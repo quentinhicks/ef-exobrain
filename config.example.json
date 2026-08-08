@@ -1,0 +1,11 @@
+{
+  "gcal_ical_url": "",
+  "birthdays_ical_url": "",
+  "sheets_url": "",
+  "sheets_credentials_path": "credentials.json",
+  "weekly_review_day": 0,
+  "qr_worker_url": "",
+  "qr_admin_secret": "",
+  "qr_internal_secret": "",
+  "autohotkey_path": ""
+}

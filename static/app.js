@@ -1,0 +1,8272 @@
+// ── Theme ─────────────────────────────────────────────────────
+// The setting table is the source of truth (it lands in state.settings with
+// everything else), but it arrives a fetch late — long enough to paint the
+// dark theme first and flash. So the choice is mirrored into localStorage and
+// read synchronously here, before the first paint, with the fetched value
+// reconciling it afterwards. Only the MAIN window has a theme: the NOW panel
+// is its own document and is deliberately light always.
+function applyTheme(theme) {
+  const light = theme === 'light';
+  document.documentElement.classList.toggle('theme-light', light);
+  const label = document.getElementById('theme-label');
+  if (!label) return;  // called before the shell parses on the pre-paint pass
+  label.textContent = light ? 'Light' : 'Dark';
+  document.getElementById('theme-icon-sun').classList.toggle('hidden', !light);
+  document.getElementById('theme-icon-moon').classList.toggle('hidden', light);
+}
+
+applyTheme(localStorage.getItem('theme') || 'dark');
+
+function initThemeToggle() {
+  applyTheme(localStorage.getItem('theme') || 'dark');  // now that the icons exist
+  document.getElementById('theme-toggle').addEventListener('click', async () => {
+    const theme = document.documentElement.classList.contains('theme-light') ? 'dark' : 'light';
+    applyTheme(theme);
+    localStorage.setItem('theme', theme);
+    state.settings = await fetch('/api/settings', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme }),
+    }).then(r => r.json());
+  });
+}
+
+// ── NOW panel toggle ─────────────────────────────────────────
+// Persistent, unlike Ctrl+Alt+M's 10-second hide: the setting survives
+// restarts (app.py creates the panel window hidden when it is set).
+
+function paintPanelToggle(hidden) {
+  const label = document.getElementById('panel-toggle-label');
+  if (!label) return;
+  label.textContent = hidden ? 'Panel off' : 'Panel';
+  document.getElementById('panel-icon-on').classList.toggle('hidden', hidden);
+  document.getElementById('panel-icon-off').classList.toggle('hidden', !hidden);
+}
+
+// One toggle for both launch modes: in client mode (PT_SERVER) the window
+// lives in THIS process, so the pywebview api call both persists the setting
+// on the server and hides/shows locally; the HTTP route covers local mode
+// and plain browsers.
+async function togglePanel() {
+  let hidden;
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.toggle_panel) {
+    hidden = await window.pywebview.api.toggle_panel();
+  } else {
+    const res = await fetch('/api/panel/toggle', { method: 'POST' }).then(r => r.json());
+    hidden = res.hidden;
+  }
+  state.settings.panel_hidden = hidden ? '1' : '0';
+  paintPanelToggle(hidden);
+}
+
+// One switch moves the WHOLE app: the server re-dates every calculation in
+// the new zone and re-expands the calendar (stored gcal times are naive
+// local), while the phone/laptop clocks follow the device as they always did.
+async function initTimezone() {
+  const sel = document.getElementById('tz-select');
+  if (!sel) return;
+  const zones = await fetch('/api/timezones').then(r => r.json()).catch(() => []);
+  const current = state.settings.timezone
+    || (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  sel.innerHTML = zones.map(z =>
+    `<option value="${escHtml(z)}"${z === current ? ' selected' : ''}>${escHtml(z)}</option>`).join('');
+  sel.addEventListener('change', async () => {
+    sel.disabled = true;
+    state.settings = await fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timezone: sel.value }),
+    }).then(r => r.json());
+    toast(`Timezone → ${sel.value}. Re-reading the calendar…`);
+    // The server re-expands calendars in the background; give it a beat, then
+    // repaint everything that renders times.
+    setTimeout(async () => {
+      await loadAll();
+      await refreshEngage();
+      sel.disabled = false;
+      toast('Day re-shifted to ' + sel.value);
+    }, 3000);
+  });
+}
+
+function initPanelToggle() {
+  document.getElementById('panel-toggle').addEventListener('click', togglePanel);
+}
+
+const state = {
+  currentDate: new Date(),
+  gcalEvents: [],
+  calendars: [],
+  blocks: [],
+  areas: [],
+  domains: [],
+  todo: null,
+  yesterdayTodo: null,
+  overrides: [],
+  inbox: [],
+  projects: [],
+  sheetsInbox: [],
+  activeBlock: null,
+  // activeAreaId is the block calendar's current area; activeDomainId is that
+  // area's domain, and the domain is what section 2 lists.
+  activeAreaId: null,
+  activeDomainId: null,
+  activeDomainItems: [],
+  section2OverrideDomainId: null,
+  section2OverrideItems: null,
+  inboxMode: 'capture',
+  lastFetched: null,
+  planningState: 'unstarted',
+  timerSeconds: 600,
+  timerInterval: null,
+  review: { due: null, last: {} },
+  experiments: [],
+  accountabilityNodes: null,
+  qrPageOverrides: {},
+  qrDismissed: {},
+  qrOutcomes: {},
+  locations: [],
+  // Location-bound tags (tag_location) + the last geolocation fix. FAIL-OPEN:
+  // geo.ok false (denied, no hardware, plain-http pywebview) hides nothing.
+  tagLocations: [],
+  geo: { ok: false },
+  settings: {},
+  view: { start: 0, end: 1440 },
+  // Right-click day-level view dismissals: blocks/qr keyed `id:date`, events
+  // keyed `uid|start`. Undo lives on the global stack (see pushUndo).
+  tlHidden: { block: {}, event: {}, qr: {} },
+};
+
+// Every fetch here catches, and that is load-bearing rather than defensive:
+// Promise.all rejects as a unit, so ONE failure used to take out the whole
+// render and leave the empty shell — the offline shape of this screen. With the
+// service worker in front these resolve from the last good fetch; the catches
+// are what happens when even that is missing (a first-ever offline load, or
+// pywebview over plain http, where no worker can register). They fall back to
+// the CURRENT state rather than [] so a drop mid-session doesn't blank a day
+// that is already on screen; on first load the initialiser makes that [].
+async function loadAll() {
+  const dateStr = formatDateYMD(state.currentDate);
+  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations] = await Promise.all([
+    fetch('/api/blocks').then(r => r.json()).catch(() => state.blocks),
+    fetch('/api/areas').then(r => r.json()).catch(() => state.areas),
+    fetch('/api/domains').then(r => r.json()).catch(() => state.domains),
+    fetch('/api/gcal').then(r => r.json()).catch(() => state.gcalEvents),
+    fetch(`/api/overrides?date=${dateStr}`).then(r => r.json()).catch(() => state.overrides),
+    fetch('/api/inbox').then(r => r.json()).catch(() => state.inbox),
+    fetch('/api/sheets/inbox').then(r => r.json()).catch(() => state.sheetsInbox),
+    fetch('/api/gtd-review').then(r => r.json()).catch(() => ({})),
+    fetch('/api/experiments').then(r => r.json()).catch(() => state.experiments),
+    fetch('/api/accountability/nodes').then(r => r.json()).catch(() => []),
+    fetch('/api/calendars').then(r => r.json()).catch(() => []),
+    fetch('/api/settings').then(r => r.json()).catch(() => ({})),
+    fetch(`/api/accountability/outcomes?from=${localDatePlusDays(dateStr, -4)}&to=${dateStr}`).then(r => r.json()).catch(() => []),
+    fetch('/api/dismissals').then(r => r.json()).catch(() => []),
+    fetch('/api/locations').then(r => r.json()).catch(() => state.locations),
+    fetch('/api/tag-locations').then(r => r.json()).catch(() => state.tagLocations),
+  ]);
+
+  state.locations = Array.isArray(locations) ? locations : [];
+  state.tagLocations = Array.isArray(tagLocations) ? tagLocations : [];
+  state.blocks = blocks;
+  state.areas = projects;
+  state.domains = domains;
+  state.gcalEvents = gcal;
+  state.overrides = overrides;
+  state.inbox = inbox;
+  state.sheetsInbox = sheetsInbox;
+  // The nav dot means "this week's review isn't filed yet".
+  state.review = { due: !reviewStatus.completed_at };
+  state.experiments = experiments;
+  state.accountabilityNodes = Array.isArray(accountabilityNodes) ? accountabilityNodes : [];
+  state.calendars = calendars;
+  state.settings = settings;
+  paintPanelToggle(settings.panel_hidden === '1');
+  // The db is authoritative; the localStorage mirror only exists to beat the
+  // flash, so re-sync it in case another window (or a restore) changed it.
+  if (settings.theme) {
+    localStorage.setItem('theme', settings.theme);
+    applyTheme(settings.theme);
+  }
+  state.qrOutcomes = {};
+  (Array.isArray(qrOutcomes) ? qrOutcomes : []).forEach(o => { state.qrOutcomes[`${o.node_id}:${o.date}`] = o.outcome; });
+  state.tlHidden = { block: {}, event: {}, qr: {} };
+  (Array.isArray(dismissals) ? dismissals : []).forEach(d => {
+    if (!state.tlHidden[d.type]) return;
+    state.tlHidden[d.type][d.key] = true;
+  });
+  state.lastFetched = new Date();
+
+  const activeBlock = detectCurrentStandardBlock();
+  state.activeBlock = activeBlock;
+  state.section2OverrideDomainId = null;
+  state.section2OverrideItems = null;
+  const defaultArea = state.areas.find(p => p.is_default && p.active && p.type === 'standard');
+  const activeAreaId = activeBlock ? activeBlock.area_id : (defaultArea ? defaultArea.id : null);
+  state.activeAreaId = activeAreaId;
+  state.activeDomainId = domainIdForArea(activeAreaId);
+  state.projects = await fetch('/api/projects').then(r => r.json()).catch(() => state.projects);
+  if (state.activeDomainId) {
+    state.activeDomainItems = await fetch(`/api/inbox/active?domain_id=${state.activeDomainId}`).then(r => r.json()).catch(() => state.activeDomainItems);
+  } else {
+    state.activeDomainItems = [];
+  }
+
+  const SIX_HOURS = 6 * 60 * 60 * 1000;
+  const lastRefresh = parseInt(localStorage.getItem('lastExternalRefresh') || '0');
+  const anyNeverFetched = state.calendars.some(c => !c.last_fetched_at);
+  if (anyNeverFetched || Date.now() - lastRefresh > SIX_HOURS) {
+    refreshExternal();
+  }
+
+  updateReviewNavDot();
+  renderAll();
+}
+
+function renderAll() {
+  renderTimeline();
+  renderSheetsInbox();
+  renderInbox();
+}
+
+function updateReviewNavDot() {
+  // The due dot rides on the hub's GTD icon and the review fold-out header.
+  ['hub-gtd-btn', 'gtd-review-head'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.toggle('has-due', !!state.review.due);
+  });
+  const prog = document.getElementById('gtd-review-prog');
+  if (prog && gtdReview) {
+    prog.textContent = `${GTD_STEPS.filter(s => gtdReview.steps[s.key]).length}/${GTD_STEPS.length}`;
+  }
+}
+
+// ── Timeline ─────────────────────────────────────────────────
+
+let fetchFailed = false;
+let currentTimeTick = null;
+
+function renderTimeline() {
+  state.view = computeViewWindow();
+  renderGrid();
+  renderDateLabel();
+  renderAlldayStrip();
+  const bodyH = document.getElementById('tl-body').clientHeight || 600;
+  renderBlocksLayer(bodyH);
+  renderGcalLayer(bodyH);
+  renderQrLayer();
+  updateCurrentTimeLine();
+  updateFetchStatus();
+  startCurrentTimeTick();
+}
+
+// Touch has no right-click and no ⌘-click: a ~550ms STILL press is the same
+// gesture. Cancels on movement (so scrolling/dragging never fires it) and
+// swallows the click that follows a fired hold, so a long-press can't also
+// toggle/cancel whatever a plain tap on that element means. Mouse pointers
+// are ignored — they have the real right-click.
+function onLongPress(el, fn) {
+  let t = null, sx = 0, sy = 0, fired = false;
+  el.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse') return;
+    fired = false;
+    sx = e.clientX; sy = e.clientY;
+    t = setTimeout(() => { fired = true; fn(); }, 550);
+  });
+  el.addEventListener('pointermove', e => {
+    if (t && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) {
+      clearTimeout(t); t = null;
+    }
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev =>
+    el.addEventListener(ev, () => { clearTimeout(t); t = null; }));
+  el.addEventListener('click', e => {
+    if (fired) { e.preventDefault(); e.stopPropagation(); fired = false; }
+  }, true);
+}
+
+// Right-click a block / event / QR to drop it from the day's view. No backend
+// or config change — it returns next day (blocks/qr) or on restart. Ctrl+Z undoes.
+function hideTimelineItem(type, key, label) {
+  if (state.tlHidden[type][key]) return;
+  state.tlHidden[type][key] = true;
+  fetch('/api/dismissals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, key }),
+  }).catch(() => {});
+  renderTimeline();
+  renderEngage();   // Engage shares the event dismissal set (⌘-click there)
+  pushUndo(`hid "${label || 'item'}"`, async () => {
+    delete state.tlHidden[type][key];
+    await fetch('/api/dismissals', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, key }),
+    }).catch(() => {});
+    renderTimeline();
+    renderEngage();
+  });
+}
+
+// View window in semantic minutes (0..2880: past-midnight sleep = end + 1440).
+// Hard-clips the timeline to wake→sleep when both QRs are chosen in settings.
+function computeViewWindow() {
+  const nodes = state.accountabilityNodes || [];
+  const wake = nodes.find(n => String(n.id) === String(state.settings.qr_wake_node_id));
+  const sleep = nodes.find(n => String(n.id) === String(state.settings.qr_sleep_node_id));
+  if (!wake || !sleep) return { start: 0, end: 1440 };
+  const pageDate = formatDateYMD(state.currentDate);
+  const viewingToday = isToday(state.currentDate);
+  const pageDow = (state.currentDate.getDay() + 6) % 7;
+  const deadlineMin = (node) => {
+    const ov = viewingToday ? node.today_override : (state.qrPageOverrides[`${node.id}:${pageDate}`] || null);
+    const def = nodeWindowForDow(node, pageDow);
+    const end = ov ? ov.window_end : def.window_end;
+    const offset = ov ? ov.window_end_offset_days : def.window_end_offset_days;
+    return timeToMinutes(end) + (offset ? 1440 : 0);
+  };
+  const start = deadlineMin(wake);
+  let end = deadlineMin(sleep);
+  // A sleep deadline at/before wake means past midnight, offset flag or not
+  if (end <= start) end += 1440;
+  return { start, end };
+}
+
+function minutesToViewPercent(mins) {
+  return ((mins - state.view.start) / (state.view.end - state.view.start)) * 100;
+}
+
+function renderGrid() {
+  const grid = document.getElementById('tl-grid');
+  if (!grid) return;
+  const { start, end } = state.view;
+  const win = `${start}-${end}`;
+  if (grid.dataset.win === win) return;
+  grid.dataset.win = win;
+  let html = '';
+  for (let h = Math.ceil(start / 60); h * 60 <= end; h++) {
+    const pct = minutesToViewPercent(h * 60);
+    if (pct < 1) continue;
+    const hh = h % 24;
+    const label = hh === 0 ? '12 AM' : hh < 12 ? `${hh} AM` : hh === 12 ? '12 PM' : `${hh - 12} PM`;
+    html += `<div class="tl-hour" style="top:${pct}%">
+      <span class="tl-hour-label">${label}</span>
+      <div class="tl-hour-line"></div>
+    </div>`;
+  }
+  grid.innerHTML = html;
+}
+
+function renderDateLabel() {
+  const el = document.getElementById('tl-date-label');
+  if (el) el.textContent = formatDateLabel(state.currentDate);
+  updateNavButtons();
+}
+
+function updateNavButtons() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const cur = new Date(state.currentDate); cur.setHours(0, 0, 0, 0);
+  const diff = Math.round((cur - today) / 86400000);
+  const prev = document.getElementById('nav-prev');
+  const next = document.getElementById('nav-next');
+  if (prev) prev.disabled = diff <= -3;
+  if (next) next.disabled = diff >= 3;
+}
+
+
+function renderBlocksLayer(bodyH = 600) {
+  const layer = document.getElementById('tl-blocks-layer');
+  if (!layer) return;
+  const dow = jsDateToDayOfWeek(state.currentDate);
+  const projectsById = Object.fromEntries(state.areas.map(p => [p.id, p]));
+  const dateStr = formatDateYMD(state.currentDate);
+  const prevDate = new Date(state.currentDate.getTime() - 86400000);
+  const prevDow = jsDateToDayOfWeek(prevDate);
+  const prevDateStr = formatDateYMD(prevDate);
+
+  const isVisible = (b, dayOfWeek) => b.active && b.day_of_week === dayOfWeek;
+
+  const segments = [];
+
+  // Today's blocks (overnight blocks run past 1440 in semantic minutes);
+  // a day override's times take precedence over the block's defaults
+  for (const b of state.blocks.filter(b => isVisible(b, dow))) {
+    const override = state.overrides.find(o => o.block_id === b.id && o.date === dateStr);
+    const startT = (override && override.start_time) || b.start_time;
+    const endT = (override && override.end_time) || b.end_time;
+    const startMin = timeToMinutes(startT);
+    const endMin = timeToMinutes(endT) + (endT < startT ? 1440 : 0);
+    const cancelled = override ? override.cancelled === 1 : false;
+    segments.push({ b, startMin, endMin, cancelled, label: b.label, cont: false });
+  }
+
+  // Yesterday's overnight blocks — continuation segments from 00:00 → end_time
+  for (const b of state.blocks.filter(b => isVisible(b, prevDow))) {
+    const override = state.overrides.find(o => o.block_id === b.id && o.date === prevDateStr);
+    if (override && override.cancelled === 1) continue;
+    const startT = (override && override.start_time) || b.start_time;
+    const endT = (override && override.end_time) || b.end_time;
+    if (endT >= startT) continue;
+    segments.push({ b, startMin: 0, endMin: timeToMinutes(endT), cancelled: false, label: b.label + ' (cont.)', cont: true });
+  }
+
+  if (!segments.length && !state.blocks.some(b => b.active)) {
+    layer.innerHTML = '<div class="tl-placeholder">No blocks yet — open Block Editor to add your schedule</div>';
+    return;
+  }
+
+  // Hard-clip to the view window
+  const visible = segments.map(s => {
+    const top = Math.max(0, minutesToViewPercent(s.startMin));
+    const bottom = Math.min(100, minutesToViewPercent(s.endMin));
+    return { ...s, top, height: bottom - top };
+  }).filter(s => s.height > 0 && !state.tlHidden.block[`${s.b.id}:${dateStr}`]);
+
+  const blocksHtml = visible.map(({ b, top, height, cancelled, label, cont, startMin, endMin }) => {
+    const proj = b.area_id ? projectsById[b.area_id] : null;
+    const tight = (height * bodyH / 100) < 18;
+    const labelSpan = `<span class="tl-block-label${cancelled ? ' tl-cancelled-text' : ''}">${escHtml(label)}</span>`;
+    const locLabel = b.location_name ? `<span class="tl-block-sublabel">📍︎ ${escHtml(b.location_name)}</span>` : '';
+    const inner = `<div class="tl-block-bar"></div>${labelSpan}${proj ? `<span class="tl-block-sublabel">${escHtml(proj.name)}</span>` : ''}${locLabel}`;
+    return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}"
+                 data-block-id="${b.id}" data-start-min="${startMin}" data-end-min="${endMin}"
+                 style="top:${top}%;height:${height}%;cursor:${cont ? 'default' : 'pointer'};
+                        --block-color:${b.color}">${inner}</div>`;
+  }).join('');
+
+  // Overlaps are allowed — a striped zone marks each intersection
+  const act = visible.filter(s => !s.cancelled);
+  let zonesHtml = '';
+  for (let i = 0; i < act.length; i++) {
+    for (let j = i + 1; j < act.length; j++) {
+      const lo = Math.max(act[i].startMin, act[j].startMin);
+      const hi = Math.min(act[i].endMin, act[j].endMin);
+      if (hi <= lo) continue;
+      const top = Math.max(0, minutesToViewPercent(lo));
+      const bottom = Math.min(100, minutesToViewPercent(hi));
+      if (bottom - top <= 0) continue;
+      zonesHtml += `<div class="tl-conflict-zone" style="top:${top}%;height:${bottom - top}%"></div>`;
+    }
+  }
+
+  layer.innerHTML = blocksHtml + zonesHtml;
+
+  layer.querySelectorAll('.tl-block:not(.tl-block-cont)').forEach(el => {
+    el.addEventListener('click', () => toggleBlockOverride(parseInt(el.dataset.blockId)));
+  });
+
+  layer.querySelectorAll('.tl-block').forEach(el => {
+    const hide = () => {
+      hideTimelineItem('block', `${el.dataset.blockId}:${dateStr}`,
+        el.querySelector('.tl-block-label')?.textContent || 'Block');
+      renderTimeline();
+    };
+    el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
+    onLongPress(el, hide);   // the touch right-click
+  });
+
+  initBlockBarDrag(layer, dateStr);
+}
+
+// The color bar is the manipulation surface (mirrors QR pills): top/bottom
+// edges resize, the middle moves the whole block — each writes a one-day
+// override on drop. Block defaults stay in the Block Editor.
+function initBlockBarDrag(layer, dateStr) {
+  const body = document.getElementById('tl-body');
+  layer.querySelectorAll('.tl-block:not(.tl-block-cont):not(.tl-block-cancelled) .tl-block-bar').forEach(bar => {
+    const blockEl = bar.parentElement;
+    const blockId = parseInt(blockEl.dataset.blockId);
+    const origStart = parseInt(blockEl.dataset.startMin);
+    const origEnd = parseInt(blockEl.dataset.endMin);
+
+    bar.addEventListener('mousemove', e => {
+      const r = bar.getBoundingClientRect();
+      const edge = e.clientY - r.top < 10 || r.bottom - e.clientY < 10;
+      bar.style.cursor = edge ? 'ns-resize' : 'grab';
+    });
+    bar.addEventListener('click', e => e.stopPropagation());
+
+    bar.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const span = state.view.end - state.view.start;
+      if (origEnd - origStart >= span) return;
+      const r = bar.getBoundingClientRect();
+      const mode = (e.clientY - r.top < 10) ? 'start' : (r.bottom - e.clientY < 10) ? 'end' : 'move';
+      const startY = e.clientY;
+      const bodyPx = body.getBoundingClientRect().height;
+      let moved = false;
+      let curS = origStart, curE = origEnd;
+
+      function onMove(ev) {
+        if (!moved && Math.abs(ev.clientY - startY) < 5) return;
+        moved = true;
+        const deltaMin = Math.round(((ev.clientY - startY) / bodyPx) * span / 5) * 5;
+        if (mode === 'move') {
+          const len = origEnd - origStart;
+          curS = Math.min(Math.max(state.view.start, origStart + deltaMin), state.view.end - len);
+          curE = curS + len;
+        } else if (mode === 'start') {
+          curS = Math.min(Math.max(state.view.start, origStart + deltaMin), origEnd - 15);
+        } else {
+          curE = Math.max(Math.min(state.view.end, origEnd + deltaMin), origStart + 15);
+        }
+        blockEl.style.top = `${Math.max(0, minutesToViewPercent(curS))}%`;
+        blockEl.style.height = `${Math.min(100, minutesToViewPercent(curE)) - Math.max(0, minutesToViewPercent(curS))}%`;
+      }
+
+      async function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        if (!moved || (curS === origStart && curE === origEnd)) { renderTimeline(); return; }
+        const res = await fetch('/api/overrides', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            block_id: blockId, date: dateStr, cancelled: false,
+            start_time: minutesToHHMM(curS % 1440),
+            end_time: minutesToHHMM(curE % 1440),
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const idx = state.overrides.findIndex(o => o.block_id === blockId && o.date === dateStr);
+          if (idx !== -1) state.overrides[idx] = data; else state.overrides.push(data);
+        }
+        renderTimeline();
+      }
+
+      document.body.style.cursor = mode === 'move' ? 'grabbing' : 'ns-resize';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+function renderAlldayStrip() {
+  const strip = document.getElementById('tl-allday-strip');
+  if (!strip) return;
+  const dayEvents = state.gcalEvents.filter(e => e.allday && sameDay(state.currentDate, e.start));
+  strip.innerHTML = dayEvents.map(e => {
+    const col = e.color || '#888888';
+    return `<div class="tl-allday-event" style="background:${rgbaColor(col, 0.14)};border-left-color:${col};color:color-mix(in srgb, ${col} 50%, #fff)">${escHtml(e.summary || '')}</div>`;
+  }).join('');
+}
+
+function renderGcalLayer(bodyH = 600) {
+  const layer = document.getElementById('tl-gcal-layer');
+  if (!layer) return;
+  layer.style.pointerEvents = 'none';
+  const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
+  const nextDate = new Date(state.currentDate.getTime() + 86400000);
+  // Next-day events count when the view runs past midnight (sleep +1d)
+  const dayEvents = state.gcalEvents.filter(e => !e.allday &&
+    !state.tlHidden.event[`${e.uid}|${e.start}`] &&
+    (sameDay(state.currentDate, e.start) || (state.view.end > 1440 && sameDay(nextDate, e.start))));
+  layer.innerHTML = dayEvents.map(e => {
+    const base = sameDay(nextDate, e.start) ? 1440 : 0;
+    const startMin = base + isoMin(e.start);
+    let endMin = base + isoMin(e.end);
+    if (endMin <= startMin) endMin += 1440;
+    const top = Math.max(0, minutesToViewPercent(startMin));
+    const bottom = Math.min(100, minutesToViewPercent(endMin));
+    if (bottom - top <= 0) return '';
+    const height = Math.max(bottom - top, 2);
+    const tight = (height * bodyH / 100) < 18;
+    const timeStr = `${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`;
+    const inner = `<div class="tl-event-row"><span class="tl-event-summary">${escHtml(e.summary || '')}</span><span class="tl-event-time">${escHtml(timeStr)}</span></div>`;
+    const col = e.color || '#888888';
+    const key = `${e.uid}|${e.start}`;
+    return `<div class="tl-gcal-event${tight ? ' tl-event-tight' : ''}" data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}" style="pointer-events:auto;top:${top}%;height:${height}%;background:${rgbaColor(col, 0.14)};border-left-color:${col};color:color-mix(in srgb, ${col} 50%, #fff)">${inner}</div>`;
+  }).join('');
+
+  // Read-only iCal events can't be deleted at source — right-click hides them
+  // from view for the session (persists across refreshes, restored by Ctrl+Z).
+  layer.querySelectorAll('.tl-gcal-event').forEach(el => {
+    const hide = () => {
+      hideTimelineItem('event', el.dataset.evKey, el.dataset.evLabel);
+      renderTimeline();
+    };
+    el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
+    onLongPress(el, hide);   // the touch right-click
+  });
+}
+
+function updateCurrentTimeLine() {
+  const el = document.getElementById('tl-current-time');
+  if (!el) return;
+  if (!isToday(state.currentDate)) {
+    el.style.display = 'none';
+    return;
+  }
+  const now = new Date();
+  const pct = minutesToViewPercent(now.getHours() * 60 + now.getMinutes());
+  if (pct < 0 || pct > 100) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  el.style.top = `${pct}%`;
+}
+
+function updateFetchStatus() {
+  const el = document.getElementById('fetch-status');
+  if (!el) return;
+  if (fetchFailed) {
+    el.textContent = 'Last fetch failed — check your calendar URLs in Blocks → Calendars';
+    el.classList.add('fetch-failed');
+    return;
+  }
+  el.classList.remove('fetch-failed');
+  if (!state.lastFetched) { el.textContent = ''; return; }
+  const mins = Math.floor((Date.now() - state.lastFetched) / 60000);
+  el.textContent = mins === 0 ? 'Last fetched: just now' : `Last fetched: ${mins} min ago`;
+}
+
+function startCurrentTimeTick() {
+  if (currentTimeTick) clearInterval(currentTimeTick);
+  currentTimeTick = setInterval(() => {
+    updateCurrentTimeLine();
+  }, 60000);
+}
+
+async function refreshExternal() {
+  fetchFailed = false;
+  const todayStr = formatDateYMD(new Date());
+  const [gcalResult, sheetsResult, outcomesResult] = await Promise.allSettled([
+    fetch('/api/gcal/refresh', { method: 'POST' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+    fetch('/api/sheets/refresh', { method: 'POST' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+    fetch(`/api/accountability/outcomes?from=${localDatePlusDays(todayStr, -4)}&to=${todayStr}`).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+  ]);
+  if (gcalResult.status === 'fulfilled') state.gcalEvents = gcalResult.value;
+  else fetchFailed = true;
+  if (sheetsResult.status === 'fulfilled') state.sheetsInbox = sheetsResult.value;
+  if (outcomesResult.status === 'fulfilled' && Array.isArray(outcomesResult.value)) {
+    state.qrOutcomes = {};
+    outcomesResult.value.forEach(o => { state.qrOutcomes[`${o.node_id}:${o.date}`] = o.outcome; });
+  }
+  if (!fetchFailed) localStorage.setItem('lastExternalRefresh', Date.now().toString());
+  state.lastFetched = new Date();
+  renderTimeline();
+  renderSheetsInbox();
+  refreshEngage();
+}
+
+function initTimeline() {
+  document.getElementById('nav-prev').addEventListener('click', async () => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const cur = new Date(state.currentDate); cur.setHours(0, 0, 0, 0);
+    if (Math.round((cur - today) / 86400000) <= -3) return;
+    state.currentDate = new Date(state.currentDate.getTime() - 86400000);
+    await fetchOverridesForDate(state.currentDate);
+    renderTimeline();
+  });
+  document.getElementById('nav-next').addEventListener('click', async () => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const cur = new Date(state.currentDate); cur.setHours(0, 0, 0, 0);
+    if (Math.round((cur - today) / 86400000) >= 3) return;
+    state.currentDate = new Date(state.currentDate.getTime() + 86400000);
+    await fetchOverridesForDate(state.currentDate);
+    renderTimeline();
+  });
+  document.getElementById('nav-today').addEventListener('click', async () => {
+    state.currentDate = new Date();
+    await fetchOverridesForDate(state.currentDate);
+    renderTimeline();
+  });
+  document.getElementById('refresh-btn').addEventListener('click', refreshExternal);
+
+  // Ctrl+Z is global (see the undo core). Timeline dismissals register on the
+  // same stack, so one keystroke walks back through everything in order.
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    focusRefresh();
+    const SIX_HOURS = 6 * 60 * 60 * 1000;
+    const lastRefresh = parseInt(localStorage.getItem('lastExternalRefresh') || '0');
+    if (Date.now() - lastRefresh > SIX_HOURS) refreshExternal();
+  });
+  window.addEventListener('focus', focusRefresh);
+}
+
+async function fetchOverridesForDate(date) {
+  const dateStr = formatDateYMD(date);
+  state.overrides = await fetch(`/api/overrides?date=${dateStr}`).then(r => r.json());
+}
+
+async function toggleBlockOverride(blockId) {
+  const dateStr = formatDateYMD(state.currentDate);
+  const existing = state.overrides.find(o => o.block_id === blockId && o.date === dateStr);
+  const hasTimes = existing && (existing.start_time || existing.end_time);
+
+  if (existing && existing.cancelled === 1 && !hasTimes) {
+    // un-cancel with nothing else on the row — drop it
+    const saved = existing;
+    const idx = state.overrides.indexOf(existing);
+    state.overrides.splice(idx, 1);
+    renderTimeline();
+    try {
+      const res = await fetch(`/api/overrides/${saved.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error();
+    } catch (err) {
+      state.overrides.push(saved);
+      renderTimeline();
+      console.error('Override delete failed:', err);
+    }
+    return;
+  }
+
+  // cancel, or un-cancel while keeping the row's time override
+  const cancelled = existing && existing.cancelled === 1 ? 0 : 1;
+  const prev = existing ? existing.cancelled : null;
+  const optimistic = existing || { id: null, block_id: blockId, date: dateStr, cancelled };
+  if (existing) existing.cancelled = cancelled;
+  else state.overrides.push(optimistic);
+  renderTimeline();
+  try {
+    const res = await fetch('/api/overrides', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ block_id: blockId, date: dateStr, cancelled: !!cancelled }),
+    });
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    const idx = state.overrides.indexOf(optimistic);
+    if (idx !== -1) state.overrides[idx] = data;
+  } catch (err) {
+    if (existing) existing.cancelled = prev;
+    else {
+      const idx = state.overrides.indexOf(optimistic);
+      if (idx !== -1) state.overrides.splice(idx, 1);
+    }
+    renderTimeline();
+    console.error('Override save failed:', err);
+  }
+}
+
+// Called (via evaluate_js) after the NOW panel checks something off — and
+// after an inbox capture lands from outside this window (hotkey, bridge) —
+// so the day view reflects it immediately instead of waiting for a manual
+// refresh. The name is historical (the panel used to edit the to-do plan).
+// Refetches the inbox too: the footer's "Clarify N" count is stale otherwise.
+async function refreshTodoNow() {
+  state.inbox = await fetch('/api/inbox').then(r => r.json()).catch(() => state.inbox);
+  await refreshEngage();
+  return;
+}
+
+// The phone writes straight to the server, so nothing nudges this window.
+// Coming back to it is the natural moment to catch up — a focus/visibility
+// refresh, throttled to 30s, is event-driven, not polling.
+let lastFocusRefresh = 0;
+function focusRefresh() {
+  if (document.hidden || Date.now() - lastFocusRefresh < 30000) return;
+  lastFocusRefresh = Date.now();
+  refreshTodoNow();
+}
+
+// ── Section 2: Active project items ──────────────────────────
+
+function detectCurrentStandardBlock() {
+  const now = new Date();
+  const dow = jsDateToDayOfWeek(now);
+  const nowTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+  const dateStr = formatDateYMD(now);
+  const projectsById = Object.fromEntries(state.areas.map(p => [p.id, p]));
+
+  for (const b of state.blocks) {
+    if (!b.active || b.day_of_week !== dow || !b.area_id) continue;
+    const proj = projectsById[b.area_id];
+    if (!proj || proj.type !== 'standard') continue;
+    const ov = state.overrides.find(o => o.block_id === b.id && o.date === dateStr);
+    if (ov && ov.cancelled === 1) continue;
+    const startT = (ov && ov.start_time) || b.start_time;
+    const endT = (ov && ov.end_time) || b.end_time;
+    if (nowTime >= startT && nowTime < endT) return b;
+  }
+  return null;
+}
+
+let section2RevertTimer = null;
+
+// Every area belongs to exactly one domain (storage backfills the default), so
+// a missing domain_id can only mean stale client state — fall back rather than
+// leaving section 2 blank.
+function defaultDomainId() {
+  const d = state.domains.find(x => x.is_default) || state.domains[0];
+  return d ? d.id : null;
+}
+
+function domainIdForArea(areaId) {
+  const a = areaId ? state.areas.find(p => p.id === areaId) : null;
+  return (a && a.domain_id) || defaultDomainId();
+}
+
+// Re-render an input's surface without teleporting the caret to the end.
+// Setting .value (or rebuilding the node) collapses the selection, so the
+// offsets have to be captured before and reapplied after.
+function preserveCaret(id, rerender) {
+  const before = document.getElementById(id);
+  const pos = before ? [before.selectionStart, before.selectionEnd] : null;
+  rerender();
+  const after = document.getElementById(id);
+  if (!after || !pos) return;
+  after.focus();
+  try { after.setSelectionRange(pos[0], pos[1]); } catch (e) { /* non-text input */ }
+}
+
+// ── Undo (Ctrl+Z / the ↩ button) ──────────────────────────────
+// Every button that CHANGES DATA registers how to reverse itself. The rule
+// is in CLAUDE.md: a new mutating handler ships with its inverse or it isn't
+// finished. Inverses are closures, so they capture the exact prior value
+// rather than guessing it later.
+const undoStack = [];
+const UNDO_MAX = 30;
+
+function pushUndo(label, inverse) {
+  undoStack.push({ label, inverse });
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+  paintUndo();
+}
+
+function paintUndo() {
+  // ↩ lives in the global bar, which is visible from every surface — this
+  // just keeps it hidden while there is nothing to undo.
+  const eg = document.getElementById('eg-undo');
+  if (eg) eg.classList.toggle('hidden', !undoStack.length);
+}
+
+// ── Capture (one implementation, two entry points) ────────────
+//
+// The Engage footer bar and the global capture chip both land here. Bare
+// capture is the one write with no decisions attached, so it stays a single
+// function — which is also the only place that has to own the inverse.
+async function captureToInbox(content) {
+  const res = await fetch('/api/inbox', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  }).catch(() => null);
+  if (!res || !res.ok) { toast('Capture failed'); return null; }
+  const item = await res.json();
+  // A create inverts to a delete of the new id (see the undo rule).
+  pushUndo(`captured "${content}"`, async () => {
+    await fetch(`/api/inbox/${item.id}`, { method: 'DELETE' });
+    await refreshInboxCount();
+  });
+  await refreshInboxCount();
+  return item;
+}
+
+async function refreshInboxCount() {
+  state.inbox = await fetch('/api/inbox').then(r => r.json()).catch(() => state.inbox);
+  // The footer only exists while Engage is rendered; capture works from
+  // anywhere, so this is a soft update rather than a re-render.
+  const clarify = document.getElementById('eg-clarify');
+  if (clarify) clarify.textContent = `Clarify ${state.inbox.length}`;
+  renderInbox();
+}
+
+// ── THE global bar ─────────────────────────────────────────────
+//
+// One context-sensitive bottom bar for the whole app (replaces the floating
+// capture/undo chips, MAP's footer bar and the GTD/MAP inline add inputs).
+// Every overlay opens ABOVE it (bottom: var(--gbar-h)), so its four pieces —
+// the input, ↩, Clarify N, ≡ — are one tap from anywhere. The INPUT is the
+// only part that morphs; the ◉ chip on its left names where typed text lands:
+//   · no chip           → bare inbox capture (captureToInbox)
+//   · ◉ <project>       → next action filed under that project (set by the
+//                         + affordances on GTD/MAP project rows; persists for
+//                         rapid entry until the chip is tapped or Esc'd)
+//   · ◉ <area>          → active item straight into that area (MAP's + item)
+//   · ✎ log             → derived, not selected: the Logs LIST names a new
+//                         log; with the editor open the bar reverts to inbox
+//                         capture on purpose — a stray task mid-writing goes
+//                         to the inbox, not into the log.
+// Capture stays SILENT everywhere: the Clarify count ticking up is now always
+// on screen, so it is the receipt (the old chip's toast existed only because
+// that count used to be covered). MAP's ◉ filing target is untouched — it
+// routes CLARIFY filing, a different write; only bar typing is governed here.
+const barView = { mode: null, logInbox: false };
+
+function barModeNow() {
+  if (barView.mode) return barView.mode;
+  const logsEl = document.getElementById('logs-overlay');
+  if (logsEl && !logsEl.classList.contains('hidden') && !logsView.open
+      && !barView.logInbox) return { kind: 'newlog' };
+  // Reference lists derive the same way logs do: the INDEX names a new list,
+  // an OPEN list appends to it; the chip is the way back to plain capture.
+  const refEl = document.getElementById('tab-lists');
+  if (refEl && !refEl.classList.contains('hidden') && !refView.inbox) {
+    const flow = refView.flows.find(x => x.id === refView.openFlow);
+    if (flow) return { kind: 'flowstep', id: flow.id, name: flow.name };
+    const open = refView.lists.find(l => l.id === refView.open);
+    if (open) return { kind: 'ref', id: open.id, name: open.name };
+    return { kind: 'reflist' };
+  }
+  return { kind: 'inbox' };
+}
+
+function renderBar() {
+  const bar = document.getElementById('global-bar');
+  if (!bar) return;
+  const m = barModeNow();
+  const d = new Date();
+  const chip = m.kind === 'project' || m.kind === 'area' || m.kind === 'ref'
+      || m.kind === 'flowstep'
+    ? `◉ ${escHtml(m.name)}`
+    : m.kind === 'newlog' ? '✎ log'
+    : m.kind === 'reflist' ? '✎ list' : '';
+  const ph = m.kind === 'project' ? 'next action…'
+    : m.kind === 'area' ? `item in ${m.name}…`
+    : m.kind === 'ref' ? `add to ${m.name}…`
+    : m.kind === 'flowstep' ? 'add a step…'
+    : m.kind === 'reflist' ? 'new list…'
+    : m.kind === 'newlog' ? `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()} topic…`
+    : 'Capture anything…';
+  bar.innerHTML = `
+    ${chip ? `<button id="bar-mode" title="Typed text lands here — tap for plain inbox capture">${chip}</button>`
+           : '<span class="eg-cap-plus">+</span>'}
+    <input type="text" id="eg-capture" placeholder="${escHtml(ph)}" autocomplete="off">
+    <button id="eg-undo" class="${undoStack.length ? '' : 'hidden'}" title="Undo">↩︎</button>
+    <button id="eg-clarify" title="Process the inbox">Clarify ${state.inbox.length}</button>
+    <button id="eg-hub" title="Everything else">≡</button>
+  `;
+
+  const modeBtn = bar.querySelector('#bar-mode');
+  if (modeBtn) modeBtn.addEventListener('click', () => {
+    if (barView.mode) barView.mode = null;
+    // Derived modes: the chip is the way back to plain capture. On Lists that
+    // opt-out lasts for the SURFACE, not the visit — renderRef clears it on
+    // every surface change, so walking into a routine re-arms ◉ <routine>
+    // instead of leaving you in plain capture with no way back but Esc.
+    else if (m.kind === 'newlog') barView.logInbox = true;
+    else refView.inbox = true;
+    renderBar();
+    document.getElementById('eg-capture').focus();
+  });
+
+  const input = bar.querySelector('#eg-capture');
+  input.addEventListener('keydown', async e => {
+    if (e.key === 'Escape') {
+      // Peel like everything else: text first, then the mode, then let the
+      // overlay's own Esc take over.
+      if (input.value) { e.stopPropagation(); input.value = ''; return; }
+      if (barView.mode) { e.stopPropagation(); barView.mode = null; renderBar(); return; }
+      input.blur();
+      return;
+    }
+    if (e.key !== 'Enter') return;
+    // stopPropagation, or the clarify sheet's document-level Enter handler
+    // (which files the item being clarified) fires off a BAR capture too.
+    e.stopPropagation();
+    const raw = input.value.trim();
+    if (!raw) return;
+    input.value = '';
+    const mode = barModeNow();
+    if (mode.kind === 'project' || mode.kind === 'area') {
+      const { content, tags } = parseTags(raw);
+      const created = await fetch('/api/inbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, status: 'active',
+                               area_id: mode.areaId ?? mode.id,
+                               project_id: mode.kind === 'project' ? mode.id : null,
+                               tags: tags.join(' ') }),
+      }).then(r => r.json());
+      pushUndo(`added "${content}"`, async () => {
+        await fetch(`/api/inbox/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      // Mode persists for rapid entry; repaint whatever lists are open.
+      await refreshAfterUndo();
+      document.getElementById('eg-capture').focus();
+    } else if (mode.kind === 'newlog') {
+      const log = await fetch('/api/logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: raw }),
+      }).then(r => r.json());
+      logsView.open = log.name;
+      logsView.content = log.content;
+      logsView.dirty = false;
+      renderLogs();
+    } else if (mode.kind === 'ref') {
+      const created = await fetch('/api/ref/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ list_id: mode.id, content: raw }),
+      }).then(r => r.json());
+      pushUndo(`added "${raw}" to ${mode.name}`, async () => {
+        await fetch(`/api/ref/items/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      await refreshRef();
+      document.getElementById('eg-capture').focus();
+    } else if (mode.kind === 'flowstep') {
+      const created = await fetch(`/api/flows/${mode.id}/steps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: raw }),
+      }).then(r => r.json());
+      pushUndo(`added step "${raw}"`, async () => {
+        await fetch(`/api/flow-steps/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      await refreshRef();
+      document.getElementById('eg-capture').focus();
+    } else if (mode.kind === 'reflist') {
+      const created = await fetch('/api/ref/lists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: raw }),
+      }).then(r => r.json());
+      pushUndo(`created list "${raw}"`, async () => {
+        await fetch(`/api/ref/lists/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      refView.open = created.id;
+      await refreshRef();
+      document.getElementById('eg-capture').focus();
+    } else {
+      if (await captureToInbox(raw)) {
+        // MAP's untriaged "in" pile is on screen when capturing from MAP —
+        // the new row appearing there is the receipt.
+        const mapEl = document.getElementById('map-overlay');
+        if (mapEl && !mapEl.classList.contains('hidden')) await refreshMap();
+      }
+    }
+  });
+
+  bar.querySelector('#eg-undo').addEventListener('click', runUndo);
+  bar.querySelector('#eg-clarify').addEventListener('click', openClarify);
+  bar.querySelector('#eg-hub').addEventListener('click', () => {
+    document.getElementById('hub-overlay').classList.toggle('hidden');
+  });
+}
+
+let toastTimer = null;
+
+function toast(msg) {
+  let el = document.getElementById('app-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'app-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add('toast-on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('toast-on'), 2600);
+}
+
+async function runUndo() {
+  const entry = undoStack.pop();
+  paintUndo();
+  if (!entry) { toast('Nothing to undo'); return; }
+  try {
+    await entry.inverse();
+    toast('Undone: ' + entry.label);
+  } catch (e) {
+    toast("Couldn't undo " + entry.label);
+  }
+}
+
+// Repaint whatever surfaces are open after an undo, without caring which one
+// the original action came from.
+async function refreshAfterUndo() {
+  await refreshEngage();
+  if (!document.getElementById('tab-gtd').classList.contains('hidden')) await refreshGtd();
+  if (!document.getElementById('map-overlay').classList.contains('hidden')) await refreshMap();
+  if (!document.getElementById('tab-people').classList.contains('hidden')) await loadPeopleData();
+  if (!document.getElementById('tab-lists').classList.contains('hidden')) await refreshRef();
+  // The breakdown composer reads its own list, so an undo that touched a
+  // chain (undoablePatch writes the inverse itself) has to repaint it here or
+  // the sheet keeps showing the state that was just reversed.
+  if (clarifyView.compose) await refreshCompose();
+  state.inbox = await fetch('/api/inbox').then(r => r.json());
+  renderInbox();
+}
+
+// Snapshot an inbox item so a delete can be replayed exactly (same id, so
+// children and day placements survive).
+async function snapshotItem(id) {
+  return fetch(`/api/inbox/${id}/snapshot`).then(r => r.ok ? r.json() : null).catch(() => null);
+}
+
+function patchInboxItem(id, body) {
+  return fetch(`/api/inbox/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+// The common case: a PATCH whose inverse is the same PATCH with the values
+// the item had before. `fields` is the list of keys being changed.
+function undoablePatch(item, fields, label) {
+  const prev = {};
+  fields.forEach(f => { prev[f] = item[f] === undefined ? null : item[f]; });
+  pushUndo(label, async () => {
+    await patchInboxItem(item.id, prev);
+    await refreshAfterUndo();
+  });
+}
+
+// ── Notes autosave ───────────────────────────────────────────
+//
+// Notes are the only long-form field in the inventory, and blur used to be the
+// only thing that wrote them — which lost text three ways: Escape closed the
+// editor without saving, removing a focused element fires NO blur (so any
+// re-render from elsewhere dropped whatever had been typed), and closing the
+// window took the rest. They now write on a debounce, and every exit flushes.
+//
+// The undo entry is registered ONCE per editing session rather than per save:
+// the stack is capped at 30, so pushing one every 700ms would shove the real
+// inverse off the end inside a single paragraph.
+const NOTES_SAVE_MS = 700;
+const openNotes = [];
+
+function wireNotesAutosave(ta, commit) {
+  let timer = null;
+  let pending = false;
+  const flush = async () => {
+    clearTimeout(timer);
+    timer = null;
+    if (!pending) return;
+    pending = false;
+    await commit(ta.value);
+  };
+  ta.addEventListener('input', () => {
+    pending = true;
+    clearTimeout(timer);
+    timer = setTimeout(flush, NOTES_SAVE_MS);
+  });
+  ta.__flushNotes = flush;
+  // A notes field is a markdown field — the log editor's shortcut suite comes
+  // with the autosave contract (Ctrl+S flushes via __flushNotes above).
+  wireMdShortcuts(ta);
+  // Drop textareas a re-render has already thrown away, so the list stays the
+  // length of what is actually on screen (one or two).
+  for (let i = openNotes.length - 1; i >= 0; i--) {
+    if (!openNotes[i].isConnected) openNotes.splice(i, 1);
+  }
+  openNotes.push(ta);
+  return flush;
+}
+
+// Every close path funnels here. Detached textareas get flushed too — one may
+// still be holding text that a mid-keystroke re-render orphaned — and are then
+// dropped.
+function flushOpenNotes() {
+  const all = openNotes.splice(0, openNotes.length);
+  openNotes.push(...all.filter(ta => ta.isConnected));
+  return Promise.all(all.map(ta => ta.__flushNotes()));
+}
+
+// A delete whose inverse restores the captured snapshot.
+async function undoableDelete(id, label) {
+  const snap = await snapshotItem(id);
+  await fetch(`/api/inbox/${id}`, { method: 'DELETE' });
+  if (snap) {
+    pushUndo(label, async () => {
+      await fetch('/api/inbox/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(snap),
+      });
+      await refreshAfterUndo();
+    });
+  }
+}
+
+// Time-estimate tags: one of these on an item means "takes about this long".
+// They are ordinary tags everywhere (chips, filters, #5m in an add bar) —
+// only the clarify picker treats them as exclusive, because a thing doesn't
+// take 5 AND 90 minutes.
+const EST_TAGS = ['5m', '15m', '30m', '90m'];
+
+// The due chip for inbox_item.deadline (REAL deadlines only — that discipline
+// is the user's, not the app's). One renderer so every surface says it the
+// same way: red once it's today-or-gone, plain before that. Deadline is
+// display/priority metadata — no availability predicate reads it.
+// The date an item is actually working to: its own, or the earliest one it
+// INHERITS from the projects above it (storage._effective_deadline). A project
+// due today makes its next actions due today — an action can't be later than
+// the outcome it serves.
+function dueOf(item) {
+  return item.effective_deadline || item.deadline || null;
+}
+
+function dueChip(item, cls) {
+  const due = dueOf(item);
+  if (!due) return '';
+  const today = formatDateYMD(new Date());
+  const d = new Date(due + 'T12:00:00');
+  const label = due === today ? 'due today'
+    : `due ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+  // An inherited date is shown dashed and says where it came from: it is a
+  // real constraint, but it is not one the user typed on THIS row, and the
+  // discipline that keeps deadlines meaningful depends on telling them apart.
+  const own = item.deadline === due;
+  return `<span class="${cls} due-chip${due <= today ? ' due-chip-hot' : ''}${
+    own ? '' : ' due-chip-inherited'}"${own ? '' : ' title="From the project this belongs to"'}>${label}</span>`;
+}
+
+// ── Location-bound tags — GTD's @contexts, literally ─────────
+//
+// A tag bound to a location preset (tag_location) hides its items from the
+// pool while the device is ELSEWHERE. The rule is FAIL-OPEN: no fix — denied
+// permission, no hardware, plain-http pywebview where geolocation never
+// resolves — hides nothing, because losing GPS must never lose work from
+// view. The count of hidden items rides on the pool header (⌖ n elsewhere),
+// so the exclusion is visible rather than silent.
+function geoDistM(aLat, aLng, bLat, bLng) {
+  const R = 6371000, toR = d => d * Math.PI / 180;
+  const dLat = toR(bLat - aLat), dLng = toR(bLng - aLng);
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(toR(aLat)) * Math.cos(toR(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+let _geoWatchId = null;
+function initGeo() {
+  if (!('geolocation' in navigator)) return;
+  // Re-callable from a USER GESTURE: iOS often only shows the permission
+  // prompt for a gesture-initiated request, so the ctx menu's "enable"
+  // button calls this again — clear the old watch first.
+  if (_geoWatchId != null) navigator.geolocation.clearWatch(_geoWatchId);
+  let last = null;
+  _geoWatchId = navigator.geolocation.watchPosition(pos => {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    const moved = !last || geoDistM(last.lat, last.lng, lat, lng) > 30;
+    state.geo = { ok: true, lat, lng };
+    // Re-render only on real movement — fixes arrive continuously and the
+    // day must not repaint on GPS jitter.
+    if (moved) { last = { lat, lng }; renderEngage(); }
+  }, () => {
+    const was = state.geo.ok;
+    state.geo = { ok: false };
+    if (was !== false) renderEngage();   // repaint the ⌖ status either way
+  }, { enableHighAccuracy: false, maximumAge: 60000, timeout: 20000 });
+}
+
+// ── Device-bound tags — the same idea as ⌖, on hardware ──────
+//
+// 'pc' and 'phone' are DEVICE tags: an item carrying one is only available on
+// that device, so the pool answers "what can I start ON THIS THING". An item
+// with NO device tag is available everywhere — the tag is opt-in friction, not
+// a classification every row has to carry — and one carrying BOTH is available
+// everywhere too, which is why the predicate reads "some device tag matches"
+// rather than "no foreign tag".
+//
+// They ride the tag system like EST_TAGS do (no new column, no new table): the
+// clarify sheet offers them, the context picker lists them, MAP badges them.
+// Unlike the location gate there is no fail-open case to design — detection
+// always answers — so the escape hatch is a manual override, kept in
+// localStorage because the device is a property of the MACHINE and the setting
+// table is one row shared by both of them.
+const DEVICE_TAGS = ['pc', 'phone'];
+
+function detectDevice() {
+  // The pywebview window only ever runs on the laptop.
+  if (window.pywebview) return 'pc';
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPod|Android|Windows Phone|Mobile/i.test(ua)) return 'phone';
+  // iPadOS 13+ reports itself as a Macintosh, so the UA alone would call it a
+  // pc. Touch points give it away, and a trackpad is a FINE pointer — neither
+  // signal is conclusive on its own, the pair is. ANY touch point counts,
+  // because the coarse-pointer half already excludes the mouse-driven machines
+  // that report a spurious 1.
+  return (navigator.maxTouchPoints || 0) > 0
+    && window.matchMedia('(pointer: coarse)').matches ? 'phone' : 'pc';
+}
+
+function currentDevice() {
+  const override = localStorage.getItem('device');
+  return DEVICE_TAGS.includes(override) ? override : detectDevice();
+}
+
+function itemTags(item) {
+  return (item.tags || '').split(/\s+/).filter(Boolean);
+}
+
+// '#tag' tokens typed into an add bar become tags. An entry that is ONLY tags
+// keeps its literal text as content, so nothing ever lands empty.
+function parseTags(text) {
+  const tags = [];
+  const content = text.replace(/(^|\s)#([a-z0-9_-]+)\b/gi, (m, sp, t) => {
+    tags.push(t.toLowerCase());
+    return sp;
+  }).replace(/\s+/g, ' ').trim();
+  if (!content) return { content: text.trim(), tags: [] };
+  return { content, tags: [...new Set(tags)] };
+}
+
+
+// ── Inbox ────────────────────────────────────────────────────
+
+function renderInbox() {
+  // The inbox is the capture bar's live count now; processing is the Clarify
+  // sheet (openClarify). Callers that used to repaint the queue just bump N.
+  const el = document.getElementById('eg-clarify');
+  if (el) el.textContent = `Clarify ${state.inbox.length}`;
+}
+
+
+// Project picker options, grouped by area. Filing an item under a project makes
+// it adopt that project's area server-side, so the area select follows along.
+function projectOptions(parentId) {
+  const byArea = {};
+  state.projects.forEach(p => {
+    const area = p.area_name || '—';
+    (byArea[area] = byArea[area] || []).push(p);
+  });
+  const groups = Object.keys(byArea).sort().map(area =>
+    `<optgroup label="${escHtml(area)}">` +
+    byArea[area].map(p =>
+      `<option value="${p.id}"${p.id === parentId ? ' selected' : ''}>${escHtml(p.content)}</option>`
+    ).join('') + '</optgroup>'
+  ).join('');
+  return `<option value=""${parentId ? '' : ' selected'}>—</option>${groups}`;
+}
+
+// ── Sheets Inbox ─────────────────────────────────────────────
+
+function renderSheetsInbox() {
+  // The "Due" strip lives at the top of the Calendar overlay now.
+  const panel = document.getElementById('sheets-due-strip');
+  if (!panel) return;
+
+  let section = document.getElementById('sheets-inbox-section');
+  if (!section) {
+    section = document.createElement('div');
+    section.id = 'sheets-inbox-section';
+    panel.appendChild(section);
+  }
+
+  if (!state.sheetsInbox.length) {
+    section.innerHTML = '';
+    return;
+  }
+
+  const rowsHtml = state.sheetsInbox.map(item => {
+    const timeStr = item.due_time ? ` ${item.due_time}` : '';
+    return `<div class="si-item">
+      <span class="si-course">${escHtml(item.course)}</span>
+      <span class="si-title">${escHtml(item.title)}</span>
+      <span class="si-date">${escHtml(item.due_date)}${escHtml(timeStr)}</span>
+    </div>`;
+  }).join('');
+
+  section.innerHTML = `
+    <div class="si-header">Due</div>
+    <div class="si-list">${rowsHtml}</div>
+  `;
+}
+
+// ── Utilities ────────────────────────────────────────────────
+
+const _WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const _MONTHS_SHORT   = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const _WEEKDAYS_LONG  = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const _MONTHS_LONG    = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Tiny markdown for project notes (support material is written in prose, so
+// plain <pre> text wasted it). Escape FIRST, then decorate — the input is
+// user text, never trusted HTML. Line-level: # ## ### headings, - and 1.
+// lists, blank-line paragraphs. Inline: **bold**, *italic*, `code`,
+// [text](http/https url). That's the whole grammar; anything fancier belongs
+// in a real document, not a notes field.
+function mdHtml(src) {
+  const inline = s => escHtml(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const out = [];
+  let list = null; // 'ul' | 'ol' | null
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const raw of String(src).split('\n')) {
+    const line = raw.trimEnd();
+    const h = line.match(/^(#{1,3}) +(.*)/);
+    const li = line.match(/^[-*] +(.*)/);
+    const ol = line.match(/^\d+[.)] +(.*)/);
+    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); }
+    else if (li || ol) {
+      const kind = li ? 'ul' : 'ol';
+      if (list !== kind) { closeList(); out.push(`<${kind}>`); list = kind; }
+      out.push(`<li>${inline((li || ol)[1])}</li>`);
+    }
+    else if (!line.trim()) closeList();
+    else { closeList(); out.push(`<p>${inline(line)}</p>`); }
+  }
+  closeList();
+  return out.join('');
+}
+
+function nowTimeStr() {
+  const now = new Date();
+  return now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+}
+
+function jsDateToDayOfWeek(date) {
+  return (date.getDay() + 6) % 7;
+}
+
+function isoToAmPm(isoStr) {
+  const d = new Date(isoStr);
+  const h = d.getHours(), m = d.getMinutes();
+  const period = h < 12 ? 'am' : 'pm';
+  const hour = h % 12 || 12;
+  return `${hour}:${String(m).padStart(2, '0')}${period}`;
+}
+
+function hhmmToAmPm(hhmmStr) {
+  const [h, m] = hhmmStr.split(':').map(Number);
+  const period = h < 12 ? 'am' : 'pm';
+  const hour = h % 12 || 12;
+  return `${hour}:${String(m).padStart(2, '0')}${period}`;
+}
+
+function sameDay(date, isoStr) {
+  const d = new Date(isoStr);
+  return d.getFullYear() === date.getFullYear() &&
+    d.getMonth() === date.getMonth() &&
+    d.getDate() === date.getDate();
+}
+
+function isToday(date) {
+  return sameDay(date, new Date().toISOString());
+}
+
+function formatDateLabel(date) {
+  return `${_WEEKDAYS_SHORT[date.getDay()]} ${_MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
+}
+
+function formatDateYMD(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function formatTodoDate(date) {
+  return `${_WEEKDAYS_LONG[date.getDay()]}, ${_MONTHS_LONG[date.getMonth()]} ${date.getDate()}`;
+}
+
+function formatTime12(date) {
+  const h = date.getHours();
+  const m = date.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function rgbaColor(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ── Block editor ─────────────────────────────────────────────
+
+// 10 muted pastels, shared by the block and calendar color pickers
+const BLOCK_COLORS = [
+  '#d9a3a8', '#d9b48f', '#d8cb96', '#adc9a0', '#93cbb4',
+  '#8fc6cf', '#98b9dd', '#a9a9dd', '#c3a6d8', '#d5a3c8',
+];
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+// MTWRFSU — the scheduling notation, not first initials: R is Thursday and U
+// is Sunday, so all seven stay distinct at one character. Anywhere with room
+// for `DAY_NAMES` should use that instead; this is for pickers that have none.
+const DAY_LETTERS = ['M', 'T', 'W', 'R', 'F', 'S', 'U'];
+
+let editingGroup = null;
+
+function initBlockEditor() {
+  const colorPicker = document.getElementById('be-color-picker');
+  colorPicker.innerHTML = BLOCK_COLORS.map((c, i) =>
+    `<button type="button" class="be-color-option${i === 0 ? ' selected' : ''}" data-color="${c}" style="background:${c}" title="${c}"></button>`
+  ).join('');
+  colorPicker.addEventListener('click', e => {
+    const btn = e.target.closest('.be-color-option');
+    if (!btn) return;
+    colorPicker.querySelectorAll('.be-color-option').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+  });
+
+  initCalendarSection();
+
+  document.getElementById('be-days-picker').innerHTML = DAY_NAMES.map((d, i) =>
+    `<label class="be-day-label"><input type="checkbox" class="be-day-cb" value="${i}"><span>${d}</span></label>`
+  ).join('');
+
+  document.getElementById('be-rec-days-picker').innerHTML = DAY_NAMES.map((d, i) =>
+    `<label class="be-day-label"><input type="checkbox" class="be-rec-day-cb" value="${i}"><span>${d}</span></label>`
+  ).join('');
+  document.getElementById('be-rec-weekday').innerHTML = DAY_NAMES.map((d, i) =>
+    `<option value="${i}">${d}</option>`
+  ).join('');
+
+  const REC_KIND_ROWS = {
+    weekly: ['weekly'],
+    monthly_nth: ['nth', 'months'],
+    monthly_date: ['months'],
+    every_n_days: ['ndays'],
+  };
+  document.getElementById('be-rec-kind').addEventListener('change', e => {
+    ['weekly', 'nth', 'months', 'ndays'].forEach(k => {
+      document.querySelectorAll(`.be-rec-row-${k}`).forEach(row =>
+        row.classList.toggle('hidden', !REC_KIND_ROWS[e.target.value].includes(k)));
+    });
+  });
+
+  document.getElementById('be-recurring-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const errorEl = document.getElementById('be-recurring-error');
+    errorEl.textContent = '';
+    const name = document.getElementById('be-rec-name').value.trim();
+    const area_id = parseInt(document.getElementById('be-rec-area').value) || null;
+    const kind = document.getElementById('be-rec-kind').value;
+    const anchor_date = document.getElementById('be-rec-anchor').value;
+    if (!name || !area_id || !anchor_date) {
+      errorEl.textContent = 'Name, project, and start date are required.';
+      return;
+    }
+    const body = { name, area_id, kind, anchor_date };
+    if (kind === 'weekly') {
+      const days = [...document.querySelectorAll('.be-rec-day-cb:checked')].map(cb => cb.value).join('');
+      if (!days) { errorEl.textContent = 'Select at least one day.'; return; }
+      body.days_of_week = days;
+      body.interval = parseInt(document.getElementById('be-rec-interval-weeks').value) || 1;
+    } else if (kind === 'monthly_nth') {
+      body.nth = parseInt(document.getElementById('be-rec-nth').value);
+      body.weekday = parseInt(document.getElementById('be-rec-weekday').value);
+      body.interval = parseInt(document.getElementById('be-rec-interval-months').value) || 1;
+    } else if (kind === 'monthly_date') {
+      body.interval = parseInt(document.getElementById('be-rec-interval-months').value) || 1;
+    } else {
+      body.interval = parseInt(document.getElementById('be-rec-interval-days').value) || 1;
+    }
+    const res = await fetch('/api/recurring', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { errorEl.textContent = 'Error saving.'; return; }
+    document.getElementById('be-rec-name').value = '';
+    refreshRecurringList();
+  });
+
+  document.querySelectorAll('#block-editor-modal .be-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#block-editor-modal .be-tab-btn').forEach(b =>
+        b.classList.toggle('active', b === btn));
+      document.querySelectorAll('#block-editor-modal .be-section').forEach(s =>
+        s.classList.toggle('active', s.dataset.betabPanel === btn.dataset.betab));
+    });
+  });
+  document.getElementById('modal-close').addEventListener('click', closeBlockEditor);
+  document.getElementById('modal-overlay').addEventListener('click', e => {
+    if (e.target.id === 'modal-overlay') closeBlockEditor();
+  });
+
+  document.getElementById('be-add-area-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = document.getElementById('be-area-name').value.trim();
+    const type = document.getElementById('be-area-type').value;
+    const domain_id = parseInt(document.getElementById('be-area-domain').value) || null;
+    if (!name) return;
+    await fetch('/api/areas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, type, domain_id }),
+    });
+    document.getElementById('be-area-name').value = '';
+    refreshBlockEditor(false);
+  });
+
+  document.getElementById('be-add-domain-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const input = document.getElementById('be-domain-name');
+    const name = input.value.trim();
+    if (!name) return;
+    await fetch('/api/domains', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    input.value = '';
+    refreshBlockEditor(false);
+  });
+
+  document.getElementById('be-block-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const label = document.getElementById('be-block-label-input').value.trim();
+    const color = document.querySelector('#be-color-picker .be-color-option.selected')?.dataset.color;
+    const start_time = document.getElementById('be-block-start').value;
+    const end_time = document.getElementById('be-block-end').value;
+    const area_id = document.getElementById('be-block-area-select').value || null;
+    const location_id = document.getElementById('be-block-location-select').value || null;
+    const errorEl = document.getElementById('be-block-error');
+    errorEl.textContent = '';
+
+    if (!label || !color || !start_time || !end_time) {
+      errorEl.textContent = 'Label, color, start, and end are required.';
+      return;
+    }
+
+    const days = [...document.querySelectorAll('.be-day-cb:checked')].map(cb => parseInt(cb.value));
+    if (!days.length) { errorEl.textContent = 'Select at least one day.'; return; }
+    if (editingGroup !== null) {
+      await Promise.all(editingGroup.rows.map(row =>
+        fetch(`/api/blocks/${row.id}`, { method: 'DELETE' })
+      ));
+    }
+    const res = await fetch('/api/blocks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, color, days, start_time, end_time, area_id, location_id }),
+    });
+    const data = await res.json();
+    if (!res.ok) { errorEl.textContent = data.error || 'Error saving block.'; return; }
+
+    refreshBlockEditor(true);
+  });
+
+  document.getElementById('be-block-cancel').addEventListener('click', () => {
+    editingGroup = null;
+    resetBlockForm();
+  });
+
+  document.getElementById('be-download-ics-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('be-download-ics-btn');
+    const status = document.getElementById('be-ics-status');
+    btn.disabled = true;
+    status.textContent = 'Saving…';
+    const res = await fetch('/api/blocks/export-ics', { method: 'POST' });
+    const data = await res.json();
+    btn.disabled = false;
+    status.textContent = res.ok ? `Saved to ${data.path}` : 'Error';
+  });
+}
+
+async function openBlockEditor() {
+  const [projects, domains, blocks, locations] = await Promise.all([
+    fetch('/api/areas').then(r => r.json()),
+    fetch('/api/domains').then(r => r.json()).catch(() => []),
+    fetch('/api/blocks').then(r => r.json()),
+    fetch('/api/locations').then(r => r.json()),
+  ]);
+  state.locations = locations;
+  state.areas = projects;
+  state.domains = domains;
+  renderBeAreas(projects);
+  renderBeDomains();
+  populateDomainDropdown();
+  renderBeBlocks(blocks, projects);
+  populateAreaDropdown(projects);
+  populateLocationDropdown(locations);
+  resetBlockForm();
+  renderQrManager();
+  renderBeRecurring(await fetch('/api/recurring').then(r => r.json()).catch(() => []), projects);
+  document.getElementById('be-rec-area').innerHTML = projects
+    .filter(p => p.active && p.type === 'standard')
+    .map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join('');
+  const recAnchor = document.getElementById('be-rec-anchor');
+  if (!recAnchor.value) recAnchor.value = formatDateYMD(new Date());
+  renderBeCalendars(await fetch('/api/calendars').then(r => r.json()).catch(() => []));
+  document.querySelector('#block-editor-modal .be-tab-btn[data-betab="blocks"]').click();
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+
+async function closeBlockEditor() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+  const [projects, domains, blocks, gcal, calendars] = await Promise.all([
+    fetch('/api/areas').then(r => r.json()),
+    fetch('/api/domains').then(r => r.json()).catch(() => []),
+    fetch('/api/blocks').then(r => r.json()),
+    fetch('/api/gcal').then(r => r.json()),
+    fetch('/api/calendars').then(r => r.json()).catch(() => []),
+  ]);
+  state.areas = projects;
+  state.domains = domains;
+  state.blocks = blocks;
+  state.gcalEvents = gcal;
+  state.calendars = calendars;
+  // Domains and area assignments can have changed in here, so section 2's
+  // obligation may now be a different one. This goes before renderTimeline so a
+  // timeline failure (a dead QR fetch, say) can't take section 2 down with it.
+  state.activeDomainId = state.activeAreaId ? domainIdForArea(state.activeAreaId) : null;
+  state.section2OverrideDomainId = null;
+  state.section2OverrideItems = null;
+  await refreshActiveItems();
+  renderTimeline();
+}
+
+function initCalendarSection() {
+  const picker = document.getElementById('be-calendar-color-picker');
+  picker.innerHTML = BLOCK_COLORS.map((c, i) =>
+    `<button type="button" class="be-color-option${i === 0 ? ' selected' : ''}" data-color="${c}" style="background:${c}" title="${c}"></button>`
+  ).join('');
+  picker.addEventListener('click', e => {
+    const btn = e.target.closest('.be-color-option');
+    if (!btn) return;
+    picker.querySelectorAll('.be-color-option').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+  });
+
+  document.getElementById('be-add-calendar-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const urlInput = document.getElementById('be-calendar-url');
+    const url = urlInput.value.trim();
+    const color = document.querySelector('#be-calendar-color-picker .be-color-option.selected')?.dataset.color || BLOCK_COLORS[0];
+    const errorEl = document.getElementById('be-calendar-error');
+    const statusEl = document.getElementById('be-calendar-status');
+    errorEl.textContent = '';
+    if (!url) { errorEl.textContent = 'Paste an iCal URL.'; return; }
+    statusEl.textContent = 'Fetching…';
+    const res = await fetch('/api/calendars', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, color }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = '';
+      errorEl.textContent = data.error || 'Could not add calendar.';
+      return;
+    }
+    statusEl.textContent = `Added — ${data.count} event${data.count === 1 ? '' : 's'} found.`;
+    urlInput.value = '';
+    renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
+  });
+}
+
+async function patchCalendar(id, body) {
+  await fetch(`/api/calendars/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+function renderBeCalendars(calendars) {
+  const list = document.getElementById('be-calendars-list');
+  if (!list) return;
+  if (!calendars.length) {
+    list.innerHTML = '<div class="be-empty">No calendars yet.</div>';
+    return;
+  }
+  list.innerHTML = calendars.map(c => `
+    <div class="be-calendar-row${c.active ? '' : ' be-inactive'}">
+      <input class="be-cal-name" data-id="${c.id}" value="${escHtml(c.name)}" autocomplete="off">
+      <div class="be-cal-colors" data-id="${c.id}">
+        ${BLOCK_COLORS.map(col =>
+          `<button type="button" class="be-cal-swatch${col === c.color ? ' selected' : ''}" data-id="${c.id}" data-color="${col}" style="background:${col}" title="${col}"></button>`
+        ).join('')}
+      </div>
+      <label class="be-cal-visible-label"><input type="checkbox" class="be-cal-visible" data-id="${c.id}" ${c.active ? 'checked' : ''}> Show</label>
+      <button class="be-cal-delete" data-id="${c.id}" title="Remove calendar">×</button>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.be-cal-name').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const name = inp.value.trim();
+      if (!name) return;
+      await patchCalendar(inp.dataset.id, { name });
+    });
+  });
+  list.querySelectorAll('.be-cal-swatch').forEach(sw => {
+    sw.addEventListener('click', async () => {
+      await patchCalendar(sw.dataset.id, { color: sw.dataset.color });
+      renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
+    });
+  });
+  list.querySelectorAll('.be-cal-visible').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      await patchCalendar(cb.dataset.id, { active: cb.checked ? 1 : 0 });
+      renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
+    });
+  });
+  list.querySelectorAll('.be-cal-delete').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/calendars/${btn.dataset.id}`, { method: 'DELETE' });
+      renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
+    });
+  });
+}
+
+async function refreshBlockEditor(resetForm) {
+  const [projects, domains, blocks] = await Promise.all([
+    fetch('/api/areas').then(r => r.json()),
+    fetch('/api/domains').then(r => r.json()).catch(() => []),
+    fetch('/api/blocks').then(r => r.json()),
+  ]);
+  state.areas = projects;
+  state.domains = domains;
+  renderBeAreas(projects);
+  renderBeDomains();
+  populateDomainDropdown();
+  renderBeBlocks(blocks, projects);
+  populateAreaDropdown(projects);
+  renderInbox();
+  if (resetForm) {
+    editingBlockId = null;
+    resetBlockForm();
+  }
+}
+
+function renderBeAreas(projects) {
+  const list = document.getElementById('be-areas-list');
+  if (!projects.length) {
+    list.innerHTML = '<div class="be-empty">No projects yet.</div>';
+    return;
+  }
+  const domainOptions = areaDomainId => state.domains.map(d =>
+    `<option value="${d.id}"${d.id === areaDomainId ? ' selected' : ''}>${escHtml(d.name)}</option>`
+  ).join('');
+  // Routine areas can anchor to a QR node: the routine then nests directly
+  // under that QR's hairline on Engage even with no block on the calendar.
+  const qrOptions = selected => '<option value="">no QR anchor</option>' +
+    (state.accountabilityNodes || []).filter(n => n.active).map(n =>
+      `<option value="${n.id}"${String(n.id) === String(selected || '') ? ' selected' : ''}>${escHtml(n.label)}</option>`
+    ).join('');
+  list.innerHTML = projects.map(p => `
+    <div class="be-area-row">
+      <span class="be-area-name">${escHtml(p.name)}</span>
+      <span class="be-type-badge be-type-${p.type}">${p.type}</span>
+      ${p.type === 'routine' ? `<select class="be-area-qr-select" data-id="${p.id}" title="Anchor to a QR">${qrOptions(p.qr_node_id)}</select>` : ''}
+      <select class="be-area-domain-select" data-id="${p.id}" title="Domain">${domainOptions(p.domain_id)}</select>
+      <button class="be-archive-btn" data-id="${p.id}" data-active="${p.active ? 1 : 0}">
+        ${p.active ? 'Archive' : 'Restore'}
+      </button>
+      <button class="be-delete-area-btn" data-id="${p.id}" title="Delete project">×</button>
+    </div>
+  `).join('');
+  list.querySelectorAll('.be-area-qr-select').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      await fetch(`/api/areas/${sel.dataset.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qr_node_id: sel.value ? parseInt(sel.value) : null }),
+      });
+      refreshBlockEditor(false);
+    });
+  });
+  list.querySelectorAll('.be-area-domain-select').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      await fetch(`/api/areas/${sel.dataset.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain_id: parseInt(sel.value) }),
+      });
+      refreshBlockEditor(false);
+    });
+  });
+  list.querySelectorAll('.be-archive-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const newActive = btn.dataset.active === '1' ? 0 : 1;
+      await fetch(`/api/areas/${btn.dataset.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: newActive }),
+      });
+      refreshBlockEditor(false);
+    });
+  });
+  list.querySelectorAll('.be-delete-area-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/areas/${btn.dataset.id}`, { method: 'DELETE' });
+      refreshBlockEditor(false);
+    });
+  });
+}
+
+// Domains are permanent structure, so they live here with the areas rather than
+// on the timeline. The default domain has no × — it is where a deleted domain's
+// areas land, so it can't be removed.
+function renderBeDomains() {
+  const list = document.getElementById('be-domains-list');
+  if (!list) return;
+  const counts = {};
+  state.areas.forEach(a => {
+    const d = a.domain_id;
+    if (d) counts[d] = (counts[d] || 0) + 1;
+  });
+  list.innerHTML = state.domains.map(d => `
+    <div class="be-area-row">
+      <input type="text" class="be-domain-name" data-id="${d.id}" value="${escHtml(d.name)}">
+      <span class="be-domain-count">${counts[d.id] || 0} area${(counts[d.id] || 0) === 1 ? '' : 's'}</span>
+      ${d.is_default ? '<span class="be-type-badge be-type-standard">default</span>'
+        : `<button class="be-delete-domain-btn" data-id="${d.id}" title="Delete domain (its areas move to the default)">×</button>`}
+    </div>
+  `).join('');
+  list.querySelectorAll('.be-domain-name').forEach(input => {
+    const id = parseInt(input.dataset.id);
+    input.addEventListener('blur', async () => {
+      const name = input.value.trim();
+      const current = state.domains.find(d => d.id === id);
+      if (!name || !current || name === current.name) return;
+      await fetch(`/api/domains/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      refreshBlockEditor(false);
+    });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+  });
+  list.querySelectorAll('.be-delete-domain-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const d = state.domains.find(x => x.id === parseInt(btn.dataset.id));
+      if (!confirm(`Delete domain "${d ? d.name : ''}"? Its areas move to the default domain.`)) return;
+      await fetch(`/api/domains/${btn.dataset.id}`, { method: 'DELETE' });
+      refreshBlockEditor(false);
+    });
+  });
+}
+
+function populateDomainDropdown() {
+  const sel = document.getElementById('be-area-domain');
+  if (!sel) return;
+  const keep = sel.value;
+  sel.innerHTML = state.domains.map(d =>
+    `<option value="${d.id}">${escHtml(d.name)}</option>`).join('');
+  if (keep && state.domains.some(d => String(d.id) === keep)) sel.value = keep;
+}
+
+function groupBlocks(blocks) {
+  const groups = new Map();
+  for (const b of blocks) {
+    const key = `${b.label}|${b.color}|${b.start_time}|${b.end_time}|${b.area_id ?? ''}|${b.location_id ?? ''}`;
+    if (!groups.has(key)) {
+      groups.set(key, { ...b, days: [b.day_of_week], rows: [b] });
+    } else {
+      const g = groups.get(key);
+      g.days.push(b.day_of_week);
+      g.rows.push(b);
+    }
+  }
+  return [...groups.values()].sort((a, b) => {
+    const pa = a.project_name || '';
+    const pb = b.project_name || '';
+    return pa.localeCompare(pb) || a.label.localeCompare(b.label);
+  });
+}
+
+function formatDays(days) {
+  const sorted = [...days].sort((a, b) => a - b);
+  if (sorted.length === 7) return 'Every day';
+  const isConsecutive = sorted.length >= 3 &&
+    sorted.every((d, i) => i === 0 || d === sorted[i - 1] + 1);
+  if (isConsecutive) return `${DAY_NAMES[sorted[0]]}–${DAY_NAMES[sorted[sorted.length - 1]]}`;
+  return sorted.map(d => DAY_NAMES[d]).join(', ');
+}
+
+function renderBeBlocks(blocks, projects) {
+  const list = document.getElementById('be-blocks-list');
+  if (!blocks.length) {
+    list.innerHTML = '<div class="be-empty">No blocks yet.</div>';
+    return;
+  }
+
+  const groups = groupBlocks(blocks);
+
+  list.innerHTML = groups.map((g, i) => {
+    const ids = g.rows.map(r => r.id).join(',');
+    return `<div class="be-block-row">
+      <span class="be-swatch" style="background:${escHtml(g.color)}"></span>
+      <span class="be-block-label">${escHtml(g.label)}</span>
+      <span class="be-block-day">${escHtml(formatDays(g.days))}</span>
+      <span class="be-block-time">${g.start_time}–${g.end_time}</span>
+      <span class="be-block-area">${g.project_name ? escHtml(g.project_name) : '—'}</span>
+      <span class="be-block-location">${g.location_name ? escHtml(g.location_name) : '—'}</span>
+      <button class="be-edit-block-btn" data-idx="${i}">Edit</button>
+      <button class="be-delete-block-btn" data-ids="${ids}" title="Delete block">×</button>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('.be-delete-block-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await Promise.all(btn.dataset.ids.split(',').map(id =>
+        fetch(`/api/blocks/${id}`, { method: 'DELETE' })
+      ));
+      refreshBlockEditor(true);
+    });
+  });
+
+  list.querySelectorAll('.be-edit-block-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const group = groups[parseInt(btn.dataset.idx)];
+      editingGroup = group;
+      document.getElementById('be-block-form-title').textContent = 'Edit Block';
+      document.getElementById('be-block-label-input').value = group.label;
+      document.getElementById('be-block-error').textContent = '';
+      document.querySelectorAll('#be-color-picker .be-color-option').forEach(el => {
+        el.classList.toggle('selected', el.dataset.color === group.color);
+      });
+      document.querySelectorAll('.be-day-cb').forEach(cb => {
+        cb.checked = group.days.includes(parseInt(cb.value));
+      });
+      document.getElementById('be-block-start').value = group.start_time;
+      document.getElementById('be-block-end').value = group.end_time;
+      document.getElementById('be-block-area-select').value = group.area_id || '';
+      document.getElementById('be-block-location-select').value = group.location_id || '';
+      document.getElementById('be-block-cancel').classList.remove('hidden');
+    });
+  });
+}
+
+function ordinalNth(n) {
+  return ['1st', '2nd', '3rd', '4th', '5th'][n - 1] || `${n}th`;
+}
+
+function recurringScheduleLabel(t) {
+  const every = (n, unit) => n > 1 ? `every ${n} ${unit}s` : `every ${unit}`;
+  if (t.kind === 'weekly') {
+    const days = (t.days_of_week || '').split('').map(d => DAY_NAMES[parseInt(d)]).join(', ');
+    return `${days} ${every(t.interval, 'week')}`;
+  }
+  if (t.kind === 'monthly_nth') return `${ordinalNth(t.nth)} ${DAY_NAMES[t.weekday]} ${every(t.interval, 'month')}`;
+  if (t.kind === 'monthly_date') return `Day ${parseInt(t.anchor_date.slice(8, 10))} ${every(t.interval, 'month')}`;
+  return `Every ${t.interval} days`;
+}
+
+async function refreshRecurringList() {
+  const [tasks, areas] = await Promise.all([
+    fetch('/api/recurring').then(r => r.json()),
+    fetch('/api/areas').then(r => r.json()),
+  ]);
+  state.projects = await fetch('/api/projects').then(r => r.json());
+  renderBeRecurring(tasks, areas);
+}
+
+function renderBeRecurring(tasks, areas) {
+  const list = document.getElementById('be-recurring-list');
+  const byId = Object.fromEntries(areas.map(p => [p.id, p]));
+  if (!tasks.length) {
+    list.innerHTML = '<div class="be-empty">No recurring tasks yet.</div>';
+  } else {
+    list.innerHTML = tasks.map(t => `
+      <div class="be-recurring-row${t.active ? '' : ' be-rec-inactive'}">
+        <span class="be-rec-name">${escHtml(t.name)}</span>
+        <span class="be-rec-schedule">${escHtml(recurringScheduleLabel(t))}</span>
+        <span class="be-block-area">${byId[t.area_id] ? escHtml(byId[t.area_id].name) : '—'}</span>
+        <select class="be-rec-project-select" data-id="${t.id}" title="File occurrences under a project">
+          ${projectOptions(t.project_id)}
+        </select>
+        <button class="be-archive-btn be-rec-toggle-btn" data-id="${t.id}" data-active="${t.active ? 1 : 0}">${t.active ? 'Pause' : 'Resume'}</button>
+        <button class="be-delete-area-btn be-rec-delete-btn" data-id="${t.id}" title="Delete">×</button>
+      </div>`).join('');
+  }
+  list.querySelectorAll('.be-rec-project-select').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      await fetch(`/api/recurring/${sel.dataset.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: sel.value ? parseInt(sel.value) : null }),
+      });
+      refreshRecurringList();
+    });
+  });
+  list.querySelectorAll('.be-rec-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/recurring/${btn.dataset.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: btn.dataset.active === '1' ? 0 : 1 }),
+      });
+      refreshRecurringList();
+    });
+  });
+  list.querySelectorAll('.be-rec-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/recurring/${btn.dataset.id}`, { method: 'DELETE' });
+      refreshRecurringList();
+    });
+  });
+}
+
+function populateAreaDropdown(projects) {
+  const sel = document.getElementById('be-block-area-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— none —</option>' +
+    projects.filter(p => p.active).map(p =>
+      `<option value="${p.id}">${escHtml(p.name)}</option>`
+    ).join('');
+  if (current) sel.value = current;
+}
+
+function populateLocationDropdown(locations) {
+  const sel = document.getElementById('be-block-location-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— none —</option>' +
+    locations.map(l =>
+      `<option value="${l.id}">${escHtml(l.name)}</option>`
+    ).join('');
+  if (current) sel.value = current;
+}
+
+function resetBlockForm() {
+  editingGroup = null;
+  document.getElementById('be-block-form-title').textContent = 'Add Block';
+  document.getElementById('be-block-label-input').value = '';
+  document.getElementById('be-block-error').textContent = '';
+  document.querySelectorAll('#be-color-picker .be-color-option').forEach((el, i) => {
+    el.classList.toggle('selected', i === 0);
+  });
+  document.querySelectorAll('.be-day-cb').forEach(cb => { cb.checked = false; });
+  document.getElementById('be-block-start').value = '';
+  document.getElementById('be-block-end').value = '';
+  document.getElementById('be-block-area-select').value = '';
+  document.getElementById('be-block-location-select').value = '';
+  document.getElementById('be-block-cancel').classList.add('hidden');
+}
+
+async function checkActiveBlock() {
+  const newBlock = detectCurrentStandardBlock();
+  const defaultArea = state.areas.find(p => p.is_default && p.active && p.type === 'standard');
+  const newProjectId = newBlock
+    ? newBlock.area_id
+    : (defaultArea ? defaultArea.id : null);
+  if (newProjectId === state.activeAreaId) return;
+  state.activeBlock = newBlock;
+  state.activeAreaId = newProjectId;
+  const newDomainId = newProjectId ? domainIdForArea(newProjectId) : null;
+  const domainChanged = newDomainId !== state.activeDomainId;
+  state.activeDomainId = newDomainId;
+  state.section2OverrideDomainId = null;
+  state.section2OverrideItems = null;
+  if (section2RevertTimer) { clearTimeout(section2RevertTimer); section2RevertTimer = null; }
+  // A block change inside the same domain leaves the item set alone — only the
+  // highlighted area moves.
+  if (!newDomainId) {
+    state.activeDomainItems = [];
+  } else if (domainChanged) {
+    state.activeDomainItems = await fetch(`/api/inbox/active?domain_id=${newDomainId}`).then(r => r.json());
+  }
+  // The engage pool follows the block calendar's domain unless the chip was
+  // deliberately pointed elsewhere.
+  if (domainChanged && engageView.domainId !== newDomainId && newDomainId) {
+    engageView.domainId = newDomainId;
+    await refreshEngage();
+  }
+  // The inbox processing view suggests the current block's area; follow the
+  // block change unless the user is mid-edit inside the inbox.
+  const inboxSection = document.getElementById('inbox-section');
+  if (inboxSection && !inboxSection.contains(document.activeElement)) renderInbox();
+}
+
+// ── Weekly Review (GTD) ──────────────────────────────────────
+// Allen's three-phase drill, as a checklist that persists per week. The three
+// counts and the stalled-project list are the parts a paper checklist can't do:
+// "every active project has a next action" is the review's load-bearing check
+// and it is not runnable by hand.
+
+const GTD_STEPS = [
+  { phase: 'Get Clear', key: 'collect', label: 'Collect loose papers and materials',
+    hint: 'Desk, bag, pockets, phone notes, downloads — all into "in".' },
+  { phase: 'Get Clear', key: 'in_zero', label: 'Get "in" to empty', count: 'inbox',
+    hint: 'Every item through the clarify tree. Be ruthless; purge what isn\'t needed.' },
+  { phase: 'Get Clear', key: 'mind_sweep', label: 'Empty your head',
+    hint: 'Anything still in your head that isn\'t written down.' },
+
+  { phase: 'Get Current', key: 'next_actions', label: 'Review next-action lists',
+    pushed: true, hint: 'Mark off completed; add follow-on steps.' },
+  { phase: 'Get Current', key: 'cal_back', label: 'Review previous calendar, 2–3 weeks back',
+    hint: 'Uncaptured follow-ups. Archive the past with nothing left in it.' },
+  { phase: 'Get Current', key: 'cal_fwd', label: 'Review upcoming calendar',
+    hint: 'Anything needing preparation that starts now.' },
+  { phase: 'Get Current', key: 'waiting', label: 'Review waiting-for and deferred',
+    waiting: true, hint: 'What\'s owed to you? What needs chasing?' },
+  { phase: 'Get Current', key: 'projects', label: 'Every active project has a next action',
+    stalled: true, hint: 'Anything with none is stalled or dead — decide which.' },
+  { phase: 'Get Current', key: 'checklists', label: 'Review any relevant checklists' },
+
+  { phase: 'Get Creative', key: 'someday', label: 'Review someday/maybe', count: 'someday',
+    hint: 'Activate what\'s ripe, delete what\'s outlived your interest, add new.' },
+  { phase: 'Get Creative', key: 'creative', label: 'Be creative and courageous',
+    hint: 'Anything new worth capturing into the system.' },
+];
+
+let gtdReview = null;
+
+// The weekly review lives INSIDE the GTD overlay now: a fold-out section at
+// the top, toggled by #gtd-review-head. No modal.
+async function openGtdReview() {
+  gtdReview = await fetch('/api/gtd-review').then(r => r.json());
+  renderGtdReview();
+  document.getElementById('review-panel').classList.remove('hidden');
+  updateReviewNavDot();
+}
+
+function initGtdReviewFold() {
+  document.getElementById('gtd-review-head').addEventListener('click', () => {
+    const panel = document.getElementById('review-panel');
+    if (panel.classList.contains('hidden')) openGtdReview();
+    else panel.classList.add('hidden');
+  });
+}
+
+function renderGtdReview() {
+  const panel = document.getElementById('review-panel');
+  if (!panel || !gtdReview) return;
+  const { steps, counts } = gtdReview;
+  const done = GTD_STEPS.filter(s => steps[s.key]).length;
+
+  const badge = s => {
+    if (s.stalled) {
+      const n = counts.stalled.length;
+      return `<span class="gr-badge${n ? ' gr-badge-bad' : ' gr-badge-ok'}">${n ? `${n} stalled` : 'all covered'}</span>`;
+    }
+    // Waiting-for and deferred are two different parks, so the step that
+    // reviews both shows both. This step asked for a waiting count for a long
+    // time and had nothing to count until 'waiting' became a real state.
+    if (s.waiting) {
+      const w = counts.waiting || 0;
+      const d = counts.deferred || 0;
+      return `<span class="gr-badge${w ? '' : ' gr-badge-ok'}">${w} waiting · ${d} deferred</span>`;
+    }
+    if (!s.count) return '';
+    const n = counts[s.count];
+    const ok = s.count === 'inbox' ? n === 0 : true;
+    return `<span class="gr-badge${ok && s.count === 'inbox' ? ' gr-badge-ok' : ''}">${n} ${
+      s.count === 'inbox' ? 'in "in"' : s.count === 'deferred' ? 'deferred' : 'maybe'}</span>`;
+  };
+
+  const stalledList = counts.stalled.length
+    ? `<ul class="gr-stalled">${counts.stalled.map(p =>
+        `<li>${escHtml(p.content)}<span class="gr-stalled-area">${escHtml(p.area_name || '—')}</span></li>`).join('')}</ul>`
+    : '';
+
+  const rowList = (rows, meta) => (rows || []).length
+    ? `<ul class="gr-list">${rows.map(r =>
+        `<li><span>${escHtml(r.content)}</span><span class="gr-list-meta">${escHtml(meta(r))}</span></li>`
+      ).join('')}</ul>`
+    : '';
+  const waitingList = rowList(counts.waiting_list,
+    r => `${r.area_name || '—'} · since ${(r.captured_at || '').slice(0, 10)}`);
+  // Repeatedly "not today"-ed. The daily list deliberately never shows this —
+  // a running tally there would be a guilt tax on a surface glanced at dozens
+  // of times a day. Here it is exactly the right signal.
+  const pushedList = rowList(counts.pushed_list,
+    r => `${r.area_name || '—'} · pushed ${r.pushed}x`);
+
+  let html = '';
+  let phase = null;
+  GTD_STEPS.forEach(s => {
+    if (s.phase !== phase) {
+      if (phase) html += '</div>';
+      phase = s.phase;
+      html += `<div class="gr-phase"><div class="gr-phase-name">${escHtml(phase)}</div>`;
+    }
+    const isDone = !!steps[s.key];
+    html += `
+      <label class="gr-step${isDone ? ' gr-step-done' : ''}">
+        <input type="checkbox" class="gr-cb" data-step="${s.key}"${isDone ? ' checked' : ''}>
+        <span class="gr-step-body">
+          <span class="gr-step-label">${escHtml(s.label)}${badge(s)}</span>
+          ${s.hint ? `<span class="gr-step-hint">${escHtml(s.hint)}</span>` : ''}
+          ${s.stalled ? stalledList : ''}
+          ${s.waiting ? waitingList : ''}
+          ${s.pushed ? pushedList : ''}
+        </span>
+      </label>`;
+  });
+  html += '</div>';
+
+  const weekLabel = new Date(gtdReview.week_start_date + 'T00:00:00')
+    .toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const habit = gtdReview.habit && gtdReview.habit.habit ? gtdReview.habit.habit : '';
+
+  panel.innerHTML = `
+    <div class="gr-head">
+      <span class="gr-week">Week of ${escHtml(weekLabel)}</span>
+      <span class="gr-progress">${done} / ${GTD_STEPS.length}</span>
+    </div>
+    <div class="gr-criterion">Done when you can say: “I know right now everything I'm not doing but could be doing if I decided to.”</div>
+    ${html}
+    <div class="gr-footer">
+      <label class="gr-field"><span>This week's habit</span>
+        <input type="text" id="gr-habit" value="${escHtml(habit)}" placeholder="optional — rated nightly on the sleep QR"></label>
+      <label class="gr-field"><span>Note</span>
+        <input type="text" id="gr-note" value="${escHtml(gtdReview.note || '')}" placeholder="optional"></label>
+      ${gtdReview.completed_at
+        ? `<div class="gr-completed">Filed ${escHtml(gtdReview.completed_at)}</div>`
+        : `<button id="gr-finish" class="be-btn-primary">Finish review</button>`}
+    </div>`;
+
+  panel.querySelectorAll('.gr-cb').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      gtdReview = await fetch('/api/gtd-review/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ week: gtdReview.week_start_date, step: cb.dataset.step, done: cb.checked }),
+      }).then(r => r.json());
+      gtdReview.counts = counts;
+      gtdReview.habit = habit ? { habit } : null;
+      renderGtdReview();
+    });
+  });
+
+  const finish = document.getElementById('gr-finish');
+  if (finish) {
+    finish.addEventListener('click', async () => {
+      finish.disabled = true;
+      await fetch('/api/gtd-review/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          week: gtdReview.week_start_date,
+          note: document.getElementById('gr-note').value,
+          habit: document.getElementById('gr-habit').value,
+        }),
+      });
+      state.review.due = false;
+      updateReviewNavDot();
+      await openGtdReview();
+    });
+  }
+}
+
+// ── Hub rail + mobile overlays (9c) ──────────────────────────
+// The day is the whole screen; every reference surface is a full-screen
+// overlay reached from the ≡ hub in the capture bar. One surface at a time.
+
+function openM(id) {
+  document.querySelectorAll('.m-overlay').forEach(o => o.classList.add('hidden'));
+  document.getElementById('hub-overlay').classList.add('hidden');
+  document.getElementById(id).classList.remove('hidden');
+  renderBar();   // derived modes (✎ log / ✎ list / ◉ <list>) follow the surface
+}
+
+function closeM(id) {
+  flushOpenNotes();
+  document.getElementById(id).classList.add('hidden');
+  renderBar();
+}
+
+function initHub() {
+  const hub = document.getElementById('hub-overlay');
+  hub.addEventListener('click', e => { if (e.target === hub) hub.classList.add('hidden'); });
+  document.querySelectorAll('.m-close').forEach(btn => {
+    btn.addEventListener('click', () => closeM(btn.dataset.close));
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    // The clarify sheet is the innermost layer wherever it was opened from —
+    // initEngage's handler peels it. This listener is registered first, so
+    // without this bail it would close the overlay out from under it.
+    if (clarifyView.open) return;
+    flushOpenNotes();
+    if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
+    // (MAP has no transient layer of its own to peel any more — its rows open
+    // the clarify sheet, and the bail above lets the sheet peel first.)
+    // Legacy modal overlays first (they sit above the m-overlays), innermost
+    // wins; the person-detail/bucket/add trio stack over People.
+    for (const id of ['person-add-overlay', 'bucket-mgr-overlay', 'person-detail-overlay',
+                      'map-overlay', 'logs-overlay', 'modal-overlay']) {
+      const el = document.getElementById(id);
+      if (el && !el.classList.contains('hidden')) {
+        if (id === 'logs-overlay') closeLogsView();
+        else el.classList.add('hidden');
+        return;
+      }
+    }
+    // Same backstop for the GTD tab's open notes.
+    const gtdEl = document.getElementById('tab-gtd');
+    if (gtdEl && !gtdEl.classList.contains('hidden') && gtdView.notesFor != null) {
+      gtdView.notesFor = null; gtdView.notesEdit = false;
+      renderGtd();
+      return;
+    }
+    // A step's settings sheet peels before the editor it opened from.
+    if (stepSheet.id != null) {
+      closeStepSheet();
+      return;
+    }
+    // The routine runner peels before anything under it.
+    if (flowRunView.open) {
+      closeFlowRun();
+      return;
+    }
+    // Lists peels an open list / flow editor back to the index first.
+    const refEl = document.getElementById('tab-lists');
+    if (refEl && !refEl.classList.contains('hidden')
+        && (refView.open != null || refView.openFlow != null)) {
+      refView.open = null;
+      refView.openFlow = null;
+      renderRef();
+      return;
+    }
+    // Social peels an open spec/log form before the overlay closes (the
+    // focused-input case stopPropagates and never reaches here).
+    const soEl = document.getElementById('tab-social');
+    if (soEl && !soEl.classList.contains('hidden') && socialView.form) {
+      socialView.form = null;
+      renderSocial();
+      return;
+    }
+    const open = [...document.querySelectorAll('.m-overlay:not(.hidden)')].pop();
+    if (open) closeM(open.id);
+  });
+  document.querySelectorAll('.hub-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      hub.classList.add('hidden');
+      const dest = btn.dataset.hub;
+      if (dest === 'calendar') { openM('cal-overlay'); renderTimeline(); renderSheetsInbox(); }
+      else if (dest === 'gtd') { openM('tab-gtd'); refreshGtd(); }
+      else if (dest === 'lists') {
+        refView.open = null;
+        refView.openFlow = null;
+        refView.inbox = false;
+        refView.lastSurface = null;
+        openM('tab-lists');   // unhide FIRST — renderRef's bar mode derives from it
+        refreshRef();
+      }
+      else if (dest === 'map') { openMap(); }
+      else if (dest === 'people') { openM('tab-people'); openPeopleSurface(); }
+      else if (dest === 'journal') { openM('tab-journal'); renderJournal(); }
+      else if (dest === 'social') { socialView.form = null; openM('tab-social'); refreshSocial(); }
+      else if (dest === 'logs') {
+        logsView.logs = await fetch('/api/logs').then(r => r.json());
+        logsView.open = null;
+        // Unhide FIRST: renderLogs repaints the global bar, and the bar
+        // derives its ✎ log mode from this overlay being visible.
+        document.getElementById('logs-overlay').classList.remove('hidden');
+        renderLogs();
+      }
+      else if (dest === 'settings') { openBlockEditor(); }
+    });
+  });
+}
+
+
+// ── Logs ─────────────────────────────────────────────────────
+
+const logsView = { logs: [], open: null, content: '', dirty: false, saveTimer: null, desc: false };
+
+// Logs are named "YY-M-D topic", so name order IS date order — one direction
+// toggle covers both "oldest first" and "newest first". Session-local, like
+// the other view filters.
+function sortedLogs() {
+  const rows = logsView.logs.slice().sort((a, b) => a.name.localeCompare(b.name));
+  return logsView.desc ? rows.reverse() : rows;
+}
+
+function initLogsView() {
+  const overlay = document.getElementById('logs-overlay');
+  document.getElementById('logs-close').addEventListener('click', closeLogsView);
+  // A rotation or window resize changes the textarea's content width, which
+  // would desync the highlight until the next keystroke. Registered once —
+  // updateLogHighlight no-ops when the editor isn't open.
+  window.addEventListener('resize', updateLogHighlight);
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) closeLogsView();
+  });
+}
+
+async function closeLogsView() {
+  await flushLogSave();
+  document.getElementById('logs-overlay').classList.add('hidden');
+  logsView.open = null;
+  barView.logInbox = false;   // next Logs visit starts back in ✎ log mode
+  renderBar();
+  fetch('/api/logs/sync', { method: 'POST' });
+}
+
+// ── Reference lists — GTD's non-actionable keeps ──────────────
+//
+// Books, movies, gifts, places: kept because they might matter, never
+// actionable, so they live OUTSIDE the inbox_item inventory — no MAP row, no
+// availability predicate, no review count. Two levels (index → one list),
+// both written through the global bar's derived modes; the clarify sheet's
+// Reference exit files an inbox item's text here (the missing half of GTD's
+// non-actionable keep, next to Someday/Maybe).
+const refView = { lists: [], open: null, inbox: false,
+                  // Interactive routines (flows) share this surface: a
+                  // ROUTINES section on the index, openFlow = the step editor.
+                  flows: [], openFlow: null,
+                  // The surface `inbox` was dismissed on — renderRef compares
+                  // it to decide when the dismissal has expired.
+                  lastSurface: null };
+
+// Which of the three Lists surfaces is showing.
+function refSurfaceKey() {
+  if (refView.openFlow != null) return 'flow:' + refView.openFlow;
+  if (refView.open != null) return 'list:' + refView.open;
+  return 'index';
+}
+
+// 0=Mon..6=Sun, matching storage.step_due_on and every other days_of_week in
+// the app. Empty = every day.
+function stepDueToday(s, d) {
+  const dow = jsDateToDayOfWeek(d || new Date());
+  return !s.days_of_week || String(s.days_of_week).includes(String(dow));
+}
+
+async function refreshRef() {
+  const today = formatDateYMD(new Date());
+  const [lists, flows] = await Promise.all([
+    fetch('/api/ref').then(r => r.json()).catch(() => refView.lists),
+    fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => refView.flows),
+  ]);
+  refView.lists = lists;
+  refView.flows = flows;
+  renderRef();
+}
+
+// A flow's deadline in display minutes, resolved from its linked QR the same
+// way Engage resolves hairlines (today_override > weekly window > defaults),
+// plus the ±offset — or the "before QR Y" anchor's deadline.
+function flowDueMin(f) {
+  const nodeId = f.before_node_id || f.qr_node_id;
+  if (!nodeId) return null;
+  const n = (state.accountabilityNodes || []).find(x => x.id === nodeId);
+  if (!n) return null;
+  const dow = jsDateToDayOfWeek(new Date());
+  const ov = n.today_override;
+  const def = nodeWindowForDow(n, dow);
+  const end = ov ? ov.window_end : def.window_end;
+  const off = ov ? (ov.window_end_offset_days || 0) : (def.window_end_offset_days || 0);
+  let m = timeToMinutes(end) + (off ? 1440 : 0);
+  if (!f.before_node_id && f.offset_min) m += f.offset_min;
+  return m;
+}
+
+function renderRef() {
+  const body = document.getElementById('ref-body');
+  const title = document.getElementById('ref-title');
+  if (!body) return;
+  // Changing surface re-arms the bar: dismissing ◉ <routine> is a statement
+  // about the routine you were looking at, not about Lists for the rest of
+  // the visit — so walking out and back in gives the mode back. Must run
+  // BEFORE renderBar, which is what reads the flag.
+  const surface = refSurfaceKey();
+  if (refView.lastSurface !== surface) {
+    refView.lastSurface = surface;
+    refView.inbox = false;
+  }
+  renderBar();   // the bar derives ✎ list / ◉ <list> from this surface
+
+  const openFlow = refView.flows.find(f => f.id === refView.openFlow);
+  if (openFlow) { renderFlowEditor(body, title, openFlow); return; }
+
+  const open = refView.lists.find(l => l.id === refView.open);
+  if (!open) {
+    title.textContent = 'Lists';
+    const flowRow = f => {
+      const due = flowDueMin(f);
+      const done = f.run && f.run.completed_at;
+      // The count is TODAY's steps, not the routine's whole length — it is
+      // read as "how much is left tonight", and a Sunday-only step would
+      // otherwise inflate every other day of the week.
+      const todaySteps = f.steps.filter(s => stepDueToday(s)).length;
+      return `<div class="ref-row" data-flow="${f.id}">
+        <span class="ref-name" title="Tap to edit steps · double-click to rename">${escHtml(f.name)}</span>
+        ${due != null ? `<span class="fr-due${done ? '' : ''}">${done ? '✓ done' : 'due ' + minutesToHHMM(Math.round(due) % 1440)}</span>` : done ? '<span class="fr-due">✓ done</span>' : ''}
+        <span class="map-count" title="${todaySteps} of ${f.steps.length} steps run today">${todaySteps}${
+          todaySteps === f.steps.length ? '' : `<span class="fr-of">/${f.steps.length}</span>`}</span>
+        <button class="fr-play" data-flow="${f.id}" title="Run this routine">▶</button>
+        <button class="ref-del" data-flow-del="${f.id}" title="Delete routine">×</button>
+      </div>`;
+    };
+    body.innerHTML = `
+      <div class="gtd-section-head">Routines</div>
+      <div class="ref-list">${refView.flows.map(flowRow).join('')
+        || '<div class="gtd-empty">No routines — type a name in the bar and pick ✎ routine mode… or just create one below.</div>'}
+      <button id="fr-new" class="map-add-btn">+ routine</button></div>
+      <div class="gtd-section-head">Reference</div>
+      <div class="ref-list">${refView.lists.map(l => `
+      <div class="ref-row" data-id="${l.id}">
+        <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}</span>
+        <span class="map-count">${l.items.filter(i => !i.done).length}</span>
+        <button class="ref-del" data-id="${l.id}" title="Delete list">×</button>
+      </div>`).join('')
+      || '<div class="gtd-empty">No lists yet — name one in the bar below.</div>'}</div>`;
+
+    // Routine rows: tap = step editor, double-click = rename, ▶ = runner,
+    // × = delete (undo replays). The single click waits out the double-click
+    // window, exactly like MAP's rows and the reference lists below.
+    body.querySelectorAll('.ref-row[data-flow] .ref-name').forEach(span => {
+      let t = null;
+      const id = parseInt(span.closest('.ref-row').dataset.flow);
+      span.addEventListener('click', () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          refView.openFlow = id;
+          renderRef();
+        }, 220);
+      });
+      span.addEventListener('dblclick', () => {
+        clearTimeout(t);
+        const was = span.textContent;
+        refRenameEl(span, async name => {
+          await fetch(`/api/flows/${id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+          });
+          pushUndo(`renamed routine to "${name}"`, async () => {
+            await fetch(`/api/flows/${id}`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: was }),
+            });
+            await refreshAfterUndo();
+          });
+          await refreshRef();
+        });
+      });
+    });
+    body.querySelectorAll('.fr-play').forEach(b => b.addEventListener('click', () => {
+      openFlowRun(parseInt(b.dataset.flow));
+    }));
+    const frNew = body.querySelector('#fr-new');
+    if (frNew) frNew.addEventListener('click', async () => {
+      const created = await fetch('/api/flows', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New routine' }),
+      }).then(r => r.json());
+      pushUndo(`created routine "${created.name}"`, async () => {
+        await fetch(`/api/flows/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      refView.openFlow = created.id;
+      await refreshRef();
+    });
+    body.querySelectorAll('[data-flow-del]').forEach(b => b.addEventListener('click', async () => {
+      const id = parseInt(b.dataset.flowDel);
+      const f = refView.flows.find(x => x.id === id);
+      await fetch(`/api/flows/${id}`, { method: 'DELETE' });
+      pushUndo(`deleted routine "${f.name}"`, async () => {
+        const nf = await fetch('/api/flows', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: f.name }),
+        }).then(r => r.json());
+        for (const s of f.steps) {
+          await fetch(`/api/flows/${nf.id}/steps`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: s.content, kind: s.kind, requirement: s.requirement }),
+          });
+        }
+        await refreshAfterUndo();
+      });
+      await refreshRef();
+    }));
+
+    // [data-id] scopes this to REFERENCE LIST rows — routine rows carry
+    // data-flow and got their own pair above; an unscoped .ref-name here used
+    // to fire on both, opening the editor and then racing a NaN list open.
+    body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span => {
+      let t = null;
+      span.addEventListener('click', () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          refView.open = parseInt(span.closest('.ref-row').dataset.id);
+          renderRef();
+        }, 220);
+      });
+      span.addEventListener('dblclick', () => {
+        clearTimeout(t);
+        refRename(span, id => name =>
+          fetch(`/api/ref/lists/${id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+          }));
+      });
+    });
+    // [data-id] again: the routine rows' × carries data-flow-del and is wired
+    // above — unscoped, this handler also fired there and tried to DELETE
+    // /api/ref/lists/NaN.
+    body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
+      const id = parseInt(b.dataset.id);
+      const l = refView.lists.find(x => x.id === id);
+      await fetch(`/api/ref/lists/${id}`, { method: 'DELETE' });
+      // Recreate replays name + items; new ids are fine — nothing references
+      // a ref id from outside (unlike inbox restore).
+      pushUndo(`deleted list "${l.name}"`, async () => {
+        const nl = await fetch('/api/ref/lists', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: l.name }),
+        }).then(r => r.json());
+        for (const it of l.items) {
+          await fetch('/api/ref/items', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ list_id: nl.id, content: it.content, done: it.done }),
+          });
+        }
+        await refreshAfterUndo();
+      });
+      await refreshRef();
+    }));
+    return;
+  }
+
+  title.textContent = open.name;
+  body.innerHTML = `
+    <button id="ref-back" class="log-back-btn">‹ All lists</button>
+    <div class="ref-list">${open.items.map(i => `
+      <div class="ref-row" data-id="${i.id}">
+        <span class="eg-check ref-check${i.done ? ' ref-checked' : ''}" data-id="${i.id}"
+          title="${i.done ? 'Uncheck' : 'Check off'}">${i.done ? '✓' : ''}</span>
+        <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
+        <button class="ref-del" data-id="${i.id}" title="Remove">×</button>
+      </div>`).join('')
+      || '<div class="gtd-empty">Empty — add the first line in the bar below.</div>'}</div>`;
+
+  document.getElementById('ref-back').addEventListener('click', () => {
+    refView.open = null;
+    renderRef();
+  });
+  body.querySelectorAll('.ref-check').forEach(c => c.addEventListener('click', async () => {
+    const id = parseInt(c.dataset.id);
+    const it = open.items.find(x => x.id === id);
+    const to = it.done ? 0 : 1;
+    await fetch(`/api/ref/items/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ done: to }),
+    });
+    pushUndo(`${to ? 'checked' : 'unchecked'} "${it.content}"`, async () => {
+      await fetch(`/api/ref/items/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ done: it.done }),
+      });
+      await refreshAfterUndo();
+    });
+    await refreshRef();
+  }));
+  body.querySelectorAll('.ref-text').forEach(span => {
+    span.addEventListener('dblclick', () => {
+      refRename(span, id => content =>
+        fetch(`/api/ref/items/${id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        }));
+    });
+  });
+  body.querySelectorAll('.ref-del').forEach(b => b.addEventListener('click', async () => {
+    const id = parseInt(b.dataset.id);
+    const it = open.items.find(x => x.id === id);
+    await fetch(`/api/ref/items/${id}`, { method: 'DELETE' });
+    pushUndo(`removed "${it.content}"`, async () => {
+      await fetch('/api/ref/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ list_id: open.id, content: it.content, done: it.done }),
+      });
+      await refreshAfterUndo();
+    });
+    await refreshRef();
+  }));
+}
+
+// The step editor for one routine: reorder (↑↓), kind picker, soft/hard
+// toggle, rename, delete — plus the QR link (deadline anchor + judgment gate).
+const FLOW_KINDS = { text: 'text', social_spec: 'social spec',
+                     journal_night: 'nightly journal', crm_fill: 'CRM fill' };
+
+function renderFlowEditor(body, title, f) {
+  title.textContent = f.name;
+  const nodes = (state.accountabilityNodes || []).filter(n => n.active);
+  const nodeOpts = sel => `<option value="">—</option>` + nodes.map(n =>
+    `<option value="${n.id}"${n.id === sel ? ' selected' : ''}>${escHtml(n.label)}</option>`).join('');
+  body.innerHTML = `
+    <button id="ref-back" class="log-back-btn">‹ All lists</button>
+    <div class="fr-link">
+      <span class="cl-label">QR</span>
+      <select id="fr-qr" class="map-area">${nodeOpts(f.qr_node_id)}</select>
+      <input type="number" id="fr-offset" class="fr-offset" placeholder="±min"
+        title="Minutes relative to the QR deadline (negative = before)" value="${f.offset_min ?? ''}">
+      <span class="cl-label">or before</span>
+      <select id="fr-before" class="map-area">${nodeOpts(f.before_node_id)}</select>
+    </div>
+    <div class="fr-link-hint">Linked QRs judge ✗ unless this routine completes for the day.</div>
+    <div class="ref-list">${f.steps.map((s, i) => `
+      <div class="ref-row${stepDueToday(s) ? '' : ' fr-step-off'}" data-step="${s.id}">
+        <span class="cl-chain-n">${i + 1}</span>
+        <span class="ref-text${s.kind !== 'text' ? ' fr-feature' : ''}"
+          title="${s.kind === 'text' ? 'Double-click to rewrite' : FLOW_KINDS[s.kind]}">${
+          s.kind === 'text' ? escHtml(s.content) : '⚙ ' + FLOW_KINDS[s.kind]}</span>
+        ${stepBadges(s)}
+        <button class="fr-up" data-step="${s.id}" title="Move up">↑</button>
+        <button class="fr-down" data-step="${s.id}" title="Move down">↓</button>
+        <button class="fr-open" data-step="${s.id}" title="Settings for this step">›</button>
+      </div>`).join('')
+      || '<div class="gtd-empty">No steps — add lines in the bar below.</div>'}</div>
+    <button class="fr-play fr-play-big" data-flow="${f.id}">▶ Run</button>`;
+
+  body.querySelector('#ref-back').addEventListener('click', () => {
+    refView.openFlow = null;
+    renderRef();
+  });
+  const linkPatch = async patch => {
+    await fetch(`/api/flows/${f.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    await refreshRef();
+  };
+  body.querySelector('#fr-qr').addEventListener('change', e =>
+    linkPatch({ qr_node_id: e.target.value ? parseInt(e.target.value) : null }));
+  body.querySelector('#fr-offset').addEventListener('change', e =>
+    linkPatch({ offset_min: e.target.value === '' ? null : parseInt(e.target.value) }));
+  body.querySelector('#fr-before').addEventListener('change', e =>
+    linkPatch({ before_node_id: e.target.value ? parseInt(e.target.value) : null }));
+
+  // Every SETTING is decided in the step sheet now (see openStepSheet) — the
+  // row keeps only what a list alone can do: its order.
+  body.querySelectorAll('.fr-open').forEach(b => b.addEventListener('click', () =>
+    openStepSheet(parseInt(b.dataset.step))));
+  const swap = async (id, dir) => {
+    const i = f.steps.findIndex(x => x.id === id);
+    const j = i + dir;
+    if (j < 0 || j >= f.steps.length) return;
+    const a = f.steps[i], b = f.steps[j];
+    pushUndo(`reordered "${f.name}"`, async () => {
+      await fetch(`/api/flow-steps/${a.id}`, { method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position: a.position }) });
+      await fetch(`/api/flow-steps/${b.id}`, { method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position: b.position }) });
+      await refreshAfterUndo();
+    });
+    await fetch(`/api/flow-steps/${a.id}`, { method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position: b.position }) });
+    await fetch(`/api/flow-steps/${b.id}`, { method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position: a.position }) });
+    await refreshRef();
+  };
+  body.querySelectorAll('.fr-up').forEach(b =>
+    b.addEventListener('click', () => swap(parseInt(b.dataset.step), -1)));
+  body.querySelectorAll('.fr-down').forEach(b =>
+    b.addEventListener('click', () => swap(parseInt(b.dataset.step), 1)));
+  body.querySelectorAll('.ref-row[data-step] .ref-text:not(.fr-feature)').forEach(span => {
+    span.addEventListener('dblclick', () => {
+      const id = parseInt(span.closest('.ref-row').dataset.step);
+      refRenameEl(span, async v => {
+        await fetch(`/api/flow-steps/${id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: v }),
+        });
+        await refreshRef();
+      });
+    });
+  });
+  body.querySelectorAll('.fr-play').forEach(b => b.addEventListener('click', () => {
+    openFlowRun(f.id);
+  }));
+}
+
+
+// ── One routine step's settings, in a clarify-shaped sheet ────
+//
+// THE DIRECTION for list datatypes (CLAUDE.md): a row on a list is its text,
+// its badges and ONE control — `›` — and everything that DECIDES something is
+// taken in a sheet. This is MAP's 2026-08-07 lesson applied to routine steps,
+// which had grown a kind select, a soft/hard toggle, a 7-button day picker and
+// a delete, all on a 430px row: four grammars saying what one sheet says once.
+// What stays on the row is what only a LIST can do — its order (↑↓), the way
+// only a tree could do MAP's nesting.
+const stepSheet = { id: null };
+
+// Badges say what the settings decided, in the order you scan for them. Only
+// the non-default states earn one: a daily hard text step is unremarkable and
+// renders none.
+function stepBadges(s) {
+  const out = [];
+  if (s.days_of_week) {
+    const days = String(s.days_of_week).split('').sort()
+      .map(d => DAY_LETTERS[Number(d)]).join('');
+    out.push(`<span class="fr-badge" title="Runs ${String(s.days_of_week).split('').sort()
+      .map(d => DAY_NAMES[Number(d)]).join(', ')}">${days}</span>`);
+  }
+  if (s.requirement === 'soft') out.push('<span class="fr-badge">soft</span>');
+  return out.join('');
+}
+
+function stepSheetFind() {
+  for (const f of refView.flows) {
+    const s = (f.steps || []).find(x => x.id === stepSheet.id);
+    if (s) return { f, s };
+  }
+  return null;
+}
+
+function openStepSheet(id) {
+  stepSheet.id = id;
+  renderStepSheet();
+}
+
+function closeStepSheet() {
+  stepSheet.id = null;
+  document.getElementById('fr-sheet').classList.add('hidden');
+  document.getElementById('fr-sheet-backdrop').classList.add('hidden');
+}
+
+async function stepSheetPatch(patch, label) {
+  const found = stepSheetFind();
+  if (!found) return;
+  const { s } = found;
+  const prev = {};
+  Object.keys(patch).forEach(k => { prev[k] = s[k] ?? null; });
+  pushUndo(label, async () => {
+    await fetch(`/api/flow-steps/${s.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(prev),
+    });
+    await refreshAfterUndo();
+  });
+  await fetch(`/api/flow-steps/${s.id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  await refreshRef();
+  renderStepSheet();
+}
+
+function renderStepSheet() {
+  const sheet = document.getElementById('fr-sheet');
+  const back = document.getElementById('fr-sheet-backdrop');
+  if (!sheet) return;
+  const found = stepSheet.id != null ? stepSheetFind() : null;
+  if (!found) { closeStepSheet(); return; }
+  const { f, s } = found;
+  sheet.classList.remove('hidden');
+  back.classList.remove('hidden');
+
+  const lit = n => !s.days_of_week || String(s.days_of_week).includes(String(n));
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">step · ${escHtml(f.name)}</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="fr-sheet-close">✕</button>
+    </div>
+    <div class="cl-action-wrap">
+      ${s.kind === 'text'
+        ? `<input type="text" class="cl-action" id="fr-sheet-text" value="${escHtml(s.content)}"
+             placeholder="What is the step?">`
+        : `<span class="cl-title fr-feature">⚙ ${FLOW_KINDS[s.kind]}</span>`}
+    </div>
+
+    <div class="cl-sec"><span class="cl-label">Type</span></div>
+    <div class="cl-chips">${Object.keys(FLOW_KINDS).map(k =>
+      `<button class="cl-chip${s.kind === k ? ' cl-chip-on' : ''}" data-kind="${k}">${
+        FLOW_KINDS[k]}</button>`).join('')}</div>
+
+    <div class="cl-sec"><span class="cl-label">Counts as done</span></div>
+    <div class="cl-chips">
+      <button class="cl-chip${s.requirement === 'hard' ? ' cl-chip-on' : ''}" data-req="hard"
+        title="The real thing or nothing">hard</button>
+      <button class="cl-chip${s.requirement === 'soft' ? ' cl-chip-on' : ''}" data-req="soft"
+        title="A smaller version still credits">soft</button>
+      <span class="cl-hint">${s.requirement === 'soft'
+        ? 'a smaller version still credits' : 'the real thing, or it does not count'}</span>
+    </div>
+
+    <div class="cl-sec"><span class="cl-label">Runs on</span></div>
+    <div class="cl-chips fr-sheet-days">
+      ${DAY_LETTERS.map((d, n) => `<button class="fr-day${lit(n) ? ' fr-day-on' : ''}"
+        data-dow="${n}" title="${DAY_NAMES[n]}">${d}</button>`).join('')}
+      <span class="cl-hint">${s.days_of_week
+        ? 'only the lit days' : 'every day'}</span>
+    </div>
+
+    <div class="cl-row">
+      <button class="cl-pill fr-sheet-del" id="fr-sheet-del">Remove step</button>
+    </div>`;
+
+  sheet.querySelector('#fr-sheet-close').addEventListener('click', closeStepSheet);
+  sheet.querySelectorAll('[data-kind]').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.kind === s.kind) return;
+    stepSheetPatch({ kind: b.dataset.kind }, `changed a step in "${f.name}"`);
+  }));
+  sheet.querySelectorAll('[data-req]').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.req === s.requirement) return;
+    stepSheetPatch({ requirement: b.dataset.req },
+      `made "${s.content || FLOW_KINDS[s.kind]}" ${b.dataset.req}`);
+  }));
+  // A step with NO days runs every day, so the picker starts all lit — turning
+  // one off from there has to mean "every day EXCEPT this", not "no days",
+  // which is why the empty value is expanded to the full week before the digit
+  // comes out. Lighting the last one back collapses to NULL, so "daily" stays
+  // one state rather than two that look alike.
+  sheet.querySelectorAll('.fr-day').forEach(b => b.addEventListener('click', () => {
+    const cur = new Set((s.days_of_week || '0123456').split(''));
+    const d = b.dataset.dow;
+    if (cur.has(d)) cur.delete(d); else cur.add(d);
+    const next = [...cur].sort().join('');
+    // Empty reads as NULL reads as daily, so there is no way to store "never"
+    // — and a step that runs on no day is a step you would delete.
+    if (!next) { toast('A step needs at least one day — remove it instead'); return; }
+    stepSheetPatch({ days_of_week: next.length === 7 ? null : next },
+      `changed the days of "${s.content || FLOW_KINDS[s.kind]}"`);
+  }));
+  const txt = sheet.querySelector('#fr-sheet-text');
+  if (txt) {
+    // Enter commits and closes; blur commits quietly. Same guarantee as the
+    // notes editors — leaving the field may never lose what was typed.
+    const save = async () => {
+      const v = txt.value.trim();
+      if (!v || v === s.content) return;
+      await stepSheetPatch({ content: v }, `reworded a step in "${f.name}"`);
+    };
+    txt.addEventListener('blur', save);
+    txt.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      e.stopPropagation();
+      txt.blur();
+    });
+  }
+  sheet.querySelector('#fr-sheet-del').addEventListener('click', async () => {
+    await fetch(`/api/flow-steps/${s.id}`, { method: 'DELETE' });
+    pushUndo(`removed "${s.content || FLOW_KINDS[s.kind]}"`, async () => {
+      await fetch(`/api/flows/${f.id}/steps`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: s.content, kind: s.kind,
+                               requirement: s.requirement, days_of_week: s.days_of_week }),
+      });
+      await refreshAfterUndo();
+    });
+    closeStepSheet();
+    await refreshRef();
+  });
+  back.onclick = closeStepSheet;
+}
+
+// Same inline-rename gesture with a plain save callback (flow steps).
+function refRenameEl(span, save) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 's2-rename-input';
+  input.value = span.textContent;
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const finish = async ok2 => {
+    if (settled) return;
+    settled = true;
+    const v = input.value.trim();
+    if (ok2 && v && v !== span.textContent) await save(v);
+    else await refreshRef();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+// ── The routine RUNNER: one step per page ─────────────────────
+//
+// Pages credit into flowRunView.steps ({step_id: 'done'|'soft'}); every
+// credit saves the partial run so a half-finished routine resumes, and the
+// last credit completes the run — the server then notifies the linked QR's
+// Worker gate. Feature pages are the real forms: the nightly journal PATCHes
+// journal_day, CRM fill posts the same 'entries' satisfy the People flow
+// sends, the social page reads the day's spec status.
+const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
+                      journal: null, crmFilled: false };
+
+async function openFlowRun(flowId) {
+  const today = formatDateYMD(new Date());
+  const [flows, day, journal] = await Promise.all([
+    fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => []),
+    fetch(`/api/social/day?date=${today}`).then(r => r.json()).catch(() => null),
+    fetch('/api/journal').then(r => r.json()).catch(() => null),
+  ]);
+  const flow = flows.find(f => f.id === flowId);
+  if (!flow) return;
+  // THE RUN IS TODAY'S STEPS. `due` is the server's answer (storage.step_due_on
+  // — one weekday convention for the whole app), and narrowing the flow here
+  // rather than at each use means resume, progress and above all COMPLETION
+  // are all about today: a Sunday-only step must not hold a Tuesday's QR open.
+  const steps = flow.steps.filter(s => s.due);
+  if (!steps.length) {
+    toast(flow.steps.length ? 'Nothing in this routine today' : 'No steps in this routine');
+    return;
+  }
+  flowRunView.flow = { ...flow, steps };
+  flowRunView.steps = flow.run ? JSON.parse(flow.run.steps || '{}') : {};
+  // Resume at the first uncredited step.
+  const idx = steps.findIndex(s => !flowRunView.steps[s.id]);
+  flowRunView.idx = idx === -1 ? 0 : idx;
+  flowRunView.day = day;
+  flowRunView.journal = journal && journal.days
+    ? journal.days.find(x => x.date === today) || null : null;
+  flowRunView.crmFilled = false;
+  flowRunView.open = true;
+  renderFlowRun();
+}
+
+function closeFlowRun() {
+  flowRunView.open = false;
+  document.getElementById('flow-run').classList.add('hidden');
+  refreshRef();
+}
+
+async function creditFlowStep(step, how) {
+  const today = formatDateYMD(new Date());
+  flowRunView.steps[step.id] = how;
+  const complete = flowRunView.flow.steps.every(s => flowRunView.steps[s.id]);
+  await fetch(`/api/flows/${flowRunView.flow.id}/run`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: today, steps: flowRunView.steps, completed: complete }),
+  });
+  if (complete) {
+    toast(`${flowRunView.flow.name} complete ✓`);
+    closeFlowRun();
+    return;
+  }
+  const next = flowRunView.flow.steps.findIndex(s => !flowRunView.steps[s.id]);
+  flowRunView.idx = next === -1 ? flowRunView.idx : next;
+  renderFlowRun();
+}
+
+function renderFlowRun() {
+  const el = document.getElementById('flow-run');
+  if (!el || !flowRunView.open) return;
+  const f = flowRunView.flow;
+  const s = f.steps[flowRunView.idx];
+  const day = flowRunView.day || {};
+  const due = flowDueMin(f);
+  const credited = flowRunView.steps[s.id];
+
+  let page = '';
+  if (s.kind === 'text') {
+    page = `<div class="fr-step-big">${escHtml(s.content)}</div>
+      ${s.requirement === 'soft'
+        ? '<div class="fr-note">soft — a smaller version still counts</div>'
+        : '<div class="fr-note fr-note-hard">hard — the real thing</div>'}`;
+  } else if (s.kind === 'journal_night') {
+    const j = flowRunView.journal || {};
+    page = `<div class="fr-step-big">Nightly journal</div>
+      <textarea id="fr-jn-bottleneck" class="cl-notes" rows="2"
+        placeholder="Today's bottleneck…">${escHtml(j.bottleneck || '')}</textarea>
+      <textarea id="fr-jn-exp" class="cl-notes" rows="2"
+        placeholder="Active experiment…">${escHtml(j.active_experiment || '')}</textarea>
+      <div class="fr-rating">${[1, 2, 3, 4, 5, 6, 7].map(n =>
+        `<button class="fr-rate${j.rating === n ? ' fr-rate-on' : ''}" data-rate="${n}">${n}</button>`).join('')}</div>`;
+  } else if (s.kind === 'crm_fill') {
+    page = `<div class="fr-step-big">CRM nightly fill</div>
+      <div class="fr-note">${flowRunView.crmFilled
+        ? 'filled tonight ✓' : 'log tonight\'s people entries'}</div>
+      ${flowRunView.crmFilled ? ''
+        : '<button id="fr-crm-fill" class="cl-pill">Mark filled (entries made)</button>'}`;
+  } else if (s.kind === 'social_spec') {
+    const okSpec = day.specOk === true;
+    page = `<div class="fr-step-big">Social spec</div>
+      <div class="fr-note">${day.spec ? 'spec set' : 'no spec yet'} · ${day.total ?? 0} point${(day.total ?? 0) === 1 ? '' : 's'}${
+        okSpec ? ' — spec complete ✓' : ' — set/complete it in ≡ Social'}</div>`;
+  }
+
+  el.innerHTML = `
+    <div class="fr-head">
+      <span class="fr-title">${escHtml(f.name)}</span>
+      <span class="fr-meta">${flowRunView.idx + 1}/${f.steps.length}${
+        due != null ? ` · due ${minutesToHHMM(Math.round(due) % 1440)}` : ''}</span>
+      <button class="modal-close-btn" id="fr-close">✕</button>
+    </div>
+    <div class="fr-page">${page}${credited ? '<div class="fr-note">✓ already credited</div>' : ''}</div>
+    <div class="fr-foot">
+      <button id="fr-back" ${flowRunView.idx === 0 ? 'disabled' : ''}>‹ back</button>
+      ${s.kind === 'text' && s.requirement === 'soft'
+        ? '<button id="fr-soft" class="cl-pill">Did a smaller version</button>' : ''}
+      <button id="fr-done" class="cl-pill cl-pill-on"${
+        s.kind === 'social_spec' && day.specOk !== true && s.requirement !== 'soft' ? ' disabled' : ''}>Done ✓</button>
+    </div>`;
+  el.classList.remove('hidden');
+
+  el.querySelector('#fr-close').addEventListener('click', closeFlowRun);
+  el.querySelector('#fr-back').addEventListener('click', () => {
+    if (flowRunView.idx > 0) { flowRunView.idx--; renderFlowRun(); }
+  });
+  const soft = el.querySelector('#fr-soft');
+  if (soft) soft.addEventListener('click', () => creditFlowStep(s, 'soft'));
+  el.querySelector('#fr-done').addEventListener('click', async () => {
+    if (s.kind === 'journal_night') {
+      const today = formatDateYMD(new Date());
+      const rate = el.querySelector('.fr-rate-on');
+      await fetch(`/api/journal/${today}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bottleneck: el.querySelector('#fr-jn-bottleneck').value,
+          active_experiment: el.querySelector('#fr-jn-exp').value,
+          rating: rate ? parseInt(rate.dataset.rate) : null,
+        }),
+      });
+    }
+    creditFlowStep(s, 'done');
+  });
+  el.querySelectorAll('.fr-rate').forEach(b => b.addEventListener('click', () => {
+    el.querySelectorAll('.fr-rate').forEach(x => x.classList.remove('fr-rate-on'));
+    b.classList.add('fr-rate-on');
+  }));
+  const crm = el.querySelector('#fr-crm-fill');
+  if (crm) crm.addEventListener('click', async () => {
+    const today = formatDateYMD(new Date());
+    await fetch('/api/people/night', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'entries', date: today }),
+    });
+    flowRunView.crmFilled = true;
+    renderFlowRun();
+  });
+}
+
+// Shared inline rename for ref rows — same gesture as MAP's, same Esc rule
+// (stopPropagation, or the keydown peels the overlay behind the editor).
+function refRename(span, patchFor) {
+  const id = parseInt(span.closest('.ref-row').dataset.id);
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 's2-rename-input';
+  input.value = span.textContent;
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const finish = async save => {
+    if (settled) return;
+    settled = true;
+    const v = input.value.trim();
+    if (save && v && v !== span.textContent) await patchFor(id)(v);
+    await refreshRef();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+async function flushLogSave() {
+  clearTimeout(logsView.saveTimer);
+  if (!logsView.open || !logsView.dirty) return;
+  const ta = document.getElementById('log-editor');
+  if (!ta) return;
+  logsView.dirty = false;
+  await fetch(`/api/logs/${encodeURIComponent(logsView.open)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: ta.value }),
+  });
+  const status = document.getElementById('log-save-status');
+  if (status) status.textContent = 'Saved';
+}
+
+async function openLog(name) {
+  const log = await fetch(`/api/logs/${encodeURIComponent(name)}`).then(r => r.json());
+  logsView.open = log.name;
+  logsView.content = log.content;
+  logsView.dirty = false;
+  renderLogs();
+}
+
+// Markdown source highlighting (VS Code style): raw text stays visible,
+// tokens get color/weight via a highlight layer under a transparent textarea.
+// Mono font only — bold/italic keep advance width so the layers stay aligned.
+
+function mdInline(esc) {
+  return esc.split(/(`[^`\n]+`)/g).map(seg => {
+    if (/^`[^`\n]+`$/.test(seg)) return `<span class="md-code">${seg}</span>`;
+    return seg.replace(
+      /(\*\*[^*\n]+\*\*)|(~~[^~\n]+~~)|(\*[^*\n]+\*)|(\b_[^_\n]+_\b)|(\[[^\]\n]*\]\([^)\n]*\))/g,
+      (m, bold, strike, star, under, link) => {
+        if (bold) return `<span class="md-bold">${bold}</span>`;
+        if (strike) return `<span class="md-strike">${strike}</span>`;
+        if (star || under) return `<span class="md-italic">${star || under}</span>`;
+        return `<span class="md-link">${link}</span>`;
+      }
+    );
+  }).join('');
+}
+
+function mdHighlight(text) {
+  if (text.endsWith('\n')) text += ' ';
+  const out = [];
+  let inFence = false;
+  for (const line of text.split('\n')) {
+    const esc = escHtml(line);
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      out.push(`<span class="md-codeblock">${esc}</span>`);
+    } else if (inFence) {
+      out.push(`<span class="md-codeblock">${esc}</span>`);
+    } else if (/^#{1,6}(\s|$)/.test(line)) {
+      out.push(`<span class="md-heading">${mdInline(esc)}</span>`);
+    } else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      out.push(`<span class="md-hr">${esc}</span>`);
+    } else if (/^\s*>/.test(line)) {
+      out.push(`<span class="md-quote">${mdInline(esc)}</span>`);
+    } else {
+      const m = line.match(/^(\s*)([-*+]|\d+\.)( \[[ xX]\])?(\s)/);
+      if (m) {
+        out.push(`<span class="md-marker">${escHtml(m[0])}</span>` + mdInline(escHtml(line.slice(m[0].length))));
+      } else {
+        out.push(mdInline(esc));
+      }
+    }
+  }
+  return out.join('\n');
+}
+
+// The two layers must wrap IDENTICALLY or the caret stops matching the text
+// you see: the textarea lays out the real lines, the highlight paints the
+// visible ones, and one row of divergence anywhere above the click point
+// shifts everything below it. CSS alone can't guarantee equal width —
+// scrollbar-gutter is honored on the textarea but not on the overflow:hidden
+// highlight in WebKit — so pin the highlight to the textarea's own content
+// width. Cheap, and it re-runs on every input, when the scrollbar's
+// appearance could change that width.
+function syncLogHighlightWidth(ta, hl) {
+  hl.style.width = ta.clientWidth + 'px';
+}
+
+function updateLogHighlight() {
+  const ta = document.getElementById('log-editor');
+  const hl = document.getElementById('log-highlight');
+  if (!ta || !hl) return;
+  syncLogHighlightWidth(ta, hl);
+  hl.innerHTML = mdHighlight(ta.value);
+  hl.scrollTop = ta.scrollTop;
+  hl.scrollLeft = ta.scrollLeft;
+}
+
+// ── Log editor: markdown shortcuts + editing gestures ────────
+//
+// Every mutation goes through document.execCommand('insertText') instead of
+// assigning ta.value. Assigning wipes the textarea's native undo stack, and
+// inside a text field the BROWSER's Ctrl+Z is deliberately the one that wins
+// (see Undo: the app stack ignores keystrokes in text fields). Selecting the
+// range first and letting insertText do the write is the whole reason a log
+// stays undoable one step at a time. insertText also fires `input`, so the
+// highlight repaint and the autosave timer come along for free — no handler
+// below has to remember to trigger them.
+
+// Typing one of these over a SELECTION wraps it instead of replacing it.
+// Deliberately no auto-closing on an empty caret: that is the half of
+// auto-pairing everyone turns off.
+const LOG_PAIRS = { '*': '*', '_': '_', '`': '`', '~': '~', '(': ')', '[': ']', '{': '}', '"': '"', "'": "'" };
+const LOG_WORD = /[\p{L}\p{N}_]/u;
+
+function logEdit(ta, start, end, text, selStart, selEnd) {
+  if (!text && start === end) return;
+  ta.setSelectionRange(start, end);
+  if (text) document.execCommand('insertText', false, text);
+  else document.execCommand('delete');
+  if (selStart != null) ta.setSelectionRange(selStart, selEnd == null ? selStart : selEnd);
+}
+
+function logLineStart(v, pos) {
+  return pos <= 0 ? 0 : v.lastIndexOf('\n', pos - 1) + 1;
+}
+
+function logLineEnd(v, pos) {
+  const i = v.indexOf('\n', pos);
+  return i === -1 ? v.length : i;
+}
+
+function logWordAt(v, pos) {
+  let s = pos, e = pos;
+  while (s > 0 && LOG_WORD.test(v[s - 1])) s--;
+  while (e < v.length && LOG_WORD.test(v[e])) e++;
+  return [s, e];
+}
+
+// Wrap / unwrap an inline span. With no selection it takes the word under the
+// caret, so Ctrl+B mid-word bolds the word rather than opening empty markers.
+function logWrap(ta, left, right) {
+  const v = ta.value;
+  let s = ta.selectionStart, e = ta.selectionEnd;
+  if (s === e) [s, e] = logWordAt(v, s);
+  const sel = v.slice(s, e);
+  // '*' must never unwrap '**': stripping one layer would silently turn bold
+  // into italic. Nesting them is legal markdown, so fall through and wrap.
+  const doubled = left === '*' && sel.startsWith('**') && sel.endsWith('**');
+  if (!doubled && sel.length >= left.length + right.length
+      && sel.startsWith(left) && sel.endsWith(right)) {
+    const inner = sel.slice(left.length, sel.length - right.length);
+    logEdit(ta, s, e, inner, s, s + inner.length);
+    return;
+  }
+  if (v.slice(s - left.length, s) === left && v.slice(e, e + right.length) === right
+      && !(left === '*' && v.slice(s - 2, s) === '**')) {
+    const ns = s - left.length;
+    logEdit(ta, ns, e + right.length, sel, ns, ns + sel.length);
+    return;
+  }
+  logEdit(ta, s, e, left + sel + right, s + left.length, s + left.length + sel.length);
+}
+
+// Rewrite every line the selection touches. A bare caret keeps its column
+// (shifted by whatever the prefix added or removed); a real selection ends up
+// covering the block, so Tab-Tab-Tab keeps indenting the same lines.
+function logMapLines(ta, fn) {
+  const v = ta.value;
+  const caret = ta.selectionStart, caretEnd = ta.selectionEnd;
+  const s = logLineStart(v, caret);
+  const e = logLineEnd(v, caretEnd);
+  const before = v.slice(s, e);
+  const lines = before.split('\n');
+  const after = lines.map(fn).join('\n');
+  if (after === before) return;
+  if (caret === caretEnd) {
+    const d = after.split('\n')[0].length - lines[0].length;
+    logEdit(ta, s, e, after, Math.max(s, caret + d));
+  } else {
+    logEdit(ta, s, e, after, s, s + after.length);
+  }
+}
+
+// level 0 strips the heading; pressing the level a line already has toggles
+// it off, so Ctrl+2 twice is a round trip.
+function logHeading(ta, level) {
+  logMapLines(ta, line => {
+    const indent = line.match(/^\s*/)[0];
+    const rest = line.slice(indent.length);
+    const m = rest.match(/^(#{1,6})\s+/);
+    const bare = m ? rest.slice(m[0].length) : rest;
+    if (!level || (m && m[1].length === level)) return indent + bare;
+    return indent + '#'.repeat(level) + ' ' + bare;
+  });
+}
+
+// Block toggles read the whole selection first: a mixed block gets marked,
+// and only a fully-marked block gets cleared. Blank lines never count against
+// "all marked", or one stray empty line would flip the gesture.
+function logBlockToggle(ta, kind) {
+  const v = ta.value;
+  const s = logLineStart(v, ta.selectionStart);
+  const e = logLineEnd(v, ta.selectionEnd);
+  const lines = v.slice(s, e).split('\n');
+  const re = kind === 'quote' ? /^\s*>\s?/
+    : kind === 'ordered' ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/;
+  const all = lines.every(l => !l.trim() || re.test(l));
+  let n = 0;
+  logMapLines(ta, line => {
+    const indent = line.match(/^\s*/)[0];
+    const rest = line.slice(indent.length);
+    if (kind === 'quote') {
+      return all ? indent + rest.replace(/^>\s?/, '') : indent + '> ' + rest;
+    }
+    const bare = rest.replace(/^([-*+]|\d+\.)\s+/, '');
+    if (all) return indent + bare;
+    if (!line.trim()) return line;
+    n++;
+    return indent + (kind === 'ordered' ? n + '. ' : '- ') + bare;
+  });
+}
+
+// Ctrl+Enter. A plain line becomes a task, a bullet gains a box, a box flips.
+function logCheckbox(ta) {
+  logMapLines(ta, line => {
+    const indent = line.match(/^\s*/)[0];
+    const rest = line.slice(indent.length);
+    const m = rest.match(/^([-*+]|\d+\.)\s+(\[([ xX])\]\s+)?/);
+    if (m && m[2]) {
+      return indent + m[1] + ' [' + (m[3] === ' ' ? 'x' : ' ') + '] ' + rest.slice(m[0].length);
+    }
+    if (m) return indent + m[1] + ' [ ] ' + rest.slice(m[0].length);
+    return indent + '- [ ] ' + rest;
+  });
+}
+
+// Enter continues the list, quote or task you are standing in. Returns false
+// when there is nothing to continue, so the caller leaves Enter alone.
+function logEnter(ta) {
+  const v = ta.value;
+  const pos = ta.selectionStart;
+  if (pos !== ta.selectionEnd) return false;
+  const s = logLineStart(v, pos);
+  const line = v.slice(s, pos);
+  const m = line.match(/^(\s*)(>\s?|([-*+])\s+(\[[ xX]\]\s+)?|(\d+)\.\s+(\[[ xX]\]\s+)?)/);
+  if (!m) return false;
+  // Enter on a marker with nothing after it EXITS the list instead of adding
+  // another empty bullet — the standard gesture, and the only way out that
+  // doesn't mean backspacing over the marker.
+  if (line.length === m[0].length && !v.slice(pos, logLineEnd(v, pos)).trim()) {
+    logEdit(ta, s, pos, '', s);
+    return true;
+  }
+  const marker = m[5] ? (parseInt(m[5]) + 1) + '. ' + (m[6] ? '[ ] ' : '')
+    : m[3] ? m[3] + ' ' + (m[4] ? '[ ] ' : '')
+    : '> ';
+  const ins = '\n' + m[1] + marker;
+  logEdit(ta, pos, pos, ins, pos + ins.length);
+  return true;
+}
+
+// Tab is two spaces in prose and a real indent inside a list or a multi-line
+// selection — the two things Tab means in a markdown file.
+function logIndent(ta, out) {
+  const v = ta.value;
+  const multi = ta.selectionStart !== ta.selectionEnd
+    && v.slice(ta.selectionStart, ta.selectionEnd).includes('\n');
+  const line = v.slice(logLineStart(v, ta.selectionStart), logLineEnd(v, ta.selectionStart));
+  const onList = /^\s*([-*+]|\d+\.)\s/.test(line) || /^\s*>/.test(line);
+  if (!out && !multi && !onList) {
+    document.execCommand('insertText', false, '  ');
+    return;
+  }
+  logMapLines(ta, l => out ? l.replace(/^ {1,2}/, '') : (l.trim() ? '  ' + l : l));
+}
+
+function logMoveLines(ta, dir) {
+  const v = ta.value;
+  const s = logLineStart(v, ta.selectionStart);
+  const e = logLineEnd(v, ta.selectionEnd);
+  const block = v.slice(s, e);
+  if (dir < 0) {
+    if (s === 0) return;
+    const ps = logLineStart(v, s - 1);
+    const text = block + '\n' + v.slice(ps, s - 1);
+    logEdit(ta, ps, e, text, ps, ps + block.length);
+  } else {
+    if (e >= v.length) return;
+    const ne = logLineEnd(v, e + 1);
+    const next = v.slice(e + 1, ne);
+    const text = next + '\n' + block;
+    logEdit(ta, s, ne, text, s + next.length + 1, s + next.length + 1 + block.length);
+  }
+}
+
+function logDuplicateLines(ta) {
+  const v = ta.value;
+  const s = logLineStart(v, ta.selectionStart);
+  const e = logLineEnd(v, ta.selectionEnd);
+  const block = v.slice(s, e);
+  logEdit(ta, e, e, '\n' + block, e + 1, e + 1 + block.length);
+}
+
+function logDeleteLines(ta) {
+  const v = ta.value;
+  const s = logLineStart(v, ta.selectionStart);
+  let e = logLineEnd(v, ta.selectionEnd);
+  if (e < v.length) e++;                    // take the trailing newline with it
+  else if (s > 0) { logEdit(ta, s - 1, e, '', s - 1); return; }
+  logEdit(ta, s, e, '', s);
+}
+
+function logLink(ta) {
+  const v = ta.value;
+  let s = ta.selectionStart, e = ta.selectionEnd;
+  if (s === e) [s, e] = logWordAt(v, s);
+  const sel = v.slice(s, e);
+  // Selection already a URL? It becomes the target and the caret lands in the
+  // label. Otherwise it becomes the label and the caret lands in the target.
+  if (/^(https?:\/\/|mailto:|www\.)\S*$/.test(sel)) {
+    logEdit(ta, s, e, `[](${sel})`, s + 1);
+  } else {
+    const out = `[${sel}]()`;
+    logEdit(ta, s, e, out, s + out.length - 1);
+  }
+}
+
+function logKeydown(e) {
+  const ta = e.currentTarget;
+  const mod = e.metaKey || e.ctrlKey;
+  const k = e.key;
+
+  if (!mod && !e.altKey && LOG_PAIRS[k] && ta.selectionStart !== ta.selectionEnd) {
+    e.preventDefault();
+    logWrap(ta, k, LOG_PAIRS[k]);
+    return;
+  }
+  if (k === 'Tab') { e.preventDefault(); logIndent(ta, e.shiftKey); return; }
+  if (k === 'Enter' && mod) { e.preventDefault(); logCheckbox(ta); return; }
+  if (k === 'Enter' && !e.shiftKey && !e.altKey) {
+    if (logEnter(ta)) e.preventDefault();
+    return;
+  }
+  if (e.altKey && !mod && (k === 'ArrowUp' || k === 'ArrowDown')) {
+    e.preventDefault();
+    if (e.shiftKey) logDuplicateLines(ta);
+    else logMoveLines(ta, k === 'ArrowUp' ? -1 : 1);
+    return;
+  }
+  if (!mod) return;
+
+  // Digits and punctuation come off e.code: e.key for Ctrl+Shift+8 is '*' on a
+  // US layout and something else everywhere else.
+  if (e.shiftKey) {
+    if (e.code === 'Digit8') { e.preventDefault(); logBlockToggle(ta, 'bullet'); return; }
+    if (e.code === 'Digit7') { e.preventDefault(); logBlockToggle(ta, 'ordered'); return; }
+    if (e.code === 'Period') { e.preventDefault(); logBlockToggle(ta, 'quote'); return; }
+    if (k.toLowerCase() === 'x') { e.preventDefault(); logWrap(ta, '~~', '~~'); return; }
+    if (k.toLowerCase() === 'k') { e.preventDefault(); logDeleteLines(ta); return; }
+    return;
+  }
+  const digit = e.code.match(/^Digit([0-6])$/);
+  if (digit) { e.preventDefault(); logHeading(ta, parseInt(digit[1])); return; }
+  switch (k.toLowerCase()) {
+    case 'b': e.preventDefault(); logWrap(ta, '**', '**'); break;
+    case 'i': e.preventDefault(); logWrap(ta, '*', '*'); break;
+    case 'e': e.preventDefault(); logWrap(ta, '`', '`'); break;
+    case 'k': e.preventDefault(); logLink(ta); break;
+    // Save-now saves THIS field: a notes textarea flushes its own autosave
+    // (wireNotesAutosave stamps __flushNotes); the log editor keeps its path.
+    case 's': e.preventDefault(); if (ta.__flushNotes) ta.__flushNotes(); else flushLogSave(); break;
+  }
+}
+
+// The whole suite for any markdown-capable textarea. The log editor's engine
+// (logKeydown/logPaste and every log* helper above) is textarea-agnostic —
+// handlers read e.currentTarget — so notes fields get bold/italic/code/strike,
+// links, headings, list/quote/task toggles, Enter continuation, Tab indent,
+// line move/duplicate/delete and wrap-on-typing for free. Everything still
+// goes through execCommand('insertText'), so the field's NATIVE undo survives
+// and `input` fires — which is what keeps wireNotesAutosave's debounce and
+// #cl-notes' clarifyView mirror working without any extra plumbing.
+function wireMdShortcuts(ta) {
+  ta.addEventListener('keydown', logKeydown);
+  ta.addEventListener('paste', logPaste);
+}
+
+// Pasting a bare URL over a selection links it — the one paste worth
+// intercepting, and the gesture that makes citing a source in a log free.
+function logPaste(e) {
+  const ta = e.currentTarget;
+  if (ta.selectionStart === ta.selectionEnd || !e.clipboardData) return;
+  const url = (e.clipboardData.getData('text') || '').trim();
+  if (!/^(https?:\/\/|mailto:)\S+$/.test(url)) return;
+  e.preventDefault();
+  const s = ta.selectionStart, en = ta.selectionEnd;
+  const out = `[${ta.value.slice(s, en)}](${url})`;
+  logEdit(ta, s, en, out, s + out.length);
+}
+
+function renderLogs() {
+  const body = document.getElementById('logs-body');
+  const title = document.getElementById('logs-title');
+  if (!body) return;
+  // The bar derives its mode from this surface (✎ log on the list, plain
+  // inbox capture in the editor) — repaint it with every transition.
+  renderBar();
+
+  if (!logsView.open) {
+    title.textContent = 'Logs';
+    const rows = sortedLogs().map(l => `
+      <button class="log-row" data-name="${escHtml(l.name)}">
+        <span class="log-row-name">${escHtml(l.name)}</span>
+        <span class="log-row-date">${new Date(l.updated_at).toLocaleDateString()}</span>
+      </button>`).join('');
+    body.innerHTML = `
+      <div class="log-list-bar">
+        <button id="log-sort" class="log-sort-btn"
+          title="Sorted by name — for the YY-M-D logs that is ${logsView.desc ? 'newest' : 'oldest'} first">
+          ${logsView.desc ? 'Z → A ↓' : 'A → Z ↑'}
+        </button>
+      </div>
+      <div class="log-list">${rows || '<div class="log-empty">No logs yet</div>'}</div>`;
+    body.querySelectorAll('.log-row').forEach(row => {
+      row.addEventListener('click', () => openLog(row.dataset.name));
+    });
+    document.getElementById('log-sort').addEventListener('click', () => {
+      logsView.desc = !logsView.desc;
+      renderLogs();
+      document.getElementById('logs-body').scrollTop = 0;
+    });
+    // Creating a log is the GLOBAL BAR's job on this view (✎ log mode, see
+    // the renderBar call above) — the list carries no form of its own.
+    return;
+  }
+
+  title.textContent = logsView.open;
+  body.innerHTML = `
+    <div class="log-editor-bar">
+      <button id="log-back" class="log-back-btn">‹ All logs</button>
+      <span id="log-save-status" class="log-save-status"></span>
+    </div>
+    <div class="log-editor-wrap">
+      <div id="log-highlight" class="log-highlight" aria-hidden="true"></div>
+      <textarea id="log-editor" class="log-editor" spellcheck="false"></textarea>
+    </div>`;
+  const ta = document.getElementById('log-editor');
+  ta.value = logsView.content;
+  updateLogHighlight();
+  ta.addEventListener('input', () => {
+    updateLogHighlight();
+    logsView.dirty = true;
+    document.getElementById('log-save-status').textContent = '·';
+    clearTimeout(logsView.saveTimer);
+    logsView.saveTimer = setTimeout(flushLogSave, 1000);
+  });
+  ta.addEventListener('scroll', () => {
+    const hl = document.getElementById('log-highlight');
+    hl.scrollTop = ta.scrollTop;
+    hl.scrollLeft = ta.scrollLeft;
+  });
+  ta.addEventListener('keydown', logKeydown);
+  ta.addEventListener('paste', logPaste);
+  ta.addEventListener('blur', flushLogSave);
+  document.getElementById('log-back').addEventListener('click', async () => {
+    await flushLogSave();
+    logsView.open = null;
+    logsView.logs = await fetch('/api/logs').then(r => r.json());
+    renderLogs();
+  });
+  ta.focus();
+}
+
+// ── Social exposure v1 (dryrun) ──────────────────────────────
+//
+// The grid: a rep is a cell of axis levels; its price is the sum of the
+// levels' calibrated 0-10 anticipatory-pressure ratings. Two daily lines,
+// both ✓/✗ only (no money path exists here): SPEC — one intended rep,
+// specified to startability, whose price arithmetically clears D — and
+// DOSE — today's rep prices sum to ≥ D. D is the anchor cell's price,
+// never a free number. Prices are stamped on the rep at log time, so
+// recalibration never rewrites history. Design log:
+// ai-docs/26-8-6 Social stakes system design Q&A.md
+
+const socialView = { config: null, day: null, cues: '', form: null, calOpen: false };
+
+async function refreshSocialDot() {
+  socialView.day = await fetch('/api/social/day').then(r => r.json()).catch(() => socialView.day);
+  paintSocialDot();
+}
+
+function paintSocialDot() {
+  const btn = document.getElementById('hub-social-btn');
+  const day = socialView.day;
+  if (!btn) return;
+  // Gold dot = calibrated and a line is still open today. Uncalibrated stays
+  // quiet — the feature doesn't nag before it exists.
+  btn.classList.toggle('has-due', !!(day && day.d != null && !(day.specOk && day.doseCleared)));
+}
+
+async function refreshSocial() {
+  const [config, day, engage] = await Promise.all([
+    fetch('/api/social').then(r => r.json()).catch(() => socialView.config),
+    fetch('/api/social/day').then(r => r.json()).catch(() => socialView.day),
+    fetch('/api/engage/day').then(r => r.json()).catch(() => null),
+  ]);
+  socialView.config = config;
+  socialView.day = day;
+  // The evening tally's retrieval cue: walking the day's structure beats a
+  // blank "anything?" — the blocks are the cue, not a metric.
+  if (engage && engage.rows) {
+    socialView.cues = [...new Set(engage.rows
+      .filter(r => r.kind !== 'action' && r.label).map(r => r.label))].join(' → ');
+  }
+  paintSocialDot();
+  renderSocial();
+}
+
+async function refreshSocialIfOpen() {
+  const el = document.getElementById('tab-social');
+  if (el && !el.classList.contains('hidden')) await refreshSocial();
+  else await refreshSocialDot();
+}
+
+function socialLevelById(id) {
+  return ((socialView.config || {}).levels || []).find(l => l.id === id);
+}
+
+function socialShortLabel(id) {
+  const l = socialLevelById(id);
+  return l ? l.label.split('—')[0].split('(')[0].trim() : '';
+}
+
+function socialRepDesc(rep) {
+  const parts = Object.values(rep.levels || {}).map(socialShortLabel).filter(Boolean);
+  return parts.join(' · ') + (rep.person ? ` — ${rep.person}` : '');
+}
+
+function socialFormPrice(f) {
+  const axes = ((socialView.config || {}).axes || {})[f.family] || [];
+  let sum = 0;
+  for (const a of axes) {
+    const l = socialLevelById((f.levels || {})[a]);
+    if (!l || l.rating == null) return null;
+    sum += l.rating;
+  }
+  return sum;
+}
+
+const SOCIAL_AXIS_TITLES = {
+  warmth: 'Warmth', medium: 'Medium', ask: 'Ask size',
+  audience: 'Audience', disclosure: 'Self-disclosure',
+  micro: 'Micro moves — price = rating',
+};
+
+function renderSocial() {
+  const body = document.getElementById('social-body');
+  if (!body || !socialView.config) return;
+  const cfg = socialView.config;
+  const day = socialView.day || { reps: [], total: 0 };
+  const calibrated = cfg.d != null;
+  const byAxis = {};
+  (cfg.levels || []).forEach(l => { (byAxis[l.axis] = byAxis[l.axis] || []).push(l); });
+  const f = socialView.form;
+
+  const chipRow = (axis, sel) => (byAxis[axis] || []).map(l =>
+    `<button class="cl-chip so-lvl${sel === l.id ? ' cl-chip-on' : ''}" data-axis="${axis}" data-id="${l.id}">
+       ${escHtml(socialShortLabel(l.id))}${l.rating != null ? ` <span class="so-rating">${l.rating}</span>` : ''}
+     </button>`).join('');
+
+  let main = '';
+  if (calibrated) {
+    const pct = Math.min(100, Math.round(100 * day.total / day.d));
+    main += `
+      <div class="so-meter">
+        <span class="so-meter-text">${day.total} / ${day.d}</span>
+        <div class="so-meter-bar"><div class="so-meter-fill${day.doseCleared ? ' so-fill-ok' : ''}" style="width:${pct}%"></div></div>
+        <span class="so-line${day.specOk ? ' so-ok' : ''}" title="The morning line: an intended rep that clears D">spec ${day.specOk ? '✓' : '·'}</span>
+        <span class="so-line${day.doseCleared ? ' so-ok' : ''}" title="The evening line: logged prices sum to D">dose ${day.doseCleared ? '✓' : '·'}</span>
+      </div>`;
+
+    // The spec card — today's intended rep, startable from the card alone.
+    if (day.spec && (!f || f.intent !== 'spec')) {
+      main += `
+        <div class="so-card">
+          <div class="so-card-top"><span class="cl-label">Today's spec</span>
+            <span class="so-price">${day.spec.price}</span>
+            ${day.spec.price >= day.d ? '' : `<span class="so-short">${day.d - day.spec.price} short of D</span>`}</div>
+          <div class="so-spec-desc">${escHtml(socialRepDesc(day.spec))}</div>
+          ${day.spec.opener ? `<div class="so-opener">“${escHtml(day.spec.opener)}”</div>` : ''}
+          <div class="so-card-btns">
+            <button id="so-spec-did" title="Log it as done, planned">✓ did it</button>
+            <button id="so-spec-edit" title="Re-spec — free, any time">↻ replace</button>
+          </div>
+        </div>`;
+    } else if (!f) {
+      main += `<button id="so-spec-new" class="so-add">+ plan today's rep <span class="cl-hint">the morning line — person, channel, opener</span></button>`;
+    }
+
+    if (f) {
+      const price = socialFormPrice(f);
+      const spec = f.intent === 'spec';
+      main += `
+        <div class="so-card so-form">
+          <div class="so-card-top"><span class="cl-label">${spec ? "Plan today's rep" : 'Log a rep'}</span></div>
+          <div class="cl-chips">
+            <button class="cl-chip so-fam${f.family === 'directed' ? ' cl-chip-on' : ''}" data-fam="directed">directed</button>
+            <button class="cl-chip so-fam${f.family === 'broadcast' ? ' cl-chip-on' : ''}" data-fam="broadcast">broadcast</button>
+          </div>
+          ${(cfg.axes[f.family] || []).map(axis => `
+            <div class="so-axis"><span class="cl-hint">${SOCIAL_AXIS_TITLES[axis] || axis}</span>
+              <div class="cl-chips">${chipRow(axis, (f.levels || {})[axis])}</div></div>`).join('')}
+          ${f.family === 'directed' ? `<input type="text" id="so-person" class="so-input" placeholder="who — name them" value="${escHtml(f.person || '')}">` : ''}
+          ${spec ? `<textarea id="so-opener" class="cl-notes" rows="2" placeholder="the opening message, verbatim — ready to send">${escHtml(f.opener || '')}</textarea>` : ''}
+          ${spec ? '' : `<input type="number" id="so-pre" class="so-input so-pre" min="0" max="10" placeholder="pressure 0–10 (optional)" value="${f.pre ?? ''}">`}
+          <div class="so-card-btns">
+            <span class="so-price">${price == null ? '—' : price}</span>
+            ${spec && price != null ? (price >= cfg.d
+              ? '<span class="so-ok">clears D</span>'
+              : `<span class="so-short">${cfg.d - price} short — upgrade a level</span>`) : ''}
+            <button id="so-form-go" ${price == null || (spec && price < cfg.d) ? 'disabled' : ''}>${spec ? 'Save spec' : 'Log it'}</button>
+            <button id="so-form-x">cancel</button>
+          </div>
+        </div>`;
+    }
+
+    // Micro chips: one tap logs; the count is today's reps of that move.
+    main += `
+      <div class="so-axis"><span class="cl-hint">micro — one tap logs it</span>
+        <div class="cl-chips">${(byAxis.micro || []).map(l => {
+          const n = (day.reps || []).filter(r => r.family === 'micro' && r.levels.micro === l.id).length;
+          return `<button class="cl-chip so-micro" data-id="${l.id}" ${l.rating == null ? 'disabled title="rate this in calibration first"' : ''}>
+            ${escHtml(socialShortLabel(l.id))}${l.rating != null ? ` <span class="so-rating">${l.rating}</span>` : ''}${n ? ` ×${n}` : ''}</button>`;
+        }).join('')}
+        ${f ? '' : '<button class="cl-chip" id="so-log-open">+ log a rep…</button>'}</div></div>`;
+
+    if (socialView.cues) main += `<div class="so-cues cl-hint" title="The evening tally's retrieval cue">walk the day: ${escHtml(socialView.cues)}</div>`;
+
+    main += `<div class="so-reps">${(day.reps || []).map(r => `
+      <div class="so-rep" data-id="${r.id}">
+        <span class="so-price">${r.price}</span>
+        <span class="so-rep-text">${escHtml(socialRepDesc(r))}</span>
+        ${r.planned ? '<span class="so-planned" title="spec’d in advance">◆</span>' : ''}
+        ${r.pre_rating != null ? `<span class="cl-hint">felt ${r.pre_rating}</span>` : ''}
+        <button class="so-del" data-id="${r.id}" title="Remove">×</button>
+      </div>`).join('') || '<div class="gtd-empty">Nothing logged today.</div>'}</div>`;
+  } else {
+    main += `<div class="so-intro">Rate each level below for anticipatory pressure (0–10),
+      then pick the <b>anchor</b> — the directed cell whose price becomes D, your daily dose.
+      Moderate band: hard enough to train, clearable 6 of 7 days. Dryrun — ✓/✗ only, no money.</div>`;
+  }
+
+  // Calibration & anchor — config surface (deliberately not undoable, like
+  // Settings). Open until calibrated, folded after.
+  const anchor = cfg.anchor || {};
+  main += `<div class="so-fold-head" id="so-cal-head">Calibration &amp; anchor
+    <span class="cl-hint">${calibrated ? `D = ${cfg.d}` : 'required first'} ${socialView.calOpen || !calibrated ? '⌃' : '⌄'}</span></div>`;
+  if (socialView.calOpen || !calibrated) {
+    main += Object.keys(byAxis).map(axis => `
+      <div class="so-axis"><span class="cl-hint">${SOCIAL_AXIS_TITLES[axis] || axis}</span>
+        ${(byAxis[axis] || []).map(l => `
+        <div class="so-cal-row"><span class="so-rep-text">${escHtml(l.label)}</span>
+          <input type="number" class="so-input so-rate" data-id="${l.id}" min="0" max="10" value="${l.rating ?? ''}"></div>`).join('')}
+      </div>`).join('');
+    main += `
+      <div class="so-axis"><span class="cl-hint">Anchor — the cell whose price IS D (one at-anchor rep clears the day)</span>
+        ${['warmth', 'medium', 'ask'].map(axis => `<div class="cl-chips so-anchor" data-axis="${axis}">${chipRow(axis, anchor[axis])}</div>`).join('')}
+      </div>`;
+  }
+
+  body.innerHTML = main;
+
+  const head = body.querySelector('#so-cal-head');
+  if (head) head.addEventListener('click', () => { socialView.calOpen = !socialView.calOpen; renderSocial(); });
+
+  body.querySelectorAll('.so-rate').forEach(inp => inp.addEventListener('change', async () => {
+    const v = inp.value === '' ? null : Math.max(0, Math.min(10, parseInt(inp.value) || 0));
+    await fetch(`/api/social/levels/${inp.dataset.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating: v }),
+    });
+    await refreshSocial();
+  }));
+
+  body.querySelectorAll('.so-anchor .so-lvl').forEach(b => b.addEventListener('click', async () => {
+    const next = { ...(socialView.config.anchor || {}) };
+    next[b.dataset.axis] = parseInt(b.dataset.id);
+    if (next.warmth && next.medium && next.ask) {
+      await fetch('/api/social/anchor', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
+      });
+      await refreshSocial();
+    } else {
+      socialView.config.anchor = next;
+      renderSocial();
+    }
+  }));
+
+  const specNew = body.querySelector('#so-spec-new');
+  if (specNew) specNew.addEventListener('click', () => {
+    socialView.form = { intent: 'spec', family: 'directed', levels: {}, person: '', opener: '' };
+    renderSocial();
+  });
+  const specEdit = body.querySelector('#so-spec-edit');
+  if (specEdit) specEdit.addEventListener('click', () => {
+    const s = socialView.day.spec;
+    socialView.form = { intent: 'spec', family: s.family, levels: { ...s.levels },
+                        person: s.person, opener: s.opener };
+    renderSocial();
+  });
+  const specDid = body.querySelector('#so-spec-did');
+  if (specDid) specDid.addEventListener('click', async () => {
+    const s = socialView.day.spec;
+    const rep = await fetch('/api/social/reps', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ family: s.family, levels: s.levels, person: s.person, planned: 1 }),
+    }).then(r => r.json());
+    pushUndo(`logged the spec'd rep (+${rep.price})`, async () => {
+      await fetch(`/api/social/reps/${rep.id}`, { method: 'DELETE' });
+      await refreshSocialIfOpen();
+    });
+    await refreshSocial();
+  });
+
+  const logOpen = body.querySelector('#so-log-open');
+  if (logOpen) logOpen.addEventListener('click', () => {
+    socialView.form = { intent: 'log', family: 'directed', levels: {}, person: '', pre: '' };
+    renderSocial();
+  });
+
+  if (f) {
+    body.querySelectorAll('.so-fam').forEach(b => b.addEventListener('click', () => {
+      f.family = b.dataset.fam; f.levels = {};
+      renderSocial();
+    }));
+    body.querySelectorAll('.so-form .so-lvl').forEach(b => b.addEventListener('click', () => {
+      f.levels[b.dataset.axis] = parseInt(b.dataset.id);
+      renderSocial();
+    }));
+    const person = body.querySelector('#so-person');
+    if (person) person.addEventListener('input', e => { f.person = e.target.value; });
+    const opener = body.querySelector('#so-opener');
+    if (opener) opener.addEventListener('input', e => { f.opener = e.target.value; });
+    const pre = body.querySelector('#so-pre');
+    if (pre) pre.addEventListener('input', e => { f.pre = e.target.value; });
+    // Esc peels the form, not the overlay — same idea as MAP's capture field.
+    body.querySelectorAll('.so-form input, .so-form textarea').forEach(el =>
+      el.addEventListener('keydown', e => {
+        if (e.key !== 'Escape') return;
+        e.stopPropagation();
+        socialView.form = null;
+        renderSocial();
+      }));
+    const go = body.querySelector('#so-form-go');
+    if (go) go.addEventListener('click', async () => {
+      if (f.intent === 'spec') {
+        const prev = socialView.day.spec;
+        const spec = await fetch('/api/social/spec', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ family: f.family, levels: f.levels,
+                                 person: f.person, opener: f.opener }),
+        }).then(r => r.json());
+        if (spec.error) return;
+        pushUndo(prev ? 'replaced the spec' : 'planned the rep', async () => {
+          if (prev) await fetch('/api/social/spec', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ family: prev.family, levels: prev.levels,
+                                   person: prev.person, opener: prev.opener }),
+          });
+          else await fetch('/api/social/spec', { method: 'DELETE' });
+          await refreshSocialIfOpen();
+        });
+      } else {
+        const rep = await fetch('/api/social/reps', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ family: f.family, levels: f.levels, person: f.person,
+                                 pre_rating: f.pre === '' || f.pre == null ? null
+                                   : Math.max(0, Math.min(10, parseInt(f.pre) || 0)) }),
+        }).then(r => r.json());
+        if (rep.error) return;
+        pushUndo(`logged social rep (+${rep.price})`, async () => {
+          await fetch(`/api/social/reps/${rep.id}`, { method: 'DELETE' });
+          await refreshSocialIfOpen();
+        });
+      }
+      socialView.form = null;
+      await refreshSocial();
+    });
+    const cancel = body.querySelector('#so-form-x');
+    if (cancel) cancel.addEventListener('click', () => { socialView.form = null; renderSocial(); });
+  }
+
+  body.querySelectorAll('.so-micro').forEach(b => b.addEventListener('click', async () => {
+    const rep = await fetch('/api/social/reps', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ family: 'micro', levels: { micro: parseInt(b.dataset.id) } }),
+    }).then(r => r.json());
+    if (rep.error) return;
+    pushUndo(`logged "${socialShortLabel(rep.levels.micro)}" (+${rep.price})`, async () => {
+      await fetch(`/api/social/reps/${rep.id}`, { method: 'DELETE' });
+      await refreshSocialIfOpen();
+    });
+    await refreshSocial();
+  }));
+
+  body.querySelectorAll('.so-del').forEach(b => b.addEventListener('click', async () => {
+    const id = parseInt(b.dataset.id);
+    const rep = (socialView.day.reps || []).find(r => r.id === id);
+    await fetch(`/api/social/reps/${id}`, { method: 'DELETE' });
+    // Replay verbatim — id and stamped price included, so undo can't reprice.
+    pushUndo(`removed rep (${rep ? '+' + rep.price : ''})`, async () => {
+      await fetch('/api/social/reps', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rep),
+      });
+      await refreshSocialIfOpen();
+    });
+    await refreshSocial();
+  }));
+}
+
+
+// ── Init ─────────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+  initThemeToggle();
+  initPanelToggle();
+  initBlockEditor();
+  initTimeline();
+  initGtdReviewFold();
+  initLogsView();
+  initPeopleModals();
+  initHub();
+  initUndo();
+  renderBar();
+  initGeo();
+  initEngage();
+  // Engage IS the home screen (9c): the day renders once everything is loaded.
+  // Last line of defence for unsaved notes and log text. visibilitychange is
+  // the one that actually lands — it fires while the page is still allowed to
+  // run fetches, unlike pagehide, which is often too late to finish a PATCH.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { flushOpenNotes(); flushLogSave(); }
+  });
+  window.addEventListener('pagehide', () => { flushOpenNotes(); flushLogSave(); });
+  loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); });
+  setInterval(checkActiveBlock, 60000);
+});
+
+// ── Accountability ────────────────────────────────────────────
+
+function renderQrLayer() {
+  const layer = document.getElementById('tl-qr-layer');
+  if (!layer) return;
+  layer.innerHTML = '';
+  const nodes = (state.accountabilityNodes || []).filter(n => n.active);
+  if (!nodes.length) return;
+
+  const body = document.getElementById('tl-body');
+  const pageDate = formatDateYMD(state.currentDate);
+  const viewingToday = isToday(state.currentDate);
+  const pageDow = String((state.currentDate.getDay() + 6) % 7);
+
+  nodes.forEach(node => {
+    if (node.days_of_week != null && !String(node.days_of_week).includes(pageDow)) return;
+    // today_override from the API is only for the Worker's local today.
+    // For other dates, use the client-side cache populated by drag saves.
+    const cacheKey = `${node.id}:${pageDate}`;
+    if (state.tlHidden.qr[cacheKey]) return;
+    const ov = viewingToday ? node.today_override : (state.qrPageOverrides[cacheKey] || null);
+    const def = nodeWindowForDow(node, pageDow);
+    const windowStart = ov ? ov.window_start : def.window_start;
+    const windowEnd = ov ? ov.window_end : def.window_end;
+    const offsetDays = ov ? ov.window_end_offset_days : def.window_end_offset_days;
+
+    // ±12h drag bounds in semantic minutes: a +1d deadline counts as end + 1440,
+    // so dragging preserves the offset and can cross midnight in either direction
+    const originalMinutes = timeToMinutes(windowEnd) + (offsetDays ? 1440 : 0);
+    const minMinutes = Math.max(0, originalMinutes - 720);
+    const maxMinutes = Math.min(originalMinutes + 720, 2875);
+
+    const pct = minutesToViewPercent(originalMinutes);
+    if (pct < -0.01 || pct > 100.01) return;
+    // 🔒 locked: deadline within now + 24h — line is inert (no drag, no ✕)
+    const endDate = offsetDays ? localDatePlusDays(pageDate, 1) : pageDate;
+    const windowEndMs = new Date(`${endDate}T${windowEnd}:00`).getTime();
+    const locked = windowEndMs <= Date.now() + 24 * 60 * 60 * 1000;
+    const dismissed = !locked && !!state.qrDismissed[cacheKey];
+
+    const line = document.createElement('div');
+    // outcome colors the pill for judged (closed) windows: green/red
+    const outcome = state.qrOutcomes[cacheKey];
+    line.className = 'tl-qr-line' + (locked ? ' tl-qr-locked' : '') + (dismissed ? ' tl-qr-dismissed' : '')
+      + (outcome ? ` tl-qr-${outcome}` : '');
+    line.style.top = `${pct}%`;
+
+    const label = document.createElement('span');
+    label.className = 'tl-qr-label';
+    const labelText = document.createElement('span');
+    labelText.textContent = `${node.label} ${windowEnd}${offsetDays ? ' +1d' : ''}${locked ? ' 🔒︎' : ''}`;
+    label.appendChild(labelText);
+    line.appendChild(label);
+    layer.appendChild(line);
+
+    // pills center on their time; near the top/bottom edge that would clip
+    function setLabelEdge(p) {
+      if (p >= 98.5) label.style.top = '-18px';
+      else if (p <= 1.5) label.style.top = '0px';
+      else label.style.top = '';
+    }
+    setLabelEdge(pct);
+
+    line.addEventListener('contextmenu', e => e.preventDefault());
+    if (locked) return;
+
+    const xBtn = document.createElement('button');
+    xBtn.className = 'tl-qr-x';
+    xBtn.textContent = '✕';
+    xBtn.title = dismissed ? 'Restore' : 'Gray out for this day';
+    label.appendChild(xBtn);
+
+    xBtn.addEventListener('mousedown', e => e.stopPropagation());
+    xBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      if (state.qrDismissed[cacheKey]) delete state.qrDismissed[cacheKey];
+      else state.qrDismissed[cacheKey] = true;
+      renderQrLayer();
+    });
+
+    let dragging = false;
+    let dragStartY = 0;
+
+    label.addEventListener('mousedown', e => {
+      if ((e.button !== 0 && e.button !== 2) || dismissed) return;
+      e.preventDefault();
+      dragging = true;
+      dragStartY = e.clientY;
+      line.classList.add('tl-qr-dragging');
+      document.body.style.cursor = 'ns-resize';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
+    function calcMinutes(clientY) {
+      const bodyRect = body.getBoundingClientRect();
+      const { start, end } = state.view;
+      const rawMinutes = start + ((clientY - bodyRect.top) / bodyRect.height) * (end - start);
+      const clamped = Math.min(maxMinutes, Math.max(minMinutes, rawMinutes));
+      return Math.round(clamped / 5) * 5;
+    }
+
+    function onMove(e) {
+      if (!dragging) return;
+      const mins = calcMinutes(e.clientY);
+      const displayPct = Math.min(100, Math.max(0, minutesToViewPercent(mins)));
+      line.style.top = `${displayPct}%`;
+      setLabelEdge(displayPct);
+      const nextDay = mins >= 1440;
+      labelText.textContent = `${node.label} ${minutesToHHMM(mins % 1440)}${nextDay ? ' +1d' : ''}`;
+    }
+
+    async function onUp(e) {
+      if (!dragging) return;
+      dragging = false;
+      line.classList.remove('tl-qr-dragging');
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      // Right-button release fires a contextmenu event — swallow it
+      document.addEventListener('contextmenu', ev => ev.preventDefault(), { once: true, capture: true });
+
+      // A click without real movement is not a drag — never post from it
+      // (a +1d line is pinned at the bottom edge, so its position doesn't
+      // round-trip through calcMinutes and would otherwise save a change).
+      // A right-click without movement hides the pill for the day instead.
+      if (Math.abs(e.clientY - dragStartY) < 5) {
+        if (e.button === 2) {
+          hideTimelineItem('qr', cacheKey, node.label);
+        }
+        renderQrLayer();
+        return;
+      }
+
+      const mins = calcMinutes(e.clientY);
+      const newOffsetDays = mins >= 1440 ? 1 : 0;
+      const newEnd = minutesToHHMM(mins % 1440);
+
+      if (newEnd === windowEnd && newOffsetDays === offsetDays) return;
+
+      const ovBody = {
+        date: pageDate,
+        window_start: windowStart,
+        window_end: newEnd,
+        window_end_offset_days: newOffsetDays,
+      };
+      const res = await fetch(`/api/accountability/nodes/${node.id}/overrides`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ovBody),
+      });
+      if (res.ok) {
+        // Cache the override so non-today pages stay in the right position on re-render
+        state.qrPageOverrides[cacheKey] = ovBody;
+        if (viewingToday) {
+          state.accountabilityNodes = await fetch('/api/accountability/nodes').then(r => r.json()).catch(() => state.accountabilityNodes);
+        }
+      }
+      // Moving the wake/sleep deadline moves the view window itself
+      const isWindowNode = String(node.id) === String(state.settings.qr_wake_node_id)
+        || String(node.id) === String(state.settings.qr_sleep_node_id);
+      if (isWindowNode) renderTimeline();
+      else renderQrLayer();
+    }
+  });
+}
+
+function timeToMinutes(timeStr) {
+  const [h, m] = timeStr.split(':').map(Number);
+  return h * 60 + m;
+}
+
+// Effective default window for a weekday (0=Mon..6=Sun): the node's
+// weekly_windows entry for that day, else the node-wide defaults.
+// Mirrors the Worker's weeklyWindowFor resolution.
+function nodeWindowForDow(node, dow) {
+  let w = null;
+  if (node.weekly_windows) {
+    try { w = JSON.parse(node.weekly_windows)[String(dow)] || null; } catch (e) { w = null; }
+  }
+  return w
+    ? { window_start: w.window_start, window_end: w.window_end, window_end_offset_days: w.window_end_offset_days || 0 }
+    : { window_start: node.window_start, window_end: node.window_end, window_end_offset_days: node.window_end_offset_days };
+}
+
+function localDatePlusDays(dateStr, days) {
+  const d = new Date(dateStr + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  return formatDateYMD(d);
+}
+
+function minutesToHHMM(minutes) {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+async function renderQrManager() {
+  const panel = document.getElementById('be-qr-section');
+  const locPanel = document.getElementById('be-loc-section');
+  if (!panel || !locPanel) return;
+  panel.innerHTML = '<p class="ac-loading">Loading…</p>';
+
+  let nodes = null;
+  let locations = null;
+  try {
+    [nodes, locations] = await Promise.all([
+      fetch('/api/accountability/nodes').then(r => r.json()),
+      fetch('/api/locations').then(r => r.json()),
+    ]);
+  } catch (e) {
+    nodes = null;
+  }
+  // A Worker error body still parses as JSON, so a failed load arrives here as
+  // an object, not a throw. It has to be caught before it reaches state: a
+  // non-array there breaks every later nodes.map/find — renderTimeline's
+  // included, which took the whole to-do side of the app down with it.
+  if (!Array.isArray(nodes)) {
+    panel.innerHTML = '<p class="ac-error">Failed to load accountability nodes.</p>';
+    locPanel.innerHTML = '';
+    return;
+  }
+  state.accountabilityNodes = nodes;
+  state.locations = Array.isArray(locations) ? locations : [];
+
+  const nodeOptions = (selectedId) => `<option value="">— none —</option>` +
+    state.accountabilityNodes.filter(n => n.active).map(n =>
+      `<option value="${n.id}"${String(n.id) === String(selectedId) ? ' selected' : ''}>${escHtml(n.label)}</option>`
+    ).join('');
+
+  panel.innerHTML = `
+    <table class="ac-table">
+      <thead>
+        <tr><th>Label</th><th>Window</th><th>Location</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>${state.accountabilityNodes.map(n => renderNodeRow(n)).join('')}</tbody>
+    </table>
+    <div class="ac-card" id="ac-view-window-card">
+      <div class="ac-view-title">Timeline view window</div>
+      <div class="ac-form-row"><label>Wake QR</label><select id="ac-wake-node">${nodeOptions(state.settings.qr_wake_node_id)}</select></div>
+      <div class="ac-form-row"><label>Sleep QR</label><select id="ac-sleep-node">${nodeOptions(state.settings.qr_sleep_node_id)}</select></div>
+      <div class="ac-view-hint">The calendar clips to wake → sleep. Leave either unset for the full 24h.</div>
+    </div>
+    <div class="ac-card" id="ac-add-node-card">
+      <button class="ac-add-node-btn" id="ac-add-node-toggle">+ Add node</button>
+      <div id="ac-add-node-form" class="ac-inline-form"></div>
+    </div>`;
+
+  [['ac-wake-node', 'qr_wake_node_id'], ['ac-sleep-node', 'qr_sleep_node_id']].forEach(([selId, key]) => {
+    document.getElementById(selId).addEventListener('change', async e => {
+      const value = e.target.value || null;
+      state.settings = await fetch('/api/settings', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value }),
+      }).then(r => r.json());
+      renderTimeline();
+    });
+  });
+
+  locPanel.innerHTML = `
+    <table class="ac-table">
+      <thead>
+        <tr><th>Name</th><th>Lat</th><th>Lng</th><th>Radius</th><th></th></tr>
+      </thead>
+      <tbody>${state.locations.map(l => `
+        <tr>
+          <td class="ac-td-label">${l.name}</td>
+          <td class="ac-td-win">${l.lat}</td>
+          <td class="ac-td-win">${l.lng}</td>
+          <td>${l.radius_m}m</td>
+          <td class="ac-td-actions"><button class="ac-loc-delete-btn" data-id="${l.id}" title="Delete location">✕</button></td>
+        </tr>`).join('')}</tbody>
+    </table>
+    <div class="ac-loc-form">
+      <input type="text" id="ac-loc-name" placeholder="Name">
+      <input type="number" step="any" id="ac-loc-lat" placeholder="Latitude">
+      <input type="number" step="any" id="ac-loc-lng" placeholder="Longitude">
+      <input type="number" id="ac-loc-radius" placeholder="Radius m (150)">
+      <button id="ac-loc-add">Add location</button>
+    </div>`;
+
+  document.getElementById('ac-loc-add').addEventListener('click', async () => {
+    const name = document.getElementById('ac-loc-name').value.trim();
+    const lat = parseFloat(document.getElementById('ac-loc-lat').value);
+    const lng = parseFloat(document.getElementById('ac-loc-lng').value);
+    const radius = parseInt(document.getElementById('ac-loc-radius').value);
+    if (!name || isNaN(lat) || isNaN(lng)) return;
+    await fetch('/api/locations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, lat, lng, radius_m: isNaN(radius) ? null : radius }),
+    });
+    renderQrManager();
+  });
+
+  locPanel.querySelectorAll('.ac-loc-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/locations/${btn.dataset.id}`, { method: 'DELETE' });
+      renderQrManager();
+    });
+  });
+
+  document.getElementById('ac-add-node-toggle').addEventListener('click', () => {
+    const form = document.getElementById('ac-add-node-form');
+    if (form.innerHTML) { form.innerHTML = ''; return; }
+    form.innerHTML = `
+      <div class="ac-form-row"><label>Label</label><input type="text" id="ac-new-label"></div>
+      <div class="ac-form-row"><label>Window start</label><input type="time" id="ac-new-ws"></div>
+      <div class="ac-form-row"><label>Window end</label><input type="time" id="ac-new-we"></div>
+      <div class="ac-form-row"><label>Cross-midnight (+1d)</label><input type="checkbox" id="ac-new-offset"></div>
+      <div class="ac-form-row"><label>Days</label><div class="be-days-picker" id="ac-new-days">
+        ${DAY_NAMES.map((d, i) => `<label class="be-day-label"><input type="checkbox" class="ac-day-cb" value="${i}" checked><span>${d}</span></label>`).join('')}
+      </div></div>
+      <div class="ac-form-row"><label>Location</label><select id="ac-new-loc">
+        <option value="">— none —</option>
+        ${state.locations.map(l => `<option value="${l.id}">${l.name}</option>`).join('')}
+      </select></div>
+      <div class="ac-form-row"><label>Geofence radius (m)</label><input type="number" id="ac-new-radius" placeholder="from location"></div>
+      <div class="ac-form-actions">
+        <button id="ac-new-save">Create</button>
+        <button id="ac-new-cancel">Cancel</button>
+      </div>
+      <div id="ac-new-result" style="font-size:12px;margin-top:6px;color:var(--accent)"></div>`;
+
+    document.getElementById('ac-new-cancel').addEventListener('click', () => { form.innerHTML = ''; });
+    document.getElementById('ac-new-save').addEventListener('click', async () => {
+      const loc = state.locations.find(l => l.id === Number(document.getElementById('ac-new-loc').value));
+      const radius = parseInt(document.getElementById('ac-new-radius').value);
+      const days = [...document.querySelectorAll('#ac-new-days .ac-day-cb:checked')].map(cb => cb.value).join('');
+      if (!days) {
+        document.getElementById('ac-new-result').textContent = 'Select at least one day.';
+        return;
+      }
+      const body = {
+        label: document.getElementById('ac-new-label').value,
+        window_start: document.getElementById('ac-new-ws').value,
+        window_end: document.getElementById('ac-new-we').value,
+        window_end_offset_days: document.getElementById('ac-new-offset').checked ? 1 : 0,
+        geofence_lat: loc ? loc.lat : null,
+        geofence_lng: loc ? loc.lng : null,
+        geofence_radius_m: loc ? (isNaN(radius) ? loc.radius_m : radius) : null,
+        days_of_week: days,
+      };
+      const resp = await fetch('/api/accountability/nodes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const node = await resp.json();
+      const workerUrl = state.settings.qr_worker_url || '';
+      document.getElementById('ac-new-result').innerHTML =
+        `Created! QR URL: <a href="${workerUrl}/scan/${node.token}" target="_blank">${workerUrl}/scan/${node.token}</a>`;
+      state.accountabilityNodes = await fetch('/api/accountability/nodes').then(r => r.json()).catch(() => state.accountabilityNodes);
+    });
+  });
+
+  panel.querySelectorAll('.ac-edit-default-btn').forEach(btn => {
+    btn.addEventListener('click', () => showEditDefaultForm(Number(btn.dataset.id)));
+  });
+  panel.querySelectorAll('.ac-deactivate-btn').forEach(btn => {
+    btn.addEventListener('click', () => deactivateNode(Number(btn.dataset.id), btn));
+  });
+  panel.querySelectorAll('.ac-activate-btn').forEach(btn => {
+    btn.addEventListener('click', () => activateNode(Number(btn.dataset.id), btn));
+  });
+  panel.querySelectorAll('.ac-node-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteNode(Number(btn.dataset.id), btn));
+  });
+  panel.querySelectorAll('.ac-remove-override-btn').forEach(btn => {
+    btn.addEventListener('click', () => removeOverride(Number(btn.dataset.id), btn.dataset.date));
+  });
+}
+
+function renderNodeRow(n) {
+  const nodeDays = (n.days_of_week || '0123456').split('').map(Number);
+  const daysLabel = nodeDays.length === 7 ? '' : ` <span class="ac-days-label">${formatDays(nodeDays)}</span>`;
+  let weekly = {};
+  if (n.weekly_windows) { try { weekly = JSON.parse(n.weekly_windows) || {}; } catch (e) {} }
+  const weeklyDows = Object.keys(weekly);
+  const weeklyBadge = weeklyDows.length
+    ? ` <span class="ac-badge ac-badge-weekly" title="${weeklyDows.map(d =>
+        `${DAY_NAMES[Number(d)]} ${weekly[d].window_start}–${weekly[d].window_end}${weekly[d].window_end_offset_days ? ' +1d' : ''}`
+      ).join('; ')}">per-day</span>`
+    : '';
+  const winLabel = `${n.window_start}–${n.window_end}${n.window_end_offset_days ? ' +1d' : ''}${daysLabel}${weeklyBadge}`;
+  const loc = (state.locations || []).find(l => l.lat === n.geofence_lat && l.lng === n.geofence_lng);
+  const geoLabel = n.geofence_lat != null
+    ? `${loc ? loc.name : `${n.geofence_lat.toFixed(4)}, ${n.geofence_lng.toFixed(4)}`} (${n.geofence_radius_m}m)`
+    : 'none';
+
+  let ovBadge = '';
+  if (n.today_override) {
+    const ov = n.today_override;
+    ovBadge = `
+      <span class="ac-badge ac-badge-override" title="Today override">${ov.window_start}–${ov.window_end}${ov.window_end_offset_days ? ' +1d' : ''} today</span>
+      <button class="ac-remove-override-btn" data-id="${n.id}" data-date="${ov.date}" title="Remove today override">✕</button>`;
+  }
+
+  const pendingDisable = (n.pending_changes || []).find(p => p.field === 'active' && String(p.new_value) === '0');
+  const otherPending = (n.pending_changes || []).filter(p => p.field !== 'active');
+
+  let pendingBadge = '';
+  if (otherPending.length) {
+    const detail = otherPending.map(p =>
+      `${p.field} → ${p.new_value} (applies ${new Date(p.apply_at).toLocaleString()})`
+    ).join('; ');
+    pendingBadge = ` <span class="ac-badge ac-badge-pending" title="${detail}">pending</span>`;
+  }
+
+  let statusHtml;
+  if (!n.active) {
+    statusHtml = `<span class="ac-status-dot ac-inactive">inactive</span>`;
+  } else if (pendingDisable) {
+    statusHtml = `<span class="ac-status-dot ac-deactivating" title="inactive at ${new Date(pendingDisable.apply_at).toLocaleString()}">deactivating</span>`;
+  } else {
+    statusHtml = `<span class="ac-status-dot ac-active">active</span>`;
+  }
+
+  let actionsHtml = '';
+  if (n.active) {
+    actionsHtml += `<button class="ac-edit-default-btn" data-id="${n.id}">Edit</button> `;
+    actionsHtml += pendingDisable
+      ? `<button class="ac-activate-btn" data-id="${n.id}" title="Cancel the pending deactivation">Activate</button>`
+      : `<button class="ac-deactivate-btn" data-id="${n.id}">Deactivate (24h)</button>`;
+  } else {
+    actionsHtml = `<button class="ac-node-delete-btn" data-id="${n.id}" title="Delete node permanently">✕</button>`;
+  }
+
+  return `
+    <tr data-node-id="${n.id}">
+      <td class="ac-td-label">${n.label}</td>
+      <td class="ac-td-win">${winLabel}${ovBadge}${pendingBadge}</td>
+      <td>${geoLabel}</td>
+      <td>${statusHtml}</td>
+      <td class="ac-td-actions">${actionsHtml}</td>
+    </tr>
+    <tr class="ac-form-tr"><td colspan="6"><div class="ac-inline-form" id="ac-form-${n.id}"></div></td></tr>`;
+}
+
+function showEditDefaultForm(nodeId) {
+  const n = state.accountabilityNodes.find(x => x.id === nodeId);
+  if (!n) return;
+  const form = document.getElementById(`ac-form-${nodeId}`);
+  const weeklyRows = DAY_NAMES.map((d, i) => {
+    if (!(n.days_of_week || '0123456').includes(String(i))) return '';
+    const eff = nodeWindowForDow(n, i);
+    return `
+      <div class="ac-weekly-row" data-dow="${i}">
+        <span class="ac-weekly-day">${d}</span>
+        <input type="time" class="ac-wk-ws" value="${eff.window_start}">
+        <span>–</span>
+        <input type="time" class="ac-wk-we" value="${eff.window_end}">
+        <label class="ac-weekly-offset"><input type="checkbox" class="ac-wk-offset" ${eff.window_end_offset_days ? 'checked' : ''}>+1d</label>
+      </div>`;
+  }).join('');
+  form.innerHTML = `
+    <div class="ac-form-row">
+      <label>Window start</label>
+      <input type="time" id="ac-ws-${nodeId}" value="${n.window_start}">
+    </div>
+    <div class="ac-form-row">
+      <label>Window end</label>
+      <input type="time" id="ac-we-${nodeId}" value="${n.window_end}">
+    </div>
+    <div class="ac-form-row">
+      <label>Cross-midnight (+1d)</label>
+      <input type="checkbox" id="ac-offset-${nodeId}" ${n.window_end_offset_days ? 'checked' : ''}>
+    </div>
+    <div class="ac-form-row">
+      <label>Days</label>
+      <div class="be-days-picker" id="ac-days-${nodeId}">
+        ${DAY_NAMES.map((d, i) => `<label class="be-day-label"><input type="checkbox" class="ac-day-cb" value="${i}" ${(n.days_of_week || '0123456').includes(String(i)) ? 'checked' : ''}><span>${d}</span></label>`).join('')}
+      </div>
+    </div>
+    <div class="ac-form-row">
+      <label>Per-day times</label>
+      <div class="ac-weekly" id="ac-weekly-${nodeId}">${weeklyRows}
+        <div class="ac-weekly-hint">Days matching the defaults above follow them; edited days keep their own window.</div>
+      </div>
+    </div>
+    <div class="ac-form-row">
+      <label>Location</label>
+      <select id="ac-loc-sel-${nodeId}">
+        <option value="">— keep current —</option>
+        ${(state.locations || []).map(l => `<option value="${l.id}">${l.name}</option>`).join('')}
+      </select>
+    </div>
+    <div class="ac-form-row">
+      <label>Geofence radius (m)</label>
+      <input type="number" id="ac-geo-${nodeId}" value="${n.geofence_radius_m || ''}">
+    </div>
+    <div class="ac-form-actions">
+      <button id="ac-save-default-${nodeId}">Save</button>
+      <button id="ac-cancel-form-${nodeId}">Cancel</button>
+    </div>
+    <div class="ac-form-note">Loosening changes (wider window, larger radius) take effect in 24h.</div>`;
+
+  document.getElementById(`ac-cancel-form-${nodeId}`).addEventListener('click', () => { form.innerHTML = ''; });
+  document.getElementById(`ac-save-default-${nodeId}`).addEventListener('click', async () => {
+    const days = [...document.querySelectorAll(`#ac-days-${nodeId} .ac-day-cb:checked`)].map(cb => cb.value).join('');
+    if (!days) { alert('Select at least one day.'); return; }
+    const body = {
+      window_start: document.getElementById(`ac-ws-${nodeId}`).value,
+      window_end: document.getElementById(`ac-we-${nodeId}`).value,
+      window_end_offset_days: document.getElementById(`ac-offset-${nodeId}`).checked ? 1 : 0,
+      geofence_radius_m: parseInt(document.getElementById(`ac-geo-${nodeId}`).value) || n.geofence_radius_m,
+      days_of_week: days,
+    };
+    // Store only days that differ from the new defaults; the rest inherit
+    const weeklyMap = {};
+    document.querySelectorAll(`#ac-weekly-${nodeId} .ac-weekly-row`).forEach(row => {
+      if (!days.includes(row.dataset.dow)) return;
+      const entry = {
+        window_start: row.querySelector('.ac-wk-ws').value,
+        window_end: row.querySelector('.ac-wk-we').value,
+        window_end_offset_days: row.querySelector('.ac-wk-offset').checked ? 1 : 0,
+      };
+      if (entry.window_start !== body.window_start || entry.window_end !== body.window_end
+        || entry.window_end_offset_days !== body.window_end_offset_days) {
+        weeklyMap[row.dataset.dow] = entry;
+      }
+    });
+    const weeklyJson = JSON.stringify(weeklyMap);
+    if (weeklyJson !== (n.weekly_windows || '{}')) body.weekly_windows = weeklyJson;
+    const locId = document.getElementById(`ac-loc-sel-${nodeId}`).value;
+    if (locId) {
+      const loc = state.locations.find(l => l.id === Number(locId));
+      body.geofence_lat = loc.lat;
+      body.geofence_lng = loc.lng;
+    }
+    const res = await fetch(`/api/accountability/nodes/${nodeId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      alert(`Edit failed (${res.status}): ${await res.text()}`);
+    } else {
+      const result = await res.json();
+      if (result.pending.length) {
+        alert(`Saved. Loosening changes apply ${new Date(result.apply_at).toLocaleString()}:\n` +
+          result.pending.map(p => `${p.field} → ${p.newVal}`).join('\n'));
+      }
+    }
+    renderQrManager();
+  });
+}
+
+async function deactivateNode(nodeId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Scheduling…';
+  const res = await fetch(`/api/accountability/nodes/${nodeId}/disable`, { method: 'PATCH' });
+  if (!res.ok) alert(`Deactivate failed (${res.status}): ${await res.text()}`);
+  renderQrManager();
+}
+
+async function activateNode(nodeId, btn) {
+  btn.disabled = true;
+  const res = await fetch(`/api/accountability/nodes/${nodeId}/activate`, { method: 'PATCH' });
+  if (!res.ok) alert(`Activate failed (${res.status}): ${await res.text()}`);
+  renderQrManager();
+}
+
+async function deleteNode(nodeId, btn) {
+  if (!confirm('Delete this node permanently? Its QR link stops working.')) return;
+  btn.disabled = true;
+  const res = await fetch(`/api/accountability/nodes/${nodeId}`, { method: 'DELETE' });
+  if (!res.ok) alert(`Delete failed (${res.status}): ${await res.text()}`);
+  renderQrManager();
+}
+
+async function removeOverride(nodeId, date) {
+  const res = await fetch(`/api/accountability/nodes/${nodeId}/overrides/${date}`, { method: 'DELETE' });
+  if (!res.ok) alert(`Remove override failed (${res.status}): ${await res.text()}`);
+  renderQrManager();
+}
+
+// ── People (CRM) ──────────────────────────────────────────────
+
+const CADENCES = ['none', 'weekly', 'monthly', 'quarterly', 'biannual'];
+
+const peopleView = { table: null, ready: false, pending: null, people: [], buckets: [], detailId: null,
+  editable: false, win: { open: false }, sessionEnd: 0, sessionTimer: null, satisfiedDate: null };
+
+// Editing is only allowed during the nightly fill session (window open + started,
+// within the 10-min cap). Test hooks: window.__peopleWindow forces the window
+// state; window.__peopleCapSecs overrides the 600s cap.
+function peopleEditable() { return peopleView.editable; }
+const PEOPLE_CAP_SECS = 600;
+
+function peopleBucketOptions() {
+  return peopleView.buckets.filter(b => b.active).map(b => ({ value: b.id, label: b.name }));
+}
+
+function initPeopleModals() {
+  const wire = (overlayId, closeId) => {
+    const overlay = document.getElementById(overlayId);
+    document.getElementById(closeId).addEventListener('click', () => overlay.classList.add('hidden'));
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.add('hidden'); });
+  };
+  wire('person-detail-overlay', 'person-detail-close');
+  wire('bucket-mgr-overlay', 'bucket-mgr-close');
+  wire('person-add-overlay', 'person-add-close');
+
+  document.getElementById('people-add-btn').addEventListener('click', openAddPerson);
+  document.getElementById('people-buckets-btn').addEventListener('click', openBucketMgr);
+  const refresh = document.getElementById('journal-refresh');
+  if (refresh) refresh.addEventListener('click', () => renderJournal());
+}
+
+// Entered from the hub rail: render the grid once, show the session bar
+// immediately, and start the nightly-fill window poll.
+function openPeopleSurface() {
+  renderPeople();
+  renderSessionBar();
+  peopleWindowPoll();
+  if (!peopleView.pollTimer) peopleView.pollTimer = setInterval(peopleWindowPoll, 20000);
+}
+
+async function renderPeople() {
+  await loadPeopleData();
+}
+window.renderPeople = renderPeople;
+
+// ── Journal (dashboard mirror of the sleep-QR nightly fill) ────
+const journalView = { table: null, ready: false, pending: null, habit: null };
+const RATING_OPTS = { '': '—', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7' };
+const HABIT_MARK_OPTS = { '': '—', ehh: 'Ehh', good: 'Good', great: 'Great' };
+
+async function renderJournal() {
+  await loadJournalData();
+}
+window.renderJournal = renderJournal;
+
+// Opening the tab pulls phone-written entries from the Worker (a no-op merge if
+// the Worker is unconfigured/unreachable) and renders the merged local view.
+async function loadJournalData() {
+  const data = await fetch('/api/journal/sync', { method: 'POST' }).then(r => r.json())
+    .catch(() => null)
+    || await fetch('/api/journal').then(r => r.json()).catch(() => ({ days: [], habit: null }));
+  journalView.habit = data.habit;
+  renderJournalHabit(data.habit);
+  renderJournalCards(data.days || []);
+}
+
+// Day cards: the two textareas + rating/habit selects, PATCH on change.
+function renderJournalCards(days) {
+  const grid = document.getElementById('journal-grid');
+  if (!grid) return;
+  const sorted = days.slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const sel = (field, opts, val) => `<select class="jn-sel" data-field="${field}">${
+    Object.entries(opts).map(([v, label]) =>
+      `<option value="${v}"${String(val ?? '') === v ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
+  grid.innerHTML = sorted.map(d => `
+    <div class="jn-card" data-date="${escHtml(d.date)}">
+      <div class="jn-head">
+        <span class="jn-date">${escHtml(d.date)}</span>
+        <span class="jn-spacer"></span>
+        <label class="jn-sel-label">rating ${sel('rating', RATING_OPTS, d.rating)}</label>
+        <label class="jn-sel-label">habit ${sel('habit_mark', HABIT_MARK_OPTS, d.habit_mark)}</label>
+      </div>
+      <label class="jn-lab">Biggest bottleneck</label>
+      <textarea class="jn-ta" data-field="bottleneck" rows="2">${escHtml(d.bottleneck || '')}</textarea>
+      <label class="jn-lab">Active experiment</label>
+      <textarea class="jn-ta" data-field="active_experiment" rows="2">${escHtml(d.active_experiment || '')}</textarea>
+    </div>`).join('')
+    || '<div class="gtd-empty">No journal entries yet — they arrive from the sleep-QR nightly fill</div>';
+
+  const save = async (card, field, value) => {
+    const date = card.dataset.date;
+    if (field === 'rating') value = value === '' ? null : Number(value);
+    if (field === 'habit_mark' && value === '') value = null;
+    const res = await fetch(`/api/journal/${date}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [field]: value }),
+    });
+    if (!res.ok) alert(`Save failed (${res.status})`);
+  };
+  grid.querySelectorAll('.jn-ta').forEach(ta =>
+    ta.addEventListener('blur', () => save(ta.closest('.jn-card'), ta.dataset.field, ta.value)));
+  grid.querySelectorAll('.jn-sel').forEach(s =>
+    s.addEventListener('change', () => save(s.closest('.jn-card'), s.dataset.field, s.value)));
+}
+
+function renderJournalHabit(habit) {
+  const el = document.getElementById('journal-habit');
+  if (!el) return;
+  if (habit && habit.habit) {
+    el.innerHTML = `<span class="jh-label">Habit this week</span>` +
+      `<span class="jh-value">${escHtml(habit.habit)}</span>` +
+      `<span class="jh-since">since ${escHtml(habit.week_start_date)}</span>`;
+  } else {
+    el.innerHTML = `<span class="jh-empty">No habit set — add one when you file your weekly review.</span>`;
+  }
+}
+
+// --- nightly-fill window + 10-min hard-capped session ---
+
+async function peopleWindowPoll() {
+  if (window.__peopleWindow) { peopleView.win = window.__peopleWindow; }
+  else {
+    peopleView.win = await fetch('/api/people/window').then(r => r.json())
+      .catch(() => ({ open: false, seconds_left: 0 }));
+  }
+  // if the window closed while a session was running, end it
+  if (!peopleView.win.open && peopleView.editable) endPeopleSession();
+  renderSessionBar();
+}
+
+function startPeopleSession() {
+  if (!peopleView.win.open) return;
+  const cap = window.__peopleCapSecs || PEOPLE_CAP_SECS;
+  const winLeft = peopleView.win.seconds_left || cap;
+  peopleView.sessionEnd = Date.now() + Math.min(cap, winLeft) * 1000;
+  peopleView.editable = true;
+  if (peopleView.sessionTimer) clearInterval(peopleView.sessionTimer);
+  peopleView.sessionTimer = setInterval(() => {
+    if (Date.now() >= peopleView.sessionEnd) endPeopleSession();
+    else renderSessionBar();
+  }, 1000);
+  renderSessionBar();
+}
+
+function endPeopleSession() {
+  peopleView.editable = false;
+  if (peopleView.sessionTimer) { clearInterval(peopleView.sessionTimer); peopleView.sessionTimer = null; }
+  peopleView.sessionEnd = 0;
+  document.getElementById('person-detail-overlay').classList.add('hidden');
+  document.getElementById('person-add-overlay').classList.add('hidden');
+  renderSessionBar();
+}
+
+async function peopleSatisfy(kind) {
+  const today = formatDateYMD(new Date());
+  if (kind === 'entries' && peopleView.satisfiedDate === today) return;
+  peopleView.satisfiedDate = today;
+  await fetch('/api/people/night', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, date: today }),
+  }).catch(() => {});
+}
+
+// The countdown, over every surface. The .psb bar below lives inside the
+// People tab (z 140), while the add/log forms are fixed at z 150 — so during
+// the fill, the only ten minutes the clock actually governs, it was hidden
+// behind the form you were filling in. Painted before the guard so it stays
+// correct even if the People markup isn't there.
+function paintPeopleTimer() {
+  const el = document.getElementById('people-timer');
+  if (!el) return;
+  if (!peopleView.editable) { el.classList.add('hidden'); return; }
+  const left = Math.max(0, Math.round((peopleView.sessionEnd - Date.now()) / 1000));
+  const mm = String(Math.floor(left / 60)).padStart(2, '0');
+  const ss = String(left % 60).padStart(2, '0');
+  // Shorter than the in-flow bar's copy on purpose: it is centred over whatever
+  // surface you are on, so every character it doesn't need is one it isn't
+  // covering. The countdown reads as a countdown without "left".
+  el.textContent = `Nightly fill · ${mm}:${ss}`;
+  el.classList.remove('hidden');
+}
+
+function renderSessionBar() {
+  paintPeopleTimer();
+  const bar = document.getElementById('people-session-bar');
+  const wrap = document.getElementById('people-wrap');
+  if (!bar || !wrap) return;
+  wrap.classList.toggle('people-locked', !peopleView.editable);
+  // During the fill the unified add/log form is the catch-all: most entries are
+  // an interaction with someone already in the list, so the button says so.
+  const addBtn = document.getElementById('people-add-btn');
+  if (addBtn) addBtn.textContent = peopleView.editable ? '+ add interaction' : '+ add person';
+  if (peopleView.editable) {
+    const left = Math.max(0, Math.round((peopleView.sessionEnd - Date.now()) / 1000));
+    const mm = String(Math.floor(left / 60)).padStart(2, '0');
+    const ss = String(left % 60).padStart(2, '0');
+    bar.className = 'psb psb-active';
+    bar.innerHTML = `<span class="psb-timer">Nightly fill · ${mm}:${ss} left</span>
+      <button id="psb-nothing" class="be-btn-secondary">nothing tonight</button>`;
+    bar.querySelector('#psb-nothing').addEventListener('click', async () => {
+      await peopleSatisfy('nothing');
+      endPeopleSession();
+    });
+  } else if (peopleView.win.open) {
+    bar.className = 'psb psb-open';
+    bar.innerHTML = `<span>Nightly fill is open</span>
+      <button id="psb-start" class="be-btn-primary">start nightly fill</button>`;
+    bar.querySelector('#psb-start').addEventListener('click', startPeopleSession);
+  } else {
+    bar.className = 'psb psb-closed';
+    bar.textContent = 'Read-only — editing opens when you scan your sleep QR (10-min session)';
+  }
+}
+
+// Palette for the manual recolor picker (auto-assignment happens server-side).
+const BUCKET_PALETTE_JS = (() => {
+  const out = [];
+  for (let h = 0; h < 360; h += 15) out.push(`hsl(${h}, 55%, 60%)`);
+  return out;
+})();
+
+function bucketChip(b) {
+  const c = b.color || '#8a8a8a';
+  return `<span class="people-chip" style="border-color:${c}"><span class="people-chip-dot" style="background:${c}"></span>${escHtml(b.name)}</span>`;
+}
+
+async function loadPeopleData() {
+  const [buckets, people] = await Promise.all([
+    fetch('/api/buckets').then(r => r.json()).catch(() => []),
+    fetch('/api/people').then(r => r.json()).catch(() => []),
+  ]);
+  peopleView.buckets = Array.isArray(buckets) ? buckets : [];
+  peopleView.people = Array.isArray(people) ? people : [];
+  renderPeopleList();
+  renderDueStrip();
+}
+
+// Mobile list: search + name/bucket/next-action rows; every edit lives in the
+// detail modal (still gated by the nightly-fill session).
+function renderPeopleList() {
+  const grid = document.getElementById('people-grid');
+  if (!grid) return;
+  const q = (peopleView.query || '').toLowerCase();
+  const people = peopleView.people
+    .filter(p => !q || (p.name || '').toLowerCase().includes(q)
+                    || (p.company || '').toLowerCase().includes(q))
+    .slice()
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  grid.innerHTML = `
+    <input type="text" id="people-search" class="people-search" placeholder="⌕ search people…" value="${escHtml(peopleView.query || '')}" autocomplete="off">
+    <div class="people-list">
+      ${people.map(p => `
+        <button class="pl-row" data-id="${p.id}">
+          <span class="pl-main">
+            <span class="pl-name">${escHtml(p.name || '')}</span>
+            <span class="pl-chips">${(p.buckets || []).map(bucketChip).join('')}</span>
+          </span>
+          <span class="pl-meta">
+            ${p.next_action ? `<span class="pl-next">→ ${escHtml(p.next_action)}</span>` : ''}
+            <span class="pl-last">${escHtml(p.last_contact || 'never')}</span>
+          </span>
+        </button>`).join('') || '<div class="gtd-empty">No people yet</div>'}
+    </div>`;
+  grid.querySelector('#people-search').addEventListener('input', e => {
+    peopleView.query = e.target.value;
+    preserveCaret('people-search', renderPeopleList);
+  });
+  grid.querySelectorAll('.pl-row').forEach(r =>
+    r.addEventListener('click', () => openPersonDetail(parseInt(r.dataset.id))));
+}
+
+function renderDueStrip() {
+  const strip = document.getElementById('people-due-strip');
+  if (!strip) return;
+  const today = formatDateYMD(new Date());
+  const due = peopleView.people
+    .filter(p => p.next_due && p.next_due <= today)
+    .sort((a, b) => a.next_due.localeCompare(b.next_due))
+    .slice(0, 5);
+  if (!due.length) { strip.innerHTML = ''; return; }
+  strip.innerHTML = `<div class="due-strip-label">Due</div>` + due.map(p => `
+    <div class="due-card" data-id="${p.id}">
+      <div class="due-name">${escHtml(p.name)}</div>
+      <div class="due-action">${escHtml(p.next_action || '')}</div>
+      <button class="due-skip" data-id="${p.id}">skip this cycle</button>
+    </div>`).join('');
+  strip.querySelectorAll('.due-card .due-name, .due-card .due-action').forEach(el => {
+    el.addEventListener('click', () => openPersonDetail(Number(el.closest('.due-card').dataset.id)));
+  });
+  strip.querySelectorAll('.due-skip').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      if (!peopleView.editable) return;
+      btn.disabled = true;
+      const res = await fetch(`/api/people/${btn.dataset.id}/skip-cycle`, { method: 'POST' });
+      if (!res.ok) { alert(`Skip failed (${res.status})`); btn.disabled = false; return; }
+      await loadPeopleData();
+    });
+  });
+}
+
+function openPersonDetail(id) {
+  peopleView.detailId = id;
+  const p = peopleView.people.find(x => x.id === id);
+  if (!p) return;
+  renderPersonDetail(p);
+  document.getElementById('person-detail-overlay').classList.remove('hidden');
+}
+
+function renderPersonDetail(p) {
+  document.getElementById('person-detail-title').textContent = p.name || 'Person';
+  const body = document.getElementById('person-detail-body');
+  const sub = [p.company, p.location].filter(Boolean).join(' · ');
+  // The grid used to be the field editor; with the mobile list, the detail
+  // modal edits every field — still gated by the nightly-fill session.
+  const meta = peopleView.editable
+    ? `
+      ${[['name', 'Name'], ['company', 'Company'], ['location', 'Location'],
+         ['birthday', 'Birthday'], ['how_we_met', 'How we met'], ['next_action', 'Next action']]
+        .map(([f, label]) => `<div class="pd-meta"><span>${label}</span>
+          <input type="text" class="pd-edit" data-field="${f}" value="${escHtml(p[f] || '')}"></div>`).join('')}
+      <div class="pd-meta"><span>Cadence</span>
+        <select class="pd-edit" data-field="cadence">${CADENCES.map(c =>
+          `<option value="${c}"${(p.cadence || 'none') === c ? ' selected' : ''}>${c}</option>`).join('')}</select></div>
+      <div class="pd-meta"><span>Contact</span>
+        <input type="checkbox" class="pd-edit" data-field="has_contact"${p.has_contact ? ' checked' : ''}></div>
+      <div class="pd-meta"><span>Buckets</span><span class="pd-bucket-chips">${
+        peopleView.buckets.filter(b => b.active || (p.buckets || []).some(x => x.id === b.id)).map(b => {
+          const on = (p.buckets || []).some(x => x.id === b.id);
+          return `<button class="pd-bucket-chip${on ? ' pd-bucket-on' : ''}" data-bucket="${b.id}">${escHtml(b.name)}</button>`;
+        }).join('')}</span></div>`
+    : [
+      p.birthday && `<div class="pd-meta"><span>Birthday</span>${escHtml(p.birthday)}</div>`,
+      p.how_we_met && `<div class="pd-meta"><span>How we met</span>${escHtml(p.how_we_met)}</div>`,
+      `<div class="pd-meta"><span>Cadence</span>${escHtml(p.cadence || 'none')}</div>`,
+      `<div class="pd-meta"><span>Contact</span>${p.has_contact ? 'Yes' : '—'}</div>`,
+      p.next_action && `<div class="pd-meta"><span>Next action</span>${escHtml(p.next_action)}</div>`,
+    ].filter(Boolean).join('');
+  const ints = p.interactions || [];
+  const log = ints.length
+    ? ints.map(i => `<div class="pd-log-row"><span class="pd-log-date">${escHtml(i.date)}</span><span class="pd-log-note">${escHtml(i.note || '')}</span><span class="pd-log-src">${escHtml(i.source || '')}</span></div>`).join('')
+    : `<div class="pd-empty">No interactions logged yet</div>`;
+  body.innerHTML = `
+    ${sub ? `<div class="pd-sub">${escHtml(sub)}</div>` : ''}
+    <div class="pd-metas">${meta}</div>
+    <label class="pd-label">Notes</label>
+    <textarea id="pd-notes" class="pd-notes" placeholder="Notes…">${escHtml(p.notes || '')}</textarea>
+    <div class="pd-log-heading">Interactions</div>
+    <form id="pd-add-form" class="pd-add-form">
+      <input type="date" id="pd-int-date" value="${escHtml(formatDateYMD(new Date()))}">
+      <input type="text" id="pd-int-note" placeholder="What happened?" autocomplete="off">
+      <select id="pd-int-source">
+        <option value="desktop">desktop</option>
+        <option value="phone">phone</option>
+      </select>
+      <button type="submit" class="be-btn-primary" id="pd-int-submit">Log</button>
+    </form>
+    <div class="pd-log">${log}</div>
+    <div class="pd-footer">
+      <button id="pd-delete" class="pd-delete" ${peopleView.editable ? '' : 'disabled'}>Delete person</button>
+    </div>`;
+
+  const pdPatch = async payload => {
+    const res = await fetch(`/api/people/${p.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    if (!res.ok) { alert(`Save failed (${res.status})`); return null; }
+    const person = await res.json();
+    syncPersonRow(person);
+    return person;
+  };
+  body.querySelectorAll('.pd-edit').forEach(el => {
+    el.addEventListener('change', async () => {
+      const value = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
+      const person = await pdPatch({ [el.dataset.field]: value });
+      if (person && el.dataset.field === 'name') {
+        document.getElementById('person-detail-title').textContent = person.name || 'Person';
+      }
+    });
+  });
+  body.querySelectorAll('.pd-bucket-chip').forEach(el => {
+    el.addEventListener('click', async () => {
+      const bid = parseInt(el.dataset.bucket);
+      const ids = (p.buckets || []).map(b => b.id);
+      const next = ids.includes(bid) ? ids.filter(x => x !== bid) : [...ids, bid];
+      const person = await pdPatch({ bucket_ids: next });
+      if (person) renderPersonDetail(person);
+    });
+  });
+
+  const pdNotes = document.getElementById('pd-notes');
+  pdNotes.readOnly = !peopleView.editable;
+  const pdFlush = wireNotesAutosave(pdNotes, async value => {
+    if (!peopleView.editable) return;
+    const res = await fetch(`/api/people/${p.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes: value }),
+    });
+    if (!res.ok) return;
+    p.notes = value;
+    syncPersonRow(await res.json());
+  });
+  pdNotes.addEventListener('blur', pdFlush);
+  document.getElementById('pd-add-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!peopleView.editable) return;
+    const btn = document.getElementById('pd-int-submit');
+    if (btn.disabled) return;
+    const date = document.getElementById('pd-int-date').value;
+    const note = document.getElementById('pd-int-note').value;
+    const source = document.getElementById('pd-int-source').value;
+    if (!date) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/people/${p.id}/interactions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date, note, source }),
+      });
+      if (!res.ok) { alert(`Log failed (${res.status})`); return; }
+      await peopleSatisfy('entries');
+      await loadPeopleData();
+      const fresh = peopleView.people.find(x => x.id === p.id);
+      if (fresh) renderPersonDetail(fresh);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  document.getElementById('pd-delete').addEventListener('click', async () => {
+    if (!peopleView.editable) return;
+    if (!confirm(`Delete ${p.name || 'this person'} and all their logged interactions? This cannot be undone.`)) return;
+    const btn = document.getElementById('pd-delete');
+    btn.disabled = true;
+    const res = await fetch(`/api/people/${p.id}`, { method: 'DELETE' });
+    if (!res.ok) { alert(`Delete failed (${res.status})`); btn.disabled = false; return; }
+    document.getElementById('person-detail-overlay').classList.add('hidden');
+    await loadPeopleData();
+  });
+}
+
+function syncPersonRow(person) {
+  const idx = peopleView.people.findIndex(p => p.id === person.id);
+  if (idx >= 0) peopleView.people[idx] = person;
+  renderPeopleList();
+  renderDueStrip();
+}
+
+// ── MAP — the inventory lens ─────────────────────────────────
+// The whole triaged inventory as a tree: domain → area → projects → actions,
+// every state included and nothing filtered by availability. This is the lens
+// that answers "what is the state of everything?", so it owns STRUCTURE (area,
+// nesting, filing, delete) and it is also where parked work gets reconsidered.
+// The rule that keeps the two lenses from re-merging is the inverse one: NOW
+// may never write position.
+// Controls are allowed to be dense here. MAP is visited once a week and NOW is
+// glanced at ~30x a day, so a decision costs about two orders of magnitude less
+// on this surface than on that one — friction belongs at the boundary.
+let mapWired = false;
+
+// MAP's one piece of view state: the search query. Session-local and NOT
+// undoable — it is a lens, not data.
+const mapView = { q: '' };
+
+async function openMap() {
+  if (!mapWired) {
+    const overlay = document.getElementById('map-overlay');
+    const shut = () => { flushOpenNotes(); overlay.classList.add('hidden'); };
+    document.getElementById('map-close').addEventListener('click', shut);
+    overlay.addEventListener('click', e => { if (e.target === overlay) shut(); });
+    // Wired once, outside renderMap: re-rendering the body on every keystroke
+    // must not take the field you are typing in with it.
+    const q = document.getElementById('map-q');
+    q.addEventListener('input', e => { mapView.q = e.target.value; renderMap(); });
+    q.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      // Peel: the query first, the overlay only once the search is clear.
+      if (!mapView.q) return;
+      e.stopPropagation();
+      mapView.q = '';
+      q.value = '';
+      renderMap();
+    });
+    mapWired = true;
+  }
+  await refreshMap();
+  document.getElementById('map-overlay').classList.remove('hidden');
+}
+
+async function refreshMap() {
+  const [items, projects, inbox] = await Promise.all([
+    fetch('/api/map').then(r => r.json()),
+    fetch('/api/projects').then(r => r.json()),
+    fetch('/api/inbox').then(r => r.json()),
+  ]);
+  state.mapItems = items;
+  state.projects = projects;
+  state.inbox = inbox;
+  renderMap();
+}
+
+// HTML5 drag never auto-scrolls an inner overflow container, so dragging to a
+// target above the fold used to be impossible. While a drag is over the
+// container, nudge it whenever the pointer nears an edge — dragover keeps
+// firing (even stationary), so this self-sustains without a timer.
+function dragEdgeScroll(el) {
+  if (el.__dragScroll) return;
+  el.__dragScroll = true;
+  el.addEventListener('dragover', e => {
+    const r = el.getBoundingClientRect();
+    const EDGE = 56;
+    if (e.clientY < r.top + EDGE) el.scrollTop -= 16;
+    else if (e.clientY > r.bottom - EDGE) el.scrollTop += 16;
+  });
+}
+
+// The gestures every MAP row carries, wherever it is rendered — the tree and
+// the flat search results share them, so a hit behaves exactly like the row it
+// stands for. Drag is NOT here: it is the tree's alone (see renderMap).
+function wireMapRows(body, byId) {
+  const after = async () => { await refreshMap(); await refreshActiveItems(); };
+  // Single click opens the clarify sheet, double click still renames. A
+  // dblclick always fires a click first, so the single-click action waits out
+  // the double-click window before committing.
+  body.querySelectorAll('.map-text').forEach(span => {
+    let clickTimer = null;
+    span.addEventListener('click', () => {
+      clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        const item = byId[parseInt(span.closest('.map-row').dataset.id)];
+        if (item) openClarifyForItem(item, after);
+      }, 220);
+    });
+    span.addEventListener('dblclick', () => {
+      clearTimeout(clickTimer);
+      const row = span.closest('.map-row');
+      const id = parseInt(row.dataset.id);
+      const item = byId[id];
+      if (!item) return;
+      row.draggable = false;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 's2-rename-input';
+      input.value = item.content;
+      span.replaceWith(input);
+      input.focus();
+      input.select();
+      let settled = false;
+      const finish = async save => {
+        if (settled) return;
+        settled = true;
+        const content = input.value.trim();
+        row.draggable = true;
+        if (!save || !content || content === item.content) { renderMap(); return; }
+        await fetch(`/api/inbox/${id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        });
+        await after();
+      };
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        // stopPropagation, or this same keydown also reaches initHub's handler
+        // and closes the overlay behind the editor — Esc peels innermost-first.
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      });
+      input.addEventListener('blur', () => finish(true));
+    });
+  });
+
+  // The one control on a row. State, area, due, notes and the trash all live
+  // behind it now — the sheet decides them in one place, in one grammar.
+  body.querySelectorAll('.map-open').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const item = byId[parseInt(btn.dataset.id)];
+      if (item) openClarifyForItem(item, after);
+    });
+  });
+}
+
+// MAP holds one piece of view state now — the search query (mapView.q). Every
+// WRITE a row used to own inline (state, area, un-nest, notes, delete) is a
+// CLARIFY decision, and the sheet is where it is made. What is left here is
+// reading the tree, searching it, and re-positioning it by drag.
+function renderMap() {
+  const body = document.getElementById('map-body');
+  if (!body) return;
+  const items = state.mapItems || [];
+  const inboxItems = state.inbox || [];
+  const todayStr = formatDateYMD(new Date());
+  const byId = {};
+  items.forEach(i => { byId[i.id] = i; });
+  // "In" rows join the lookup so the shared .map-text click/rename handlers
+  // reach them too; they are not part of the tree and never enter kidsOf.
+  inboxItems.forEach(i => { byId[i.id] = i; });
+  // A project with no live action is GTD's stall signal and the review's
+  // load-bearing check, so it is marked here rather than only counted there.
+  const stalled = new Set((state.projects || []).filter(p => !p.action_count).map(p => p.id));
+
+  // (The per-row area select is gone: moving a project to another domain is
+  // the clarify sheet's "Filing to" row now, which says domain-then-area in
+  // the same words the rest of the app uses.)
+
+  // Only states worth SCANNING for get a badge. 'waiting' does — it is the one
+  // that needs chasing — and a defer date does, because the select can't show
+  // it. 'someday' doesn't: the state dropdown already says so on every row, and
+  // 23 identical badges is noise on the surface meant for reading the whole
+  // inventory at once.
+  const badge = item => {
+    // Badges compose: an item can be waiting AND due — both are worth the
+    // scan, which is the bar for badging here.
+    let out = item.status === 'waiting' ? '<span class="map-badge map-badge-wait">waiting</span>' : '';
+    out += dueChip(item, 'map-badge');
+    if (item.defer_until && item.defer_until > todayStr) {
+      out += `<span class="map-badge">→ ${escHtml(item.defer_until)}</span>`;
+    }
+    return out;
+  };
+
+  // Chain positions ([1] [2] …) per project — MAP shows the whole chain even
+  // though the pool hides everything past the head.
+  const chainN = {};
+  {
+    const byProj = {};
+    items.forEach(i => {
+      if (i.project_id && i.kind !== 'project') {
+        (byProj[i.project_id] = byProj[i.project_id] || []).push(i);
+      }
+    });
+    Object.values(byProj).forEach(acts => Object.assign(chainN, chainNumbers(acts)));
+  }
+
+  // One control per row: the SELECT button, which opens the clarify sheet for
+  // that row. A stalled project is simply RED — the old "no next action" badge
+  // said in a chip what the colour already says, on the surface built for
+  // reading everything at once.
+  const rowHtml = item => {
+    const isProject = item.kind === 'project';
+    const isStalled = isProject && stalled.has(item.id);
+    return `<div class="map-row${isProject ? ' map-row-project' : ''}${
+        isStalled ? ' map-row-stalled' : ''}" data-id="${item.id}" draggable="true">
+      ${chainN[item.id] ? `<span class="cl-chain-n" title="Position in this project's dependency chain">[${chainN[item.id]}]</span>` : ''}
+      <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
+      ${isProject ? '' : itemTags(item).map(t =>
+        `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
+      ${badge(item)}
+      ${item.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${item.pushed} times — too big, not real, or being avoided">pushed ${item.pushed}x</span>` : ''}
+      <span class="map-acts">
+        <button class="map-open" data-id="${item.id}"
+          title="${isProject ? 'Clarify this project' : 'Clarify this action'}">›</button>
+      </span>
+    </div>`;
+  };
+
+  // domain → area → tree. Area cascades down a subtree in storage, so a parent
+  // is always in the same area group as its children.
+  const domains = {};
+  items.forEach(i => {
+    const dk = i.domain_id || 0;
+    const ak = i.area_id || 0;
+    const d = domains[dk] = domains[dk] || { name: i.domain_name || '—', areas: {} };
+    const a = d.areas[ak] = d.areas[ak] || { name: i.area_name || '(no area)', items: [] };
+    a.items.push(i);
+  });
+
+  const areaTreeHtml = areaItems => {
+    const inView = new Set(areaItems.map(i => i.id));
+    const kidsOf = {};
+    const roots = [];
+    areaItems.forEach(item => {
+      const pid = item.project_id && inView.has(item.project_id) ? item.project_id : null;
+      if (pid) (kidsOf[pid] = kidsOf[pid] || []).push(item);
+      else roots.push(item);
+    });
+    // No add affordance here any more: MAP is a reading surface, and "give
+    // this project a next action" already has a home on GTD's Projects list
+    // (the same + that puts the global bar in the project's mode).
+    const subtree = item => {
+      const kids = kidsOf[item.id] || [];
+      return rowHtml(item) + (kids.length
+        ? `<div class="map-kids">${kids.map(subtree).join('')}</div>` : '');
+    };
+    return roots.map(subtree).join('');
+  };
+
+  const domainKeys = Object.keys(domains).sort((a, b) =>
+    domains[a].name.localeCompare(domains[b].name));
+
+  // "In" is not part of the inventory — it is what hasn't been decided yet, so
+  // get_map_items excludes it. But MAP is the read-EVERYTHING surface, and an
+  // undecided pile you can only reach through the day's Clarify count is a
+  // pile you forget you have. It sits at the bottom, below the tree, because
+  // the tree is what you came to read.
+  const inboxHtml = inboxItems.length ? `
+    <div class="map-area-group">
+      <div class="map-area-head">In — not yet clarified<span class="map-count">${inboxItems.length}</span></div>
+      ${inboxItems.map(i => `<div class="map-row map-row-in" data-id="${i.id}">
+        <span class="map-text" title="Tap to clarify · double-click to reword">${escHtml(i.content)}</span>
+        <span class="map-acts"><button class="map-open" data-id="${i.id}" title="Clarify this">›</button></span>
+      </div>`).join('')}
+    </div>` : '';
+
+  // ── Search ────────────────────────────────────────────────
+  //
+  // The clarify project search's matcher (relScore — word overlap plus a
+  // character-bigram Dice score; at this corpus size that IS semantic search,
+  // no embeddings, no network) run over the WHOLE inventory instead of just
+  // projects. A substring hit always counts; a fuzzy one has to clear the same
+  // 0.5 relScore bar clarify uses for its "closest matches".
+  //
+  // Results are FLAT and ranked, not a pruned tree: the ranking is the point,
+  // and it can't survive nesting. Each row keeps its breadcrumb, so position —
+  // the thing the tree was telling you — is still on screen. Drag is off here
+  // for the same reason: there is nothing coherent to drop into in a ranked
+  // list, and filing stays a tree gesture.
+  const q = mapView.q.trim();
+  const qLower = q.toLowerCase();
+  const countEl = document.getElementById('map-q-count');
+  if (q) {
+    const parentOf = {};
+    items.forEach(i => { parentOf[i.id] = i.project_id; });
+    const crumb = i => {
+      const parts = [];
+      if (i.domain_name) parts.push(i.domain_name);
+      if (i.area_name) parts.push(i.area_name);
+      const p = i.project_id && byId[i.project_id];
+      if (p) parts.push(p.content);
+      return parts.join(' › ');
+    };
+    const hits = [...items, ...inboxItems]
+      .map(i => {
+        const sub = (i.content || '').toLowerCase().includes(qLower);
+        const score = relScore(q, i.content || '');
+        return { i, sub, score };
+      })
+      .filter(h => h.sub || h.score >= 0.5)
+      // Substring hits first (you typed it, it is there), then by relevance.
+      .sort((a, b) => (b.sub - a.sub) || (b.score - a.score)
+        || (a.i.content || '').localeCompare(b.i.content || ''));
+
+    if (countEl) countEl.textContent = `${hits.length} of ${items.length + inboxItems.length}`;
+    body.innerHTML = hits.length ? hits.map(({ i }) => {
+      const isIn = !i.status || i.status === 'in';
+      const isProject = i.kind === 'project';
+      return `<div class="map-row map-row-hit${isProject ? ' map-row-project' : ''}${
+          isProject && stalled.has(i.id) ? ' map-row-stalled' : ''}${
+          isIn && !i.area_id ? ' map-row-in' : ''}" data-id="${i.id}">
+        <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(i.content)}</span>
+        ${isProject ? '' : itemTags(i).map(t =>
+          `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
+        ${badge(i)}
+        <span class="map-crumb">${escHtml(crumb(i)) || 'in'}</span>
+        <span class="map-acts">
+          <button class="map-open" data-id="${i.id}" title="Clarify this">›</button>
+        </span>
+      </div>`;
+    }).join('') : `<div class="pm-empty">Nothing matches "${escHtml(q)}".</div>`;
+    wireMapRows(body, byId);
+    return;
+  }
+  if (countEl) countEl.textContent = '';
+
+  body.innerHTML = (domainKeys.length ? domainKeys.map(dk => {
+    const d = domains[dk];
+    const areaKeys = Object.keys(d.areas).sort((a, b) => d.areas[a].name.localeCompare(d.areas[b].name));
+    const total = areaKeys.reduce((n, ak) => n + d.areas[ak].items.length, 0);
+    return `<div class="map-domain">
+      <div class="map-domain-head">${escHtml(d.name)}<span class="map-count">${total}</span></div>
+      ${areaKeys.map(ak => `<div class="map-area-group">
+        <div class="map-area-head">${escHtml(d.areas[ak].name)}<span class="map-count">${d.areas[ak].items.length}</span></div>
+        ${areaTreeHtml(d.areas[ak].items)}
+      </div>`).join('')}
+    </div>`;
+  }).join('') : '<div class="pm-empty">Nothing in the inventory yet — capture into the inbox first.</div>') + inboxHtml;
+
+  const patchItem = (id, patch) => fetch(`/api/inbox/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  const after = async () => { await refreshMap(); await refreshActiveItems(); };
+
+  wireMapRows(body, byId);
+
+  // Drag one row onto another to file it there — the same act as the filing
+  // target, so the destination becomes a project by the usual invariant. The
+  // only refusals are no-ops and cycles.
+  let dragId = null;
+  const canDrop = (srcId, dstId) => {
+    if (!srcId || srcId === dstId) return false;
+    const src = byId[srcId];
+    const dst = byId[dstId];
+    if (!src || !dst) return false;
+    if (src.project_id === dst.id) return false;
+    let cur = dst;
+    const seen = new Set();
+    while (cur && cur.project_id && !seen.has(cur.id)) {
+      if (cur.project_id === srcId) return false;
+      seen.add(cur.id);
+      cur = byId[cur.project_id];
+    }
+    return true;
+  };
+
+  // Untriaged rows are excluded: filing something UNDER an item that is still
+  // "in" would make an undecided row a project, which is the one thing the
+  // clarify step exists to prevent.
+  body.querySelectorAll('.map-row:not(.map-row-in)').forEach(row => {
+    const id = parseInt(row.dataset.id);
+    row.addEventListener('dragstart', e => {
+      const t = e.target.tagName;
+      if (t === 'INPUT' || t === 'SELECT' || t === 'BUTTON') { e.preventDefault(); return; }
+      dragId = id;
+      row.classList.add('s2-item-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(id));
+    });
+    row.addEventListener('dragend', () => {
+      dragId = null;
+      body.querySelectorAll('.s2-drop-target').forEach(x => x.classList.remove('s2-drop-target'));
+      row.classList.remove('s2-item-dragging');
+    });
+    row.addEventListener('dragover', e => {
+      if (!canDrop(dragId, id)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      row.classList.add('s2-drop-target');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('s2-drop-target'));
+    row.addEventListener('drop', async e => {
+      e.preventDefault();
+      row.classList.remove('s2-drop-target');
+      const srcId = dragId || parseInt(e.dataTransfer.getData('text/plain'));
+      if (!canDrop(srcId, id)) return;
+      dragId = null;
+      if (byId[srcId]) undoablePatch(byId[srcId], ['project_id', 'area_id'],
+                                     `filed "${byId[srcId].content}"`);
+      await patchItem(srcId, { project_id: id });
+      await after();
+    });
+  });
+
+  dragEdgeScroll(body);
+}
+
+// Historical name: the NOW list (section 2) is gone — the engage pool is the
+// next-actions lens, so "refresh the active items" means re-render the day.
+async function refreshActiveItems() {
+  await refreshEngage();
+}
+
+// ── GTD tab — the four lists with no other surface ────────────
+// Projects, Waiting For, Someday/Maybe, Deferred: all inbox_item rows, all
+// already computable, none with a home until now. Flat on purpose (no domain
+// or area grouping — the breadcrumb rides on the row), and weekly-cadence, so
+// density is cheap here in a way it never is on NOW.
+// notesFor = which project's notes are open; notesEdit = raw-markdown editing
+// (false shows the rendered view — notes are read far more than written).
+// chainFor/chainArm/chainItems: the ⛓ dependency editor, which lives HERE on
+// the Projects list (2026-08-07, moved out of the clarify sheet
+// deliberately — ordering a project's actions is a structure decision, and this is
+// the projects surface). chainItems is fetched from /api/map on open because
+// the GTD lists payload carries no plain actions.
+const gtdView = { lists: null, notesFor: null, notesEdit: false,
+                  chainFor: null, chainArm: null, chainItems: [] };
+let gtdTagFilter = null;
+
+
+async function refreshGtd() {
+  gtdView.lists = await fetch('/api/gtd/lists').then(r => r.json());
+  renderGtd();
+}
+
+function renderGtd() {
+  const left = document.getElementById('gtd-left-body');
+  const right = document.getElementById('gtd-right-body');
+  if (!left || !right || !gtdView.lists) return;
+  const { projects, waiting, someday, deferred } = gtdView.lists;
+  const all = [...projects, ...waiting, ...someday, ...deferred];
+  const allTags = [...new Set(all.flatMap(itemTags))].sort();
+  if (gtdTagFilter && !allTags.includes(gtdTagFilter)) gtdTagFilter = null;
+  const byTag = list => gtdTagFilter
+    ? list.filter(i => itemTags(i).includes(gtdTagFilter)) : list;
+
+  const crumb = i => i.project_name
+    ? `${i.area_name || '—'} / ${i.project_name}` : (i.area_name || '—');
+  // captured_at is SQLite UTC with a space — normalize before parsing or ages
+  // drift by the timezone offset.
+  const ageDays = i => Math.max(0, Math.floor(
+    (Date.now() - new Date((i.captured_at || '').replace(' ', 'T') + 'Z')) / 86400000));
+
+  const row = (item, badges, acts) => `
+    <div class="gtd-row${item.kind === 'project' ? ' gtd-row-project' : ''}" data-id="${item.id}">
+      <span class="gtd-text">${escHtml(item.content)}</span>
+      <span class="gtd-crumb">${escHtml(crumb(item))}</span>
+      ${dueChip(item, 'gtd-tag')}
+      ${itemTags(item).map(t => `<span class="gtd-tag">${escHtml(t)}</span>`).join('')}
+      <button class="gtd-tag-edit" data-id="${item.id}" title="Edit tags">#</button>
+      ${badges || ''}
+      <span class="gtd-acts">${acts || ''}</span>
+    </div>`;
+
+  const notesOpen = gtdView.notesFor;
+  // The ⛓ chain card: this project's actions with [n] positions; drag one
+  // onto the one it comes AFTER (touch: tap to arm, tap the predecessor).
+  const chainCard = p => {
+    const acts = gtdView.chainItems.filter(i =>
+      i.project_id === p.id && i.kind !== 'project');
+    const nums = chainNumbers(acts);
+    return `<div class="cl-chain">
+      <div class="cl-chain-hint">${gtdView.chainArm != null
+        ? 'now tap the action it comes AFTER'
+        : 'drag an action onto the one it comes after · [2] hides until [1] is done'}</div>
+      ${acts.map(a => `
+        <div class="cl-chain-row${gtdView.chainArm === a.id ? ' cl-chain-armed' : ''}"
+          draggable="true" data-id="${a.id}">
+          ${nums[a.id] ? `<span class="cl-chain-n">[${nums[a.id]}]</span>` : '<span class="cl-chain-n cl-chain-free"></span>'}
+          <span class="cl-chain-text">${escHtml(a.content)}</span>
+          ${a.after_id ? `<button class="cl-chain-x" data-id="${a.id}" title="Unchain">✕</button>` : ''}
+        </div>`).join('')
+        || '<div class="gtd-empty">No actions to order yet.</div>'}
+    </div>`;
+  };
+
+  const projRows = byTag(projects).map(p =>
+    row(p,
+      `<span class="gtd-age" title="Live actions in this project">${p.action_count} action${p.action_count === 1 ? '' : 's'}</span>` +
+      (p.action_count === 0 ? '<span class="map-badge map-badge-bad">no next action</span>' : ''),
+      (p.action_count >= 2 ? `<button class="gtd-chain-btn${gtdView.chainFor === p.id ? ' gtd-notes-on' : ''}"
+         data-id="${p.id}" title="Dependencies — order this project's actions">⛓</button>` : '') +
+      `<button class="gtd-notes-btn${(p.notes || '').trim() ? ' gtd-notes-on' : ''}" data-id="${p.id}"
+         title="Project notes — support material, not actions">✎</button>`) +
+    (gtdView.chainFor === p.id ? chainCard(p) : '') +
+    (notesOpen === p.id
+      ? (gtdView.notesEdit || !(p.notes || '').trim()
+        ? `<textarea class="gtd-notes" data-id="${p.id}" rows="4"
+             placeholder="Notes, links, thinking — support material for ${escHtml(p.content)}. Markdown works. Actions belong on the list, not in here.">${escHtml(p.notes || '')}</textarea>`
+        : `<div class="gtd-notes-view md-body" data-id="${p.id}" title="Tap to edit">${mdHtml(p.notes)}</div>`)
+      : '') +
+    `<button class="gtd-add-btn map-add-btn" data-area="${p.area_id || ''}" data-project="${p.id}"
+       data-name="${escHtml(p.content)}">+ next action</button>`
+  ).join('');
+
+  const waitRows = byTag(waiting).map(w =>
+    row(w,
+      (w.kind === 'project' ? '<span class="gtd-age">project</span>' : '') +
+      (w.waiting_on ? `<span class="gtd-age gtd-who">${escHtml(w.waiting_on)}</span>` : '') +
+      `<span class="gtd-age" title="Waiting since ${escHtml(w.captured_at || '')}">${ageDays(w)}d</span>` +
+      (w.chase_on ? `<span class="gtd-age" title="Chase date">chase ${escHtml(w.chase_on)}</span>` : ''),
+      `<button class="gtd-activate" data-id="${w.id}" title="Take it back — active again">→ active</button>
+       <button class="gtd-done" data-id="${w.id}" title="Arrived / done">✓</button>`)
+  ).join('');
+
+  const someRows = byTag(someday).map(s =>
+    row(s, '',
+      `<button class="gtd-activate" data-id="${s.id}" title="Activate">→ active</button>
+       <button class="gtd-del" data-id="${s.id}" title="Delete">×</button>`)
+  ).join('');
+
+  const defRows = byTag(deferred).map(d =>
+    row(d,
+      `<span class="map-badge">→ ${escHtml(d.defer_until)}</span>` +
+      (d.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${d.pushed} times — too big, not real, or being avoided">pushed ${d.pushed}x</span>` : ''),
+      `<button class="gtd-now" data-id="${d.id}" title="Bring back now">now</button>`)
+  ).join('');
+
+  const stalledN = projects.filter(p => !p.action_count).length;
+  const chips = allTags.map(t =>
+    `<button class="gtd-chip${t === gtdTagFilter ? ' gtd-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`
+  ).join('');
+
+  left.innerHTML = `
+    <div class="gtd-header">
+      <span class="gtd-counts">${projects.length} projects · ${waiting.length} waiting · ${someday.length} someday · ${deferred.length} deferred</span>
+      ${allTags.length ? `<span class="gtd-chips">${chips}</span>` : ''}
+    </div>
+    <div class="gtd-section">
+      <div class="gtd-section-head">Projects<span class="map-count">${byTag(projects).length}</span>${
+        stalledN ? `<span class="gtd-stalled-n">${stalledN} stalled</span>` : ''}</div>
+      ${projRows || '<div class="gtd-empty">No projects — nothing multi-step is on the books.</div>'}
+    </div>
+    <div class="gtd-section">
+      <div class="gtd-section-head">Waiting for<span class="map-count">${byTag(waiting).length}</span></div>
+      ${waitRows || '<div class="gtd-empty">Nothing handed off.</div>'}
+    </div>`;
+  right.innerHTML = `
+    <div class="gtd-section">
+      <div class="gtd-section-head">Someday / maybe<span class="map-count">${byTag(someday).length}</span></div>
+      ${someRows || '<div class="gtd-empty">Nothing parked.</div>'}
+    </div>
+    <div class="gtd-section">
+      <div class="gtd-section-head">Deferred<span class="map-count">${byTag(deferred).length}</span></div>
+      ${defRows || '<div class="gtd-empty">Nothing deferred — the tickler is empty.</div>'}
+    </div>`;
+
+  const rootEl = document.getElementById('tab-gtd');
+  const patchItem = (id, body) => fetch(`/api/inbox/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const after = async () => { await refreshGtd(); await refreshActiveItems(); };
+
+  // Every item is one tap from the sheet that can re-decide it — the same
+  // gesture the Engage pool already has. GTD's text carries no rename, so the
+  // click is free here (MAP's needs the double-click guard).
+  rootEl.querySelectorAll('.gtd-text').forEach(span => {
+    span.addEventListener('click', () => {
+      const id = parseInt(span.closest('.gtd-row').dataset.id);
+      const item = all.find(i => i.id === id);
+      if (item) openClarifyForItem(item, after);
+    });
+  });
+
+  // Notes are Allen's project SUPPORT MATERIAL: they live with the project
+  // and are read in the weekly review, never on the action lists.
+  rootEl.querySelectorAll('.gtd-notes-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      const id = parseInt(b.dataset.id);
+      gtdView.notesFor = gtdView.notesFor === id ? null : id;
+      gtdView.notesEdit = false;
+      renderGtd();
+      if (gtdView.notesFor === id) rootEl.querySelector(`.gtd-notes[data-id="${id}"]`)?.focus();
+    });
+  });
+  // Open notes render as markdown; tapping the rendered view swaps in the
+  // raw-text editor (links inside it still navigate — that's the point of
+  // rendering them).
+  rootEl.querySelectorAll('.gtd-notes-view').forEach(v => {
+    v.addEventListener('click', e => {
+      if (e.target.tagName === 'A') return;
+      gtdView.notesEdit = true;
+      renderGtd();
+      rootEl.querySelector(`.gtd-notes[data-id="${v.dataset.id}"]`)?.focus();
+    });
+  });
+  rootEl.querySelectorAll('.gtd-notes').forEach(ta => {
+    const id = parseInt(ta.dataset.id);
+    const item = all.find(i => i.id === id);
+    let undoPushed = false;
+    const flush = wireNotesAutosave(ta, async value => {
+      if (!item || value === (item.notes || '')) return;
+      if (!undoPushed) {
+        undoPushed = true;
+        undoablePatch(item, ['notes'], `edited notes on "${item.content}"`);
+      }
+      await patchItem(id, { notes: value });
+      // Keep the local copy in step: the next flush must not re-PATCH text
+      // that is already stored, and renderGtd reads this object for the ✎
+      // lit state. It is the same object gtdView.lists holds.
+      item.notes = value;
+    });
+    ta.addEventListener('blur', async () => {
+      await flush();
+      gtdView.notesEdit = false;
+      renderGtd();
+    });
+    ta.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        flush();
+        gtdView.notesFor = null; gtdView.notesEdit = false;
+        renderGtd();
+      }
+    });
+  });
+
+  rootEl.querySelectorAll('.gtd-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      gtdTagFilter = gtdTagFilter === b.dataset.tag ? null : b.dataset.tag;
+      renderGtd();
+    });
+  });
+  rootEl.querySelectorAll('.gtd-activate').forEach(b => {
+    b.addEventListener('click', async () => {
+      const id = parseInt(b.dataset.id);
+      const item = all.find(i => i.id === id);
+      if (item) undoablePatch(item, ['status', 'waiting_on', 'chase_on'],
+                              `activated "${item.content}"`);
+      await patchItem(id, { status: 'active' });
+      await after();
+    });
+  });
+  rootEl.querySelectorAll('.gtd-now').forEach(b => {
+    b.addEventListener('click', async () => {
+      const id = parseInt(b.dataset.id);
+      const item = all.find(i => i.id === id);
+      if (item) undoablePatch(item, ['defer_until'], `un-deferred "${item.content}"`);
+      await patchItem(id, { defer_until: null });
+      await after();
+    });
+  });
+  rootEl.querySelectorAll('.gtd-done, .gtd-del').forEach(b => {
+    b.addEventListener('click', async () => {
+      const id = parseInt(b.dataset.id);
+      const item = all.find(i => i.id === id);
+      await undoableDelete(id, `deleted "${(item && item.content) || 'item'}"`);
+      await after();
+    });
+  });
+
+  // Tags are edited HERE, not on NOW: a 3-second decision belongs on the
+  // weekly surface, not the one glanced at 30x a day.
+  rootEl.querySelectorAll('.gtd-tag-edit').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.dataset.id);
+      const item = all.find(i => i.id === id);
+      if (!item) return;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'gtd-tags-input';
+      input.value = itemTags(item).join(' ');
+      input.placeholder = 'tags…';
+      btn.replaceWith(input);
+      input.focus();
+      let settled = false;
+      const finish = async save => {
+        if (settled) return;
+        settled = true;
+        if (!save) { renderGtd(); return; }
+        const tags = input.value.toLowerCase().split(/[\s,#]+/).filter(Boolean).join(' ');
+        if (tags === (item.tags || '')) { renderGtd(); return; }
+        await patchItem(id, { tags });
+        await after();
+      };
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        // stopPropagation, or this same keydown also reaches initHub's handler
+        // and closes the overlay behind the editor — Esc peels innermost-first.
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      });
+      input.addEventListener('blur', () => finish(true));
+    });
+  });
+
+  // The ⛓ chain editor. Dropping A onto B (or arming A by tap, then tapping
+  // B) sets A.after_id = B — A comes AFTER B, and the availability predicate
+  // hides A until B completes. Every link/unlink is one undoable PATCH; the
+  // cycle guard here mirrors storage's silent-no-op backstop.
+  rootEl.querySelectorAll('.gtd-chain-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = parseInt(btn.dataset.id);
+      if (gtdView.chainFor === id) { gtdView.chainFor = null; }
+      else {
+        gtdView.chainItems = await fetch('/api/map').then(r => r.json()).catch(() => []);
+        gtdView.chainFor = id;
+        gtdView.chainArm = null;
+      }
+      renderGtd();
+    });
+  });
+  const chainLink = async (fromId, toId) => {
+    if (fromId === toId) return;
+    const byId = {};
+    gtdView.chainItems.forEach(a => { byId[a.id] = a; });
+    let cur = toId;
+    const seen = new Set();
+    while (cur != null && !seen.has(cur)) {
+      if (cur === fromId) { toast('That would make a loop'); return; }
+      seen.add(cur);
+      cur = (byId[cur] || {}).after_id;
+    }
+    const item = byId[fromId];
+    undoablePatch(item, ['after_id'], `chained "${item.content}"`);
+    await patchItem(fromId, { after_id: toId });
+    item.after_id = toId;
+    gtdView.chainArm = null;
+    renderGtd();
+    await refreshActiveItems();   // availability changed — the pool must agree
+  };
+  rootEl.querySelectorAll('.cl-chain-row').forEach(rw => {
+    const id = parseInt(rw.dataset.id);
+    rw.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', String(id));
+      e.dataTransfer.effectAllowed = 'link';
+    });
+    rw.addEventListener('dragover', e => e.preventDefault());
+    rw.addEventListener('drop', e => {
+      e.preventDefault();
+      const from = parseInt(e.dataTransfer.getData('text/plain'));
+      if (from) chainLink(from, id);
+    });
+    rw.addEventListener('click', e => {
+      if (e.target.classList.contains('cl-chain-x')) return;
+      if (gtdView.chainArm == null) { gtdView.chainArm = id; renderGtd(); }
+      else if (gtdView.chainArm === id) { gtdView.chainArm = null; renderGtd(); }
+      else chainLink(gtdView.chainArm, id);
+    });
+  });
+  rootEl.querySelectorAll('.cl-chain-x').forEach(b => b.addEventListener('click', async () => {
+    const id = parseInt(b.dataset.id);
+    const item = gtdView.chainItems.find(i => i.id === id);
+    undoablePatch(item, ['after_id'], `unchained "${item.content}"`);
+    await patchItem(id, { after_id: null });
+    item.after_id = null;
+    renderGtd();
+    await refreshActiveItems();
+  }));
+
+  // "+ next action" puts the GLOBAL BAR into that project's mode — same
+  // affordance as MAP's, one implementation, no inline form in the list.
+  rootEl.querySelectorAll('.gtd-add-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      barView.mode = { kind: 'project', id: parseInt(btn.dataset.project),
+                       name: btn.dataset.name,
+                       areaId: parseInt(btn.dataset.area) || null };
+      renderBar();
+      document.getElementById('eg-capture').focus();
+    });
+  });
+}
+
+// ── Engage — the day panel (GTD Panel Layouts 6c) ─────────────
+// The day as GTD's hard landscape in one column: QR bookends as hairline
+// rules, blocks and gcal events at their times, and next actions DRAGGED
+// between those fixed points. A placement is a sort key in engage_placement,
+// never a property of the item — the item stays an ordinary next action, and
+// unplaced actions sit in the "Not scheduled" pool at the bottom.
+const engageView = { placements: [], pool: [], allItems: [], overrides: [],
+                     // The viewed day (YMD). null = today, and the header's ‹ ›
+                     // move it. Session-local, like every other view state —
+                     // the label always says which day you are looking at.
+                     date: null,
+                     // Placements on/after the viewed day, for the pool's
+                     // "already scheduled" exclusion (date >= viewed).
+                     futurePlaced: [],
+                     routineItems: [], flows: [], domainId: null, dragId: null,
+                     // armId: the tap-to-place fallback's armed action (touch
+                     // has no HTML5 drag events).
+                     armId: null, clockTimer: null,
+                     // Context filter (the top-right picker). Keys are
+                     // namespaced: 'domain:3' / 'tag:light'. Two tiers:
+                     // include = OR (widen), require = AND (narrow).
+                     // Empty include set = the block calendar's domain, i.e.
+                     // the resting behaviour is exactly what it always was.
+                     // Context filter (2026-08-07 model): the DOMAIN axis is
+                     // single-select and mutually exclusive — picking one IS
+                     // excluding the others, and the UI says so with ¬. Tags
+                     // are all conjunctive: every selected tag is required.
+                     // Formula: domain ∧ ¬other ∧ ¬other ∧ tag ∧ tag.
+                     ctxDomain: null, ctxTags: new Set(), ctxOpen: false,
+                     // Which tag's location-binding popover is open in the menu.
+                     ctxLocFor: null,
+                     // Which routine's details card is open (area id). Session
+                     // state; survives the re-render a checkoff triggers.
+                     routinePop: null };
+
+function initUndo() {
+  document.addEventListener('keydown', e => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+    if (e.key !== 'z' && e.key !== 'Z') return;
+    // Inside a text field the browser's own undo is the right behaviour.
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    e.preventDefault();
+    runUndo();
+  });
+}
+
+function initEngage() {
+  // Engage IS the home screen now (9c) — nothing to open or close. Esc peels
+  // one layer at a time: project search → clarify sheet → routine card.
+  const peelClarify = () => {
+    // The composer peels to the NEXT CAPTURE, not back to the search: its
+    // project exists and its first action is filed, so there is nothing to
+    // cancel — leaving it is finishing it.
+    if (clarifyView.compose) {
+      closeCompose();
+    } else if (clarifyView.projSearch != null) {
+      clarifyView.projSearch = null;
+      renderClarify();
+    } else {
+      closeClarify();
+    }
+  };
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (clarifyView.open) { peelClarify(); return; }
+    if (engageView.routinePop != null) {
+      engageView.routinePop = null;
+      renderEngage();
+    }
+  });
+  // Tapping off the sheet is the touch Esc — same ladder, innermost first.
+  document.getElementById('clarify-backdrop').addEventListener('click', peelClarify);
+}
+
+async function openEngage() {
+  if (!engageView.domainId) engageView.domainId = state.activeDomainId || defaultDomainId();
+  await refreshEngage();
+  if (!engageView.clockTimer) {
+    engageView.clockTimer = setInterval(() => {
+      const el = document.getElementById('eg-clock');
+      if (el) el.textContent = egHeaderClock();
+    }, 30000);
+  }
+}
+
+function egHeaderClock() {
+  const now = new Date();
+  return minutesToHHMM(now.getHours() * 60 + now.getMinutes());
+}
+
+// The viewed day as YMD; parse at noon so DST shifts can't slide the date.
+function egDateStr() { return engageView.date || formatDateYMD(new Date()); }
+function egViewDate() { return new Date(egDateStr() + 'T12:00:00'); }
+
+async function refreshEngage() {
+  const dateStr = egDateStr();
+  // /api/map resolves placed items from ANY domain; the pool fetch is only the
+  // chip's domain (and runs the recurring-task seeding, same as NOW).
+  // Catches fall back to the current values, not [] — this is the home screen,
+  // and a network drop must not blank the day that is already rendered. See the
+  // note on loadAll.
+  const [placements, futurePlaced, pool, all, overrides, routineItems, flows] = await Promise.all([
+    fetch(`/api/engage/placements?date=${dateStr}`).then(r => r.json()).catch(() => engageView.placements),
+    // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
+    // shows what still NEEDS a day, and these have one).
+    fetch(`/api/engage/placements?from=${dateStr}`).then(r => r.json()).catch(() => engageView.futurePlaced),
+    // Everything available, every domain: the context picker narrows it
+    // client-side, so switching contexts is instant.
+    fetch('/api/inbox/active').then(r => r.json()).catch(() => engageView.pool),
+    fetch('/api/map').then(r => r.json()).catch(() => engageView.allItems),
+    fetch(`/api/overrides?date=${dateStr}`).then(r => r.json()).catch(() => []),
+    fetch('/api/routine-items').then(r => r.json()).catch(() => []),
+    // The day's routines, so a QR hairline can name the routine that gates it
+    // — the link is what makes the QR pass or fail, and it was only visible
+    // inside the step editor.
+    fetch(`/api/flows?date=${dateStr}`).then(r => r.json()).catch(() => engageView.flows),
+  ]);
+  engageView.placements = placements;
+  engageView.futurePlaced = futurePlaced;
+  engageView.pool = pool;
+  engageView.allItems = all;
+  engageView.overrides = overrides;
+  engageView.routineItems = routineItems;
+  engageView.flows = Array.isArray(flows) ? flows : [];
+  renderEngage();
+}
+
+function renderEngage() {
+  const header = document.getElementById('engage-header');
+  const body = document.getElementById('engage-body');
+  if (!header || !body) return;
+
+  const now = new Date();
+  const dateStr = egDateStr();
+  const viewDate = egViewDate();
+  const isToday = dateStr === formatDateYMD(now);
+  // "Past" dimming is a statement about the wall clock, so it only exists on
+  // today's view: a future day has no past yet, and a past day is all past.
+  const nowMin = isToday ? now.getHours() * 60 + now.getMinutes()
+    : dateStr < formatDateYMD(now) ? 5760 : -1;
+  const dow = jsDateToDayOfWeek(viewDate);
+  const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
+
+  // The day's fixed points, all in semantic minutes.
+  const rows = [];
+
+  const qrMinutes = {};
+  (state.accountabilityNodes || []).filter(n => n.active)
+    .filter(n => n.days_of_week == null || String(n.days_of_week).includes(String(dow)))
+    .forEach(n => {
+      // today_override is the Worker's resolution FOR TODAY — on any other
+      // viewed day fall back to weekly window > defaults. (Date overrides for
+      // other days stay the timeline's business; Engage shows the default
+      // shape of a day it can't yet know overrides for.)
+      const ov = isToday ? n.today_override : null;
+      const def = nodeWindowForDow(n, dow);
+      const end = ov ? ov.window_end : def.window_end;
+      const off = ov ? (ov.window_end_offset_days || 0) : (def.window_end_offset_days || 0);
+      const outcome = state.qrOutcomes[`${n.id}:${dateStr}`];
+      const minute = timeToMinutes(end) + (off ? 1440 : 0);
+      qrMinutes[n.id] = minute;
+      // The routines that GATE this node (qr_node_id = anchored to its
+      // deadline, before_node_id = must be done before it). The link decides
+      // whether the QR judges ✓ or ✗, so the hairline says which routine it is
+      // waiting on rather than leaving that buried in the step editor.
+      const flows = (engageView.flows || []).filter(
+        fl => fl.qr_node_id === n.id || fl.before_node_id === n.id);
+      rows.push({ kind: 'qr', minute, label: n.label, outcome, flows });
+    });
+
+  // Routine areas collapse to ONE row per area spanning their blocks; the
+  // blocks themselves become the routine's steps inside the details card.
+  // The checklist is the routine_item datatype on the AREA — done_date makes
+  // a check daily (checked iff done_date == today).
+  const routineAreaIds = new Set(state.areas.filter(a => a.type === 'routine').map(a => a.id));
+  const routineGroups = {};
+
+  state.blocks.filter(b => b.active && b.day_of_week === dow).forEach(b => {
+    const ov = engageView.overrides.find(o => o.block_id === b.id && o.date === dateStr);
+    const startT = (ov && ov.start_time) || b.start_time;
+    const endT = (ov && ov.end_time) || b.end_time;
+    const seg = { minute: timeToMinutes(startT),
+                  endMin: timeToMinutes(endT) + (endT < startT ? 1440 : 0),
+                  id: b.id, label: b.label, cancelled: !!(ov && ov.cancelled === 1) };
+    if (routineAreaIds.has(b.area_id)) {
+      (routineGroups[b.area_id] = routineGroups[b.area_id] || []).push(seg);
+      return;
+    }
+    rows.push({ kind: 'block', ...seg });
+  });
+
+  Object.entries(routineGroups).forEach(([areaId, blocks]) => {
+    blocks.sort((a, b) => a.minute - b.minute);
+    const area = state.areas.find(a => a.id === parseInt(areaId)) || {};
+    rows.push({ kind: 'routine', areaId: parseInt(areaId),
+                label: area.name || 'Routine',
+                minute: Math.min(...blocks.map(b => b.minute)),
+                endMin: Math.max(...blocks.map(b => b.endMin)),
+                blocks });
+  });
+
+  // A QR-anchored routine with no block today nests directly under its QR's
+  // hairline (Morning routine under Wake QR, per the design). Blocks win as
+  // the anchor when both exist. SAME minute as the QR, not +1: a placement's
+  // fractional midpoint used to slip between the hairline and its riding
+  // label. The sort is stable (QRs are pushed first) and actions tie-break
+  // last, so the pair stays adjacent whatever lands at that minute.
+  state.areas
+    .filter(a => a.type === 'routine' && a.active && a.qr_node_id
+                 && !routineGroups[a.id] && qrMinutes[a.qr_node_id] != null)
+    .forEach(a => {
+      const qm = qrMinutes[a.qr_node_id];
+      rows.push({ kind: 'routine', areaId: a.id, label: a.name,
+                  minute: qm, endMin: qm, blocks: [], qrAnchored: true });
+    });
+
+  // Same dismissal set as the timeline: a right-clicked-away (or ⌘-clicked,
+  // below) event is gone from the DAY, whichever surface shows it.
+  state.gcalEvents.filter(e => !e.allday && sameDay(viewDate, e.start)
+      && !state.tlHidden.event[`${e.uid}|${e.start}`]).forEach(e => {
+    rows.push({ kind: 'event', minute: isoMin(e.start), endMin: isoMin(e.end),
+                label: e.summary || 'Event', ekey: `${e.uid}|${e.start}`,
+                color: e.color });
+  });
+
+  const itemById = {};
+  engageView.allItems.forEach(i => { itemById[i.id] = i; });
+  const placedIds = new Set();
+  engageView.placements.forEach(p => {
+    const item = itemById[p.item_id];
+    // A placement whose item was completed or parked elsewhere just falls out.
+    if (!item || item.status !== 'active') return;
+    placedIds.add(item.id);
+    rows.push({ kind: 'action', minute: p.minute, id: item.id, label: item.content,
+                started: !!item.started_at });
+  });
+
+  rows.sort((a, b) => a.minute - b.minute || (a.kind === 'action') - (b.kind === 'action'));
+
+  // Context filter. There are TWO AXES and they do not compose the same way:
+  // a domain is WHERE the work belongs (single-valued — area.domain_id), a tag
+  // is WHAT KIND of work it is (many per item). So:
+  //   · within an axis, include is OR
+  //   · across the two axes, AND
+  //   · require (AND) exists for tags only — see the chip cycle below
+  //   · an empty domain axis falls back to the block calendar's domain, so
+  //     picking a tag NARROWS the resting context instead of escaping it
+  // A flat OR over both axes made "School + deep" mean "School OR deep", which
+  // dragged in deep work from every other domain, and a tag-only selection
+  // dropped the domain scope entirely rather than filtering inside it.
+  const domainOf = i => i.domain_id || domainIdForArea(i.area_id);
+  // ONE domain is always in force — the explicit selection, or the block
+  // calendar's. Being in it is being NOT in every other; the pool predicate
+  // is exactly the formula the button shows: domain ∧ ¬others ∧ tag ∧ tag.
+  const ctxDomainId = engageView.ctxDomain != null ? engageView.ctxDomain : engageView.domainId;
+  const inContext = i => String(domainOf(i)) === String(ctxDomainId)
+    && [...engageView.ctxTags].every(t => itemTags(i).includes(t));
+
+  // Location gate: any bound tag on the item must be satisfied by the current
+  // fix; without a fix nothing is gated (fail-open, see initGeo).
+  const tagLoc = {};
+  (state.tagLocations || []).forEach(b => {
+    const loc = (state.locations || []).find(l => l.id === b.location_id);
+    if (loc) tagLoc[b.tag] = loc;
+  });
+  const locOk = i => !state.geo.ok || itemTags(i).every(t => {
+    const loc = tagLoc[t];
+    return !loc || geoDistM(state.geo.lat, state.geo.lng, loc.lat, loc.lng)
+      <= (loc.radius_m || 150);
+  });
+
+  // Device gate: on the pc you get the pc-tagged work plus everything carrying
+  // no device tag at all; the phone-only rows drop out (see DEVICE_TAGS). The
+  // day's fixed points are commitments and are never filtered — this is the
+  // pool, same boundary the location gate keeps.
+  const device = currentDevice();
+  const deviceOk = i => {
+    const devs = itemTags(i).filter(t => DEVICE_TAGS.includes(t));
+    return !devs.length || devs.includes(device);
+  };
+  const otherDevice = device === 'pc' ? 'phone' : 'pc';
+
+  // Scheduled on/after the viewed day = it HAS a day, so it isn't "Not
+  // scheduled" on this one. A placement whose day has passed is not in this
+  // set (the server query is date >= viewed), so an unfinished item quietly
+  // returns to the pool instead of being scheduled-in-the-past forever.
+  const scheduledIds = new Set(engageView.futurePlaced.map(p => p.item_id));
+  const poolBase = engageView.pool
+    .filter(i => (i.kind || 'item') === 'item' && !placedIds.has(i.id)
+                 && !scheduledIds.has(i.id)
+                 && !routineAreaIds.has(i.area_id) && inContext(i));
+  // Hidden-by-location is COUNTED on the header, never silent — trust in the
+  // pool is multiplicative across 210 glances a week. Hidden-by-device is
+  // counted the same way, and among the locOk rows only, so the two exclusions
+  // can't both claim the same item.
+  const geoHidden = poolBase.filter(i => !locOk(i)).length;
+  const devHidden = poolBase.filter(i => locOk(i) && !deviceOk(i)).length;
+  const pool = poolBase
+    .filter(i => locOk(i) && deviceOk(i))
+    // In-progress floats first — "what am I on" is the glance the ◐ exists
+    // for — then BY DUE DATE (2026-08-07: deadlines sort the pool; no
+    // deadline sorts last), then oldest-first as always.
+    .sort((a, b) => (!!b.started_at - !!a.started_at)
+      || (dueOf(a) || '9999').localeCompare(dueOf(b) || '9999')
+      || (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
+
+  const hhmm = m => minutesToHHMM(Math.round(m) % 1440);
+
+  const rowHtml = r => {
+    if (r.kind === 'qr') {
+      // Each gating routine rides on the label as a chip: ✓ once its run is
+      // complete for the day, ▶ to run it while it isn't. Tapping is the
+      // shortest path from "this QR is coming" to actually doing the thing.
+      const flowChips = (r.flows || []).map(fl => {
+        const done = fl.run && fl.run.completed_at;
+        return `<button class="eg-qr-flow${done ? ' eg-qr-flow-done' : ''}"
+          data-flow="${fl.id}" title="${done ? 'Done today' : 'Run this routine'} — this QR judges ✗ unless it completes">${
+          done ? '✓' : '▶'} ${escHtml(fl.name)}</button>`;
+      }).join('');
+      return `<div class="eg-qr${r.outcome ? ` eg-qr-${r.outcome}` : ''}">
+        <span class="eg-time">${hhmm(r.minute)}</span>
+        <span class="eg-qr-label">${escHtml(r.label.toUpperCase())}</span>
+        ${flowChips}
+        <span class="eg-qr-rule"></span>
+        ${r.outcome === 'success' ? '<span class="eg-qr-tick">✓</span>' : ''}
+      </div>`;
+    }
+    if (r.kind === 'block') {
+      return `<div class="eg-row eg-block${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}"
+        data-block="${r.id}" title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
+        <span class="eg-time">${hhmm(r.minute)}</span>
+        <span class="eg-text">${escHtml(r.label)}</span>
+        <span class="eg-end">${hhmm(r.endMin)}</span>
+      </div>`;
+    }
+    if (r.kind === 'routine') {
+      // One row for the whole routine; the ☰ button on the right opens the
+      // details card (its blocks as steps + the routine_item checklist). The
+      // button always shows — an empty checklist is where you'd START one.
+      const open = engageView.routineItems.filter(
+        i => i.area_id === r.areaId && i.done_date !== dateStr).length;
+      // A QR-anchored routine has no span of its own: it rides under the
+      // hairline as a bare label, exactly like the design's routine rows.
+      return `<div class="eg-row eg-routine${!r.qrAnchored && r.endMin <= nowMin ? ' eg-past' : ''}">
+        <span class="eg-time">${r.qrAnchored ? '' : hhmm(r.minute)}</span>
+        <span class="eg-text">${escHtml(r.label)}</span>
+        <button class="eg-routine-btn${engageView.routinePop === r.areaId ? ' eg-routine-btn-on' : ''}"
+          data-area="${r.areaId}" title="Routine details">☰${open ? ` ${open}` : ''}</button>
+        ${r.qrAnchored ? '' : `<span class="eg-end">${hhmm(r.endMin)}</span>`}
+      </div>`;
+    }
+    if (r.kind === 'event') {
+      // The source calendar's pastel rides along as an inset edge (inset
+      // box-shadow, so no layout shift) — same identity the timeline shows.
+      return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}"
+        data-ekey="${escHtml(r.ekey)}" title="⌘-click / long-press to hide from the day"
+        ${r.color ? `style="box-shadow: inset 3px 0 0 ${escHtml(r.color)}"` : ''}>
+        <span class="eg-time">${hhmm(r.minute)}</span>
+        <span class="eg-text eg-event-text">${escHtml(r.label)}</span>
+        <span class="eg-end">${hhmm(r.endMin)}</span>
+      </div>`;
+    }
+    // No time on an action: r.minute is the PLACEMENT SORT KEY (the midpoint of
+    // its drop gap), not a commitment. Printing it read as an appointment the
+    // day never promised. The empty column keeps actions indented under their
+    // block; blocks/events/QRs above still show their real times.
+    return `<div class="eg-row eg-action${r.started ? ' eg-inprog' : ''}" draggable="true" data-id="${r.id}">
+      <span class="eg-time"></span>
+      <span class="eg-check${r.started ? ' eg-check-started' : ''}" data-id="${r.id}"
+        title="${r.started ? 'In progress — tap for done, hold to clear' : 'Tap = done · hold = in progress'}">${r.started ? '◐' : ''}</span>
+      <span class="eg-text">${escHtml(r.label)}</span>
+      <button class="eg-unplace" data-id="${r.id}" title="Back to Not scheduled">↩︎</button>
+    </div>`;
+  };
+
+  // A drop gap between every pair of neighbours (and one at each end): its
+  // minute is the sort key a dropped action receives. Gaps are SILENT — they
+  // only light up while a drag is over them; adding new actions happens in
+  // the capture bar / NOW, not mid-day.
+  const gapHtml = m => `<div class="eg-gap" data-minute="${m}"></div>`;
+
+  const parts = [];
+  if (!rows.length) {
+    parts.push(gapHtml(540));
+    parts.push(`<div class="eg-empty">Nothing fixed ${isToday ? 'today' : 'this day'} — drag an action up from the pool.</div>`);
+  } else {
+    parts.push(gapHtml(Math.max(0, rows[0].minute - 30)));
+    rows.forEach((r, i) => {
+      parts.push(rowHtml(r));
+      const next = rows[i + 1];
+      // No drop slot between a QR hairline and its riding routine label —
+      // they are one visual unit, and a drop there would split them.
+      if (next && next.qrAnchored) return;
+      parts.push(gapHtml(next ? (r.minute + next.minute) / 2 : r.minute + 30));
+    });
+  }
+
+  // Chips render the formula's terms. The in-force domain is the positive
+  // term (gold; dashed when it's only the block calendar's), every OTHER
+  // domain is its ¬ exclusion — implied by mutual exclusivity, and shown,
+  // because the logic must stay legible. Tags are two-state: off, or
+  // required (∧).
+  const domainChip = d => {
+    const inForce = String(d.id) === String(ctxDomainId);
+    const isBase = inForce && engageView.ctxDomain == null;
+    const title = isBase ? "the block calendar's domain — the resting scope"
+      : inForce ? 'the domain in force — click to return to the resting scope'
+      : 'excluded (domains are mutually exclusive) — click to make this the domain';
+    return `<button class="ctx-chip ${inForce ? (isBase ? 'ctx-base' : 'ctx-req') : 'ctx-not'}"
+      data-ctx="domain:${d.id}" title="${title}"
+      >${inForce ? '' : '¬'}${escHtml(d.name)}</button>`;
+  };
+  const tagChip = t => {
+    const on = engageView.ctxTags.has(t);
+    const bound = tagLoc[t];
+    // A device tag is already a gate, so it is marked like a bound one — and
+    // it is NOT bindable to a location (the hardware is the context).
+    const dev = DEVICE_TAGS.includes(t);
+    return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-ctx="tag:${t}"
+      title="${on ? 'required — click to clear' : 'click to require'}${dev
+        ? ` · ▭ only available on the ${escHtml(t)}`
+        : bound
+        ? ` · ⌖ only at ${escHtml(bound.name)} (right-click / long-press to change)`
+        : ' · right-click / long-press to bind a location'}"
+      >${on ? '∧' : ''}${escHtml(t)}${dev ? '▭' : bound ? '⌖' : ''}</button>`;
+  };
+  const poolTags = [...new Set(engageView.pool.flatMap(itemTags))].sort();
+  const ctxCount = (engageView.ctxDomain != null ? 1 : 0) + engageView.ctxTags.size;
+  const domainName = id =>
+    (state.domains.find(d => String(d.id) === String(id)) || {}).name || 'contexts';
+  // The button IS the formula: domain ∧ ¬other ∧ ¬other ∧ tag ∧ tag.
+  const notTerms = state.domains
+    .filter(d => String(d.id) !== String(ctxDomainId))
+    .map(d => '¬' + d.name);
+  const tagTerms = [...engageView.ctxTags];
+  const shownTags = tagTerms.slice(0, 2);
+  const ctxLabel = [domainName(ctxDomainId), ...notTerms, ...shownTags].join(' ∧ ')
+    + (tagTerms.length > 2 ? ` ∧ +${tagTerms.length - 2}` : '');
+
+  // 9c header: NOW-panel button top-left, the day as the title, domain chip.
+  header.innerHTML = `
+    <button id="eg-panel-btn" title="NOW panel">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+      </svg>
+    </button>
+    <button class="eg-nav" id="eg-prev" title="Previous day">‹</button>
+    <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
+      title="Open this day in calendar view">
+      <span class="eg-day-name">${viewDate.toLocaleDateString('en-US', { weekday: 'long' })}</span>
+      <span class="eg-day-date">${viewDate.getDate()} ${viewDate.toLocaleDateString('en-US', { month: 'short' })}</span>
+    </button>
+    <button class="eg-nav" id="eg-next" title="Next day">›</button>
+    ${isToday ? `<span class="eg-clock" id="eg-clock">${egHeaderClock()}</span>`
+      : '<button id="eg-today" title="Back to today">today</button>'}
+    <span class="eg-spacer"></span>
+    <button class="eg-domain" id="eg-ctx-btn" title="Contexts — one domain in force (the rest excluded), every selected tag required">${escHtml(ctxLabel)} ▾</button>
+    ${engageView.ctxOpen ? `<div id="eg-ctx-menu">
+      <div class="ctx-group">Domain — one in force, others excluded</div>
+      <div class="ctx-chips">${state.domains.map(domainChip).join('')}</div>
+      ${poolTags.length ? `<div class="ctx-group">Tags — every selected one required</div>
+      <div class="ctx-chips">${poolTags.map(tagChip).join('')}</div>` : ''}
+      ${engageView.ctxLocFor != null ? `
+      <div class="ctx-group">⌖ ${escHtml(engageView.ctxLocFor)} — only available at…</div>
+      <div class="ctx-chips">
+        ${state.locations.map(l => `<button class="ctx-chip ${tagLoc[engageView.ctxLocFor]
+            && tagLoc[engageView.ctxLocFor].id === l.id ? 'ctx-req' : 'ctx-off'}"
+          data-bindloc="${l.id}">${escHtml(l.name)}</button>`).join('')
+          || '<span class="cl-hint">no location presets — add one in the QR manager</span>'}
+        ${tagLoc[engageView.ctxLocFor]
+          ? '<button class="ctx-chip" data-bindloc="none">✕ unbind</button>' : ''}
+      </div>` : ''}
+      <div class="ctx-foot">
+        <span class="ctx-legend"><b>∧</b> required · <b>¬</b> excluded</span>
+        <span class="ctx-legend">${state.geo.ok ? '⌖ located'
+          : '⌖ no fix'}</span>
+        <button id="eg-dev-swap" title="This device — ${detectDevice()} detected. #pc / #phone items only show on their own device; click to correct it.">▭ ${device}${device === detectDevice() ? '' : ' ✎'}</button>
+        ${state.geo.ok ? '' : '<button id="eg-geo-enable" title="Request location — location-bound tags need a fix">enable</button>'}
+        ${ctxCount ? '<button id="eg-ctx-clear">clear</button>' : ''}
+      </div>
+    </div>` : ''}
+  `;
+
+  // The routine details card: the area's blocks as read-only steps (their
+  // completion is the clock passing them) + the routine_item checklist,
+  // checkable/editable/addable — and adding NEVER creates a block.
+  let popHtml = '';
+  if (engageView.routinePop != null) {
+    const rt = rows.find(r => r.kind === 'routine' && r.areaId === engageView.routinePop);
+    const area = state.areas.find(a => a.id === engageView.routinePop) || {};
+    const items = engageView.routineItems.filter(i => i.area_id === engageView.routinePop);
+    const steps = ((rt && rt.blocks) || []).map(b => `
+      <div class="eg-rt-step${b.cancelled ? ' eg-cancelled' : ''}${b.endMin <= nowMin ? ' eg-past' : ''}">
+        <span class="eg-time">${hhmm(b.minute)}</span>
+        <span class="eg-text">${escHtml(b.label)}</span>
+        <span class="eg-end">${hhmm(b.endMin)}</span>
+      </div>`).join('');
+    popHtml = `<div class="eg-rt-pop">
+      <div class="eg-rt-head">
+        <span class="eg-rt-title">${escHtml(area.name || 'Routine')}</span>
+        <button class="modal-close-btn" id="eg-rt-close">✕</button>
+      </div>
+      ${steps ? `<div class="eg-rt-steps">${steps}</div>` : ''}
+      <div class="eg-rt-items">
+        ${items.map(i => {
+          const done = i.done_date === dateStr;
+          return `<div class="eg-rt-item">
+            <span class="eg-check eg-rt-check${done ? ' eg-rt-checked' : ''}" data-rt="${i.id}"
+              title="${done ? 'Undo' : 'Done today'}">${done ? '✓' : ''}</span>
+            <span class="eg-text eg-rt-text${done ? ' eg-rt-done' : ''}" data-rt="${i.id}"
+              title="Double-click to rewrite">${escHtml(i.content)}</span>
+            <button class="eg-rt-del" data-rt="${i.id}" title="Remove from the routine">×</button>
+          </div>`;
+        }).join('') || '<div class="eg-empty">No checklist yet — add the first line below.</div>'}
+      </div>
+      <input type="text" class="eg-rt-add" placeholder="+ add to the routine…" autocomplete="off">
+    </div>`;
+  }
+
+  body.innerHTML = `
+    <div class="eg-day">${parts.join('')}</div>
+    <div class="eg-pool-head">Not scheduled${geoHidden
+      ? ` <span class="eg-geo-hidden" title="Hidden by location-bound tags — they return when you're there">⌖ ${geoHidden} elsewhere</span>` : ''}${devHidden
+      ? ` <span class="eg-dev-hidden" title="Tagged #${otherDevice} — they show up on the ${otherDevice}">▭ ${devHidden} ${otherDevice}-only</span>` : ''}</div>
+    <div class="eg-pool">
+      ${pool.map(i => `
+        <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
+          <span class="eg-check${i.started_at ? ' eg-check-started' : ''}" data-id="${i.id}"
+            title="${i.started_at ? 'In progress — tap for done, hold to clear' : 'Tap = done · hold = in progress'}">${i.started_at ? '◐' : ''}</span>
+          <span class="eg-text">${escHtml(i.content)}</span>
+          ${itemTags(i).filter(t => EST_TAGS.includes(t))
+            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
+          ${dueChip(i, 'eg-tag')}
+          ${itemTags(i).filter(t => !EST_TAGS.includes(t))
+            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
+        </div>`).join('') || '<div class="eg-empty">Nothing available — done, parked, or handed off.</div>'}
+    </div>
+    ${popHtml}
+  `;
+
+  // The bottom bar is global now (renderBar) — repaint it alongside the day
+  // so the Clarify count and undo state stay honest.
+  renderBar();
+
+  // -- wiring --
+  // Day navigation. Not undoable (navigation, not data), and session-local:
+  // engageView.date is null for today so a restart always lands on the real
+  // day. The label doubles as "back to today" whenever you're elsewhere.
+  const shiftDay = delta => {
+    const d = egViewDate();
+    d.setDate(d.getDate() + delta);
+    const s = formatDateYMD(d);
+    engageView.date = s === formatDateYMD(new Date()) ? null : s;
+    refreshEngage();
+  };
+  header.querySelector('#eg-prev').addEventListener('click', () => shiftDay(-1));
+  header.querySelector('#eg-next').addEventListener('click', () => shiftDay(1));
+  // The day itself is the door to the timeline: open calendar view AT the
+  // viewed day (clamped to the timeline's ±3-day window). "Back to today" is
+  // the pill that appears only when you're elsewhere.
+  header.querySelector('#eg-day-btn').addEventListener('click', async () => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const target = egViewDate();
+    const diff = Math.round((new Date(target).setHours(0, 0, 0, 0) - today) / 86400000);
+    const clamped = Math.max(-3, Math.min(3, diff));
+    state.currentDate = new Date(today.getTime() + clamped * 86400000);
+    await fetchOverridesForDate(state.currentDate);
+    openM('cal-overlay');
+    renderTimeline();
+    renderSheetsInbox();
+  });
+  const todayBtn = header.querySelector('#eg-today');
+  if (todayBtn) todayBtn.addEventListener('click', () => {
+    engageView.date = null;
+    refreshEngage();
+  });
+
+  header.querySelector('#eg-panel-btn').addEventListener('click', async () => {
+    // PC: toggles the evergreen pywebview panel. Phone (no pywebview): the
+    // same active section, full-screened.
+    if (window.pywebview) {
+      await togglePanel();
+    } else {
+      openM('now-full');
+      renderNowFull();
+    }
+  });
+  header.querySelector('#eg-ctx-btn').addEventListener('click', () => {
+    engageView.ctxOpen = !engageView.ctxOpen;
+    engageView.ctxLocFor = null;
+    renderEngage();
+  });
+  // Right-click / long-press a TAG chip binds it to a location preset — the
+  // popover renders inside the menu; a plain click still toggles required.
+  // Device tags are skipped: they are already a gate, and the hardware is the
+  // context, so a geofence on top of one would be two answers to one question.
+  header.querySelectorAll('.ctx-chip[data-ctx^="tag:"]').forEach(b => {
+    if (DEVICE_TAGS.includes(b.dataset.ctx.slice(4))) return;
+    const openBind = () => {
+      engageView.ctxLocFor = b.dataset.ctx.slice(4);
+      renderEngage();
+    };
+    b.addEventListener('contextmenu', e => { e.preventDefault(); openBind(); });
+    onLongPress(b, openBind);
+  });
+  header.querySelectorAll('[data-bindloc]').forEach(b => {
+    b.addEventListener('click', async () => {
+      const tag = engageView.ctxLocFor;
+      if (b.dataset.bindloc === 'none') {
+        await fetch(`/api/tag-locations/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+        state.tagLocations = state.tagLocations.filter(x => x.tag !== tag);
+      } else {
+        state.tagLocations = await fetch('/api/tag-locations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tag, location_id: parseInt(b.dataset.bindloc) }),
+        }).then(r => r.json());
+      }
+      engageView.ctxLocFor = null;
+      renderEngage();
+    });
+  });
+
+  // Domains single-select (mutually exclusive — picking one IS excluding the
+  // rest; clicking the one in force returns to the resting scope). Tags
+  // toggle required ↔ off; there is no OR tier.
+  header.querySelectorAll('.ctx-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.ctx;
+      if (!k) return;   // the binding popover's chips carry data-bindloc instead
+      if (k.startsWith('domain:')) {
+        const id = k.slice(7);
+        engageView.ctxDomain =
+          String(engageView.ctxDomain) === id ? null : id;
+      } else {
+        const t = k.slice(4);
+        if (engageView.ctxTags.has(t)) engageView.ctxTags.delete(t);
+        else engageView.ctxTags.add(t);
+      }
+      renderEngage();
+    });
+  });
+  const ctxClear = header.querySelector('#eg-ctx-clear');
+  if (ctxClear) ctxClear.addEventListener('click', () => {
+    engageView.ctxDomain = null;
+    engageView.ctxTags.clear();
+    renderEngage();
+  });
+  // The device override. Detection has no fail-open state to fall back on, so
+  // this is the escape hatch: a wrong guess would hide real work silently, and
+  // silent is the one thing the pool may never be.
+  const devBtn = header.querySelector('#eg-dev-swap');
+  if (devBtn) devBtn.addEventListener('click', () => {
+    const next = currentDevice() === 'pc' ? 'phone' : 'pc';
+    // Clearing rather than storing when the flip lands back on the detected
+    // value keeps ✎ meaning "I disagreed", not "I clicked twice".
+    if (next === detectDevice()) localStorage.removeItem('device');
+    else localStorage.setItem('device', next);
+    renderEngage();
+  });
+
+  // Gesture-initiated location request — the path that actually makes iOS
+  // show the permission prompt when the load-time watch silently failed.
+  const geoBtn = header.querySelector('#eg-geo-enable');
+  if (geoBtn) geoBtn.addEventListener('click', () => {
+    initGeo();
+    toast('Requesting location…');
+  });
+
+  const after = async () => { await refreshEngage(); };
+
+  // [data-id] scopes this to inventory checkboxes — routine checks carry
+  // data-rt and PATCH the routine_item instead of deleting an inbox row.
+  // Tap = done (as ever). Press-and-hold ~½s = toggle ◐ in progress — a
+  // glance state, not availability: predicates ignore it, it just floats
+  // the row and marks what you're on. Cleared by another hold or by done.
+  body.querySelectorAll('.eg-check[data-id]').forEach(el => {
+    const id = parseInt(el.dataset.id);
+    const itemOf = () => [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+    let holdTimer = null, held = false;
+    el.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      held = false;
+      holdTimer = setTimeout(async () => {
+        held = true;
+        const item = itemOf();
+        if (!item) return;
+        undoablePatch(item, ['started_at'], item.started_at
+          ? `cleared in-progress on "${item.content}"`
+          : `marked "${item.content}" in progress`);
+        await patchInboxItem(id, { started_at: item.started_at ? null : new Date().toISOString() });
+        await after();
+      }, 500);
+    });
+    const cancelHold = () => clearTimeout(holdTimer);
+    el.addEventListener('pointerup', cancelHold);
+    el.addEventListener('pointerleave', cancelHold);
+    el.addEventListener('pointercancel', cancelHold);
+    // iOS long-press otherwise summons the callout/context menu.
+    el.addEventListener('contextmenu', e => e.preventDefault());
+    el.addEventListener('click', async () => {
+      if (held) { held = false; return; }   // the hold consumed this gesture
+      const item = itemOf();
+      await undoableDelete(id, `completed "${(item && item.content) || 'action'}"`);
+      await after();
+    });
+  });
+
+  // The pool's per-row exit glyphs are gone (2026-08): a pool row is text and
+  // a checkbox now, and push/waiting/someday are taken in the clarify sheet.
+
+  body.querySelectorAll('.eg-routine-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      const key = parseInt(el.dataset.area);
+      engageView.routinePop = engageView.routinePop === key ? null : key;
+      renderEngage();
+    });
+  });
+  // A gating routine on a QR hairline runs straight from the day. The runner
+  // needs refView.flows populated (it reads its own fetch, but the editor
+  // behind it doesn't exist here) — openFlowRun refetches, so this is safe
+  // from Engage with Lists never opened.
+  body.querySelectorAll('.eg-qr-flow').forEach(el => {
+    el.addEventListener('click', () => openFlowRun(parseInt(el.dataset.flow)));
+  });
+
+  const pop = body.querySelector('.eg-rt-pop');
+  if (pop) {
+    const rtHeaders = { 'Content-Type': 'application/json' };
+    pop.querySelector('#eg-rt-close').addEventListener('click', () => {
+      engageView.routinePop = null;
+      renderEngage();
+    });
+    pop.querySelectorAll('.eg-rt-check').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = parseInt(el.dataset.rt);
+        const item = engageView.routineItems.find(i => i.id === id);
+        if (!item) return;
+        const wasDone = item.done_date === dateStr;
+        await fetch(`/api/routine-items/${id}`, {
+          method: 'PATCH', headers: rtHeaders, body: JSON.stringify({ done: !wasDone }),
+        });
+        pushUndo(`${wasDone ? 'un-checked' : 'checked'} "${item.content}"`, async () => {
+          await fetch(`/api/routine-items/${id}`, {
+            method: 'PATCH', headers: rtHeaders, body: JSON.stringify({ done: wasDone }),
+          });
+          await refreshAfterUndo();
+        });
+        await refreshEngage();
+      });
+    });
+    pop.querySelectorAll('.eg-rt-del').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = parseInt(el.dataset.rt);
+        const row = engageView.routineItems.find(i => i.id === id);
+        await fetch(`/api/routine-items/${id}`, { method: 'DELETE' });
+        if (row) {
+          pushUndo(`removed "${row.content}" from the routine`, async () => {
+            await fetch('/api/routine-items/restore', {
+              method: 'POST', headers: rtHeaders, body: JSON.stringify(row),
+            });
+            await refreshAfterUndo();
+          });
+        }
+        await refreshEngage();
+      });
+    });
+    pop.querySelectorAll('.eg-rt-text').forEach(span => {
+      span.addEventListener('dblclick', () => {
+        const id = parseInt(span.dataset.rt);
+        const item = engageView.routineItems.find(i => i.id === id);
+        if (!item) return;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 's2-rename-input';
+        input.value = item.content;
+        span.replaceWith(input);
+        input.focus();
+        input.select();
+        let settled = false;
+        const finish = async save => {
+          if (settled) return;
+          settled = true;
+          const content = input.value.trim();
+          if (!save || !content || content === item.content) { renderEngage(); return; }
+          await fetch(`/api/routine-items/${id}`, {
+            method: 'PATCH', headers: rtHeaders, body: JSON.stringify({ content }),
+          });
+          await refreshEngage();
+        };
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        });
+        input.addEventListener('blur', () => finish(true));
+      });
+    });
+    const rtAdd = pop.querySelector('.eg-rt-add');
+    rtAdd.addEventListener('keydown', async e => {
+      if (e.key === 'Escape') { e.stopPropagation(); rtAdd.value = ''; rtAdd.blur(); return; }
+      if (e.key !== 'Enter') return;
+      const content = rtAdd.value.trim();
+      if (!content) return;
+      rtAdd.value = '';
+      await fetch('/api/routine-items', {
+        method: 'POST', headers: rtHeaders,
+        body: JSON.stringify({ area_id: engageView.routinePop, content }),
+      });
+      await refreshEngage();
+      body.querySelector('.eg-rt-add')?.focus();
+    });
+  }
+
+  // ⌘/Ctrl-click disables things from the day, without leaving it: a BLOCK
+  // toggles that day's cancel (block_override — the same write the timeline's
+  // body click makes, so it strikes through everywhere); an EVENT joins the
+  // timeline's dismissal set (gcal is a read-only mirror — "hide from my day"
+  // is the only honest verb for it). Plain click stays inert on both.
+  const egToggleBlockCancel = async blockId => {
+    const existing = engageView.overrides.find(o => o.block_id === blockId && o.date === dateStr);
+    const hasTimes = existing && (existing.start_time || existing.end_time);
+    const label = (state.blocks.find(b => b.id === blockId) || {}).label || 'block';
+    if (existing && existing.cancelled === 1 && !hasTimes) {
+      // Un-cancel with nothing else on the row — drop the override entirely
+      // (same rule as the timeline's toggle).
+      await fetch(`/api/overrides/${existing.id}`, { method: 'DELETE' });
+      pushUndo(`restored "${label}"`, async () => {
+        await fetch('/api/overrides', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ block_id: blockId, date: dateStr, cancelled: true }),
+        });
+        await refreshAfterUndo();
+      });
+    } else {
+      const target = !(existing && existing.cancelled === 1);
+      await fetch('/api/overrides', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ block_id: blockId, date: dateStr, cancelled: target }),
+      });
+      pushUndo(`${target ? 'cancelled' : 'restored'} "${label}"`, async () => {
+        await fetch('/api/overrides', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ block_id: blockId, date: dateStr, cancelled: !target }),
+        });
+        await refreshAfterUndo();
+      });
+    }
+    await refreshEngage();
+  };
+
+  body.querySelectorAll('.eg-block[data-block]').forEach(el => {
+    el.addEventListener('click', e => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      egToggleBlockCancel(parseInt(el.dataset.block));
+    });
+    onLongPress(el, () => egToggleBlockCancel(parseInt(el.dataset.block)));
+  });
+  body.querySelectorAll('.eg-event[data-ekey]').forEach(el => {
+    const hide = () => hideTimelineItem('event', el.dataset.ekey,
+      el.querySelector('.eg-text')?.textContent);
+    el.addEventListener('click', e => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      hide();
+    });
+    onLongPress(el, hide);
+  });
+
+  body.querySelectorAll('.eg-unplace').forEach(el => {
+    el.addEventListener('click', async () => {
+      const id = parseInt(el.dataset.id);
+      const was = engageView.placements.find(p => p.item_id === id);
+      await fetch(`/api/engage/placements/${id}?date=${dateStr}`, { method: 'DELETE' });
+      if (was) {
+        pushUndo('unscheduled an action', async () => {
+          await fetch('/api/engage/placements', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date: dateStr, item_id: id, minute: was.minute }),
+          });
+          await refreshAfterUndo();
+        });
+      }
+      await refreshEngage();
+    });
+  });
+
+  // Drag an action (pool or already-placed) into a gap.
+  const placeAt = async (id, minute) => {
+    engageView.dragId = null;
+    engageView.armId = null;
+    const was = engageView.placements.find(p => p.item_id === id);
+    await fetch('/api/engage/placements', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: dateStr, item_id: id, minute }),
+    });
+    pushUndo(was ? 'moved an action' : 'scheduled an action', async () => {
+      if (was) {
+        await fetch('/api/engage/placements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: dateStr, item_id: id, minute: was.minute }),
+        });
+      } else {
+        await fetch(`/api/engage/placements/${id}?date=${dateStr}`, { method: 'DELETE' });
+      }
+      await refreshAfterUndo();
+    });
+    await refreshEngage();
+  };
+
+  body.querySelectorAll('.eg-pool-item, .eg-action').forEach(row => {
+    row.addEventListener('dragstart', e => {
+      engageView.dragId = parseInt(row.dataset.id);
+      row.classList.add('eg-dragging');
+      // Gaps rest at 3px (whitespace, not targets) — open them all for the
+      // duration of the drag, same as the touch arm does.
+      body.querySelectorAll('.eg-gap').forEach(g => g.classList.add('eg-gap-armed'));
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', row.dataset.id);
+    });
+    row.addEventListener('dragend', () => {
+      engageView.dragId = null;
+      body.querySelectorAll('.eg-gap-over').forEach(g => g.classList.remove('eg-gap-over'));
+      if (engageView.armId == null)
+        body.querySelectorAll('.eg-gap').forEach(g => g.classList.remove('eg-gap-armed'));
+      row.classList.remove('eg-dragging');
+    });
+    // Tap a POOL row's text → the clarify sheet for that one item (re-decide
+    // it from the day; "Place in day" inside the sheet arms it for touch
+    // placement). Tap a PLACED action's text → arm it to move, as before.
+    // Mouse users still have drag for both.
+    row.addEventListener('click', e => {
+      if (!e.target.classList.contains('eg-text')) return;
+      const id = parseInt(row.dataset.id);
+      if (engageView.armId != null) {           // arming in progress: toggle off
+        engageView.armId = engageView.armId === id ? null : id;
+        renderEngage();
+        return;
+      }
+      const poolItem = row.classList.contains('eg-pool-item')
+        && engageView.pool.find(i => i.id === id);
+      if (poolItem) { openClarifyForItem(poolItem); return; }
+      engageView.armId = id;
+      renderEngage();
+    });
+  });
+  if (engageView.armId != null) {
+    const armed = body.querySelector(`.eg-pool-item[data-id="${engageView.armId}"], .eg-action[data-id="${engageView.armId}"]`);
+    if (armed) armed.classList.add('eg-armed');
+    body.querySelectorAll('.eg-gap').forEach(g => g.classList.add('eg-gap-armed'));
+  }
+
+  dragEdgeScroll(body);   // a drag can reach gaps above/below the fold
+  body.querySelectorAll('.eg-gap').forEach(gap => {
+    gap.addEventListener('dragover', e => {
+      if (engageView.dragId == null) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      gap.classList.add('eg-gap-over');
+    });
+    gap.addEventListener('dragleave', () => gap.classList.remove('eg-gap-over'));
+    gap.addEventListener('drop', async e => {
+      e.preventDefault();
+      const id = engageView.dragId || parseInt(e.dataTransfer.getData('text/plain'));
+      if (!id) return;
+      await placeAt(id, parseFloat(gap.dataset.minute));
+    });
+    gap.addEventListener('click', async () => {
+      if (engageView.armId == null) return;
+      await placeAt(engageView.armId, parseFloat(gap.dataset.minute));
+    });
+  });
+
+}
+
+// ── Full-screen NOW view (the phone's version of the panel) ───
+// Same selection rule as panel.js: latest start wins, ties break
+// event > routine > block.
+async function renderNowFull() {
+  const body = document.getElementById('now-full-body');
+  if (!body) return;
+  const day = await fetch('/api/engage/day').then(r => r.json()).catch(() => null);
+  if (!day) { body.innerHTML = '<div class="gtd-empty">Could not load the day.</div>'; return; }
+  const d = new Date();
+  const m = d.getHours() * 60 + d.getMinutes();
+  const PRIO = { event: 3, routine: 2, block: 1 };
+  const active = day.rows
+    .filter(r => r.start <= m && m < r.end)
+    .sort((a, b) => (b.start - a.start) || (PRIO[b.kind] - PRIO[a.kind]))[0] || null;
+  const next = day.rows.filter(r => r.start > m).sort((a, b) => a.start - b.start)[0] || null;
+  const hhmm = x => minutesToHHMM(((Math.round(x) % 1440) + 1440) % 1440);
+
+  let checklist = [];
+  if (active && active.kind === 'routine') {
+    checklist = day.routine_items
+      .filter(i => i.area_id === active.area_id && i.done_date !== day.date)
+      .map(i => ({ type: 'routine', id: i.id, text: i.content }));
+  } else if (active) {
+    checklist = day.placed
+      .filter(p => p.minute >= active.start && p.minute < active.end)
+      .map(p => ({ type: 'action', id: p.id, text: p.content }));
+  }
+
+  body.innerHTML = active ? `
+    <div class="nf-kind">${escHtml(active.kind.toUpperCase())}</div>
+    <div class="nf-label">${escHtml(active.label)}</div>
+    <div class="nf-elapsed">NOW · ${Math.max(0, m - active.start)} min in · ${hhmm(active.start)}–${hhmm(active.end)}</div>
+    <div class="nf-todos">${checklist.map(t => `
+      <button class="nf-todo" data-type="${t.type}" data-id="${t.id}">
+        <span class="nf-check">○</span><span class="nf-text">${escHtml(t.text)}</span>
+      </button>`).join('')}</div>
+    ${next ? `<div class="nf-next">next: ${escHtml(next.label)} at ${hhmm(next.start)}</div>` : ''}
+  ` : `
+    <div class="nf-label nf-idle">nothing active</div>
+    <div class="nf-next">${next ? `next: ${escHtml(next.label)} at ${hhmm(next.start)}`
+      : (day.rows.length ? 'day complete' : 'no fixed points today')}</div>
+  `;
+
+  body.querySelectorAll('.nf-todo').forEach(b => {
+    b.addEventListener('click', async () => {
+      const id = parseInt(b.dataset.id);
+      const label = b.querySelector('.nf-text')?.textContent || 'item';
+      if (b.dataset.type === 'routine') {
+        await fetch(`/api/routine-items/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ done: true }),
+        });
+        pushUndo(`checked "${label}"`, async () => {
+          await fetch(`/api/routine-items/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ done: false }),
+          });
+          await renderNowFull();
+          await refreshAfterUndo();
+        });
+      } else {
+        await undoableDelete(id, `completed "${label}"`);
+      }
+      await renderNowFull();
+      await refreshEngage();
+    });
+  });
+}
+
+// ── Clarify — getting "in" to empty (7b sheet + 8a/8b states) ─
+// One item at a time, oldest first, nothing goes back into "in". The three
+// verbs are Allen's do/delegate/defer; the only other exits are Trash and
+// Someday. Contexts ARE tags. "Show on" is defer_until — adding a TIME also
+// drops an engage placement on that date (today lands visibly in the day
+// behind the sheet; a future date is scheduled into that day's schedule when
+// it arrives). Date alone just defers — no placement. Delegation stamps today
+// and takes an optional chase date.
+const clarifyView = {
+  open: false, queue: [], total: 0, verb: 'defer',
+  action: '', tags: new Set(), showDate: '', showTime: '',
+  projectId: null, projectName: '', who: '', chase: '',
+  notes: '',          // support material, saved with the item on file
+  due: '',            // hard deadline (YMD) — real ones only; '' = none
+  refOpen: false,     // the Reference exit's list picker (R toggles)
+  refLists: [],       // loaded with the sheet's other vocab
+  projNotesOpen: false, // the chosen PROJECT's notes editor (✎ by the pill)
+  areaId: null,       // explicit filing target; null = the block calendar's
+  projSearch: null,   // null = main sheet; a string = the 8b search state
+  // The BREAKDOWN composer (2026-08-07). Non-null = the search view is showing
+  // the new project's action list instead: { id, name, actions, arm }.
+  compose: null,
+  peopleNames: [], tagVocab: [],
+  single: false,      // one item from the pool, not the inbox queue
+  external: false,    // the end-of-cycle step: stuff that lives on paper/email
+  // A PROJECT is a different decision from an action, so the sheet is a
+  // different sheet: an outcome has no next-physical-action, no context, no
+  // parent project and nothing to place in a day. What it does have is a
+  // state (active / deferred to a start date / someday / trashed / kept as
+  // reference), a real deadline, a domain, and support material.
+  project: false,
+  after: null,        // re-render for the surface that opened the sheet
+  // Filing is several round trips (patch → refetch → refresh day → refresh
+  // pool). Without a lock the sheet looks frozen and a second click files the
+  // NEXT item by accident — the one thing this surface must never do.
+  filing: false,
+};
+
+// The sheet's supporting vocab (people chips, tag vocab, project search),
+// shared by every way in — the inbox queue, a single pool item, external.
+async function clarifyLoadAux() {
+  const [people, all, projects, refLists] = await Promise.all([
+    fetch('/api/people').then(r => r.json()).catch(() => []),
+    fetch('/api/map').then(r => r.json()).catch(() => []),
+    fetch('/api/projects').then(r => r.json()).catch(() => []),
+    fetch('/api/ref').then(r => r.json()).catch(() => []),
+  ]);
+  clarifyView.refLists = Array.isArray(refLists) ? refLists : [];
+  clarifyView.peopleNames = (Array.isArray(people) ? people : [])
+    .map(p => p.name).filter(Boolean).slice(0, 8);
+  // Estimates ride the tag system (GTD's time-available criterion, same as
+  // energy): always offered, duration order, ahead of the observed vocab —
+  // so the picker's existing chips/filters do all the work with no new field.
+  // Device tags ride the same rail for the same reason (see DEVICE_TAGS) —
+  // and being always-offered is what makes them reachable at all, since a tag
+  // nothing carries yet can never appear in the observed vocab.
+  const observed = [...new Set((Array.isArray(all) ? all : []).flatMap(itemTags))]
+    .filter(t => !EST_TAGS.includes(t) && !DEVICE_TAGS.includes(t)).sort();
+  clarifyView.tagVocab = [...EST_TAGS, ...DEVICE_TAGS, ...observed];
+  state.projects = Array.isArray(projects) ? projects : [];
+}
+
+async function openClarify() {
+  state.inbox = await fetch('/api/inbox').then(r => r.json());
+  renderInbox();
+  await clarifyLoadAux();
+  clarifyView.queue = [...state.inbox].sort((a, b) =>
+    (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
+  clarifyView.total = clarifyView.queue.length;
+  clarifyView.single = false;
+  // An empty "in" doesn't mean an empty head: the cycle still ends (or, here,
+  // starts) with the stuff on sticky notes, in email, on paper.
+  clarifyView.external = !clarifyView.queue.length;
+  clarifyView.open = true;
+  clarifyResetItem();
+  renderClarify();
+}
+
+// Task 14's entry: one pool row re-clarified from the day, then back to it.
+// `after` re-renders whichever surface opened the sheet. The sheet writes all
+// three column families, so a clarify from GTD or MAP can change what those
+// lists should be showing — Engage passes nothing, because closeClarify's
+// renderInbox plus the day's own refresh already cover it.
+async function openClarifyForItem(item, after) {
+  await clarifyLoadAux();
+  clarifyView.queue = [item];
+  clarifyView.total = 1;
+  clarifyView.single = true;
+  clarifyView.external = false;
+  clarifyView.open = true;
+  clarifyView.after = after || null;
+  clarifyResetItem();
+  renderClarify();
+}
+
+function clarifyResetItem() {
+  const item = clarifyView.queue[0];
+  clarifyView.compose = null;
+  clarifyView.project = !!(item && item.kind === 'project');
+  clarifyView.verb = 'defer';
+  clarifyView.action = item ? item.content : '';
+  clarifyView.tags = new Set(item ? itemTags(item) : []);
+  clarifyView.showDate = '';
+  clarifyView.showTime = '';
+  // A project's start date is a standing property, not a fresh decision, so
+  // unlike an action's it is PREFILLED — "Active" is then the explicit act of
+  // clearing it, and re-filing a parked project can't silently un-park it.
+  if (clarifyView.project) {
+    const parked = item.defer_until && item.defer_until > formatDateYMD(new Date());
+    clarifyView.verb = parked ? 'defer' : 'active';
+    clarifyView.showDate = parked ? item.defer_until : '';
+  }
+  clarifyView.projectId = null;
+  clarifyView.projectName = '';
+  clarifyView.who = '';
+  clarifyView.chase = '';
+  clarifyView.notes = item ? (item.notes || '') : '';
+  clarifyView.due = item ? (item.deadline || '') : '';
+  clarifyView.areaId = item ? item.area_id : null;
+  clarifyView.projSearch = null;
+  clarifyView.projNotesOpen = false;
+  clarifyView.refOpen = false;
+}
+
+// Chain numbering for one project's actions: after_id links order them, and
+// [n] is the position along the walk from the head. Unchained actions get no
+// number. Returns {id: n} for every chained action in the set.
+function chainNumbers(actions) {
+  const byId = {};
+  actions.forEach(a => { byId[a.id] = a; });
+  const pointedAt = new Set(actions.filter(a => a.after_id && byId[a.after_id])
+    .map(a => a.after_id));
+  const nextOf = {};
+  actions.forEach(a => { if (a.after_id && byId[a.after_id]) nextOf[a.after_id] = a.id; });
+  const nums = {};
+  actions.forEach(a => {
+    const isHead = pointedAt.has(a.id) && !(a.after_id && byId[a.after_id]);
+    if (!isHead) return;
+    let n = 1, cur = a.id;
+    const seen = new Set();
+    while (cur != null && !seen.has(cur)) {
+      seen.add(cur);
+      nums[cur] = n++;
+      cur = nextOf[cur];
+    }
+  });
+  return nums;
+}
+
+function closeClarify() {
+  flushOpenNotes();
+  // Notes typed here must survive ANY exit, filed or not — Escape (and the
+  // backdrop) means CLOSE, never revert, same as every other notes editor.
+  // Only #cl-proj-notes had that guarantee; the item's own #cl-notes saved
+  // exclusively through filing, so Esc mid-clarify silently discarded it.
+  // Notes are additive support material, safe to write without filing: status,
+  // content and position stay untouched. The reworded action is deliberately
+  // NOT saved the same way — a rewording is part of the filing decision, and
+  // Esc declines that decision.
+  const item = clarifyView.queue[0];
+  if (item && !clarifyView.external && clarifyView.notes !== (item.notes || '')) {
+    undoablePatch(item, ['notes'], `edited notes on "${item.content}"`);
+    patchInboxItem(item.id, { notes: clarifyView.notes });
+    item.notes = clarifyView.notes;
+  }
+  const after = clarifyView.after;
+  clarifyView.open = false;
+  clarifyView.single = false;
+  clarifyView.external = false;
+  clarifyView.after = null;
+  document.getElementById('clarify-sheet').classList.add('hidden');
+  document.getElementById('clarify-backdrop').classList.add('hidden');
+  document.getElementById('engage-body').classList.remove('eg-dimmed');
+  renderInbox();
+  if (after) after();
+}
+
+async function fileClarify(bucket, refListId) {
+  if (clarifyView.filing) return;          // in flight — ignore the double click
+  // A project's "Active" IS the defer exit with no start date — the same
+  // write, so it is a label on this surface rather than a bucket of its own.
+  if (bucket === 'active') { clarifyView.showDate = ''; bucket = 'defer'; }
+  if (clarifyView.external) { await fileClarifyExternal(bucket, refListId); return; }
+  const item = clarifyView.queue[0];
+  if (!item) { closeClarify(); return; }
+  if (bucket === 'delegate' && !clarifyView.who.trim()) return;
+  if (bucket === 'reference' && !refListId) return;
+  clarifyView.filing = true;
+  paintClarifyBusy(true);
+  let refCreated = null;
+  try {
+    // Filing is one-way by GTD design, but a misfile should still be
+    // recoverable: snapshot the item exactly as it sat in "in".
+    const snap = await snapshotItem(item.id);
+    const patch = body => fetch(`/api/inbox/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const content = clarifyView.action.trim() || item.content;
+    // The design has no area control: the block calendar's area is the silent
+    // default (same suggestion the old processing table made), a chosen project
+    // overrides it server-side, and MAP can re-file later.
+    const areaId = clarifyView.areaId || item.area_id || state.activeAreaId
+      || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
+
+    // (The 'breakdown' bucket — the capture BECOMING the project — was
+    // replaced 2026-08-07 by clarifyCreateProject's composer: naming the
+    // outcome and putting this action inside it, rather than promoting a line
+    // that was written as an action into an outcome it doesn't read as.)
+    if (bucket === 'trash' || bucket === 'do') {
+      // Do now = the two-minute rule: you did it; filing marks it done.
+      await fetch(`/api/inbox/${item.id}`, { method: 'DELETE' });
+    } else if (bucket === 'reference') {
+      // The other non-actionable keep: the text moves to a reference list and
+      // the item leaves the action inventory entirely.
+      refCreated = await fetch('/api/ref/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ list_id: refListId, content }),
+      }).then(r => r.json());
+      await fetch(`/api/inbox/${item.id}`, { method: 'DELETE' });
+    } else if (bucket === 'someday') {
+      // No due input on this exit, but the prefilled value rides along so
+      // parking a deadlined item never silently drops its deadline.
+      await patch({ content, status: 'on_hold', area_id: areaId,
+                    notes: clarifyView.notes,
+                    deadline: clarifyView.due || null });
+    } else if (bucket === 'delegate') {
+      await patch({ content, status: 'waiting', area_id: areaId,
+                    waiting_on: clarifyView.who.trim(),
+                    chase_on: clarifyView.chase || null,
+                    notes: clarifyView.notes,
+                    deadline: clarifyView.due || null,
+                    tags: [...clarifyView.tags].join(' ') });
+    } else {
+      const body = { content, status: 'active', area_id: areaId,
+                     tags: [...clarifyView.tags].join(' '),
+                     notes: clarifyView.notes,
+                     deadline: clarifyView.due || null,
+                     defer_until: clarifyView.showDate || null };
+      if (clarifyView.projectId) body.project_id = clarifyView.projectId;
+      await patch(body);
+      if (clarifyView.showDate && clarifyView.showTime) {
+        // A time schedules it: the placement lands in THAT day's schedule.
+        // Prior placements go first, so re-clarifying to a new slot never
+        // leaves a stale one behind on another date.
+        for (const p of (snap && snap.placements) || []) {
+          await fetch(`/api/engage/placements/${item.id}?date=${p.date}`, { method: 'DELETE' });
+        }
+        await fetch('/api/engage/placements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item_id: item.id, date: clarifyView.showDate,
+                                 minute: timeToMinutes(clarifyView.showTime) }),
+        });
+      }
+    }
+
+    if (snap) {
+      const verb = { do: 'did', trash: 'trashed', someday: 'parked',
+                     delegate: 'delegated', defer: 'filed',
+                     reference: 'referenced' }[bucket] || 'filed';
+      pushUndo(`${verb} "${item.content}"`, async () => {
+        // A reference filing has TWO effects; undo reverses both.
+        if (refCreated) await fetch(`/api/ref/items/${refCreated.id}`, { method: 'DELETE' });
+        await fetch('/api/inbox/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(snap),
+        });
+        // Put it back at the head of the queue if the sheet is still open.
+        if (clarifyView.open) {
+          clarifyView.queue.unshift(snap.row);
+          clarifyResetItem();
+          renderClarify();
+        }
+        await refreshAfterUndo();
+      });
+    }
+      clarifyView.queue.shift();
+      state.inbox = await fetch('/api/inbox').then(r => r.json());
+      await refreshEngage();
+      await refreshActiveItems();
+      if (!clarifyView.queue.length) {
+        // A single pool item goes straight back to the day. The inbox cycle
+        // ends with the EXTERNAL step: the head isn't empty until the sticky
+        // notes, emails and paper scraps have been clarified too.
+        if (clarifyView.single) { closeClarify(); return; }
+        clarifyView.external = true;
+      }
+      clarifyResetItem();
+      renderClarify();
+  } finally {
+    clarifyView.filing = false;
+    paintClarifyBusy(false);
+  }
+}
+
+// External mode: no source row — YOU hold the item (a sticky note, an email
+// thread, a pile of paper). The typed next physical action is the content;
+// filing creates the item and then routes it exactly like an inbox row.
+// Do now / Trash store nothing: the thing happened (or died) outside the app.
+async function fileClarifyExternal(bucket, refListId) {
+  const content = clarifyView.action.trim();
+  if (!content && bucket !== 'trash') return;
+  if (bucket === 'delegate' && !clarifyView.who.trim()) return;
+  if (bucket === 'reference' && !refListId) return;
+  clarifyView.filing = true;
+  paintClarifyBusy(true);
+  try {
+    if (bucket === 'reference') {
+      // Straight to the list — reference never touches the action inventory.
+      const created = await fetch('/api/ref/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ list_id: refListId, content }),
+      }).then(r => r.json());
+      pushUndo(`referenced "${content}"`, async () => {
+        await fetch(`/api/ref/items/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+    } else if (bucket !== 'trash' && bucket !== 'do') {
+      const areaId = clarifyView.areaId || state.activeAreaId
+        || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
+      const created = await fetch('/api/inbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      }).then(r => r.json());
+      const patch = body => fetch(`/api/inbox/${created.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (bucket === 'someday') {
+        await patch({ status: 'on_hold', area_id: areaId, notes: clarifyView.notes,
+                      deadline: clarifyView.due || null });
+      } else if (bucket === 'delegate') {
+        await patch({ status: 'waiting', area_id: areaId,
+                      waiting_on: clarifyView.who.trim(),
+                      chase_on: clarifyView.chase || null,
+                      notes: clarifyView.notes,
+                      deadline: clarifyView.due || null,
+                      tags: [...clarifyView.tags].join(' ') });
+      } else {
+        const body = { status: 'active', area_id: areaId,
+                       tags: [...clarifyView.tags].join(' '),
+                       notes: clarifyView.notes,
+                       deadline: clarifyView.due || null,
+                       defer_until: clarifyView.showDate || null };
+        if (clarifyView.projectId) body.project_id = clarifyView.projectId;
+        await patch(body);
+        if (clarifyView.showDate && clarifyView.showTime) {
+          await fetch('/api/engage/placements', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_id: created.id, date: clarifyView.showDate,
+                                   minute: timeToMinutes(clarifyView.showTime) }),
+          });
+        }
+      }
+      pushUndo(`clarified "${content}"`, async () => {
+        await fetch(`/api/inbox/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+    }
+    state.inbox = await fetch('/api/inbox').then(r => r.json());
+    await refreshEngage();
+    clarifyView.queue = [];
+    clarifyResetItem();
+    renderClarify();
+  } finally {
+    clarifyView.filing = false;
+    paintClarifyBusy(false);
+  }
+}
+
+// The sheet dims and the button says what it's doing, so the wait reads as
+// progress rather than a dead click.
+function paintClarifyBusy(busy) {
+  const sheet = document.getElementById('clarify-sheet');
+  if (!sheet) return;
+  sheet.classList.toggle('cl-busy', busy);
+  const btn = sheet.querySelector('#cl-file');
+  if (btn) {
+    btn.disabled = busy;
+    btn.textContent = busy ? 'Filing…' : 'File it ⏎';
+  }
+}
+
+function renderClarify() {
+  const sheet = document.getElementById('clarify-sheet');
+  const item = clarifyView.queue[0];
+  if (!clarifyView.open || (!item && !clarifyView.external)) { closeClarify(); return; }
+  document.getElementById('engage-body').classList.add('eg-dimmed');
+  document.getElementById('clarify-backdrop').classList.remove('hidden');
+  sheet.classList.remove('hidden');
+  if (clarifyView.compose) { renderClarifyCompose(sheet); return; }
+  if (clarifyView.projSearch != null) { renderClarifyProjSearch(sheet, item); return; }
+
+  const n = clarifyView.total - clarifyView.queue.length + 1;
+  const verb = clarifyView.verb;
+  // The project sheet: an outcome, not an action. No next-physical-action, no
+  // contexts, no parent project, nothing to drop into a day — the decision is
+  // just its state, its deadline and where it belongs.
+  const isProj = clarifyView.project && !clarifyView.external && !!item;
+  const verbBtn = (v, label, key) =>
+    `<button class="cl-verb${verb === v ? ' cl-verb-on' : ''}" data-verb="${v}">${label} <span class="cl-key">${key}</span></button>`;
+
+  let middle = '';
+  if (isProj) {
+    middle = verb === 'trash'
+      ? '<div class="cl-donow">Not a real outcome. Deleting it splices its actions up one level.</div>'
+      : `<div class="cl-row">
+        ${verb === 'defer' ? `<span class="cl-label">Start on</span>
+        <input type="date" id="cl-show-date" class="cl-date"
+          title="When you want to start working on this" value="${clarifyView.showDate}">` : ''}
+        <span class="cl-label">Due</span>
+        <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
+      </div>`;
+  } else if (verb === 'delegate') {
+    const custom = clarifyView.peopleNames.includes(clarifyView.who) ? '' : clarifyView.who;
+    middle = `
+      <div class="cl-sec"><span class="cl-label">Waiting on</span><span class="cl-hint">who owns it now</span></div>
+      <div class="cl-chips">
+        ${clarifyView.peopleNames.map(nm =>
+          `<button class="cl-chip${clarifyView.who === nm ? ' cl-chip-on' : ''}" data-who="${escHtml(nm)}">${escHtml(nm)}</button>`).join('')}
+        <input type="text" id="cl-who-custom" class="cl-chip-input" placeholder="+ someone" value="${escHtml(custom)}">
+      </div>
+      <div class="cl-row">
+        <span class="cl-pill cl-pill-static">Handed off ${new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+        <span class="cl-label">Chase</span>
+        <input type="date" id="cl-chase" class="cl-date" title="Optional — when to chase" value="${clarifyView.chase}">
+        <span class="cl-label">Due</span>
+        <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
+      </div>`;
+  } else if (verb === 'defer') {
+    middle = `
+      <div class="cl-sec"><span class="cl-label">Contexts</span><span class="cl-hint">${clarifyView.tags.size} selected · pick any</span></div>
+      <div class="cl-chips">
+        ${clarifyView.tagVocab.map(t =>
+          `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+        <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
+      </div>
+      <div class="cl-row">
+        <span class="cl-label">Show on</span>
+        <input type="date" id="cl-show-date" class="cl-date"
+          title="Date alone defers; adding a time places it into that day's schedule" value="${clarifyView.showDate}">
+        <input type="time" id="cl-show-time" class="cl-date" value="${clarifyView.showTime}" title="A time schedules it into that day">
+        ${clarifyView.showTime ? '<button id="cl-show-time-x" class="cl-x" title="Clear the time — date alone just defers">✕</button>' : ''}
+        <span class="cl-label">Due</span>
+        <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
+      </div>
+      <div class="cl-row">
+        <span class="cl-label">Project</span>
+        <button id="cl-proj" class="cl-pill${clarifyView.projectId ? ' cl-pill-on' : ''}">${clarifyView.projectId ? escHtml(clarifyView.projectName) : 'none'} ⌕</button>
+        ${clarifyView.projectId ? `<button id="cl-proj-notes-btn" class="cl-pill${clarifyView.projNotesOpen ? ' cl-pill-on' : ''}"
+          title="The project's support material — saved to the project, not this item">✎</button>` : ''}
+      </div>
+      ${clarifyView.projNotesOpen && clarifyView.projectId ? `
+      <textarea id="cl-proj-notes" class="cl-notes" rows="3"
+        placeholder="Support material for ${escHtml(clarifyView.projectName)}… markdown ok">${
+          escHtml(((state.projects || []).find(p => p.id === clarifyView.projectId) || {}).notes || '')}</textarea>` : ''}`;
+  } else {
+    middle = '<div class="cl-donow">Under two minutes — do it now. Filing marks it done.</div>';
+  }
+
+  // Where it lands. Domain first (the obligation level you actually think
+  // in), then that domain's areas when the choice is ambiguous. Defaults to
+  // the block calendar's area, so the common case is still zero taps.
+  if (verb !== 'do' && verb !== 'trash') {
+    const areas = state.areas.filter(a => a.active && a.type === 'standard');
+    const current = areas.find(a => a.id === clarifyView.areaId)
+      || areas.find(a => a.id === (state.activeAreaId || (item && item.area_id))) || areas[0];
+    const curDomain = current ? domainIdForArea(current.id) : defaultDomainId();
+    const siblings = areas.filter(a => domainIdForArea(a.id) === curDomain);
+    middle += `
+      <div class="cl-sec"><span class="cl-label">Filing to</span>
+        <span class="cl-hint">domain${siblings.length > 1 ? ' · area' : ''}</span></div>
+      <div class="cl-chips">
+        ${state.domains.map(d => `<button class="cl-chip${d.id === curDomain ? ' cl-chip-on' : ''}"
+           data-domain="${d.id}">${escHtml(d.name)}</button>`).join('')}
+      </div>
+      ${siblings.length > 1 ? `<div class="cl-chips">
+        ${siblings.map(a => `<button class="cl-chip${current && a.id === current.id ? ' cl-chip-on' : ''}"
+           data-area="${a.id}">${escHtml(a.name)}</button>`).join('')}
+      </div>` : ''}`;
+  }
+
+  const next = clarifyView.queue[1];
+  const ext = clarifyView.external;
+  // Support material rides along on every keep-it exit; do/trash discard it.
+  const notesHtml = verb === 'do' || verb === 'trash' ? '' : `
+    <div class="cl-sec"><span class="cl-label">Notes</span><span class="cl-hint">support material — optional</span></div>
+    <textarea id="cl-notes" class="cl-notes" rows="2"
+      placeholder="Links, thinking… markdown ok">${escHtml(clarifyView.notes)}</textarea>`;
+  const acts = isProj
+    ? ((state.projects || []).find(p => p.id === item.id) || {}).action_count
+    : null;
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">Clarify${isProj ? ' · project' : ''}</span>
+      <span class="cl-count">${ext ? 'outside the app' : `${n} of ${clarifyView.total}`}</span>
+      <span class="cl-spacer"></span>
+      <span class="cl-hint">one at a time · esc / tap off</span>
+    </div>
+    ${ext ? `
+    <div class="cl-item">
+      <div class="cl-title">Anything still in your head — or on it?</div>
+      <div class="cl-captured">sticky notes · emails · paper. Type the next physical action; the source stays where it is.</div>
+    </div>` : `
+    <div class="cl-item">
+      <div class="cl-title">${escHtml(item.content)}</div>
+      <div class="cl-captured">${isProj
+        ? (acts ? `${acts} next action${acts === 1 ? '' : 's'}`
+                : '<span class="cl-proj-bad">no next action</span>')
+        : `captured ${(item.captured_at || '').slice(0, 10)}`}</div>
+    </div>`}
+    <div class="cl-sec"><span class="cl-q">${isProj
+      ? "What's the outcome?" : "What's the next physical action?"}</span></div>
+    <div class="cl-action-wrap"><input type="text" id="cl-action" class="cl-action" value="${escHtml(clarifyView.action)}" autocomplete="off"${ext ? ' placeholder="e.g. Reply to Sam about the venue"' : ''}></div>
+    <div class="cl-verbs">${isProj
+      ? `${verbBtn('active', 'Active', 'A')}${verbBtn('defer', 'Defer', 'F')}${verbBtn('trash', 'Trash', '⌫')}`
+      : `${verbBtn('do', 'Do now', 'D')}${verbBtn('delegate', 'Delegate', 'G')}${verbBtn('defer', 'Defer', 'F')}`}</div>
+    ${middle}
+    ${notesHtml}
+    <div class="cl-row cl-or">
+      <span class="cl-label">Or</span>
+      ${ext || isProj ? '' : `<button class="cl-pill" id="cl-trash">Trash <span class="cl-key">⌫</span></button>`}
+      <button class="cl-pill" id="cl-someday">Someday <span class="cl-key">S</span></button>
+      <button class="cl-pill${clarifyView.refOpen ? ' cl-pill-on' : ''}" id="cl-reference">Reference <span class="cl-key">R</span></button>
+    </div>
+    ${clarifyView.refOpen ? `<div class="cl-chips cl-ref-row">
+      ${clarifyView.refLists.map(l => `<button class="cl-chip" data-reflist="${l.id}">${escHtml(l.name)}</button>`).join('')}
+      <input type="text" id="cl-ref-new" class="cl-chip-input" placeholder="+ new list">
+    </div>` : ''}
+    <div class="cl-foot">
+      <span class="cl-then">${ext ? 'Repeat until your head is empty'
+        : next ? `Then: ${escHtml(next.content)}`
+        : clarifyView.single ? 'Then: back to the day' : 'Then: anything outside the app'}</span>
+      ${ext ? '<button id="cl-ext-done" class="cl-pill">Done</button>' : ''}
+      <button id="cl-file">${ext ? 'Add it ⏎' : 'File it ⏎'}</button>
+    </div>`;
+
+  sheet.querySelectorAll('.cl-verb').forEach(b => b.addEventListener('click', () => {
+    clarifyView.verb = b.dataset.verb;
+    // Active is "no start date" — picking it after Defer has to clear the one
+    // that was chosen, or the project files back into the same parked state.
+    if (clarifyView.verb === 'active') clarifyView.showDate = '';
+    renderClarify();
+  }));
+  sheet.querySelector('#cl-action').addEventListener('input', e => { clarifyView.action = e.target.value; });
+  sheet.querySelectorAll('.cl-chip[data-tag]').forEach(b => b.addEventListener('click', () => {
+    const t = b.dataset.tag;
+    if (clarifyView.tags.has(t)) clarifyView.tags.delete(t);
+    else {
+      // Estimates are exclusive: picking one duration unpicks the others.
+      if (EST_TAGS.includes(t)) EST_TAGS.forEach(e => clarifyView.tags.delete(e));
+      clarifyView.tags.add(t);
+    }
+    renderClarify();
+  }));
+  sheet.querySelectorAll('.cl-chip[data-who]').forEach(b => b.addEventListener('click', () => {
+    clarifyView.who = clarifyView.who === b.dataset.who ? '' : b.dataset.who;
+    renderClarify();
+  }));
+  sheet.querySelectorAll('.cl-chip[data-domain]').forEach(b => {
+    b.addEventListener('click', () => {
+      const did = parseInt(b.dataset.domain);
+      const areas = state.areas.filter(a => a.active && a.type === 'standard'
+                                            && domainIdForArea(a.id) === did);
+      // Land on that domain's default area; the area row refines it.
+      clarifyView.areaId = (areas.find(a => a.is_default) || areas[0] || {}).id || null;
+      renderClarify();
+    });
+  });
+  sheet.querySelectorAll('.cl-chip[data-area]').forEach(b => {
+    b.addEventListener('click', () => {
+      clarifyView.areaId = parseInt(b.dataset.area);
+      renderClarify();
+    });
+  });
+
+  const whoCustom = sheet.querySelector('#cl-who-custom');
+  if (whoCustom) whoCustom.addEventListener('input', e => { clarifyView.who = e.target.value; });
+  const tagNew = sheet.querySelector('#cl-tag-new');
+  if (tagNew) tagNew.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.stopPropagation();
+    const t = tagNew.value.trim().toLowerCase().replace(/^#/, '');
+    if (!t) return;
+    if (!clarifyView.tagVocab.includes(t)) clarifyView.tagVocab.push(t);
+    clarifyView.tagVocab.sort();
+    clarifyView.tags.add(t);
+    renderClarify();
+  });
+  const showDate = sheet.querySelector('#cl-show-date');
+  if (showDate) showDate.addEventListener('change', e => { clarifyView.showDate = e.target.value; });
+  const showTime = sheet.querySelector('#cl-show-time');
+  if (showTime) showTime.addEventListener('change', e => {
+    clarifyView.showTime = e.target.value;
+    if (e.target.value && !clarifyView.showDate) clarifyView.showDate = formatDateYMD(new Date());
+    renderClarify();  // date autofill + the clear ✕ appearing/going
+  });
+  const showTimeX = sheet.querySelector('#cl-show-time-x');
+  if (showTimeX) showTimeX.addEventListener('click', () => {
+    clarifyView.showTime = '';
+    renderClarify();
+  });
+  const chase = sheet.querySelector('#cl-chase');
+  if (chase) chase.addEventListener('change', e => { clarifyView.chase = e.target.value; });
+  const due = sheet.querySelector('#cl-due');
+  if (due) due.addEventListener('change', e => { clarifyView.due = e.target.value; });
+  const proj = sheet.querySelector('#cl-proj');
+  if (proj) proj.addEventListener('click', () => { clarifyView.projSearch = ''; renderClarify(); });
+  const notesTa = sheet.querySelector('#cl-notes');
+  if (notesTa) {
+    notesTa.addEventListener('input', e => { clarifyView.notes = e.target.value; });
+    // Not autosave-wired (closeClarify owns the flush), so add the markdown
+    // suite explicitly. insertText fires input, so the mirror above stays hot.
+    wireMdShortcuts(notesTa);
+  }
+  // The chosen PROJECT's notes, editable right where you're filing into it.
+  // Saves to the project on blur; the item's own notes are #cl-notes above.
+  const pnBtn = sheet.querySelector('#cl-proj-notes-btn');
+  if (pnBtn) pnBtn.addEventListener('click', () => {
+    clarifyView.projNotesOpen = !clarifyView.projNotesOpen;
+    renderClarify();
+    if (clarifyView.projNotesOpen) sheet.querySelector('#cl-proj-notes')?.focus();
+  });
+  const pnTa = sheet.querySelector('#cl-proj-notes');
+  if (pnTa) {
+    let pnUndoPushed = false;
+    const pnFlush = wireNotesAutosave(pnTa, async value => {
+      const target = (state.projects || []).find(p => p.id === clarifyView.projectId);
+      if (!target || value === (target.notes || '')) return;
+      if (!pnUndoPushed) {
+        pnUndoPushed = true;
+        undoablePatch(target, ['notes'], `edited notes on "${target.content}"`);
+      }
+      await patchInboxItem(target.id, { notes: value });
+      target.notes = value;
+    });
+    pnTa.addEventListener('blur', pnFlush);
+    pnTa.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        pnFlush();
+        clarifyView.projNotesOpen = false;
+        renderClarify();
+      }
+    });
+  }
+  const trash = sheet.querySelector('#cl-trash');
+  if (trash) trash.addEventListener('click', () => fileClarify('trash'));
+  sheet.querySelector('#cl-someday').addEventListener('click', () => fileClarify('someday'));
+  // Reference: the OTHER non-actionable keep. The pill reveals the list
+  // chips; tapping a chip files immediately (exits are one gesture), and the
+  // + input creates the list and files into it in the same stroke.
+  sheet.querySelector('#cl-reference').addEventListener('click', () => {
+    clarifyView.refOpen = !clarifyView.refOpen;
+    renderClarify();
+  });
+  sheet.querySelectorAll('.cl-chip[data-reflist]').forEach(b => b.addEventListener('click', () => {
+    fileClarify('reference', parseInt(b.dataset.reflist));
+  }));
+  const refNew = sheet.querySelector('#cl-ref-new');
+  if (refNew) refNew.addEventListener('keydown', async e => {
+    if (e.key !== 'Enter') return;
+    e.stopPropagation();
+    const name = refNew.value.trim();
+    if (!name) return;
+    const nl = await fetch('/api/ref/lists', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }).then(r => r.json());
+    clarifyView.refLists.push(nl);
+    fileClarify('reference', nl.id);
+  });
+  sheet.querySelector('#cl-file').addEventListener('click', () => fileClarify(clarifyView.verb));
+  const extDone = sheet.querySelector('#cl-ext-done');
+  if (extDone) extDone.addEventListener('click', closeClarify);
+  // ("Place in day" retired 2026-08-06: Show-on date+TIME is the one way a
+  // clarify schedules into the day — no second pill for the same write.)
+}
+
+// Lexical relevance for the project search: word overlap (weighted) plus a
+// character-bigram Dice score for the fuzzy tail. At this corpus size this IS
+// semantic search — no embeddings, no network, instant.
+function relScore(a, b) {
+  const words = s => new Set(s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/).filter(w => w.length > 2));
+  const wa = words(a), wb = words(b);
+  let overlap = 0;
+  wa.forEach(w => { if (wb.has(w)) overlap++; });
+  const grams = s => {
+    const g = new Set(); const t = s.toLowerCase();
+    for (let i = 0; i < t.length - 1; i++) g.add(t.slice(i, i + 2));
+    return g;
+  };
+  const ga = grams(a), gb = grams(b);
+  let inter = 0;
+  ga.forEach(x => { if (gb.has(x)) inter++; });
+  const dice = ga.size + gb.size ? 2 * inter / (ga.size + gb.size) : 0;
+  return overlap * 2 + dice;
+}
+
+function renderClarifyProjSearch(sheet, item) {
+  const q = (clarifyView.projSearch || '').toLowerCase();
+  const matches = state.projects.filter(p => !q || p.content.toLowerCase().includes(q));
+  const active = matches.filter(p => p.status !== 'on_hold');
+  const dormant = matches.filter(p => p.status === 'on_hold');
+  const byArea = {};
+  active.forEach(p => { const k = p.area_name || '—'; (byArea[k] = byArea[k] || []).push(p); });
+
+  // Before any typing, lead with the projects that look like THIS item — the
+  // common case is that the right project shares its words with the capture.
+  const seed = clarifyView.action.trim() || (item && item.content) || '';
+  const best = !q && seed
+    ? state.projects.filter(p => p.status !== 'on_hold')
+        .map(p => [relScore(seed, p.content), p])
+        .filter(([s]) => s >= 0.5)
+        .sort((x, y) => y[0] - x[0])
+        .slice(0, 3).map(([, p]) => p)
+    : [];
+  const bestHtml = best.length ? `
+    <div class="cl-proj-group">Closest matches</div>
+    ${best.map(p => `
+      <button class="cl-proj-row" data-proj="${p.id}">
+        <span class="cl-proj-name">${escHtml(p.content)}</span>
+        <span class="cl-proj-meta">${escHtml(p.area_name || '—')}</span>
+      </button>`).join('')}` : '';
+
+  const rows = Object.keys(byArea).sort().map(area => `
+    <div class="cl-proj-group">${escHtml(area)} · ${byArea[area].length} open</div>
+    ${byArea[area].map(p => `
+      <button class="cl-proj-row" data-proj="${p.id}">
+        <span class="cl-proj-name">${escHtml(p.content)}</span>
+        <span class="cl-proj-meta${p.action_count ? '' : ' cl-proj-bad'}">${
+          p.action_count ? `${p.action_count} action${p.action_count === 1 ? '' : 's'}` : 'no next action'}</span>
+      </button>`).join('')}`).join('');
+  const dorm = dormant.length ? `
+    <div class="cl-proj-group">Someday / maybe</div>
+    ${dormant.map(p => `
+      <button class="cl-proj-row" data-proj="${p.id}">
+        <span class="cl-proj-name cl-proj-dormant">${escHtml(p.content)}</span>
+        <span class="cl-proj-meta">dormant</span>
+      </button>`).join('')}` : '';
+
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">Clarify · project</span>
+      <span class="cl-spacer"></span>
+      <span class="cl-hint">esc to go back</span>
+    </div>
+    <div class="cl-item">
+      <div class="cl-proj-for">${escHtml(clarifyView.action.trim() || (item && item.content) || '')}</div>
+      <div class="cl-captured">Which open loop does this belong to?</div>
+    </div>
+    <div class="cl-action-wrap cl-proj-search">
+      <input type="text" id="cl-proj-q" class="cl-action" placeholder="⌕ type to filter" value="${escHtml(clarifyView.projSearch || '')}" autocomplete="off">
+      <span class="cl-hint">${matches.length} of ${state.projects.length}</span>
+    </div>
+    ${q ? `<button class="cl-proj-row cl-proj-new" id="cl-proj-new">
+      <span>+ New project — "${escHtml(clarifyView.projSearch)}"</span><span class="cl-key">⏎</span>
+    </button>` : ''}
+    <div class="cl-proj-list">${bestHtml}${rows}${dorm}</div>
+    <button class="cl-proj-row" id="cl-proj-none">No project — file as a standalone action</button>`;
+
+  const input = sheet.querySelector('#cl-proj-q');
+  input.addEventListener('input', e => {
+    clarifyView.projSearch = e.target.value;
+    preserveCaret('cl-proj-q', renderClarify);
+  });
+  input.addEventListener('keydown', async e => {
+    if (e.key !== 'Enter') return;
+    e.stopPropagation();
+    const nq = input.value.trim();
+    if (!nq) return;
+    await clarifyCreateProject(nq);
+  });
+  const newBtn = sheet.querySelector('#cl-proj-new');
+  if (newBtn) newBtn.addEventListener('click', () => clarifyCreateProject(clarifyView.projSearch.trim()));
+  sheet.querySelectorAll('.cl-proj-row[data-proj]').forEach(b => b.addEventListener('click', () => {
+    const p = state.projects.find(x => x.id === parseInt(b.dataset.proj));
+    clarifyView.projectId = p.id;
+    clarifyView.projectName = p.content;
+    clarifyView.projSearch = null;
+    renderClarify();
+  }));
+  sheet.querySelector('#cl-proj-none').addEventListener('click', () => {
+    clarifyView.projectId = null;
+    clarifyView.projectName = '';
+    clarifyView.projSearch = null;
+    renderClarify();
+  });
+}
+
+// Creating a project IS the breakdown flow now (2026-08-07, replacing "⤷ Break
+// this down"). The old one made the CAPTURE become the project and left you in
+// the bar with an empty outcome; this one names the outcome, puts the thing you
+// were clarifying IN it as action [1], and opens the composer so the rest of
+// the decomposition — more actions, then the order they go in — happens in one
+// place, while you still have the project in your head.
+async function clarifyCreateProject(name) {
+  if (!name) return;
+  const areaId = clarifyView.areaId || state.activeAreaId
+    || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
+  const p = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: name, area_id: areaId }),
+  }).then(r => r.json());
+  state.projects = await fetch('/api/projects').then(r => r.json());
+  clarifyView.projectId = p.id;
+  clarifyView.projectName = p.content;
+  clarifyView.projSearch = null;
+
+  // The external step has no source row to file, so it opens the composer
+  // empty — the project's first action is typed in the add field like the rest.
+  const item = clarifyView.external ? null : clarifyView.queue[0];
+  if (item) {
+    // Commit the item into the project as clarified, WITHOUT advancing the
+    // queue: fileClarify would move to the next capture and take the composer
+    // with it. Everything the main sheet had decided rides along, so opening
+    // the composer never silently drops a tag or a due date.
+    const snap = await snapshotItem(item.id);
+    const content = clarifyView.action.trim() || item.content;
+    await fetch(`/api/inbox/${item.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, status: 'active', area_id: areaId,
+                             project_id: p.id,
+                             tags: [...clarifyView.tags].join(' '),
+                             notes: clarifyView.notes,
+                             deadline: clarifyView.due || null,
+                             defer_until: clarifyView.showDate || null }),
+    });
+    item.content = content;
+    item.notes = clarifyView.notes;
+    // One undo for the whole act: the item goes back to "in" AND the project
+    // it was created for goes away. Half of it would leave an empty project.
+    pushUndo(`broke down "${content}"`, async () => {
+      if (snap) {
+        await fetch('/api/inbox/restore', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(snap),
+        });
+      }
+      await fetch(`/api/inbox/${p.id}`, { method: 'DELETE' });
+      await refreshAfterUndo();
+    });
+    // It has left "in", so it leaves the queue — the composer is what stands
+    // in for this item's remaining clarify.
+    clarifyView.queue.shift();
+    state.inbox = state.inbox.filter(x => x.id !== item.id);
+    renderInbox();
+  }
+  clarifyView.compose = { id: p.id, name: p.content, areaId, actions: [], arm: null };
+  await refreshCompose();
+}
+
+// The composer's action list is read back from the server so [n] positions and
+// the blocked/unblocked state are the real ones, not a local guess.
+async function refreshCompose() {
+  if (!clarifyView.compose) return;
+  const all = await fetch('/api/map').then(r => r.json()).catch(() => []);
+  clarifyView.compose.actions = all.filter(
+    i => i.project_id === clarifyView.compose.id && i.kind !== 'project');
+  renderClarify();
+}
+
+function renderClarifyCompose(sheet) {
+  const c = clarifyView.compose;
+  const nums = chainNumbers(c.actions);
+  const byId = {};
+  c.actions.forEach(a => { byId[a.id] = a; });
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">Clarify · breaking down</span>
+      <span class="cl-spacer"></span>
+      <span class="cl-hint">esc when you're done</span>
+    </div>
+    <div class="cl-item">
+      <div class="cl-proj-for">${escHtml(c.name)}</div>
+      <div class="cl-captured">What has to happen? Add the actions, then say which waits on which.</div>
+    </div>
+    <div class="cl-sec"><span class="cl-label">Actions</span>
+      <span class="cl-hint">${c.arm != null ? 'now tap the action it comes AFTER'
+        : 'drag one onto the one it comes after'}</span></div>
+    <div class="cl-chain">
+      ${c.actions.map(a => `
+        <div class="cl-chain-row${c.arm === a.id ? ' cl-chain-armed' : ''}"
+          draggable="true" data-id="${a.id}">
+          ${nums[a.id] ? `<span class="cl-chain-n">[${nums[a.id]}]</span>`
+            : '<span class="cl-chain-n cl-chain-free"></span>'}
+          <span class="cl-chain-text">${escHtml(a.content)}</span>
+          ${a.after_id ? `<button class="cl-chain-x" data-id="${a.id}"
+            title="Unchain — it stops waiting on ${escHtml((byId[a.after_id] || {}).content || 'that')}">✕</button>` : ''}
+        </div>`).join('')
+        || '<div class="gtd-empty">No actions yet — type the first one below.</div>'}
+    </div>
+    <div class="cl-action-wrap">
+      <input type="text" id="cl-compose-add" class="cl-action"
+        placeholder="+ add an action…" autocomplete="off">
+    </div>
+    <div class="cl-row">
+      <button class="cl-pill cl-pill-on" id="cl-compose-done">Done<span class="cl-key">⏎⏎</span></button>
+    </div>`;
+
+  const add = sheet.querySelector('#cl-compose-add');
+  add.addEventListener('keydown', async e => {
+    if (e.key !== 'Enter') return;
+    // stopPropagation, or the sheet's document-level Enter files the item.
+    e.stopPropagation();
+    const raw = add.value.trim();
+    // Enter on an EMPTY field is the way out — the same "one more, one more,
+    // done" rhythm the bar's rapid entry has.
+    if (!raw) { closeCompose(); return; }
+    add.value = '';
+    const { content, tags } = parseTags(raw);
+    const created = await fetch('/api/inbox', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, status: 'active', area_id: c.areaId,
+                             project_id: c.id, tags: tags.join(' ') }),
+    }).then(r => r.json());
+    pushUndo(`added "${content}"`, async () => {
+      await fetch(`/api/inbox/${created.id}`, { method: 'DELETE' });
+      await refreshAfterUndo();
+      if (clarifyView.compose) await refreshCompose();
+    });
+    await refreshCompose();
+    document.getElementById('cl-compose-add').focus();
+  });
+  add.focus();
+
+  // Dependencies, in the chain editor's own grammar (drag, or tap-arm then tap
+  // the predecessor) — one editor's gesture vocabulary, two places.
+  const link = async (fromId, toId) => {
+    if (fromId === toId) return;
+    const it = byId[fromId];
+    if (!it) return;
+    // Refuse a loop client-side; update_inbox_item no-ops it server-side too.
+    let cur = byId[toId];
+    const seen = new Set();
+    while (cur && cur.after_id && !seen.has(cur.id)) {
+      if (cur.after_id === fromId) { toast('That would make a loop'); return; }
+      seen.add(cur.id);
+      cur = byId[cur.after_id];
+    }
+    undoablePatch(it, ['after_id'], `chained "${it.content}"`);
+    await fetch(`/api/inbox/${fromId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ after_id: toId }),
+    });
+    c.arm = null;
+    await refreshCompose();
+  };
+  sheet.querySelectorAll('.cl-chain-row').forEach(rw => {
+    const id = parseInt(rw.dataset.id);
+    rw.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', String(id));
+      e.dataTransfer.effectAllowed = 'link';
+    });
+    rw.addEventListener('dragover', e => e.preventDefault());
+    rw.addEventListener('drop', e => {
+      e.preventDefault();
+      const from = parseInt(e.dataTransfer.getData('text/plain'));
+      if (from) link(from, id);
+    });
+    rw.addEventListener('click', e => {
+      if (e.target.classList.contains('cl-chain-x')) return;
+      if (c.arm == null || c.arm === id) { c.arm = c.arm === id ? null : id; renderClarify(); }
+      else link(c.arm, id);
+    });
+  });
+  sheet.querySelectorAll('.cl-chain-x').forEach(b => b.addEventListener('click', async () => {
+    const id = parseInt(b.dataset.id);
+    const it = byId[id];
+    undoablePatch(it, ['after_id'], `unchained "${it.content}"`);
+    await fetch(`/api/inbox/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ after_id: null }),
+    });
+    await refreshCompose();
+  }));
+  sheet.querySelector('#cl-compose-done').addEventListener('click', closeCompose);
+}
+
+// Leaving the composer resumes the clarify cycle where it left off: the item
+// that started it is already filed, so this is the next capture (or the
+// external step, or the end).
+function closeCompose() {
+  clarifyView.compose = null;
+  clarifyView.projSearch = null;
+  if (clarifyView.single) { closeClarify(); return; }
+  if (clarifyView.queue.length) clarifyResetItem();
+  else { clarifyView.external = true; clarifyResetItem(); }
+  renderClarify();
+  refreshEngage();
+}
+
+// Keyboard: the whole inbox can be emptied without the mouse. Typing fields
+// keep their keys; Enter files from the main sheet.
+document.addEventListener('keydown', e => {
+  if (!clarifyView.open) return;
+  const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+  // Both sub-views own their own keys — the composer's Enter adds an action.
+  if (clarifyView.projSearch != null || clarifyView.compose) return;
+  // Enter files from ANY field — the two inputs where Enter means something
+  // local (new tag, project query) stopPropagation before this handler, and
+  // the notes textarea keeps Enter as a newline.
+  if (e.key === 'Enter') {
+    if (e.target && e.target.tagName === 'TEXTAREA') return;
+    e.preventDefault();
+    fileClarify(clarifyView.verb);
+    return;
+  }
+  if (typing) return;
+  const k = e.key.toLowerCase();
+  // A project's keys mirror its verbs. Backspace SELECTS trash rather than
+  // firing it: deleting a project takes its actions with it a level up, which
+  // is more than one keystroke should do on its own.
+  if (clarifyView.project && !clarifyView.external) {
+    if (k === 'a') { clarifyView.verb = 'active'; clarifyView.showDate = ''; renderClarify(); }
+    else if (k === 'f') { clarifyView.verb = 'defer'; renderClarify(); }
+    else if (e.key === 'Backspace') { e.preventDefault(); clarifyView.verb = 'trash'; renderClarify(); }
+    else if (k === 's') { fileClarify('someday'); }
+    else if (k === 'r') { clarifyView.refOpen = !clarifyView.refOpen; renderClarify(); }
+    return;
+  }
+  if (k === 'd') { clarifyView.verb = 'do'; renderClarify(); }
+  else if (k === 'g') { clarifyView.verb = 'delegate'; renderClarify(); }
+  else if (k === 'f') { clarifyView.verb = 'defer'; renderClarify(); }
+  else if (k === 's') { fileClarify('someday'); }
+  else if (k === 'r') { clarifyView.refOpen = !clarifyView.refOpen; renderClarify(); }
+  else if (e.key === 'Backspace') { e.preventDefault(); fileClarify('trash'); }
+});
+
+function openBucketMgr() {
+  renderBucketMgr();
+  document.getElementById('bucket-mgr-overlay').classList.remove('hidden');
+}
+
+function renderBucketMgr() {
+  const body = document.getElementById('bucket-mgr-body');
+  const rows = peopleView.buckets.map(b => `
+    <div class="bm-row" data-id="${b.id}">
+      <button class="bm-swatch" title="Change color" style="background:${b.color || '#8a8a8a'}"></button>
+      <input type="text" class="bm-name" value="${escHtml(b.name)}"${b.active ? '' : ' disabled'}>
+      <button class="bm-toggle">${b.active ? 'retire' : 'activate'}</button>
+    </div>`).join('') || `<div class="pd-empty">No buckets yet</div>`;
+  body.innerHTML = `
+    <div class="bm-list">${rows}</div>
+    <form id="bm-add-form" class="be-inline-form">
+      <input type="text" id="bm-new-name" placeholder="New bucket name" autocomplete="off">
+      <button type="submit" id="bm-add-btn">Add</button>
+    </form>`;
+  body.querySelectorAll('.bm-row').forEach(row => {
+    const id = Number(row.dataset.id);
+    const nameInput = row.querySelector('.bm-name');
+    nameInput.addEventListener('blur', async () => {
+      if (nameInput.value === (peopleView.buckets.find(b => b.id === id) || {}).name) return;
+      await patchBucket(id, { name: nameInput.value });
+    });
+    row.querySelector('.bm-toggle').addEventListener('click', async () => {
+      const b = peopleView.buckets.find(x => x.id === id);
+      await patchBucket(id, { active: b.active ? 0 : 1 });
+    });
+    row.querySelector('.bm-swatch').addEventListener('click', () => {
+      const open = row.nextElementSibling && row.nextElementSibling.classList.contains('bm-palette');
+      body.querySelectorAll('.bm-palette').forEach(p => p.remove());
+      if (open) return;
+      const pal = document.createElement('div');
+      pal.className = 'bm-palette';
+      pal.innerHTML = BUCKET_PALETTE_JS.map(c =>
+        `<button class="bm-pal-swatch" style="background:${c}" data-color="${c}" title="${c}"></button>`).join('');
+      row.after(pal);
+      pal.querySelectorAll('.bm-pal-swatch').forEach(sw => {
+        sw.addEventListener('click', () => patchBucket(id, { color: sw.dataset.color }));
+      });
+    });
+  });
+  document.getElementById('bm-add-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = document.getElementById('bm-add-btn');
+    if (btn.disabled) return;
+    const name = document.getElementById('bm-new-name').value.trim();
+    if (!name) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/buckets', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+      });
+      if (!res.ok) { alert(`Add bucket failed (${res.status})`); return; }
+      await reloadBuckets();
+      renderBucketMgr();
+    } finally {
+      // renderBucketMgr() rebuilds the form; guard only matters if the fetch failed.
+      const still = document.getElementById('bm-add-btn');
+      if (still) still.disabled = false;
+    }
+  });
+}
+
+async function patchBucket(id, body) {
+  const res = await fetch(`/api/buckets/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!res.ok) { alert(`Bucket update failed (${res.status})`); return; }
+  await reloadBuckets();
+  renderBucketMgr();
+  renderPeopleList();
+}
+
+async function reloadBuckets() {
+  const buckets = await fetch('/api/buckets').then(r => r.json()).catch(() => []);
+  peopleView.buckets = Array.isArray(buckets) ? buckets : [];
+}
+
+// Unified add/log form. Typing a name surfaces matching existing people; picking
+// one autofills their info (edits are saved) and the form logs a new interaction.
+// Keeping a fresh name creates a new person, optionally with a first interaction.
+function openAddPerson() {
+  if (!peopleView.editable) return;
+  peopleView.addSelectedId = null;
+  const title = document.getElementById('person-add-title');
+  if (title) title.textContent = 'Add interaction';
+  const body = document.getElementById('person-add-body');
+  const bucketChecks = peopleView.buckets.filter(b => b.active).map(b => `
+    <label class="pa-check"><input type="checkbox" value="${b.id}"> ${escHtml(b.name)}</label>`).join('')
+    || `<span class="pd-empty">No buckets yet</span>`;
+  body.innerHTML = `
+    <form id="pa-form" class="pa-form" autocomplete="off">
+      <div class="pa-row pa-name-row"><label>Name</label>
+        <div class="pa-name-wrap">
+          <input type="text" id="pa-name" autocomplete="off" required placeholder="Type a name…">
+          <div id="pa-suggest" class="pa-suggest hidden"></div>
+        </div>
+      </div>
+      <div id="pa-existing" class="pa-existing hidden"></div>
+      <div class="pa-row"><label>Company</label><input type="text" id="pa-company" autocomplete="off"></div>
+      <div class="pa-row"><label>Location</label><input type="text" id="pa-location" autocomplete="off"></div>
+      <div class="pa-row"><label>Birthday</label><input type="text" id="pa-birthday" autocomplete="off"></div>
+      <div class="pa-row"><label>How we met</label><input type="text" id="pa-how" autocomplete="off"></div>
+      <div class="pa-row"><label>Next action</label><input type="text" id="pa-next" autocomplete="off"></div>
+      <div class="pa-row"><label>Cadence</label>
+        <select id="pa-cadence">${CADENCES.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
+      </div>
+      <div class="pa-row"><label>Contact</label>
+        <label class="pa-check pa-contact"><input type="checkbox" id="pa-contact"> I have their contact info</label>
+      </div>
+      <div class="pa-row pa-row-notes"><label>Notes</label>
+        <div class="pa-notes-wrap">
+          <div id="pa-notes-current" class="pa-notes-current hidden"></div>
+          <textarea id="pa-notes-add" class="pa-notes-add" placeholder="Add to notes…"></textarea>
+        </div>
+      </div>
+      <div class="pa-int">
+        <div class="pd-log-heading">Interaction (optional)</div>
+        <div class="pa-row"><label>Date</label><input type="date" id="pa-int-date" value="${escHtml(formatDateYMD(new Date()))}"></div>
+        <div class="pa-row"><label>What happened</label><input type="text" id="pa-int-note" autocomplete="off"></div>
+        <div class="pa-row"><label>Source</label>
+          <select id="pa-int-source"><option value="desktop">desktop</option><option value="phone">phone</option></select>
+        </div>
+      </div>
+      <div class="pa-actions"><button type="submit" class="be-btn-primary" id="pa-submit">Add person</button></div>
+      <div id="pa-error" class="be-error"></div>
+    </form>`;
+
+  const nameInput = document.getElementById('pa-name');
+  const suggest = document.getElementById('pa-suggest');
+  // The notes-append box is a markdown field like every other notes surface.
+  wireMdShortcuts(document.getElementById('pa-notes-add'));
+
+  const updateBanner = () => {
+    const banner = document.getElementById('pa-existing');
+    const submit = document.getElementById('pa-submit');
+    if (peopleView.addSelectedId) {
+      const p = peopleView.people.find(x => x.id === peopleView.addSelectedId);
+      banner.innerHTML = `Existing contact — edits save to <strong>${escHtml(p ? p.name : '')}</strong> and your interaction is logged.`;
+      banner.classList.remove('hidden');
+      submit.textContent = 'Save + log interaction';
+    } else {
+      banner.classList.add('hidden');
+      submit.textContent = 'Add person';
+    }
+  };
+
+  const selectExisting = id => {
+    const p = peopleView.people.find(x => x.id === id);
+    if (!p) return;
+    peopleView.addSelectedId = id;
+    nameInput.value = p.name || '';
+    document.getElementById('pa-company').value = p.company || '';
+    document.getElementById('pa-location').value = p.location || '';
+    document.getElementById('pa-birthday').value = p.birthday || '';
+    document.getElementById('pa-how').value = p.how_we_met || '';
+    document.getElementById('pa-next').value = p.next_action || '';
+    document.getElementById('pa-cadence').value = p.cadence || 'none';
+    document.getElementById('pa-contact').checked = !!p.has_contact;
+    const bids = (p.buckets || []).map(b => b.id);
+    document.querySelectorAll('#pa-form .pa-buckets input').forEach(cb => { cb.checked = bids.includes(Number(cb.value)); });
+    // Show what's already on file, read-only, so you're adding to their notes
+    // rather than repeating what's in them. The box below only ever appends.
+    const curNotes = document.getElementById('pa-notes-current');
+    const hasNotes = (p.notes || '').trim();
+    curNotes.textContent = hasNotes ? p.notes : '';
+    curNotes.classList.toggle('hidden', !hasNotes);
+    suggest.classList.add('hidden');
+    updateBanner();
+    document.getElementById('pa-int-note').focus();
+  };
+
+  nameInput.addEventListener('input', () => {
+    peopleView.addSelectedId = null;   // typing means diverging from any picked person
+    updateBanner();
+    document.getElementById('pa-notes-current').classList.add('hidden');
+    const q = nameInput.value.trim().toLowerCase();
+    const matches = q ? peopleView.people.filter(p => (p.name || '').toLowerCase().includes(q)).slice(0, 8) : [];
+    if (!matches.length) { suggest.classList.add('hidden'); suggest.innerHTML = ''; return; }
+    suggest.innerHTML = matches.map(p => `
+      <div class="pa-suggest-item" data-id="${p.id}">
+        <span class="pa-suggest-name">${escHtml(p.name)}</span>
+        <span class="pa-suggest-sub">${escHtml([p.company, p.location].filter(Boolean).join(' · '))}</span>
+      </div>`).join('');
+    suggest.classList.remove('hidden');
+    suggest.querySelectorAll('.pa-suggest-item').forEach(it => {
+      it.addEventListener('mousedown', e => { e.preventDefault(); selectExisting(Number(it.dataset.id)); });
+    });
+  });
+  nameInput.addEventListener('focus', () => { if (suggest.innerHTML) suggest.classList.remove('hidden'); });
+  nameInput.addEventListener('blur', () => setTimeout(() => suggest.classList.add('hidden'), 120));
+
+  document.getElementById('pa-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const submit = document.getElementById('pa-submit');
+    if (submit.disabled) return;
+    const errEl = document.getElementById('pa-error');
+    errEl.textContent = '';
+    const name = nameInput.value.trim();
+    if (!name) { errEl.textContent = 'Name is required.'; return; }
+    const bucket_ids = [...document.querySelectorAll('#pa-form .pa-buckets input:checked')].map(cb => Number(cb.value));
+    const fields = {
+      name,
+      company: document.getElementById('pa-company').value,
+      location: document.getElementById('pa-location').value,
+      birthday: document.getElementById('pa-birthday').value,
+      how_we_met: document.getElementById('pa-how').value,
+      next_action: document.getElementById('pa-next').value,
+      cadence: document.getElementById('pa-cadence').value,
+      has_contact: document.getElementById('pa-contact').checked,
+      bucket_ids,
+    };
+    const intDate = document.getElementById('pa-int-date').value;
+    const intNote = document.getElementById('pa-int-note').value.trim();
+    const intSource = document.getElementById('pa-int-source').value;
+    const notesAdd = document.getElementById('pa-notes-add').value.trim();
+    submit.disabled = true;
+    try {
+      let personId = peopleView.addSelectedId;
+      if (personId) {
+        // notes_append, never notes: appending in SQL is what keeps this form
+        // from overwriting notes it never showed.
+        const body = notesAdd ? { ...fields, notes_append: notesAdd } : fields;
+        const res = await fetch(`/api/people/${personId}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!res.ok) { errEl.textContent = `Save failed (${res.status})`; return; }
+      } else {
+        // A new person has nothing to append to, so this IS their notes.
+        const body = notesAdd ? { ...fields, notes: notesAdd } : fields;
+        const res = await fetch('/api/people', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!res.ok) { errEl.textContent = `Add failed (${res.status})`; return; }
+        personId = (await res.json()).id;
+      }
+      if (intNote && intDate) {
+        const ires = await fetch(`/api/people/${personId}/interactions`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: intDate, note: intNote, source: intSource }) });
+        if (!ires.ok) { errEl.textContent = `Person saved, but logging failed (${ires.status})`; await loadPeopleData(); return; }
+      }
+      await peopleSatisfy('entries');
+      document.getElementById('person-add-overlay').classList.add('hidden');
+      await loadPeopleData();
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  document.getElementById('person-add-overlay').classList.remove('hidden');
+  nameInput.focus();
+}
+
+// ── Offline (service worker + the stale marker) ───────────────
+//
+// Registration needs a SECURE CONTEXT, which is the whole reason `tailscale
+// serve` exists in deploy/ORACLE.md: over plain http://<host>:5000 this is a
+// silent no-op, and the app behaves exactly as it did before. Over
+// https://<host>.<tailnet>.ts.net (and over localhost, so pywebview local mode
+// counts) the worker installs and the day survives with no network.
+//
+// The marker is driven by the worker itself rather than by navigator.onLine,
+// which lies in the direction that matters: it reports true on a WiFi network
+// that has no route out, which is a captive portal or dead uplink — precisely
+// when you are looking at yesterday's day and being told it is today's.
+function initOffline() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data && e.data.type === 'pt-stale') markStale(true);
+  });
+  // A page that LOADS offline gets no 'offline' event — there was no transition
+  // to fire one — and that is the common case: you open the app on the train.
+  if (!navigator.onLine) markStale(true);
+  window.addEventListener('offline', () => markStale(true));
+  window.addEventListener('online', async () => {
+    markStale(false);
+    toast('Back online');
+    // Engage IS the home screen (9c), so it is always the thing to re-render.
+    await loadAll();
+    await refreshEngage();
+  });
+}
+
+let staleShown = false;
+
+function markStale(on) {
+  if (on === staleShown) return;
+  staleShown = on;
+  let el = document.getElementById('pt-stale');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'pt-stale';
+    el.textContent = 'Offline · last synced day';
+    document.body.appendChild(el);
+  }
+  el.classList.toggle('stale-on', on);
+  // The marker is fixed to the top of the viewport, so the app has to give up
+  // exactly its height or it covers the date header. Measured, not assumed: on
+  // a notched iPhone in standalone the safe-area inset makes it much taller.
+  document.body.classList.toggle('pt-stale', on);
+  document.documentElement.style.setProperty('--stale-h', on ? el.offsetHeight + 'px' : '0px');
+}
+
+initOffline();

@@ -1,0 +1,16 @@
+[Unit]
+Description=Productivity Tracker (headless server)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=__HOME__/productivity-app
+Environment=PT_HEADLESS=1
+ExecStart=__HOME__/venvs/qpa/bin/python app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

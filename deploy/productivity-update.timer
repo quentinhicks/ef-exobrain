@@ -1,0 +1,12 @@
+[Unit]
+Description=Check GitHub for Productivity Tracker updates
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+# A VM that was down through a push still updates on the next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

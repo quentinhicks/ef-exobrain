@@ -1,0 +1,36 @@
+config.json
+credentials.json
+tracker.db
+backups/
+__pycache__/
+*.pyc
+
+# PyInstaller build artifacts (run build_exe.bat to regenerate the .exe)
+build/
+dist/
+*.spec
+!productivity-tracker.spec
+
+# Cloudflare Worker
+QR-accountability/.env
+QR-accountability/.wrangler/
+.wrangler/
+node_modules/
+
+# Reference material and scratch that should never be in the repo
+*.pdf
+Getting Things Done — condensed.md
+career-discovery/
+ea-socials/
+*.m4a
+*.lnk
+QR-accountability/temp-verify*/
+.oci/
+*.pem
+run-client.command
+
+# Personal & medical records — never commit. Consolidated out of the repo root.
+personal/
+
+# macOS
+.DS_Store

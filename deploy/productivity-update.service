@@ -1,0 +1,10 @@
+[Unit]
+Description=Productivity Tracker (pull code from GitHub)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=__HOME__/productivity-app
+ExecStart=__HOME__/productivity-app/deploy/auto-update.sh

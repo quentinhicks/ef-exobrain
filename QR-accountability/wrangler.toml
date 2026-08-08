@@ -1,0 +1,36 @@
+name = "qr-accountability"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+LOCAL_TZ = "America/Los_Angeles"
+# DISABLED 2026-08-04 deliberately — charges were landing that should
+# not have. With LIVE_CHARGING off the judge still evaluates windows and logs
+# outcomes (the app's ✓/✗ colouring keeps working), it just never moves money.
+# beeminderCharge() is ALSO stubbed out in index.js; both must be reverted to
+# charge again.
+LIVE_CHARGING = "false"
+# Beeminder is the charge provider (2026-08, replacing a self-owned Stripe
+# account). BEEMINDER_USER is the username charges are billed to; the token is
+# a secret (wrangler secret put BEEMINDER_AUTH_TOKEN). Flip CHARGE_DRYRUN to
+# "true" to exercise the whole pipeline without money moving.
+BEEMINDER_USER = ""  # your Beeminder username
+CHARGE_DRYRUN = "true"
+# Safety rail, not a budget: a week that would exceed this stops charging and
+# logs 'capped' instead. Rolling 7 local days.
+WEEKLY_CHARGE_CAP_CENTS = "2500"
+CHARGE_AMOUNT_CENTS = "200"
+# Missing the social-points floor is staked higher than an absent scan or a
+# missing to-do, which stay at CHARGE_AMOUNT_CENTS.
+SOCIAL_CHARGE_AMOUNT_CENTS = "800"
+# SUMMARY_EMAIL_TO = ""  # disabled: no daily accountability summary emails
+SUMMARY_EMAIL_FROM = "onboarding@resend.dev"
+TODO_VIEW_KEY = ""  # set your own; the /todo page is dormant
+
+[[d1_databases]]
+binding = "DB"
+database_name = "qr-accountability"
+database_id = "11d544fe-d587-4b15-9969-5c923b5db809"
