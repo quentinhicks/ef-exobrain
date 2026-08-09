@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the QR judge every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# A VM that was down when a window closed still judges it on the next run:
+# the judge evaluates yesterday as well as today, so one missed day backfills.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

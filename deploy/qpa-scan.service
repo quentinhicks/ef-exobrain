@@ -1,0 +1,28 @@
+[Unit]
+Description=QR scan endpoint (the only publicly reachable service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/qpa
+Environment=PYTHONPATH=/home/ubuntu/qpa/ef-exobrain
+Environment=PT_DATA_DIR=/home/ubuntu/qpa
+Environment=QR_PORT=5001
+ExecStart=/home/ubuntu/venvs/qpa/bin/python /home/ubuntu/qpa/ef-exobrain/qr_scan_server.py
+Restart=always
+RestartSec=5
+
+# It is internet-facing, so give it the least the kernel will let us.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/qpa
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

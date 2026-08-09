@@ -1,0 +1,12 @@
+[Unit]
+Description=QR accountability judge (replaces the Cloudflare Worker cron)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+# cwd is the DATA dir (storage.py's paths are cwd-relative); the code is
+# imported from the repo beside it.
+WorkingDirectory=/home/ubuntu/qpa
+Environment=PYTHONPATH=/home/ubuntu/qpa/ef-exobrain
+ExecStart=/home/ubuntu/venvs/qpa/bin/python /home/ubuntu/qpa/ef-exobrain/qr_judge.py
