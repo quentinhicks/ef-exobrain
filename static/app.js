@@ -3295,26 +3295,13 @@ async function flushLogSave() {
 // `let`, not `const`: the headless test hook, same as panel.js's
 // ACK_GRACE_MIN — a suite cannot spend 5 real seconds per assertion.
 let DW_IDLE_MS = 5000;
-const DW_PROMPTS = [
-  'Write about something you have been avoiding saying out loud.',
-  'Describe a room you know by heart. Put someone in it who does not belong.',
-  'What did you believe a year ago that you no longer believe?',
-  'Start with: "The last time I felt certain about anything…"',
-  'Write the argument you keep losing, from the other side.',
-  'Something small that went wrong today, told as if it mattered enormously.',
-  'What would you do this week if no one would ever ask you about it?',
-  'Describe a person by what they carry and never use.',
-  'Write down the thing you would edit out if you were allowed to edit.',
-  'Begin in the middle of a sentence someone else was speaking.',
-];
 
 const dwView = {
-  open: false, phase: 'setup',       // setup | writing
-  usePrompt: true, prompt: '',
+  open: false, phase: 'setup',       // setup | writing | releasing
   goalKind: 'time', goalTime: 10, goalWords: 500,
   hardcore: false,
   text: '', startedAt: 0,
-  idleTimer: null, tick: null,
+  idleTimer: null, warnTimer: null, tick: null,
 };
 
 function dwWordCount(s) {
@@ -3338,8 +3325,10 @@ function closeDangerousWriting() {
 
 function dwStopTimers() {
   clearTimeout(dwView.idleTimer);
+  clearTimeout(dwView.warnTimer);
   clearInterval(dwView.tick);
   dwView.idleTimer = null;
+  dwView.warnTimer = null;
   dwView.tick = null;
 }
 
@@ -3355,17 +3344,21 @@ function dwFail() {
 // Success: hand the text to the ordinary Logs machinery and get out of the
 // way. Everything after this line is the app that already exists.
 async function dwSucceed() {
+  // Synchronous re-entry guard, set BEFORE the first await. The word goal is
+  // tested on every keystroke, so without this each key past the goal starts
+  // another release — it wrote one log per character.
+  if (dwView.phase !== 'writing') return;
+  dwView.phase = 'releasing';
   dwStopTimers();
   const text = dwView.text;
   const d = new Date();
   const stamp = `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()}`;
-  const first = (dwView.usePrompt && dwView.prompt ? dwView.prompt : text)
-    .replace(/\s+/g, ' ').trim().slice(0, 48).replace(/[\\/:*?"<>|]/g, '');
+  const first = text.replace(/\s+/g, ' ').trim().slice(0, 48).replace(/[\\/:*?"<>|]/g, '');
   const log = await fetch('/api/logs', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: `${stamp} ${first || 'writing'}` }),
   }).then(r => r.json());
-  const body = (dwView.usePrompt && dwView.prompt ? `> ${dwView.prompt}\n\n` : '') + text;
+  const body = text;
   await fetch(`/api/logs/${encodeURIComponent(log.name)}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content: body }),
@@ -3379,6 +3372,16 @@ async function dwSucceed() {
 
 function dwArm() {
   clearTimeout(dwView.idleTimer);
+  clearTimeout(dwView.warnTimer);
+  const el = document.getElementById('dw-session');
+  if (el) el.classList.remove('dw-danger');
+  // At 2/3 of the window the surface goes red. This is a WARNING, not a
+  // countdown — a number to watch is a thing to do instead of writing, but
+  // silent deletion with no tell reads as a bug rather than a rule.
+  dwView.warnTimer = setTimeout(() => {
+    const e = document.getElementById('dw-session');
+    if (e) e.classList.add('dw-danger');
+  }, Math.round(DW_IDLE_MS * 2 / 3));
   dwView.idleTimer = setTimeout(dwFail, DW_IDLE_MS);
 }
 
@@ -3386,8 +3389,6 @@ function dwBegin() {
   dwView.phase = 'writing';
   dwView.text = '';
   dwView.startedAt = Date.now();
-  dwView.prompt = dwView.usePrompt
-    ? DW_PROMPTS[Math.floor(Math.random() * DW_PROMPTS.length)] : '';
   renderDangerous();
   dwArm();
   // The clock is checked on a tick rather than a single timeout so the
@@ -3421,21 +3422,23 @@ function renderDangerous() {
   if (!dwView.open) return;
 
   if (dwView.phase === 'setup') {
+    const PRESETS = [5, 10, 20];
+    const WORD_PRESETS = [250, 500, 1000];
     const goalChips = dwView.goalKind === 'time'
-      ? [5, 10, 20].map(m => `<button class="cl-chip${dwView.goalTime === m ? ' cl-chip-on' : ''}"
+      ? PRESETS.map(m => `<button class="cl-chip${dwView.goalTime === m ? ' cl-chip-on' : ''}"
           data-time="${m}">${m} min</button>`).join('')
-      : [250, 500, 1000].map(w => `<button class="cl-chip${dwView.goalWords === w ? ' cl-chip-on' : ''}"
-          data-words="${w}">${w} words</button>`).join('');
+        + `<input type="number" id="dw-time-custom" class="cl-chip-input dw-custom"
+             min="1" max="240" placeholder="min"
+             value="${PRESETS.includes(dwView.goalTime) ? '' : dwView.goalTime}">`
+      : WORD_PRESETS.map(w => `<button class="cl-chip${dwView.goalWords === w ? ' cl-chip-on' : ''}"
+          data-words="${w}">${w} words</button>`).join('')
+        + `<input type="number" id="dw-words-custom" class="cl-chip-input dw-custom"
+             min="1" max="10000" placeholder="words"
+             value="${WORD_PRESETS.includes(dwView.goalWords) ? '' : dwView.goalWords}">`;
     el.innerHTML = `
       <div class="dw-wrap">
         <div class="dw-title">Dangerous writing</div>
         <div class="dw-warn">Stop typing for ${DW_IDLE_MS / 1000} seconds and everything you have written is destroyed. There is no recovery. Finish the goal and it is yours.</div>
-
-        <div class="cl-sec"><span class="cl-label">Prompt</span></div>
-        <div class="cl-chips">
-          <button class="cl-chip${dwView.usePrompt ? ' cl-chip-on' : ''}" data-prompt="1">Give me one</button>
-          <button class="cl-chip${dwView.usePrompt ? '' : ' cl-chip-on'}" data-prompt="0">I know what I'm writing</button>
-        </div>
 
         <div class="cl-sec"><span class="cl-label">Goal</span></div>
         <div class="cl-chips">
@@ -3456,10 +3459,6 @@ function renderDangerous() {
         </div>
       </div>`;
 
-    el.querySelectorAll('[data-prompt]').forEach(b => b.addEventListener('click', () => {
-      dwView.usePrompt = b.dataset.prompt === '1';
-      renderDangerous();
-    }));
     el.querySelectorAll('[data-kind]').forEach(b => b.addEventListener('click', () => {
       dwView.goalKind = b.dataset.kind;
       renderDangerous();
@@ -3468,10 +3467,28 @@ function renderDangerous() {
       dwView.goalTime = parseInt(b.dataset.time);
       renderDangerous();
     }));
+    const custom = el.querySelector('#dw-time-custom');
+    if (custom) custom.addEventListener('input', () => {
+      const n = parseInt(custom.value);
+      if (!n || n < 1) return;
+      dwView.goalTime = Math.min(240, n);
+      // Repaint the chips by hand rather than re-rendering: a re-render here
+      // would take the field you are typing in with it.
+      el.querySelectorAll('[data-time]').forEach(c =>
+        c.classList.toggle('cl-chip-on', parseInt(c.dataset.time) === dwView.goalTime));
+    });
     el.querySelectorAll('[data-words]').forEach(b => b.addEventListener('click', () => {
       dwView.goalWords = parseInt(b.dataset.words);
       renderDangerous();
     }));
+    const customW = el.querySelector('#dw-words-custom');
+    if (customW) customW.addEventListener('input', () => {
+      const n = parseInt(customW.value);
+      if (!n || n < 1) return;
+      dwView.goalWords = Math.min(10000, n);
+      el.querySelectorAll('[data-words]').forEach(c =>
+        c.classList.toggle('cl-chip-on', parseInt(c.dataset.words) === dwView.goalWords));
+    });
     el.querySelector('[data-hard]').addEventListener('click', () => {
       dwView.hardcore = !dwView.hardcore;
       renderDangerous();
@@ -3486,7 +3503,6 @@ function renderDangerous() {
   // unquantified. Only progress toward the GOAL is displayed.
   el.innerHTML = `
     <div class="dw-wrap dw-writing">
-      ${dwView.prompt ? `<div class="dw-prompt">${escHtml(dwView.prompt)}</div>` : ''}
       <textarea id="dw-editor" class="dw-editor${dwView.hardcore ? ' dw-blind' : ''}"
         spellcheck="false" placeholder="Start. Don't stop."></textarea>
       <div class="dw-foot">
@@ -6368,7 +6384,7 @@ function renderEngage() {
     .forEach(a => {
       const qm = qrMinutes[a.qr_node_id];
       rows.push({ kind: 'routine', areaId: a.id, label: a.name,
-                  minute: qm, endMin: qm, blocks: [], qrAnchored: true });
+                  minute: qm, endMin: qm, blocks: [] });
     });
 
   // Same dismissal set as the timeline: a right-clicked-away (or ⌘-clicked,
@@ -6498,12 +6514,12 @@ function renderEngage() {
         i => i.area_id === r.areaId && i.done_date !== dateStr).length;
       // A QR-anchored routine has no span of its own: it rides under the
       // hairline as a bare label, exactly like the design's routine rows.
-      return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${!r.qrAnchored && r.endMin <= nowMin ? ' eg-past' : ''}">
-        <span class="eg-time">${r.qrAnchored ? '' : hhmm(r.minute)}</span>
+      return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}">
+        <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-routine-btn${engageView.routinePop === r.areaId ? ' eg-routine-btn-on' : ''}"
           data-area="${r.areaId}" title="Routine details">☰${open ? ` ${open}` : ''}</button>
-        ${r.qrAnchored ? '' : `<span class="eg-end">${hhmm(r.endMin)}</span>`}
+        ${r.endMin > r.minute ? `<span class="eg-end">${hhmm(r.endMin)}</span>` : ''}
       </div>`;
     }
     if (r.kind === 'event') {
@@ -6545,9 +6561,10 @@ function renderEngage() {
     rows.forEach((r, i) => {
       parts.push(rowHtml(r));
       const next = rows[i + 1];
-      // No drop slot between a QR hairline and its riding routine label —
-      // they are one visual unit, and a drop there would split them.
-      if (next && next.qrAnchored) return;
+      // A QR-anchored routine used to suppress the drop slot after the QR
+      // hairline, because it rode underneath as a bare label and the two read
+      // as one unit. It is an ordinary row now (2026-08-08), so it takes an
+      // ordinary gap.
       parts.push(gapHtml(next ? (r.minute + next.minute) / 2 : r.minute + 30));
     });
   }
@@ -7389,6 +7406,10 @@ async function fileClarify(bucket, refListId) {
   if (!item) { closeClarify(); return; }
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
   if (bucket === 'reference' && !refListId) return;
+  // Read before clarifyResetItem clears it — the post-file composer hook
+  // below needs to know where this action landed.
+  const filedProjectId = (bucket !== 'trash' && bucket !== 'reference')
+    ? clarifyView.projectId : null;
   clarifyView.filing = true;
   paintClarifyBusy(true);
   let refCreated = null;
@@ -7483,8 +7504,22 @@ async function fileClarify(bucket, refListId) {
     }
       clarifyView.queue.shift();
       state.inbox = await fetch('/api/inbox').then(r => r.json());
+      state.projects = await fetch('/api/projects').then(r => r.json())
+        .catch(() => state.projects);
       await refreshEngage();
       await refreshActiveItems();
+      // Filing into a project that now holds more than one action drops you
+      // into the composer to ORDER them, exactly as creating a project does.
+      // The moment you have just added the second action is the moment their
+      // sequence is in your head; making you leave, find the project and open
+      // the chain editor is how ordering never gets done.
+      if (filedProjectId != null) {
+        const proj = state.projects.find(x => x.id === filedProjectId);
+        if (proj && (proj.action_count || 0) >= 2) {
+          await openComposeFor(proj);
+          return;
+        }
+      }
       if (!clarifyView.queue.length) {
         // A single pool item goes straight back to the day. The inbox cycle
         // ends with the EXTERNAL step: the head isn't empty until the sticky
@@ -7926,12 +7961,18 @@ function renderClarifyProjSearch(sheet, item) {
         .sort((x, y) => y[0] - x[0])
         .slice(0, 3).map(([, p]) => p)
     : [];
+  // Every row states its action count — the closest-matches and dormant rows
+  // used to show only the area or the word 'dormant', so the one number that
+  // says whether a project is stalled was missing from exactly the rows you
+  // reach first.
+  const countMeta = p => (p.action_count
+    ? `${p.action_count} action${p.action_count === 1 ? '' : 's'}` : 'no next action');
   const bestHtml = best.length ? `
     <div class="cl-proj-group">Closest matches</div>
     ${best.map(p => `
       <button class="cl-proj-row" data-proj="${p.id}">
         <span class="cl-proj-name">${escHtml(p.content)}</span>
-        <span class="cl-proj-meta">${escHtml(p.area_name || '—')}</span>
+        <span class="cl-proj-meta${p.action_count ? '' : ' cl-proj-bad'}">${escHtml(p.area_name || '—')} · ${countMeta(p)}</span>
       </button>`).join('')}` : '';
 
   const rows = Object.keys(byArea).sort().map(area => `
@@ -7947,7 +7988,7 @@ function renderClarifyProjSearch(sheet, item) {
     ${dormant.map(p => `
       <button class="cl-proj-row" data-proj="${p.id}">
         <span class="cl-proj-name cl-proj-dormant">${escHtml(p.content)}</span>
-        <span class="cl-proj-meta">dormant</span>
+        <span class="cl-proj-meta">dormant · ${countMeta(p)}</span>
       </button>`).join('')}` : '';
 
   sheet.innerHTML = `
@@ -8062,6 +8103,16 @@ async function clarifyCreateProject(name) {
   await refreshCompose();
 }
 
+// Open the composer on an EXISTING project. clarifyCreateProject does the
+// same for a project it just made; this is the other door into it.
+async function openComposeFor(proj) {
+  clarifyView.compose = { id: proj.id, name: proj.content,
+                          areaId: proj.area_id, actions: [], arm: null };
+  clarifyView.projSearch = null;
+  await refreshCompose();
+}
+
+
 // The composer's action list is read back from the server so [n] positions and
 // the blocked/unblocked state are the real ones, not a local guess.
 async function refreshCompose() {
@@ -8097,8 +8148,13 @@ function renderClarifyCompose(sheet) {
           ${nums[a.id] ? `<span class="cl-chain-n">[${nums[a.id]}]</span>`
             : '<span class="cl-chain-n cl-chain-free"></span>'}
           <span class="cl-chain-text">${escHtml(a.content)}</span>
+          ${(a.tags || '').split(' ').filter(Boolean)
+            .map(t => `<span class="map-tag">${escHtml(t)}</span>`).join('')}
+          ${dueOf(a) ? dueChip(a, 'map-badge') : ''}
           ${a.after_id ? `<button class="cl-chain-x" data-id="${a.id}"
             title="Unchain — it stops waiting on ${escHtml((byId[a.after_id] || {}).content || 'that')}">✕</button>` : ''}
+          <button class="cl-chain-go" data-go="${a.id}"
+            title="Clarify this action — contexts, due, show-on, notes">›</button>
         </div>`).join('')
         || '<div class="gtd-empty">No actions yet — type the first one below.</div>'}
     </div>
@@ -8109,6 +8165,31 @@ function renderClarifyCompose(sheet) {
     <div class="cl-row">
       <button class="cl-pill cl-pill-on" id="cl-compose-done">Done<span class="cl-key">⏎⏎</span></button>
     </div>`;
+
+  // THE RULE: an action created here is clarifiable here. A new action used
+  // to be bare text — no contexts, no due, no show-on, no notes — and the
+  // only way to reach those was to leave, find it on another surface and open
+  // the sheet from there. `›` opens the SAME clarify sheet for that action
+  // and returns to the composer when it closes, so the breakdown is not lost.
+  // Clarify does NOT open on creation: the composer's whole rhythm is "one
+  // more, one more, done", and a sheet after every Enter would end it.
+  sheet.querySelectorAll('.cl-chain-go').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const action = byId[btn.dataset.go];
+      if (!action) return;
+      const saved = { id: c.id, name: c.name, areaId: c.areaId };
+      openClarifyForItem(action, async () => {
+        clarifyView.compose = { ...saved, actions: [], arm: null };
+        clarifyView.open = true;
+        clarifyView.single = false;
+        document.getElementById('clarify-sheet').classList.remove('hidden');
+        document.getElementById('clarify-backdrop').classList.remove('hidden');
+        document.getElementById('engage-body').classList.add('eg-dimmed');
+        await refreshCompose();
+      });
+    });
+  });
 
   const add = sheet.querySelector('#cl-compose-add');
   add.addEventListener('keydown', async e => {

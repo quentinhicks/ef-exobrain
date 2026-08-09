@@ -4805,6 +4805,10 @@ button.eg-domain { cursor: pointer; }
 .cl-chain-text { flex: 1; font-size: 12.5px; color: var(--text-primary); }
 .cl-chain-x { color: var(--text-secondary); font-size: 12px; padding: 1px 5px; }
 .cl-chain-x:hover { color: var(--danger); }
+/* The ONE control on a composer row — same grammar as MAP's ›. */
+.cl-chain-go { color: var(--text-secondary); font-size: 15px; padding: 1px 4px;
+               margin-left: auto; line-height: 1; }
+.cl-chain-go:hover { color: var(--text); }
 
 .gtd-chips,
 .now-chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
@@ -5611,15 +5615,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: var(--on-accent);
   cursor: pointer;
 }
-.dw-prompt {
-  font-size: 14px;
-  line-height: 1.45;
-  color: var(--accent);
-  font-style: italic;
-  padding: 0 14px 10px;
-  margin: 0 14px 10px;
-  border-bottom: 1px solid var(--border-soft);
-}
+.dw-custom { width: 68px; text-align: center; }
 .dw-editor {
   flex: 1;
   min-height: 0;
@@ -5651,4 +5647,13 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border-radius: 20px;
   padding: 6px 14px;
   cursor: pointer;
+}
+
+/* Two thirds through the idle window with nothing typed: the surface goes
+   red. A warning, not a countdown — a number would be something to watch
+   instead of write, but a silent wipe with no tell reads as a bug. */
+#dw-session.dw-danger {
+  border-color: var(--danger);
+  box-shadow: inset 0 0 0 3px var(--danger);
+  transition: box-shadow 0.25s ease;
 }
