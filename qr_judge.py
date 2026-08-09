@@ -20,7 +20,8 @@
 import json
 import math
 import sys
-from datetime import date as date_cls, datetime, timedelta
+import time
+from datetime import datetime, timedelta
 
 import storage
 
@@ -80,8 +81,22 @@ def applies_on(node, ymd):
     return days is None or _dow_of(ymd) in str(days)
 
 
-def _local_iso(ymd, hhmm):
-    return ymd + 'T' + hhmm + ':00'
+def _local_dt(ymd, hhmm):
+    return datetime.strptime(ymd + ' ' + hhmm, '%Y-%m-%d %H:%M')
+
+
+def _utc_iso(ymd, hhmm):
+    # Window times are LOCAL wall clock; qr_scan.scanned_at is UTC with a Z
+    # (the format the Worker wrote, kept so migrated rows and new ones compare
+    # the same way). Converting here is load-bearing: comparing a naive local
+    # bound against a UTC timestamp as strings silently misses every scan that
+    # falls after local midnight in UTC — which for a 21:45 window is ALL of
+    # them, so every night would have judged absent.
+    #
+    # mktime reads the tuple in the PROCESS timezone and handles DST, which is
+    # the same convention the rest of the app dates things by.
+    epoch = time.mktime(time.strptime(ymd + ' ' + hhmm, '%Y-%m-%d %H:%M'))
+    return datetime.utcfromtimestamp(epoch).strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
 
 def judge(now=None, verbose=False):
@@ -102,15 +117,13 @@ def judge(now=None, verbose=False):
                 continue
             start, end, offset = resolve_window(node, ymd)
             close_date = _date_plus(ymd, 1) if offset == 1 else ymd
-            open_iso = _local_iso(ymd, start)
-            close_iso = _local_iso(close_date, end)
-
-            if now < datetime.strptime(close_iso, '%Y-%m-%dT%H:%M:%S'):
+            if now < _local_dt(close_date, end):
                 continue  # window still open
             if storage.qr_judgment_exists(node['id'], ymd):
                 continue
 
-            scans = storage.qr_scans_in_window(node['id'], open_iso, close_iso)
+            scans = storage.qr_scans_in_window(
+                node['id'], _utc_iso(ymd, start), _utc_iso(close_date, end))
             satisfied = any(
                 node.get('geofence_lat') is None or s.get('geofence_pass') == 1
                 for s in scans)
@@ -147,8 +160,8 @@ def outcomes(from_date, to_date, now=None):
     overrides = {(o['node_id'], o['date']): o
                  for o in storage.qr_overrides_between(from_date, to_date)}
     # A +1d window opening on to_date can close as late as the end of to+1.
-    scans = storage.qr_scans_between(from_date + 'T00:00:00',
-                                     _date_plus(to_date, 2) + 'T00:00:00')
+    scans = storage.qr_scans_between(_utc_iso(from_date, '00:00'),
+                                     _utc_iso(_date_plus(to_date, 2), '00:00'))
     by_node = {}
     for s in scans:
         by_node.setdefault(s['node_id'], []).append(s)
@@ -163,8 +176,9 @@ def outcomes(from_date, to_date, now=None):
             start, end, offset = resolve_window(
                 node, ymd, overrides.get((node['id'], ymd)))
             close_date = _date_plus(ymd, 1) if offset == 1 else ymd
-            open_iso, close_iso = _local_iso(ymd, start), _local_iso(close_date, end)
-            if now >= datetime.strptime(close_iso, '%Y-%m-%dT%H:%M:%S'):
+            open_iso = _utc_iso(ymd, start)
+            close_iso = _utc_iso(close_date, end)
+            if now >= _local_dt(close_date, end):
                 if (node['id'], ymd) in charged:
                     out.append({'node_id': node['id'], 'date': ymd, 'outcome': 'failed'})
                 else:
