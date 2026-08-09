@@ -5897,7 +5897,7 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      routineItems: [], flows: [], domainId: null, dragId: null,
                      // armId: the tap-to-place fallback's armed action (touch
                      // has no HTML5 drag events).
-                     armId: null, clockTimer: null,
+                     armId: null,
                      // Context filter (the top-right picker). Keys are
                      // namespaced: 'domain:3' / 'tag:light'. Two tiers:
                      // include = OR (widen), require = AND (narrow).
@@ -5958,17 +5958,9 @@ function initEngage() {
 async function openEngage() {
   if (!engageView.domainId) engageView.domainId = state.activeDomainId || defaultDomainId();
   await refreshEngage();
-  if (!engageView.clockTimer) {
-    engageView.clockTimer = setInterval(() => {
-      const el = document.getElementById('eg-clock');
-      if (el) el.textContent = egHeaderClock();
-    }, 30000);
-  }
-}
-
-function egHeaderClock() {
-  const now = new Date();
-  return minutesToHHMM(now.getHours() * 60 + now.getMinutes());
+  // No header clock (2026-08-08) and so no tick to drive it. The day is
+  // already positioned against now by .eg-past dimming; the device shows the
+  // time everywhere else.
 }
 
 // The viewed day as YMD; parse at noon so DST shifts can't slide the date.
@@ -6072,14 +6064,19 @@ function renderEngage() {
     rows.push({ kind: 'block', ...seg });
   });
 
+  // ONE ROW PER BLOCK (2026-08-08). A routine area used to collapse into a
+  // single row spanning min start -> max end, with its blocks visible only
+  // inside the details card — so a three-part morning read as one opaque
+  // 06:00-08:00 bar and you could not see what was next without opening it.
+  // Each block is its own row now, at its own time. Every row keeps the FULL
+  // block list so the ☰ card still shows the whole routine.
   Object.entries(routineGroups).forEach(([areaId, blocks]) => {
     blocks.sort((a, b) => a.minute - b.minute);
-    const area = state.areas.find(a => a.id === parseInt(areaId)) || {};
-    rows.push({ kind: 'routine', areaId: parseInt(areaId),
-                label: area.name || 'Routine',
-                minute: Math.min(...blocks.map(b => b.minute)),
-                endMin: Math.max(...blocks.map(b => b.endMin)),
-                blocks });
+    blocks.forEach(b => {
+      rows.push({ kind: 'routine', areaId: parseInt(areaId),
+                  label: b.label, minute: b.minute, endMin: b.endMin,
+                  cancelled: b.cancelled, blocks });
+    });
   });
 
   // A QR-anchored routine with no block today nests directly under its QR's
@@ -6224,7 +6221,7 @@ function renderEngage() {
         i => i.area_id === r.areaId && i.done_date !== dateStr).length;
       // A QR-anchored routine has no span of its own: it rides under the
       // hairline as a bare label, exactly like the design's routine rows.
-      return `<div class="eg-row eg-routine${!r.qrAnchored && r.endMin <= nowMin ? ' eg-past' : ''}">
+      return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${!r.qrAnchored && r.endMin <= nowMin ? ' eg-past' : ''}">
         <span class="eg-time">${r.qrAnchored ? '' : hhmm(r.minute)}</span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-routine-btn${engageView.routinePop === r.areaId ? ' eg-routine-btn-on' : ''}"
@@ -6278,20 +6275,20 @@ function renderEngage() {
     });
   }
 
-  // Chips render the formula's terms. The in-force domain is the positive
-  // term (gold; dashed when it's only the block calendar's), every OTHER
-  // domain is its ¬ exclusion — implied by mutual exclusivity, and shown,
-  // because the logic must stay legible. Tags are two-state: off, or
-  // required (∧).
+  // Only the domain IN FORCE is shown (2026-08-08). The menu used to render
+  // every other domain as a dimmed ¬Name to spell the exclusion out; with
+  // more than a couple of domains that was most of the menu saying what
+  // mutual exclusivity already guarantees. The domain still comes from the
+  // block calendar, and tapping the chip returns to that resting scope.
+  // Tags are two-state: off, or required (∧).
   const domainChip = d => {
     const inForce = String(d.id) === String(ctxDomainId);
     const isBase = inForce && engageView.ctxDomain == null;
     const title = isBase ? "the block calendar's domain — the resting scope"
-      : inForce ? 'the domain in force — click to return to the resting scope'
-      : 'excluded (domains are mutually exclusive) — click to make this the domain';
-    return `<button class="ctx-chip ${inForce ? (isBase ? 'ctx-base' : 'ctx-req') : 'ctx-not'}"
+      : 'the domain in force — click to return to the resting scope';
+    return `<button class="ctx-chip ${isBase ? 'ctx-base' : 'ctx-req'}"
       data-ctx="domain:${d.id}" title="${title}"
-      >${inForce ? '' : '¬'}${escHtml(d.name)}</button>`;
+      >${escHtml(d.name)}</button>`;
   };
   const tagChip = t => {
     const on = engageView.ctxTags.has(t);
@@ -6311,13 +6308,13 @@ function renderEngage() {
   const ctxCount = (engageView.ctxDomain != null ? 1 : 0) + engageView.ctxTags.size;
   const domainName = id =>
     (state.domains.find(d => String(d.id) === String(id)) || {}).name || 'contexts';
-  // The button IS the formula: domain ∧ ¬other ∧ ¬other ∧ tag ∧ tag.
-  const notTerms = state.domains
-    .filter(d => String(d.id) !== String(ctxDomainId))
-    .map(d => '¬' + d.name);
+  // The button names the domain in force and the required tags. The ¬ terms
+  // for every other domain went with the chips (2026-08-08): with more than
+  // two domains the label was mostly exclusions, and it grew with each domain
+  // added — on a header that has to fit a phone.
   const tagTerms = [...engageView.ctxTags];
   const shownTags = tagTerms.slice(0, 2);
-  const ctxLabel = [domainName(ctxDomainId), ...notTerms, ...shownTags].join(' ∧ ')
+  const ctxLabel = [domainName(ctxDomainId), ...shownTags].join(' ∧ ')
     + (tagTerms.length > 2 ? ` ∧ +${tagTerms.length - 2}` : '');
 
   // 9c header: NOW-panel button top-left, the day as the title, domain chip.
@@ -6334,13 +6331,13 @@ function renderEngage() {
       <span class="eg-day-date">${viewDate.getDate()} ${viewDate.toLocaleDateString('en-US', { month: 'short' })}</span>
     </button>
     <button class="eg-nav" id="eg-next" title="Next day">›</button>
-    ${isToday ? `<span class="eg-clock" id="eg-clock">${egHeaderClock()}</span>`
-      : '<button id="eg-today" title="Back to today">today</button>'}
+    ${isToday ? '' : '<button id="eg-today" title="Back to today">today</button>'}
     <span class="eg-spacer"></span>
-    <button class="eg-domain" id="eg-ctx-btn" title="Contexts — one domain in force (the rest excluded), every selected tag required">${escHtml(ctxLabel)} ▾</button>
+    <button class="eg-domain" id="eg-ctx-btn" title="Contexts — the domain in force, and every selected tag required">${escHtml(ctxLabel)} ▾</button>
     ${engageView.ctxOpen ? `<div id="eg-ctx-menu">
-      <div class="ctx-group">Domain — one in force, others excluded</div>
-      <div class="ctx-chips">${state.domains.map(domainChip).join('')}</div>
+      <div class="ctx-group">Domain — in force</div>
+      <div class="ctx-chips">${state.domains
+        .filter(d => String(d.id) === String(ctxDomainId)).map(domainChip).join('')}</div>
       ${poolTags.length ? `<div class="ctx-group">Tags — every selected one required</div>
       <div class="ctx-chips">${poolTags.map(tagChip).join('')}</div>` : ''}
       ${engageView.ctxLocFor != null ? `
@@ -6354,7 +6351,7 @@ function renderEngage() {
           ? '<button class="ctx-chip" data-bindloc="none">✕ unbind</button>' : ''}
       </div>` : ''}
       <div class="ctx-foot">
-        <span class="ctx-legend"><b>∧</b> required · <b>¬</b> excluded</span>
+        <span class="ctx-legend"><b>∧</b> required</span>
         <span class="ctx-legend">${state.geo.ok ? '⌖ located'
           : '⌖ no fix'}</span>
         <button id="eg-dev-swap" title="This device — ${detectDevice()} detected. #pc / #phone items only show on their own device; click to correct it.">▭ ${device}${device === detectDevice() ? '' : ' ✎'}</button>

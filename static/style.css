@@ -4076,7 +4076,6 @@ body.np-body {
 
 .eg-day-name { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); }
 .eg-day-date { font: 11px var(--font-mono); color: var(--text-secondary); }
-.eg-clock { font: 10px var(--font-mono); color: var(--text-secondary); }
 /* Day nav: ghost arrows either side of the day, which is itself the way back
    to today. Off-today gets the accent so a planning view can never be
    mistaken for the real day. */
