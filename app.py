@@ -2189,6 +2189,53 @@ def _panel_yield_to_app():
             user32.SetWindowPos(hwnd, ctypes.c_void_p(fg), 0, 0, 0, 0, KEEP_PLACE)
 
 
+HS_BEGIN = '-- >>> ef-exobrain hotkeys (managed — do not edit this block) >>>'
+HS_END = '-- <<< ef-exobrain hotkeys <<<'
+
+
+def _ensure_hammerspoon_config():
+    # ~/.hammerspoon/init.lua loads inbox.lua by ABSOLUTE path, so moving the
+    # repo unbinds every hotkey silently: Hammerspoon keeps running, the
+    # dofile just fails, and nothing says so. Rewrite the line whenever it
+    # does not point at this checkout. Returns True if the file changed.
+    #
+    # Only the marked block is ours. Anything else in init.lua belongs to the
+    # user and is preserved.
+    target = os.path.join(_REPO_DIR, 'inbox-hotkey', 'inbox.lua')
+    if not os.path.exists(target):
+        return False
+    cfg_dir = os.path.expanduser(os.path.join('~', '.hammerspoon'))
+    cfg = os.path.join(cfg_dir, 'init.lua')
+    block = '%s\ndofile("%s")\n%s' % (HS_BEGIN, target, HS_END)
+    try:
+        existing = ''
+        if os.path.exists(cfg):
+            with open(cfg, encoding='utf-8') as f:
+                existing = f.read()
+        if block in existing:
+            return False
+        if HS_BEGIN in existing and HS_END in existing:
+            head, rest = existing.split(HS_BEGIN, 1)
+            updated = head + block + rest.split(HS_END, 1)[1]
+        else:
+            # First run here, or a pre-block install: drop any legacy line that
+            # dofile'd an inbox.lua (that is the stale path) and its comment.
+            kept = [ln for ln in existing.splitlines()
+                    if 'inbox.lua' not in ln
+                    and 'Productivity Tracker hotkeys' not in ln]
+            while kept and not kept[-1].strip():
+                kept.pop()
+            updated = ('\n'.join(kept) + '\n\n' if kept else '') + block + '\n'
+        os.makedirs(cfg_dir, exist_ok=True)
+        with open(cfg, 'w', encoding='utf-8') as f:
+            f.write(updated)
+        print('Hammerspoon config pointed at', target)
+        return True
+    except OSError as e:
+        print('Hammerspoon config not written:', e)
+        return False
+
+
 def _start_inbox_hotkeys():
     # Launch the global hotkey script (inbox-hotkey/inbox.ahk) alongside the app
     # so the shortcut boots both. It is its own AHK process and outlives us on
@@ -2201,6 +2248,11 @@ def _start_inbox_hotkeys():
         # any app launch path boots the hotkeys. -g = no focus steal; it is
         # single-instance by nature, and a missing install is a silent skip.
         if os.path.exists('/Applications/Hammerspoon.app'):
+            if _ensure_hammerspoon_config():
+                # The config changed, so a running Hammerspoon is holding the
+                # old one — `open` alone does not re-read init.lua.
+                subprocess.run(['killall', 'Hammerspoon'],
+                               capture_output=True)
             subprocess.Popen(['open', '-ga', 'Hammerspoon'])
         return
     if sys.platform != 'win32':

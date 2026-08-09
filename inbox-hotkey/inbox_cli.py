@@ -5,8 +5,25 @@ import datetime
 import urllib.request
 import urllib.error
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG = os.path.join(BASE, 'config.json')
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _config_path():
+    # config.json lives in the DATA dir, which since 2026-08-08 sits BESIDE
+    # the repo rather than inside it. Hammerspoon and AHK launch this script
+    # directly, so they inherit no PT_DATA_DIR — the parent-of-repo probe is
+    # what actually resolves it in the split layout, and the repo itself still
+    # resolves the all-in-one one.
+    for base in (os.environ.get('PT_DATA_DIR'), os.path.dirname(REPO), REPO):
+        if base:
+            candidate = os.path.join(base, 'config.json')
+            if os.path.exists(candidate):
+                return candidate
+    return os.path.join(REPO, 'config.json')
+
+
+BASE = REPO
+CONFIG = _config_path()
 TMP = (os.environ.get('TEMP') or os.environ.get('TMPDIR')
        or os.path.dirname(os.path.abspath(__file__)))
 ADD_FILE = os.path.join(TMP, 'inbox_add.txt')
