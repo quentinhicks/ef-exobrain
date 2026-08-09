@@ -734,6 +734,69 @@ def init_db():
             price      INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )''')
+    # QR accountability (2026-08-08, migrated off Cloudflare Workers + D1).
+    # Prefixed qr_ because 'nodes' is too generic to share a 50-table schema.
+    # The Worker's routine gate, /todo page and phone capture pages are NOT
+    # ported: in-app flows replaced them, so a QR URL is location proof again.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_node (
+            id                     INTEGER PRIMARY KEY,
+            label                  TEXT NOT NULL,
+            token                  TEXT UNIQUE NOT NULL,
+            window_start           TEXT NOT NULL,
+            window_end             TEXT NOT NULL,
+            window_end_offset_days INTEGER DEFAULT 0,
+            geofence_lat           REAL,
+            geofence_lng           REAL,
+            geofence_radius_m      INTEGER,
+            active                 INTEGER DEFAULT 1,
+            days_of_week           TEXT NOT NULL DEFAULT '0123456',
+            weekly_windows         TEXT
+        )''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_scan (
+            id            INTEGER PRIMARY KEY,
+            node_id       INTEGER NOT NULL REFERENCES qr_node(id),
+            scanned_at    TEXT NOT NULL,
+            lat           REAL,
+            lng           REAL,
+            geofence_pass INTEGER,
+            accuracy_m    REAL
+        )''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_override (
+            id                     INTEGER PRIMARY KEY,
+            node_id                INTEGER NOT NULL REFERENCES qr_node(id),
+            date                   TEXT NOT NULL,
+            window_start           TEXT NOT NULL,
+            window_end             TEXT NOT NULL,
+            window_end_offset_days INTEGER DEFAULT 0,
+            UNIQUE(node_id, date)
+        )''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_pending_change (
+            id        INTEGER PRIMARY KEY,
+            node_id   INTEGER NOT NULL REFERENCES qr_node(id),
+            field     TEXT NOT NULL,
+            new_value TEXT NOT NULL,
+            apply_at  TEXT NOT NULL
+        )''')
+    # UNIQUE(node_id, date) is the reservation that stops a re-judge — the
+    # judge INSERTs before acting, so a second tick is a no-op rather than a
+    # duplicate. Kept from the Worker verbatim; it was the anti-double-charge
+    # guard and it is still the anti-double-judge guard.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_charge_log (
+            id             INTEGER PRIMARY KEY,
+            node_id        INTEGER NOT NULL REFERENCES qr_node(id),
+            date           TEXT NOT NULL,
+            failure_reason TEXT,
+            charge_status  TEXT,
+            charge_ref     TEXT,
+            amount_cents   INTEGER,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(node_id, date)
+        )''')
     _seed_social_axes(conn)
     conn.commit()
     conn.close()
@@ -3763,3 +3826,240 @@ def delete_social_rep(id):
     conn.execute('DELETE FROM social_rep WHERE id = ?', (id,))
     conn.commit()
     conn.close()
+
+
+# ── QR accountability ─────────────────────────────────────────────────────
+#
+# Was a Cloudflare Worker + D1 (2026-08-08). Moving it here collapsed ~20
+# authenticated HTTP round trips into function calls: the app and the judge
+# now share this database, so only the SCAN itself still needs to be a route
+# (the phone hits it from anywhere, so it is the one public surface).
+#
+# Windows resolve the same way everywhere, and this is the ONLY place that
+# rule lives now: date override > weekly window > node defaults.
+
+def qr_get_nodes(active_only=False):
+    conn = get_conn()
+    q = 'SELECT * FROM qr_node'
+    if active_only:
+        q += ' WHERE active = 1'
+    rows = conn.execute(q + ' ORDER BY id').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_get_node_by_token(token):
+    conn = get_conn()
+    row = conn.execute(
+        'SELECT * FROM qr_node WHERE token = ? AND active = 1', (token,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def qr_create_node(label, token, window_start, window_end, offset_days=0,
+                   lat=None, lng=None, radius=None, days='0123456', weekly=None):
+    conn = get_conn()
+    cur = conn.execute(
+        '''INSERT INTO qr_node (label, token, window_start, window_end,
+                                window_end_offset_days, geofence_lat, geofence_lng,
+                                geofence_radius_m, days_of_week, weekly_windows)
+           VALUES (?,?,?,?,?,?,?,?,?,?)''',
+        (label, token, window_start, window_end, offset_days, lat, lng, radius,
+         days, weekly))
+    conn.commit()
+    node_id = cur.lastrowid
+    conn.close()
+    return node_id
+
+
+QR_NODE_FIELDS = ('label', 'window_start', 'window_end', 'window_end_offset_days',
+                  'geofence_lat', 'geofence_lng', 'geofence_radius_m', 'active',
+                  'days_of_week', 'weekly_windows')
+
+
+def qr_update_node(node_id, fields):
+    sets = [(k, v) for k, v in fields.items() if k in QR_NODE_FIELDS]
+    if not sets:
+        return
+    conn = get_conn()
+    conn.execute('UPDATE qr_node SET ' + ', '.join(k + ' = ?' for k, _ in sets) +
+                 ' WHERE id = ?', [v for _, v in sets] + [node_id])
+    conn.commit()
+    conn.close()
+
+
+def qr_delete_node(node_id):
+    conn = get_conn()
+    for t in ('qr_scan', 'qr_override', 'qr_pending_change', 'qr_charge_log'):
+        conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (node_id,))
+    conn.execute('DELETE FROM qr_node WHERE id = ?', (node_id,))
+    conn.commit()
+    conn.close()
+
+
+def qr_log_scan(node_id, scanned_at, lat, lng, geofence_pass, accuracy=None):
+    conn = get_conn()
+    conn.execute(
+        '''INSERT INTO qr_scan (node_id, scanned_at, lat, lng, geofence_pass, accuracy_m)
+           VALUES (?,?,?,?,?,?)''',
+        (node_id, scanned_at, lat, lng, geofence_pass, accuracy))
+    conn.commit()
+    conn.close()
+
+
+def qr_scans_in_window(node_id, open_iso, close_iso):
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT * FROM qr_scan
+           WHERE node_id = ? AND scanned_at >= ? AND scanned_at <= ?
+           ORDER BY scanned_at DESC''', (node_id, open_iso, close_iso)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_recent_scans(limit=100):
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT s.*, n.label, n.geofence_lat, n.geofence_lng, n.geofence_radius_m
+           FROM qr_scan s JOIN qr_node n ON n.id = s.node_id
+           ORDER BY s.scanned_at DESC LIMIT ?''', (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_get_override(node_id, date):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM qr_override WHERE node_id = ? AND date = ?',
+                       (node_id, date)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def qr_set_override(node_id, date, window_start, window_end, offset_days=0):
+    conn = get_conn()
+    conn.execute(
+        '''INSERT INTO qr_override (node_id, date, window_start, window_end,
+                                    window_end_offset_days)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(node_id, date) DO UPDATE SET
+             window_start = excluded.window_start,
+             window_end = excluded.window_end,
+             window_end_offset_days = excluded.window_end_offset_days''',
+        (node_id, date, window_start, window_end, offset_days))
+    conn.commit()
+    conn.close()
+
+
+def qr_delete_override(node_id, date):
+    conn = get_conn()
+    conn.execute('DELETE FROM qr_override WHERE node_id = ? AND date = ?',
+                 (node_id, date))
+    conn.commit()
+    conn.close()
+
+
+def qr_add_pending_change(node_id, field, new_value, apply_at):
+    conn = get_conn()
+    conn.execute(
+        '''INSERT INTO qr_pending_change (node_id, field, new_value, apply_at)
+           VALUES (?,?,?,?)''', (node_id, field, new_value, apply_at))
+    conn.commit()
+    conn.close()
+
+
+def qr_get_pending_changes(node_id=None):
+    conn = get_conn()
+    if node_id is None:
+        rows = conn.execute('SELECT * FROM qr_pending_change ORDER BY apply_at').fetchall()
+    else:
+        rows = conn.execute(
+            'SELECT * FROM qr_pending_change WHERE node_id = ? ORDER BY apply_at',
+            (node_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_cancel_pending_change(node_id, field):
+    conn = get_conn()
+    conn.execute('DELETE FROM qr_pending_change WHERE node_id = ? AND field = ?',
+                 (node_id, field))
+    conn.commit()
+    conn.close()
+
+
+def qr_apply_due_pending_changes(now_iso):
+    # Loosening a constraint is 24h-gated; this is where the delay elapses.
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM qr_pending_change WHERE apply_at <= ?',
+                        (now_iso,)).fetchall()
+    applied = []
+    for r in rows:
+        if r['field'] in QR_NODE_FIELDS:
+            conn.execute('UPDATE qr_node SET ' + r['field'] + ' = ? WHERE id = ?',
+                         (r['new_value'], r['node_id']))
+            applied.append(dict(r))
+        conn.execute('DELETE FROM qr_pending_change WHERE id = ?', (r['id'],))
+    conn.commit()
+    conn.close()
+    return applied
+
+
+def qr_judgment_exists(node_id, date):
+    conn = get_conn()
+    row = conn.execute('SELECT 1 FROM qr_charge_log WHERE node_id = ? AND date = ?',
+                       (node_id, date)).fetchone()
+    conn.close()
+    return row is not None
+
+
+def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cents=None):
+    # Returns True only if THIS call created the row. The insert is the
+    # reservation: it happens before anything acts on the judgment, so a
+    # concurrent or repeated tick backs off here instead of duplicating.
+    conn = get_conn()
+    cur = conn.execute(
+        '''INSERT OR IGNORE INTO qr_charge_log
+             (node_id, date, failure_reason, charge_status, amount_cents)
+           VALUES (?,?,?,?,?)''',
+        (node_id, date, failure_reason, charge_status, amount_cents))
+    conn.commit()
+    won = cur.rowcount > 0
+    conn.close()
+    return won
+
+
+def qr_get_charge_log(limit=200):
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT c.*, n.label FROM qr_charge_log c
+           JOIN qr_node n ON n.id = c.node_id
+           ORDER BY c.date DESC, c.id DESC LIMIT ?''', (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_charges_between(from_date, to_date):
+    conn = get_conn()
+    rows = conn.execute(
+        'SELECT node_id, date FROM qr_charge_log WHERE date >= ? AND date <= ?',
+        (from_date, to_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_overrides_between(from_date, to_date):
+    conn = get_conn()
+    rows = conn.execute(
+        'SELECT * FROM qr_override WHERE date >= ? AND date <= ?',
+        (from_date, to_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_scans_between(from_iso, to_iso):
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT node_id, scanned_at, geofence_pass FROM qr_scan
+           WHERE scanned_at >= ? AND scanned_at <= ?''', (from_iso, to_iso)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
