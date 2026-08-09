@@ -1122,29 +1122,15 @@ def get_todo_yesterday():
     return jsonify(todo or {})
 
 
-def _git_push_paths(pathspec, message):
-    def git(*args):
-        return subprocess.run(('git',) + args, capture_output=True, text=True)
-    git('add', pathspec)
-    if git('diff', '--cached', '--quiet', '--', pathspec).returncode == 0:
-        return
-    git('commit', '-m', message, '--', pathspec)
-    if git('push').returncode != 0:
-        git('pull', '--rebase')
-        p = git('push')
-        if p.returncode != 0:
-            print(f'{pathspec} push failed:', p.stderr)
-
-
-def _push_logs():
-    _git_push_paths('logs', 'Update logs')
-
-
+# Local snapshot only. Git is no longer a sync or backup layer for data: the
+# repo carries code, the data dir carries data, and durability is the restic
+# timer's job (encrypted client-side, offsite, versioned — deploy/BACKUPS.md).
+# Nothing here commits or pushes, which is also what lets the server run from
+# a read-only public clone with no deploy key.
 def _daily_backup():
     if storage.get_settings().get('last_backup_date') == date_cls.today().isoformat():
         return
     storage.backup_db()
-    _git_push_paths('backups', 'Daily db backup')
 
 
 if not os.environ.get('PT_SERVER'):
@@ -1171,12 +1157,6 @@ def get_log(name):
 def put_log(name):
     storage.write_log(name, request.get_json()['content'])
     return '', 204
-
-
-@app.route('/api/logs/sync', methods=['POST'])
-def sync_logs():
-    threading.Thread(target=_push_logs, daemon=True).start()
-    return '', 202
 
 
 @app.route('/api/settings', methods=['GET'])

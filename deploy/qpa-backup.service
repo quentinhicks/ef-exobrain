@@ -1,0 +1,9 @@
+[Unit]
+Description=Encrypted offsite backup of the Productivity Tracker data plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/qpa-backup.sh

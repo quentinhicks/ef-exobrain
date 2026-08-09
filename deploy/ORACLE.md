@@ -35,10 +35,11 @@ The client bridge keeps every global hotkey working unchanged: panel marks
   → approve the login URL. Note the tailnet name (`tailscale status`).
 - Do NOT open port 5000 in the OCI security list — Tailscale is the only door.
 
-### 3. Deploy key
-- On the VM: `ssh-keygen -t ed25519` and add `~/.ssh/id_ed25519.pub` to the
-  GitHub repo as a deploy key WITH WRITE ACCESS (the daily db backup commits
-  and pushes from the server).
+### 3. Repo access
+- The server only READS the repo, so a public clone over HTTPS needs nothing.
+- For a private repo: `ssh-keygen -t ed25519` on the VM and add the pubkey as a
+  READ-ONLY deploy key. Write access is no longer needed — since 2026-08-08 the
+  server makes no commits (backups go to Object Storage via restic).
 
 ### 4. Deploy
 ```
@@ -119,9 +120,10 @@ tracked code path changed (`*.py`, `static`, `templates`, `deploy`). A `git
 push` from a laptop is therefore live on the VM within ~5 min with nothing to
 run by hand.
 
-The data-only test matters: the server commits `logs/` on every logs sync and
-`backups/` daily, and those come back around through GitHub. Restarting on
-them would bounce Flask every time a log is edited on the phone.
+The path test still matters, but only to avoid bouncing Flask for a docs- or
+spec-only commit. It used to matter far more: the server itself committed
+`logs/` on every sync and `backups/` daily, and those came back around through
+GitHub, so without the test a phone log edit restarted the app.
 
 The timer runs as `ubuntu` and holds exactly one sudo right, from
 `/etc/sudoers.d/qpa-update`: `systemctl restart productivity`.
@@ -139,9 +141,10 @@ next tick — conflicts are never resolved unattended. If it stays stuck,
 ## Verify
 - `systemctl status productivity` green; `sudo reboot` → the phone loads again
   without touching anything (systemd + tailscaled come back on their own).
-- Next day: a "Daily db backup" commit appears in the repo, authored by
-  qpa-server — that makes the VM disposable (reclaimed instance = re-run
-  steps 2–5, restore backups/tracker.sql, nothing lost).
+- `systemctl list-timers qpa-backup.timer` shows the next run, and
+  `restic snapshots` lists them — that is what makes the VM disposable
+  (reclaimed instance = re-run steps 2–5, `restic restore latest`, nothing
+  lost). Verify with a real restore, not just a snapshot listing.
 
 ## Known limits
 - Phone needs the Tailscale app connected (it's a VPN profile; iOS keeps it

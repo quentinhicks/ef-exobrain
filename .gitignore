@@ -1,6 +1,12 @@
 config.json
 credentials.json
 tracker.db
+
+# The data plane. Git is not a sync or backup layer: the server serves these
+# over the API and restic backs them up encrypted+offsite. logs/ held personal
+# writing and backups/ held full SQL dumps of the database — both were pushed
+# to GitHub on every edit.
+logs/
 backups/
 __pycache__/
 *.pyc

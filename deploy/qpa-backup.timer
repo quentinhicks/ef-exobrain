@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the qpa encrypted backup every 6 hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+# A VM that was off at the scheduled time still backs up on next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

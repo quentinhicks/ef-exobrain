@@ -44,7 +44,19 @@ static/app.js   all state, rendering and fetching for the main window
 static/panel.js the same, for the "NOW" panel — touches no app.js state
 static/sw.js    service worker: offline reads of the current day
 QR-accountability/  Cloudflare Worker: scan windows, geofencing, judgment
+deploy/         systemd units, VM setup, encrypted backups
 ```
+
+**Code and data are separate planes.** The repo holds code; the server's data
+directory holds the database and logs, and nothing in `app.py` runs git. Data
+durability is [`deploy/BACKUPS.md`](deploy/BACKUPS.md): restic to S3-compatible
+object storage, encrypted client-side, versioned, every 6h — plus a daily
+`gpg`-encrypted tarball that restores with `gpg -d | tar xz` if restic is
+unavailable. Because logs are markdown and the database is SQLite, a recovered
+archive stays readable with a text editor and `sqlite3` even without this app.
+
+A consequence worth noting: the server makes no commits, so it runs from a
+read-only clone and needs no deploy key.
 
 Those boundaries are enforced by convention and held to strictly — the
 separation is the reason a codebase this size stays workable without a

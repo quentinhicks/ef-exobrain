@@ -2484,7 +2484,9 @@ async function closeLogsView() {
   logsView.open = null;
   barView.logInbox = false;   // next Logs visit starts back in ✎ log mode
   renderBar();
-  fetch('/api/logs/sync', { method: 'POST' });
+  // No sync call on close: the PUT already wrote the file on the server, which
+  // is the single copy every device reads. Logs used to be git-pushed from
+  // here, which is what put personal writing under version control.
 }
 
 // ── Reference lists — GTD's non-actionable keeps ──────────────
