@@ -11,7 +11,9 @@
 # escrowed in a password manager, not only here.
 set -uo pipefail
 
-APP_DIR="${APP_DIR:-$HOME/productivity-app}"
+# The DATA dir (PT_DATA_DIR), not the repo — tracker.db, logs/ and
+# config.json live here and the code lives in APP_DIR/ef-exobrain.
+APP_DIR="${APP_DIR:-$HOME/qpa}"
 STAGE="${STAGE:-$HOME/.qpa-backup-stage}"
 ESCAPE_DIR="${ESCAPE_DIR:-$HOME/qpa-escape}"
 ESCAPE_KEEP="${ESCAPE_KEEP:-7}"
