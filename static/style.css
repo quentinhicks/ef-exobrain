@@ -5565,3 +5565,90 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #fr-sheet {
   bottom: var(--gbar-h);
 }
+
+/* ── Dangerous writing ───────────────────────────────────────
+   z 240: ABOVE the global bar (170) and the clarify sheet (200), below
+   #people-timer (250). The only surface in the app that covers the bar —
+   capture during a session is the exact task-switch being punished, and the
+   bar's own Esc would be a way to stop typing for free. */
+#dw-session {
+  position: fixed;
+  inset: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 430px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  z-index: 240;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.dw-wrap { display: flex; flex-direction: column; gap: 2px; padding: 18px 0 14px; }
+.dw-writing { flex: 1; min-height: 0; padding: 12px 0 0; gap: 0; }
+.dw-title {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  padding: 0 14px 6px;
+}
+.dw-warn {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--danger);
+  padding: 0 14px 12px;
+}
+.dw-actions { display: flex; align-items: center; gap: 10px; padding: 14px 14px 0; }
+.dw-begin {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 11px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: var(--on-accent);
+  cursor: pointer;
+}
+.dw-prompt {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--accent);
+  font-style: italic;
+  padding: 0 14px 10px;
+  margin: 0 14px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.dw-editor {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: 15px/1.6 var(--font-mono);
+  padding: 0 14px;
+}
+/* Hardcore: the text is there, you just don't get to read it back. */
+.dw-blind { color: transparent; text-shadow: none; caret-color: var(--accent); }
+.dw-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.dw-progress { font: 11px var(--font-mono); color: var(--text-secondary); flex: 1; }
+.dw-entry {
+  margin: 14px auto 0;
+  display: block;
+  font: 11px var(--font-mono);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 20px;
+  padding: 6px 14px;
+  cursor: pointer;
+}

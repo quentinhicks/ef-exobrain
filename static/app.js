@@ -2392,6 +2392,9 @@ function initHub() {
       renderGtd();
       return;
     }
+    // A dangerous-writing session swallows Esc entirely — its own keydown
+    // handler treats Esc as the abort, and nothing underneath may act on it.
+    if (dwView.open) return;
     // A step's settings sheet peels before the editor it opened from.
     if (stepSheet.id != null) {
       closeStepSheet();
@@ -3267,6 +3270,267 @@ async function flushLogSave() {
   if (status) status.textContent = 'Saved';
 }
 
+// ── Dangerous writing ────────────────────────────────────────
+//
+// A timed session where pausing DESTROYS the draft. Three things in this app
+// would each have neutralised that, and all three fixes invert a rule the
+// codebase otherwise enforces — see design-specs/spec-dangerous-writing.md:
+//
+//   1. The log editor autosaves 1s after input, so a 5s wipe would delete
+//      text that reached the server four seconds earlier. So a session NEVER
+//      touches /api/logs: the draft lives in dwView.text and nowhere else,
+//      and the first write happens on success. Failure is honest because
+//      nothing was ever stored.
+//   2. The markdown suite routes every mutation through execCommand so the
+//      browser's Ctrl+Z survives. Obey that here and Ctrl+Z resurrects the
+//      draft. The wipe is therefore the one sanctioned `ta.value = ''` —
+//      killing the native undo stack is the FEATURE here, not the bug that
+//      rule exists to prevent. Do not "fix" it.
+//   3. The global bar is reachable everywhere and its Esc stops typing for
+//      free. So this overlay sits ABOVE the bar (z 240), the only surface
+//      that takes capture away.
+//
+// The threat is total on purpose: a partial penalty is a cost you negotiate
+// with, which is the thing being designed against.
+// `let`, not `const`: the headless test hook, same as panel.js's
+// ACK_GRACE_MIN — a suite cannot spend 5 real seconds per assertion.
+let DW_IDLE_MS = 5000;
+const DW_PROMPTS = [
+  'Write about something you have been avoiding saying out loud.',
+  'Describe a room you know by heart. Put someone in it who does not belong.',
+  'What did you believe a year ago that you no longer believe?',
+  'Start with: "The last time I felt certain about anything…"',
+  'Write the argument you keep losing, from the other side.',
+  'Something small that went wrong today, told as if it mattered enormously.',
+  'What would you do this week if no one would ever ask you about it?',
+  'Describe a person by what they carry and never use.',
+  'Write down the thing you would edit out if you were allowed to edit.',
+  'Begin in the middle of a sentence someone else was speaking.',
+];
+
+const dwView = {
+  open: false, phase: 'setup',       // setup | writing
+  usePrompt: true, prompt: '',
+  goalKind: 'time', goalTime: 10, goalWords: 500,
+  hardcore: false,
+  text: '', startedAt: 0,
+  idleTimer: null, tick: null,
+};
+
+function dwWordCount(s) {
+  return (s.trim().match(/\S+/g) || []).length;
+}
+
+function openDangerousWriting() {
+  dwView.open = true;
+  dwView.phase = 'setup';
+  dwView.text = '';
+  renderDangerous();
+}
+
+function closeDangerousWriting() {
+  dwStopTimers();
+  dwView.open = false;
+  dwView.phase = 'setup';
+  dwView.text = '';
+  document.getElementById('dw-session').classList.add('hidden');
+}
+
+function dwStopTimers() {
+  clearTimeout(dwView.idleTimer);
+  clearInterval(dwView.tick);
+  dwView.idleTimer = null;
+  dwView.tick = null;
+}
+
+// Failure. The buffer is dropped and nothing is written — there is no
+// recovery path by construction, not by policy.
+function dwFail() {
+  dwStopTimers();
+  dwView.text = '';
+  dwView.phase = 'setup';
+  renderDangerous();
+}
+
+// Success: hand the text to the ordinary Logs machinery and get out of the
+// way. Everything after this line is the app that already exists.
+async function dwSucceed() {
+  dwStopTimers();
+  const text = dwView.text;
+  const d = new Date();
+  const stamp = `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()}`;
+  const first = (dwView.usePrompt && dwView.prompt ? dwView.prompt : text)
+    .replace(/\s+/g, ' ').trim().slice(0, 48).replace(/[\\/:*?"<>|]/g, '');
+  const log = await fetch('/api/logs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: `${stamp} ${first || 'writing'}` }),
+  }).then(r => r.json());
+  const body = (dwView.usePrompt && dwView.prompt ? `> ${dwView.prompt}\n\n` : '') + text;
+  await fetch(`/api/logs/${encodeURIComponent(log.name)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: body }),
+  });
+  closeDangerousWriting();
+  openM('logs-overlay');
+  logsView.logs = await fetch('/api/logs').then(r => r.json());
+  await openLog(log.name);
+  toast('Released — it is yours to edit now');
+}
+
+function dwArm() {
+  clearTimeout(dwView.idleTimer);
+  dwView.idleTimer = setTimeout(dwFail, DW_IDLE_MS);
+}
+
+function dwBegin() {
+  dwView.phase = 'writing';
+  dwView.text = '';
+  dwView.startedAt = Date.now();
+  dwView.prompt = dwView.usePrompt
+    ? DW_PROMPTS[Math.floor(Math.random() * DW_PROMPTS.length)] : '';
+  renderDangerous();
+  dwArm();
+  // The clock is checked on a tick rather than a single timeout so the
+  // progress readout and the time goal share one source of truth.
+  dwView.tick = setInterval(() => {
+    if (dwView.phase !== 'writing') return;
+    if (dwView.goalKind === 'time'
+        && Date.now() - dwView.startedAt >= dwView.goalTime * 60000) {
+      dwSucceed();
+      return;
+    }
+    dwPaintProgress();
+  }, 1000);
+}
+
+function dwPaintProgress() {
+  const el = document.getElementById('dw-progress');
+  if (!el) return;
+  if (dwView.goalKind === 'time') {
+    const left = Math.max(0, dwView.goalTime * 60000 - (Date.now() - dwView.startedAt));
+    el.textContent = `${Math.floor(left / 60000)}:${String(Math.floor(left / 1000) % 60).padStart(2, '0')} left`;
+  } else {
+    el.textContent = `${dwWordCount(dwView.text)} / ${dwView.goalWords} words`;
+  }
+}
+
+function renderDangerous() {
+  const el = document.getElementById('dw-session');
+  if (!el) return;
+  el.classList.toggle('hidden', !dwView.open);
+  if (!dwView.open) return;
+
+  if (dwView.phase === 'setup') {
+    const goalChips = dwView.goalKind === 'time'
+      ? [5, 10, 20].map(m => `<button class="cl-chip${dwView.goalTime === m ? ' cl-chip-on' : ''}"
+          data-time="${m}">${m} min</button>`).join('')
+      : [250, 500, 1000].map(w => `<button class="cl-chip${dwView.goalWords === w ? ' cl-chip-on' : ''}"
+          data-words="${w}">${w} words</button>`).join('');
+    el.innerHTML = `
+      <div class="dw-wrap">
+        <div class="dw-title">Dangerous writing</div>
+        <div class="dw-warn">Stop typing for ${DW_IDLE_MS / 1000} seconds and everything you have written is destroyed. There is no recovery. Finish the goal and it is yours.</div>
+
+        <div class="cl-sec"><span class="cl-label">Prompt</span></div>
+        <div class="cl-chips">
+          <button class="cl-chip${dwView.usePrompt ? ' cl-chip-on' : ''}" data-prompt="1">Give me one</button>
+          <button class="cl-chip${dwView.usePrompt ? '' : ' cl-chip-on'}" data-prompt="0">I know what I'm writing</button>
+        </div>
+
+        <div class="cl-sec"><span class="cl-label">Goal</span></div>
+        <div class="cl-chips">
+          <button class="cl-chip${dwView.goalKind === 'time' ? ' cl-chip-on' : ''}" data-kind="time">Time</button>
+          <button class="cl-chip${dwView.goalKind === 'words' ? ' cl-chip-on' : ''}" data-kind="words">Words</button>
+        </div>
+        <div class="cl-chips">${goalChips}</div>
+
+        <div class="cl-sec"><span class="cl-label">Hardcore</span></div>
+        <div class="cl-chips">
+          <button class="cl-chip${dwView.hardcore ? ' cl-chip-on' : ''}" data-hard="1">${dwView.hardcore ? 'On' : 'Off'}</button>
+          <span class="cl-hint">hides the text and disables backspace</span>
+        </div>
+
+        <div class="dw-actions">
+          <button id="dw-begin" class="dw-begin">Begin</button>
+          <button id="dw-quit" class="cl-pill">Not now</button>
+        </div>
+      </div>`;
+
+    el.querySelectorAll('[data-prompt]').forEach(b => b.addEventListener('click', () => {
+      dwView.usePrompt = b.dataset.prompt === '1';
+      renderDangerous();
+    }));
+    el.querySelectorAll('[data-kind]').forEach(b => b.addEventListener('click', () => {
+      dwView.goalKind = b.dataset.kind;
+      renderDangerous();
+    }));
+    el.querySelectorAll('[data-time]').forEach(b => b.addEventListener('click', () => {
+      dwView.goalTime = parseInt(b.dataset.time);
+      renderDangerous();
+    }));
+    el.querySelectorAll('[data-words]').forEach(b => b.addEventListener('click', () => {
+      dwView.goalWords = parseInt(b.dataset.words);
+      renderDangerous();
+    }));
+    el.querySelector('[data-hard]').addEventListener('click', () => {
+      dwView.hardcore = !dwView.hardcore;
+      renderDangerous();
+    });
+    el.querySelector('#dw-begin').addEventListener('click', dwBegin);
+    el.querySelector('#dw-quit').addEventListener('click', closeDangerousWriting);
+    return;
+  }
+
+  // Writing. No idle countdown is shown on purpose — a visible timer is
+  // something to watch instead of write, and the threat reads stronger
+  // unquantified. Only progress toward the GOAL is displayed.
+  el.innerHTML = `
+    <div class="dw-wrap dw-writing">
+      ${dwView.prompt ? `<div class="dw-prompt">${escHtml(dwView.prompt)}</div>` : ''}
+      <textarea id="dw-editor" class="dw-editor${dwView.hardcore ? ' dw-blind' : ''}"
+        spellcheck="false" placeholder="Start. Don't stop."></textarea>
+      <div class="dw-foot">
+        <span id="dw-progress" class="dw-progress"></span>
+        <span class="cl-hint">${dwView.hardcore ? 'hardcore — no backspace, no reading back' : 'esc abandons it'}</span>
+      </div>
+    </div>`;
+
+  const ta = el.querySelector('#dw-editor');
+  ta.value = dwView.text;
+  ta.focus();
+  dwPaintProgress();
+
+  ta.addEventListener('input', () => {
+    dwView.text = ta.value;
+    dwArm();
+    if (dwView.goalKind === 'words' && dwWordCount(dwView.text) >= dwView.goalWords) {
+      dwSucceed();
+      return;
+    }
+    dwPaintProgress();
+  });
+  ta.addEventListener('keydown', e => {
+    // Hardcore: no going back. Cut/undo are the same escape by another name.
+    if (dwView.hardcore
+        && (e.key === 'Backspace' || e.key === 'Delete'
+            || ((e.metaKey || e.ctrlKey) && ['z', 'y', 'x'].includes(e.key.toLowerCase())))) {
+      e.preventDefault();
+      return;
+    }
+    // Esc is the ABORT, not a peel — and it costs exactly what pausing costs.
+    // stopPropagation so initHub's handler doesn't also close the overlay
+    // underneath.
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      dwFail();
+    }
+  });
+  // Leaving counts as stopping. wireNotesAutosave uses these same hooks to
+  // SAVE; here they do the opposite, which is the point and not a bug.
+  ta.addEventListener('blur', () => { if (dwView.phase === 'writing') dwArm(); });
+}
+
 async function openLog(name) {
   const log = await fetch(`/api/logs/${encodeURIComponent(name)}`).then(r => r.json());
   logsView.open = log.name;
@@ -3670,10 +3934,13 @@ function renderLogs() {
           ${logsView.desc ? 'Z → A ↓' : 'A → Z ↑'}
         </button>
       </div>
-      <div class="log-list">${rows || '<div class="log-empty">No logs yet</div>'}</div>`;
+      <div class="log-list">${rows || '<div class="log-empty">No logs yet</div>'}</div>
+      <button id="log-dangerous" class="dw-entry" title="Stop typing and the draft is destroyed">⚡ Dangerous writing</button>`;
     body.querySelectorAll('.log-row').forEach(row => {
       row.addEventListener('click', () => openLog(row.dataset.name));
     });
+    document.getElementById('log-dangerous')
+      .addEventListener('click', openDangerousWriting);
     document.getElementById('log-sort').addEventListener('click', () => {
       logsView.desc = !logsView.desc;
       renderLogs();
@@ -4090,10 +4357,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // Last line of defence for unsaved notes and log text. visibilitychange is
   // the one that actually lands — it fires while the page is still allowed to
   // run fetches, unlike pagehide, which is often too late to finish a PATCH.
+  // Note the ASYMMETRY: for notes and logs these hooks SAVE, but a dangerous
+  // session is not a document — leaving it is stopping, and stopping is what
+  // the mechanic punishes. Same event, opposite meaning, on purpose.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { flushOpenNotes(); flushLogSave(); }
+    if (document.visibilityState !== 'hidden') return;
+    if (dwView.phase === 'writing') { dwFail(); return; }
+    flushOpenNotes();
+    flushLogSave();
   });
-  window.addEventListener('pagehide', () => { flushOpenNotes(); flushLogSave(); });
+  window.addEventListener('pagehide', () => {
+    if (dwView.phase === 'writing') { dwFail(); return; }
+    flushOpenNotes();
+    flushLogSave();
+  });
   loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); });
   setInterval(checkActiveBlock, 60000);
 });
