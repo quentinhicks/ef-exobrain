@@ -1,6 +1,8 @@
 import ctypes
 import json
 import os
+import re
+import secrets
 import socket
 import subprocess
 import sys
@@ -19,6 +21,7 @@ from flask import Flask, jsonify, render_template, request, send_from_directory
 
 import storage
 import aggregator
+import qr_judge
 from aggregator import fetch_gcal, fetch_sheets
 
 # THE DATA DIR. Everything the user owns — config.json, tracker.db, backups/,
@@ -1574,44 +1577,94 @@ def create_observation():
     return jsonify(result), 201
 
 
-# --- Accountability proxy ---
+_YMD_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+# --- Accountability (local since 2026-08-08; was a Cloudflare Worker) ---
+#
+# These were proxies to /admin/* on the Worker. The judge and the scan
+# endpoint now share this database, so they are ordinary reads and writes and
+# the authenticated HTTP hop is gone. The RESPONSE SHAPES are unchanged —
+# app.js reads days_of_week, weekly_windows, today_override and
+# pending_changes off each node, and the QR manager is built around them.
+
+def _node_payload(node, today):
+    ov = storage.qr_get_override(node['id'], today)
+    return dict(node,
+                today_override=ov,
+                pending_changes=storage.qr_get_pending_changes(node['id']))
+
 
 @app.route('/api/accountability/nodes', methods=['GET', 'POST'])
 def accountability_nodes():
+    today = date_cls.today().isoformat()
     if request.method == 'POST':
-        data, status = _qr_admin('POST', '/admin/nodes', request.get_json())
-        return jsonify(data), status
-    data, status = _qr_admin('GET', '/admin/nodes')
-    return jsonify(data), status
+        d = request.get_json() or {}
+        # 43 chars of URL-safe base64, the same shape the Worker minted: the
+        # token IS the scan credential, so it has to be unguessable.
+        token = secrets.token_urlsafe(32)
+        node_id = storage.qr_create_node(
+            d.get('label', 'Untitled'), token,
+            d.get('window_start', '09:00'), d.get('window_end', '10:00'),
+            d.get('window_end_offset_days') or 0,
+            d.get('geofence_lat'), d.get('geofence_lng'), d.get('geofence_radius_m'),
+            d.get('days_of_week') or '0123456', d.get('weekly_windows'))
+        node = [n for n in storage.qr_get_nodes() if n['id'] == node_id][0]
+        return jsonify(_node_payload(node, today)), 201
+    return jsonify([_node_payload(n, today) for n in storage.qr_get_nodes()])
 
 
 @app.route('/api/accountability/outcomes', methods=['GET'])
 def accountability_outcomes():
     from_date = request.args.get('from', '')
     to_date = request.args.get('to', '')
-    data, status = _qr_admin('GET', f'/admin/outcomes?from={from_date}&to={to_date}')
-    return jsonify(data), status
+    if not (_YMD_RE.match(from_date) and _YMD_RE.match(to_date)) or from_date > to_date:
+        return jsonify({'error': 'from and to required (YYYY-MM-DD)'}), 400
+    return jsonify(qr_judge.outcomes(from_date, to_date))
 
 
 @app.route('/api/accountability/nodes/<int:id>', methods=['PATCH', 'DELETE'])
 def patch_accountability_node(id):
+    nodes = {n['id']: n for n in storage.qr_get_nodes()}
+    node = nodes.get(id)
+    if not node:
+        return jsonify({'error': 'unknown node'}), 404
+
     if request.method == 'DELETE':
-        data, status = _qr_admin('DELETE', f'/admin/nodes/{id}')
-        return jsonify(data), status
-    data, status = _qr_admin('PATCH', f'/admin/nodes/{id}', request.get_json())
-    return jsonify(data), status
+        # Only an already-inactive node can be deleted. Otherwise deleting
+        # would be an instant way to escape a live commitment, which is what
+        # the 24h disable delay exists to prevent.
+        if node['active']:
+            return jsonify({'error': 'deactivate first'}), 409
+        storage.qr_delete_node(id)
+        return jsonify({'ok': True})
+
+    immediate, pending = qr_judge.apply_node_patch(node, request.get_json() or {})
+    if immediate:
+        storage.qr_update_node(id, immediate)
+    apply_at = (datetime.now() + timedelta(hours=qr_judge.LOOSEN_DELAY_H)).isoformat()
+    for field, value in pending.items():
+        storage.qr_cancel_pending_change(id, field)   # newest intent wins
+        storage.qr_add_pending_change(id, field, value, apply_at)
+    return jsonify({'immediate': list(immediate), 'pending': list(pending),
+                    'apply_at': apply_at if pending else None})
 
 
 @app.route('/api/accountability/nodes/<int:id>/disable', methods=['PATCH'])
 def disable_accountability_node(id):
-    data, status = _qr_admin('PATCH', f'/admin/nodes/{id}/disable')
-    return jsonify(data), status
+    apply_at = (datetime.now() + timedelta(hours=qr_judge.LOOSEN_DELAY_H)).isoformat()
+    storage.qr_cancel_pending_change(id, 'active')
+    storage.qr_add_pending_change(id, 'active', '0', apply_at)
+    return jsonify({'pending': True, 'apply_at': apply_at})
 
 
 @app.route('/api/accountability/nodes/<int:id>/activate', methods=['PATCH'])
 def activate_accountability_node(id):
-    data, status = _qr_admin('PATCH', f'/admin/nodes/{id}/activate')
-    return jsonify(data), status
+    # Only cancels a PENDING disable inside its 24h window. A node that has
+    # already gone inactive stays inactive — re-activating instantly would let
+    # you park a commitment and resume it once the awkward day had passed.
+    storage.qr_cancel_pending_change(id, 'active')
+    return jsonify({'ok': True})
 
 
 @app.route('/api/locations', methods=['GET', 'POST'])
@@ -1757,14 +1810,29 @@ def delete_location(id):
 
 @app.route('/api/accountability/nodes/<int:id>/overrides', methods=['POST'])
 def post_accountability_override(id):
-    data, status = _qr_admin('POST', f'/admin/nodes/{id}/overrides', request.get_json())
-    return jsonify(data), status
+    d = request.get_json() or {}
+    date = d.get('date', '')
+    nodes = {n['id']: n for n in storage.qr_get_nodes()}
+    if id not in nodes or not _YMD_RE.match(date):
+        return jsonify({'error': 'unknown node or bad date'}), 400
+    if qr_judge.override_locked(nodes[id], date):
+        return jsonify({'error': 'Locked — deadline within 24h'}), 403
+    storage.qr_set_override(id, date, d['window_start'], d['window_end'],
+                            d.get('window_end_offset_days') or 0)
+    return jsonify({'ok': True})
 
 
 @app.route('/api/accountability/nodes/<int:id>/overrides/<date>', methods=['DELETE'])
 def delete_accountability_override(id, date):
-    data, status = _qr_admin('DELETE', f'/admin/nodes/{id}/overrides/{date}')
-    return jsonify(data), status
+    nodes = {n['id']: n for n in storage.qr_get_nodes()}
+    if id not in nodes or not _YMD_RE.match(date):
+        return jsonify({'error': 'unknown node or bad date'}), 400
+    # Removal is gated too: dropping an override that made a day HARDER would
+    # otherwise be a loophole back to the slacker default.
+    if qr_judge.override_locked(nodes[id], date):
+        return jsonify({'error': 'Locked — deadline within 24h'}), 403
+    storage.qr_delete_override(id, date)
+    return jsonify({'ok': True})
 
 
 # --- People CRM ---
@@ -1836,9 +1904,7 @@ def _people_window():
     node_id = settings.get('qr_sleep_node_id')
     if not node_id or not _QR_ADMIN_SECRET:
         return {'open': False, 'seconds_left': 0, 'opened_at': None}
-    data, status = _qr_admin('GET', '/admin/scan-log')
-    if status != 200 or not isinstance(data, list):
-        return {'open': False, 'seconds_left': 0, 'opened_at': None}
+    data = storage.qr_recent_scans(200)
     scans = [s for s in data if str(s.get('node_id')) == str(node_id) and s.get('scanned_at')]
     if not scans:
         return {'open': False, 'seconds_left': 0, 'opened_at': None}

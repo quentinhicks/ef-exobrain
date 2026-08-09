@@ -196,3 +196,80 @@ if __name__ == '__main__':
     found = judge(verbose=True)
     print('qr-judge: %d failure(s) recorded %s' % (len(found), datetime.now().isoformat()))
     sys.exit(0)
+
+
+# ── The 24h gates ─────────────────────────────────────────────────────────
+#
+# The whole accountability system rests on not being able to weaken a
+# commitment in the moment you want to dodge it. TIGHTENING applies at once;
+# LOOSENING waits 24 hours, by which time the window you were avoiding has
+# passed. Ported verbatim from the Worker — these predicates ARE the teeth.
+
+LOOSEN_DELAY_H = 24
+
+
+def is_loosening(field, current, nxt, node=None):
+    if field == 'window_start':
+        return str(nxt) > str(current)          # a later start is less demanding
+    if field == 'window_end':
+        return str(nxt) < str(current)          # an earlier end is less demanding
+    if field == 'window_end_offset_days':
+        return (nxt or 0) < (current or 0)
+    if field == 'geofence_radius_m':
+        return (nxt or 0) > (current or 0)      # a wider fence is easier to satisfy
+    if field == 'days_of_week':
+        # Dropping any applied day is loosening; adding days is tightening.
+        return any(d not in str(nxt) for d in str(current or ''))
+    if field == 'weekly_windows':
+        # Per-day windows: if ANY weekday's effective window loosens against
+        # its current effective state, the whole change waits. Comparing the
+        # merged view (weekly entry over node defaults) is what stops a day
+        # being loosened by deleting its entry and falling back to a slacker
+        # default.
+        def parse(v):
+            if not v:
+                return {}
+            try:
+                return json.loads(v)
+            except (ValueError, TypeError):
+                return {}
+        cur, new = parse(current), parse(nxt)
+        base = {'window_start': node['window_start'], 'window_end': node['window_end'],
+                'window_end_offset_days': node.get('window_end_offset_days') or 0}
+        for d in range(7):
+            c = dict(base, **(cur.get(str(d)) or {}))
+            n = dict(base, **(new.get(str(d)) or {}))
+            if (is_loosening('window_start', c['window_start'], n['window_start'])
+                    or is_loosening('window_end', c['window_end'], n['window_end'])
+                    or is_loosening('window_end_offset_days',
+                                    c.get('window_end_offset_days') or 0,
+                                    n.get('window_end_offset_days') or 0)):
+                return True
+        return False
+    return False
+
+
+def override_locked(node, ymd, now=None):
+    # A day's deadline locks once its effective close is within 24h: the
+    # override can no longer be created, moved OR removed. Removal is included
+    # on purpose — deleting an override that made a day harder would otherwise
+    # be a loophole straight back to the slacker default.
+    now = now or datetime.now()
+    start, end, offset = resolve_window(node, ymd)
+    close_date = _date_plus(ymd, 1) if offset == 1 else ymd
+    return _local_dt(close_date, end) <= now + timedelta(hours=LOOSEN_DELAY_H)
+
+
+def apply_node_patch(node, fields, now=None):
+    # Splits a patch into what applies now and what has to wait. Returns
+    # (immediate, pending) as {field: value}; the caller writes them.
+    now = now or datetime.now()
+    immediate, pending = {}, {}
+    for field, value in fields.items():
+        if field not in storage.QR_NODE_FIELDS:
+            continue
+        if is_loosening(field, node.get(field), value, node):
+            pending[field] = value
+        else:
+            immediate[field] = value
+    return immediate, pending
