@@ -8002,12 +8002,22 @@ function renderClarifyProjSearch(sheet, item) {
       <div class="cl-captured">Which open loop does this belong to?</div>
     </div>
     <div class="cl-action-wrap cl-proj-search">
-      <input type="text" id="cl-proj-q" class="cl-action" placeholder="⌕ type to filter" value="${escHtml(clarifyView.projSearch || '')}" autocomplete="off">
+      <input type="text" id="cl-proj-q" class="cl-action" placeholder="⌕ filter, or name a new project" value="${escHtml(clarifyView.projSearch || '')}" autocomplete="off">
       <span class="cl-hint">${matches.length} of ${state.projects.length}</span>
     </div>
     ${q ? `<button class="cl-proj-row cl-proj-new" id="cl-proj-new">
       <span>+ New project — "${escHtml(clarifyView.projSearch)}"</span><span class="cl-key">⏎</span>
-    </button>` : ''}
+    </button>`
+      // Always OFFERED, even with an empty box. The row used to appear only
+      // once you had typed, and the placeholder said "type to filter" — so
+      // the one surface that creates projects looked like it could only
+      // search, and creating one meant guessing that the filter doubled as a
+      // name field. Empty, it points at the input rather than naming the
+      // project after the action: an outcome is not the action serving it,
+      // which is why the old "this item becomes the project" exit was removed.
+      : `<button class="cl-proj-row cl-proj-new cl-proj-new-empty" id="cl-proj-new-hint">
+      <span>+ New project — name it above</span>
+    </button>`}
     <div class="cl-proj-list">${bestHtml}${rows}${dorm}</div>
     <button class="cl-proj-row" id="cl-proj-none">No project — file as a standalone action</button>`;
 
@@ -8025,6 +8035,8 @@ function renderClarifyProjSearch(sheet, item) {
   });
   const newBtn = sheet.querySelector('#cl-proj-new');
   if (newBtn) newBtn.addEventListener('click', () => clarifyCreateProject(clarifyView.projSearch.trim()));
+  const newHint = sheet.querySelector('#cl-proj-new-hint');
+  if (newHint) newHint.addEventListener('click', () => input.focus());
   sheet.querySelectorAll('.cl-proj-row[data-proj]').forEach(b => b.addEventListener('click', () => {
     const p = state.projects.find(x => x.id === parseInt(b.dataset.proj));
     clarifyView.projectId = p.id;

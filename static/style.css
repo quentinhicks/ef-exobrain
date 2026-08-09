@@ -5657,3 +5657,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   box-shadow: inset 0 0 0 3px var(--danger);
   transition: box-shadow 0.25s ease;
 }
+
+/* The create row before anything is typed: an offer, not an action. */
+.cl-proj-new-empty { color: var(--text-secondary); opacity: .75; }
+.cl-proj-new-empty:hover { opacity: 1; }
