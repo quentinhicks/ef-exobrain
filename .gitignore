@@ -40,3 +40,6 @@ personal/
 
 # macOS
 .DS_Store
+
+# Needs `gh auth refresh -s workflow` before it can be pushed (Worker CI).
+.github/
