@@ -21,25 +21,33 @@ import storage
 import aggregator
 from aggregator import fetch_gcal, fetch_sheets
 
-# When frozen (PyInstaller), templates/static live inside the bundle and data
-# (config.json, tracker.db, backups, logs) stays cwd-relative. The optional
-# PT_DATA_DIR env var lets a launcher/CI point at the data dir explicitly; with
-# no hardcoded paths so the bundle stays portable. Running from source is
-# unchanged.
-# Canonical data dir (config.json, tracker.db, backups/, logs/) for the frozen
-# exe. cwd is unreliable: double-clicking the exe, launching a pinned exe, or a
-# Start-menu launch all set cwd to the exe's install folder — not the repo —
-# which silently forks an empty second database. So pin the data dir to a fixed
-# absolute path, still overridable via PT_DATA_DIR. The repo must stay the data
-# dir because the daily git backup runs `git add` in cwd and needs the repo.
-# Running from source is unchanged (cwd is already the repo).
-_DEFAULT_DATA_DIR = os.path.expanduser(r'~\Documents\ef-exobrain')
+# THE DATA DIR. Everything the user owns — config.json, tracker.db, backups/,
+# logs/ — is cwd-relative (storage.py's DB_PATH / LOGS_DIR / BACKUPS_DIR), so
+# the data dir IS the working directory and PT_DATA_DIR is how you move it.
+#
+# It applies in every mode, not just frozen, and that is what lets the code
+# live in its own repo with the data OUTSIDE it:
+#
+#     workspace/            <- PT_DATA_DIR: tracker.db, logs/, config.json
+#     └── ef-exobrain/      <- the repo. Holds no data, so none can be committed.
+#
+# Unset = cwd, which is the old behaviour (run from the repo, data lands
+# beside it). The frozen exe additionally needs a FALLBACK, because cwd is
+# unreliable there: double-clicking, a pinned exe or a Start-menu launch all
+# set cwd to the install folder, which silently forks an empty second database.
+_DEFAULT_DATA_DIR = os.path.join(os.path.expanduser('~'), 'Documents', 'ef-exobrain')
+# Where the CODE is, fixed before any chdir. Anything shipped with the repo
+# (inbox-hotkey/) must be addressed from here; anything the user owns is
+# cwd-relative and follows PT_DATA_DIR.
+_REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+_data_dir = os.environ.get('PT_DATA_DIR')
+if getattr(sys, 'frozen', False) and not (_data_dir and os.path.isdir(_data_dir)):
+    _data_dir = _DEFAULT_DATA_DIR
+if _data_dir:
+    if not os.path.isdir(_data_dir):
+        os.makedirs(_data_dir, exist_ok=True)
+    os.chdir(_data_dir)
 if getattr(sys, 'frozen', False):
-    _data_dir = os.environ.get('PT_DATA_DIR')
-    if not (_data_dir and os.path.isdir(_data_dir)):
-        _data_dir = _DEFAULT_DATA_DIR
-    if os.path.isdir(_data_dir):
-        os.chdir(_data_dir)
     app = Flask(__name__,
                 template_folder=os.path.join(sys._MEIPASS, 'templates'),
                 static_folder=os.path.join(sys._MEIPASS, 'static'))
@@ -1161,7 +1169,11 @@ def put_log(name):
 
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
-    return jsonify(storage.get_settings())
+    # qr_worker_url lives in config.json, not the setting table, but the client
+    # needs it to build scan URLs. Serving it here keeps ONE source of truth —
+    # it used to be hardcoded separately in app.js, so changing the Worker
+    # meant changing two files and finding out later if you missed one.
+    return jsonify(dict(storage.get_settings(), qr_worker_url=_QR_WORKER_URL))
 
 
 VALID_TIMEZONES = [
@@ -1203,7 +1215,9 @@ def patch_settings():
         # times are naive local, so they must be re-parsed in the new zone.
         _apply_timezone()
         threading.Thread(target=_refresh_all_calendars, daemon=True).start()
-    return jsonify(storage.get_settings())
+    # Same shape as GET — a client that assigns this response over its settings
+    # state would otherwise lose qr_worker_url until the next full load.
+    return jsonify(dict(storage.get_settings(), qr_worker_url=_QR_WORKER_URL))
 
 
 @app.route('/api/timezones')
@@ -2133,7 +2147,9 @@ def _start_inbox_hotkeys():
             if os.path.exists(p):
                 exe = p
                 break
-    script = os.path.abspath(os.path.join('inbox-hotkey', 'inbox.ahk'))
+    # Relative to THIS FILE, not cwd: cwd is the data dir (PT_DATA_DIR), which
+    # is deliberately outside the repo, and the script ships with the code.
+    script = os.path.join(_REPO_DIR, 'inbox-hotkey', 'inbox.ahk')
     if not exe or not os.path.exists(exe) or not os.path.exists(script):
         return
     subprocess.Popen([exe, script], cwd=os.path.dirname(script),
