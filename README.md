@@ -48,71 +48,54 @@ One always-on host, three systemd units, two network surfaces.
 
 | Component | Stack | Role |
 |---|---|---|
-| Application | Python 3.12, Flask, SQLite | JSON API, all business logic and data |
-| Scan endpoint | Python 3.12, Flask | Serves the Gate URLs and records scans |
-| Gate judge | Python 3.12, systemd timer | Evaluates each Gate window when it closes |
+| Application | Python 3.12, Flask, SQLite | JSON API, business logic, data |
+| Scan endpoint | Python 3.12, Flask | Serves Gate URLs, records scans |
+| Gate judge | Python 3.12, systemd timer | Evaluates Gate windows at close |
 | Host | Oracle Cloud VM (Always Free) | Runs all three under systemd |
-| Network | Tailscale — private tailnet, plus Funnel for scans | Transport and access control |
+| Network | Tailscale tailnet, plus Funnel for scans | Transport, access control |
 
-**Application.** Flask serves JSON plus two static HTML shells; all rendering and state is vanilla JavaScript with no framework and no build step. One SQLite file holds everything, including Gate config and outcomes. The VM's copy is the single source of truth — every device is a client of the same instance. Run it three ways: `python app.py` (all-in-one), `PT_HEADLESS=1` (server), `PT_SERVER=<host>` (desktop client against a remote server).
+### Application
 
-A service worker caches the shell and API responses network-first, so the day stays readable offline. Writes are not queued — an offline write fails visibly rather than appearing to succeed.
+Flask serves JSON, plus two static HTML shells: the main window and an always-on-top "NOW" panel. All rendering, state and fetching is vanilla JavaScript — no framework, no build step. `app.py` contains routes only; all SQL is in `storage.py`; external fetches (iCal, Google Sheets) are in `aggregator.py`.
 
-**Gates.** A Gate is a URL behind an NFC tag. Scanning it opens a page that captures your location and posts it; the judge later decides whether the window was satisfied. Judgment is presence-only: a satisfying scan inside the window, geofence-passing where a geofence is set.
+One SQLite file holds everything, including Gate configuration and outcomes. The VM's copy is the single source of truth; every device is a client of the same instance.
 
-Weakening a Gate is **rate-limited by design**, which is the mechanism that makes it an accountability device rather than a preference. Tightening a window applies immediately; *loosening* one — a later start, an earlier end, a wider geofence, a dropped weekday — waits 24 hours, by which time the window you were trying to dodge has already passed. A day's Gate locks entirely once its deadline is within 24 hours, including the removal of an override that made that day harder.
+Three launch modes:
 
-**Network, and why the split matters.** The application has **no login screen** — tailnet membership *is* the access control. That makes it critical that the public scan surface cannot reach it, so the scan endpoint is a **separate process on a separate port**, not a path on the same server:
+| Mode | Command |
+|---|---|
+| All-in-one | `python app.py` |
+| Server | `PT_HEADLESS=1 python app.py` |
+| Desktop client against a remote server | `PT_SERVER=http://<host>:5000 python app.py` |
 
-- The application is reachable only inside a [Tailscale](https://tailscale.com) tailnet. `tailscale serve` provides TLS on port 443, which the service worker requires in order to register.
-- The scan endpoint binds `127.0.0.1` and is published on port **8443** by Tailscale Funnel, which terminates TLS. It defines two routes and cannot serve an application route at all.
-- **No port is opened on the host.** There is no change to the OCI security list and none to local iptables, whose INPUT chain still ends in `REJECT`; the VM has zero public listeners. Nothing needs a registered domain or a certificate of its own.
+`PT_DATA_DIR` sets the working directory the app reads and writes data in — `config.json`, `tracker.db`, `logs/`, `backups/`. Unset, it is the current directory. The repository holds no data.
 
-Port separation is deliberate over path filtering: a path rule in front of an unauthenticated API is one typo away from publishing everything, whereas a separate process has no such route to mis-serve.
+A service worker caches the app shell and `GET /api/*` responses network-first, falling back to cache only when a fetch fails. Mutations are not intercepted and not queued. Registration requires a secure context, which `tailscale serve` provides.
 
-**Stakes.** Gate outcomes are recorded and drive the ✓/✗ on the day view. The monetary path — [Beeminder](https://www.beeminder.com/overview) charges on a failed Gate — is implemented but **currently disabled**, and re-enabling it is a deliberate staged protocol rather than a config flag. See [`QR-accountability/RE-ENABLE.md`](QR-accountability/RE-ENABLE.md) for why.
+Data is backed up every 6 hours by restic to S3-compatible object storage, encrypted client-side, with a `gpg`-encrypted tarball of the database, logs and config written alongside it.
 
-Setup is documented in [`deploy/ORACLE.md`](deploy/ORACLE.md); the Gate system's exposure model and operational notes are in [`QR-accountability/RUNBOOK.md`](QR-accountability/RUNBOOK.md).
+### Gates
 
-## Running it yourself
+A Gate is a record holding a label, an opaque token, a daily window (`window_start`, `window_end`, and an offset flag for windows closing after midnight), an optional geofence (latitude, longitude, radius), the weekdays it applies on, and optional per-weekday window overrides.
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp config.example.json config.json     # every key is optional
-python app.py
-```
+Scanning an NFC tag opens `GET /scan/<token>`, which returns a page that requests the browser's location and posts it to the same URL. The endpoint computes the haversine distance to the geofence centre, records a scan row with a pass/fail flag, and returns the outcome as text. Timestamps are stored in UTC.
 
-`tracker.db` is created on first run. Every external integration (Google Calendar, Sheets, Gates) fails soft when unconfigured, so the app boots and runs against an empty config.
+The judge runs every 5 minutes. For each active Gate it evaluates yesterday's and today's windows, skipping weekdays the Gate does not apply on and windows that have not closed. Window times resolve as: date override, then per-weekday window, then Gate defaults. A window is satisfied by any scan inside it that passes the geofence, where one is set. Unsatisfied windows are recorded as failures; satisfied windows are not recorded, and are recomputed from scan rows on read.
 
-Code and data are separate: the repository holds no data, and `PT_DATA_DIR` points at the directory that does.
+Configuration changes are applied on two schedules. Tightening applies immediately. Loosening is queued and applied 24 hours later: a later start, an earlier end, a wider geofence radius, a dropped weekday, a reduced end-offset, or any weekday whose effective window loosens. Deactivating a Gate is queued with the same delay; reactivating cancels a queued deactivation but does not revive a Gate that has already gone inactive, and an active Gate cannot be deleted. A given day is locked once its deadline is within 24 hours: overrides for that day cannot be created, modified or removed.
 
-## Layout
+### Network
 
-```
-app.py            Flask routes only — thin, no business logic
-storage.py        ALL SQL. No SQL exists anywhere else.
-aggregator.py     external fetches only (iCal, Google Sheets)
-qr_judge.py       Gate window resolution, judgment, and the 24h gates
-qr_scan_server.py the public scan endpoint — two routes, its own process
-static/app.js     all state, rendering and fetching for the main window
-static/panel.js   the same, for the always-on-top "NOW" panel
-static/sw.js      service worker: offline reads of the current day
-deploy/           systemd units, VM setup, encrypted backups
-```
+The application listens on port 5000. The host's iptables INPUT chain accepts the `tailscale0` interface, loopback, established connections and port 22, and rejects everything else, so the application is reachable only from inside the tailnet. `tailscale serve` provides TLS on port 443 of the tailnet address.
 
-Those boundaries are held to strictly — the separation is the reason a codebase this size stays workable without a framework.
+The scan endpoint listens on `127.0.0.1:5001` and is published on port 8443 by Tailscale Funnel, which terminates TLS. It serves `GET`/`POST /scan/<token>` and `GET /health`; every other path returns 404. It runs as a separate process and unit from the application, under `ProtectSystem=strict`, `ProtectHome=read-only`, and a single writable path.
 
-## Design notes
+No port is opened in the OCI security list or in local iptables. The host has no public listener; the only public ingress is Tailscale's, on 8443.
 
-The interesting parts are less about the stack than the constraints:
+The application has no authentication. Tailnet membership is the access control. A scan is unauthenticated; the token in the Gate URL is the credential.
 
-- **One inventory, three lenses.** Every task row carries clarification (*what is it*), structure (*where does it belong*), and state (*is it available*). Three surfaces read that one table, and each owns exactly one write class. The rule that keeps them from collapsing into each other: the surface you glance at ~30×/day may never write *position*.
+### Stakes
 
-- **Friction belongs at the boundary.** A 3-second decision costs ~10 min/week on a surface visited 210×/week, and 3 seconds on one visited weekly — about 200×. So the weekly surface is allowed to be dense and the daily one is not. That ratio is the test applied to every new control.
+Gate outcomes drive the pass/fail marking on the day view. The monetary path — a [Beeminder](https://www.beeminder.com/overview) charge on a failed Gate — is implemented but disabled, and is not reachable from the current judge.
 
-- **Every data-changing action ships with its inverse.** A handler that mutates without registering an undo is considered unfinished. Deletes snapshot their row, children, and scheduling placements, and restore re-inserts the *original* ids so references survive.
-
-- **Counts are never silently truncated.** A hidden item is always counted somewhere visible, because trust in the numbers is multiplicative across hundreds of glances a week.
-
-- **Durability is not version control.** Data lives outside the repository and is backed up by [restic](https://restic.net) — encrypted client-side, offsite, versioned — alongside a plain `gpg`-encrypted tarball that restores with `gpg -d | tar xz`. Logs are markdown and the database is SQLite, so a recovered archive stays readable with a text editor even without this software. See [`deploy/BACKUPS.md`](deploy/BACKUPS.md).
+Setup: [`deploy/ORACLE.md`](deploy/ORACLE.md). Gate operations: [`QR-accountability/RUNBOOK.md`](QR-accountability/RUNBOOK.md). Backups: [`deploy/BACKUPS.md`](deploy/BACKUPS.md).
