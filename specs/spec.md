@@ -1,3 +1,8 @@
+> **Historical.** The original build specification. The data model and
+> constraints still largely hold, but the interface described here — a left
+> sidebar with Today/Review tabs, and a daily to-do list — was replaced by a
+> single phone-width column in 2026-08. See the README for the current shape.
+
 # Productivity Tracker — spec.md
 
 ## Purpose

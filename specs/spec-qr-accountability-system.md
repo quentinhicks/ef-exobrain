@@ -1,3 +1,9 @@
+> **Historical.** This is the original design, when Gates ran on a Cloudflare
+> Worker with a D1 database and charged through Stripe. All three are gone: the
+> system runs on the app's own host and database (2026-08-08), and the charge
+> provider became Beeminder before that. For what actually runs, see
+> [`../QR-accountability/RUNBOOK.md`](../QR-accountability/RUNBOOK.md).
+
 # QR Accountability System — Implementation Status
 
 Companion system to the productivity tracker. Self-imposed, location-bound
