@@ -1047,6 +1047,44 @@ function renderBar() {
   });
 }
 
+
+// Swipe LEFT anywhere on the day to open the ≡ hub — the phone gesture for
+// the thing the bar's rightmost button does. Touch only: a mouse drag is how
+// an action is placed, and hijacking it would break scheduling.
+//
+// The guards are what keep it from firing by accident:
+//  - it must be mostly HORIZONTAL (|dx| > 2·|dy|), so a fast list scroll and
+//    a swipe are not the same gesture;
+//  - it must clear 70px within 600ms, so a slow drag is not a swipe;
+//  - it never starts inside a text field, a draggable row, the clarify sheet
+//    or an open overlay — those own their own horizontal gestures.
+function initSwipe() {
+  const SWIPE_MIN = 70, SWIPE_MS = 600;
+  let sx = 0, sy = 0, t0 = 0, live = false;
+  const root = document.getElementById('engage-root') || document.body;
+
+  root.addEventListener('pointerdown', e => {
+    live = false;
+    if (e.pointerType === 'mouse') return;
+    if (e.target.closest('input, textarea, select, [draggable="true"], '
+        + '#clarify-sheet, #fr-sheet, .m-overlay:not(.hidden), #flow-run')) return;
+    sx = e.clientX; sy = e.clientY; t0 = Date.now(); live = true;
+  });
+
+  root.addEventListener('pointerup', e => {
+    if (!live) return;
+    live = false;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Date.now() - t0 > SWIPE_MS) return;
+    if (dx > -SWIPE_MIN) return;                 // left only
+    if (Math.abs(dx) < Math.abs(dy) * 2) return; // not a scroll
+    const hub = document.getElementById('hub-overlay');
+    if (hub && hub.classList.contains('hidden')) hub.classList.remove('hidden');
+  });
+
+  root.addEventListener('pointercancel', () => { live = false; });
+}
+
 let toastTimer = null;
 
 function toast(msg) {
@@ -4365,6 +4403,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initLogsView();
   initPeopleModals();
   initHub();
+  initSwipe();
   initUndo();
   renderBar();
   initGeo();
