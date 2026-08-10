@@ -8011,7 +8011,9 @@ function renderClarify() {
         <span class="cl-label">Project</span>
         <button id="cl-proj" class="cl-pill${clarifyView.projectId ? ' cl-pill-on' : ''}">${clarifyView.projectId ? escHtml(clarifyView.projectName) : 'none'} ⌕</button>
         ${clarifyView.projectId ? `<button id="cl-proj-notes-btn" class="cl-pill${clarifyView.projNotesOpen ? ' cl-pill-on' : ''}"
-          title="The project's support material — saved to the project, not this item">✎</button>` : ''}
+          title="The project's support material — saved to the project, not this item">✎</button>
+        <button id="cl-proj-chain" class="cl-pill"
+          title="Order this project's actions and set dependencies">⛓</button>` : ''}
       </div>
       ${clarifyView.projNotesOpen && clarifyView.projectId ? `
       <textarea id="cl-proj-notes" class="cl-notes" rows="3"
@@ -8169,6 +8171,11 @@ function renderClarify() {
   if (due) due.addEventListener('change', e => { clarifyView.due = e.target.value; });
   const proj = sheet.querySelector('#cl-proj');
   if (proj) proj.addEventListener('click', () => { clarifyView.projSearch = ''; renderClarify(); });
+  const chainBtn = sheet.querySelector('#cl-proj-chain');
+  if (chainBtn) chainBtn.addEventListener('click', async () => {
+    const p = (state.projects || []).find(x => x.id === clarifyView.projectId);
+    if (p) await openComposeFor(p, 'pick');
+  });
   const notesTa = sheet.querySelector('#cl-notes');
   if (notesTa) {
     notesTa.addEventListener('input', e => { clarifyView.notes = e.target.value; });
@@ -8355,11 +8362,21 @@ function renderClarifyProjSearch(sheet, item) {
   if (newBtn) newBtn.addEventListener('click', () => clarifyCreateProject(clarifyView.projSearch.trim()));
   const newHint = sheet.querySelector('#cl-proj-new-hint');
   if (newHint) newHint.addEventListener('click', () => input.focus());
-  sheet.querySelectorAll('.cl-proj-row[data-proj]').forEach(b => b.addEventListener('click', () => {
+  sheet.querySelectorAll('.cl-proj-row[data-proj]').forEach(b => b.addEventListener('click', async () => {
     const p = state.projects.find(x => x.id === parseInt(b.dataset.proj));
     clarifyView.projectId = p.id;
     clarifyView.projectName = p.content;
     clarifyView.projSearch = null;
+    // An EXISTING project with actions already in it goes straight to the
+    // composer — filing into a project that has a running order is exactly
+    // when you need to say where this one goes. origin 'pick' means nothing
+    // has been filed yet, so leaving returns to the sheet rather than
+    // advancing the queue (unlike the create-a-project path, which files the
+    // item as action [1] first).
+    if (p.action_count > 0) {
+      await openComposeFor(p, 'pick');
+      return;
+    }
     renderClarify();
   }));
   sheet.querySelector('#cl-proj-none').addEventListener('click', () => {
@@ -8429,8 +8446,7 @@ async function clarifyCreateProject(name) {
     state.inbox = state.inbox.filter(x => x.id !== item.id);
     renderInbox();
   }
-  clarifyView.compose = { id: p.id, name: p.content, areaId, actions: [], arm: null };
-  await refreshCompose();
+  await openComposeFor({ id: p.id, content: p.content, area_id: areaId }, 'new');
 }
 
 // Open the composer on an EXISTING project. clarifyCreateProject does the
@@ -8442,6 +8458,22 @@ async function openComposeFor(proj) {
   await refreshCompose();
 }
 
+
+// Two ways in, and the difference is whether the item has been filed yet:
+//   'new'  — clarifyCreateProject already filed it as action [1]; leaving
+//            resumes the clarify queue, because this item is done.
+//   'pick'  — you chose an existing project from the search and NOTHING has
+//            been filed; leaving goes back to the main sheet so you still pick
+//            a verb. Ordering the project's actions must not silently commit
+//            the item you were clarifying.
+async function openComposeFor(project, origin) {
+  clarifyView.compose = {
+    id: project.id, name: project.content,
+    areaId: project.area_id || clarifyView.areaId || state.activeAreaId,
+    actions: [], arm: null, origin,
+  };
+  await refreshCompose();
+}
 
 // The composer's action list is read back from the server so [n] positions and
 // the blocked/unblocked state are the real ones, not a local guess.
@@ -8466,7 +8498,9 @@ function renderClarifyCompose(sheet) {
     </div>
     <div class="cl-item">
       <div class="cl-proj-for">${escHtml(c.name)}</div>
-      <div class="cl-captured">What has to happen? Add the actions, then say which waits on which.</div>
+      <div class="cl-captured">${c.origin === 'pick'
+        ? 'Order what is already here, then keep clarifying — this item joins the project when you file it.'
+        : 'What has to happen? Add the actions, then say which waits on which.'}</div>
     </div>
     <div class="cl-sec"><span class="cl-label">Actions</span>
       <span class="cl-hint">${c.arm != null ? 'now tap the action it comes AFTER'
@@ -8493,7 +8527,8 @@ function renderClarifyCompose(sheet) {
         placeholder="+ add an action…" autocomplete="off">
     </div>
     <div class="cl-row">
-      <button class="cl-pill cl-pill-on" id="cl-compose-done">Done<span class="cl-key">⏎⏎</span></button>
+      <button class="cl-pill cl-pill-on" id="cl-compose-done">${
+        c.origin === 'pick' ? 'Back to clarify' : 'Done'}<span class="cl-key">⏎⏎</span></button>
     </div>`;
 
   // THE RULE: an action created here is clarifiable here. A new action used
@@ -8604,8 +8639,11 @@ function renderClarifyCompose(sheet) {
 // that started it is already filed, so this is the next capture (or the
 // external step, or the end).
 function closeCompose() {
+  const origin = clarifyView.compose && clarifyView.compose.origin;
   clarifyView.compose = null;
   clarifyView.projSearch = null;
+  // 'pick': the item is still unfiled and still yours to decide on.
+  if (origin === 'pick') { renderClarify(); return; }
   if (clarifyView.single) { closeClarify(); return; }
   if (clarifyView.queue.length) clarifyResetItem();
   else { clarifyView.external = true; clarifyResetItem(); }
