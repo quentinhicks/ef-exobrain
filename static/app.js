@@ -6372,7 +6372,17 @@ function renderEngage() {
       // waiting on rather than leaving that buried in the step editor.
       const flows = (engageView.flows || []).filter(
         fl => fl.qr_node_id === n.id || fl.before_node_id === n.id);
-      rows.push({ kind: 'qr', minute, label: n.label, outcome, flows });
+      rows.push({ kind: 'qr', minute, label: n.label, outcome });
+      // Each gating routine is its OWN row directly under the hairline, not a
+      // chip crowded onto it — "Morning routine" is a thing you do, and it
+      // reads as one when it has a line of its own. SAME minute as the QR:
+      // the sort is stable and QRs are pushed first, so the pair stays
+      // adjacent whatever else lands at that minute.
+      flows.forEach(fl => rows.push({
+        kind: 'flow', minute, flowId: fl.id, label: fl.name,
+        done: !!(fl.run && fl.run.completed_at),
+        before: fl.before_node_id === n.id,
+      }));
     });
 
   // Routine areas collapse to ONE row per area spanning their blocks; the
@@ -6520,21 +6530,25 @@ function renderEngage() {
 
   const rowHtml = r => {
     if (r.kind === 'qr') {
-      // Each gating routine rides on the label as a chip: ✓ once its run is
-      // complete for the day, ▶ to run it while it isn't. Tapping is the
-      // shortest path from "this QR is coming" to actually doing the thing.
-      const flowChips = (r.flows || []).map(fl => {
-        const done = fl.run && fl.run.completed_at;
-        return `<button class="eg-qr-flow${done ? ' eg-qr-flow-done' : ''}"
-          data-flow="${fl.id}" title="${done ? 'Done today' : 'Run this routine'} — this QR judges ✗ unless it completes">${
-          done ? '✓' : '▶'} ${escHtml(fl.name)}</button>`;
-      }).join('');
       return `<div class="eg-qr${r.outcome ? ` eg-qr-${r.outcome}` : ''}">
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-qr-label">${escHtml(r.label.toUpperCase())}</span>
-        ${flowChips}
         <span class="eg-qr-rule"></span>
         ${r.outcome === 'success' ? '<span class="eg-qr-tick">✓</span>' : ''}
+      </div>`;
+    }
+    if (r.kind === 'flow') {
+      // The routine that GATES the QR above, on its own line: name on the
+      // left like any other row, ▶ to run it, ✓ once today's run completed.
+      // The link is what decides whether that QR judges ✓ or ✗, so it belongs
+      // on the day rather than only inside the step editor.
+      return `<div class="eg-row eg-flow-row${r.done ? ' eg-flow-done' : ''}">
+        <span class="eg-time"></span>
+        <span class="eg-text">${escHtml(r.label)}</span>
+        <button class="eg-qr-flow${r.done ? ' eg-qr-flow-done' : ''}" data-flow="${r.flowId}"
+          title="${r.done ? 'Completed today' : 'Run this routine'} — the QR ${
+            r.before ? 'above judges ✗ unless this is done first' : 'judges ✗ unless this completes'}">${
+          r.done ? '✓ done' : '▶ run'}</button>
       </div>`;
     }
     if (r.kind === 'block') {

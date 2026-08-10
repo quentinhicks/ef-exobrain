@@ -4140,19 +4140,19 @@ body.np-body {
 .eg-qr { display: flex; align-items: center; gap: 9px; padding: 7px 14px 3px; }
 .eg-qr .eg-time { width: auto; color: var(--text-secondary); }
 .eg-qr-label { font: 10px var(--font-mono); letter-spacing: 0.09em; color: var(--text-secondary); }
-/* The routine a QR is waiting on, riding on its hairline. Accent = still to
-   do (it is what makes the QR judge ✓), success = the run completed today. */
+/* The routine a QR is waiting on — its OWN row under the hairline, not a chip
+   on it. Accent = still to do (it is what makes the QR judge ✓), success =
+   the run completed today. */
+.eg-flow-row .eg-text { color: var(--text-primary); }
+.eg-flow-done .eg-text { color: var(--text-secondary); }
 .eg-qr-flow {
   font: 10px var(--font-mono);
   color: var(--accent);
   border: 1px solid var(--accent);
   border-radius: 9px;
-  padding: 0 6px;
+  padding: 1px 8px;
   flex: none;
   cursor: pointer;
-  max-width: 46%;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .eg-qr-flow-done { color: var(--success); border-color: var(--success); }
