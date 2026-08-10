@@ -5489,6 +5489,12 @@ async function openMap() {
     overlay.addEventListener('click', e => { if (e.target === overlay) shut(); });
     // Wired once, outside renderMap: re-rendering the body on every keystroke
     // must not take the field you are typing in with it.
+    const sortBtn = document.getElementById('map-sort');
+    sortBtn.addEventListener('click', () => {
+      if (mapSortOn()) localStorage.setItem('mapSort', 'off');
+      else localStorage.removeItem('mapSort');   // absent = on, one default
+      renderMap();
+    });
     const q = document.getElementById('map-q');
     q.addEventListener('input', e => { mapView.q = e.target.value; renderMap(); });
     q.addEventListener('keydown', e => {
@@ -5531,6 +5537,43 @@ function dragEdgeScroll(el) {
     if (e.clientY < r.top + EDGE) el.scrollTop -= 16;
     else if (e.clientY > r.bottom - EDGE) el.scrollTop += 16;
   });
+}
+
+// MAP's sort: DATED work first, in order of how soon it bites.
+//
+//   1. anything with a due date        — soonest first
+//   2. anything deferred to a future   — soonest first, i.e. closest to
+//      date                              coming back
+//   3. everything else                 — the tree's own order
+//
+// The two tiers are separate rather than one merged date column because they
+// are different claims: a deadline is when it must be DONE, a defer date is
+// when it may be STARTED. Interleaving them would put "can't touch this for
+// three weeks" above "due Friday".
+//
+// Applied to SIBLINGS at every level of the tree, so a project's actions sort
+// the same way its projects do. Not applied to search results — those are
+// ranked by relevance, which is the entire point of a search.
+function mapSortOn() {
+  return localStorage.getItem('mapSort') !== 'off';
+}
+
+function mapSortRank(i, todayStr) {
+  const due = dueOf(i);
+  if (due) return [0, due];
+  if (i.defer_until && i.defer_until > todayStr) return [1, i.defer_until];
+  return [2, ''];
+}
+
+function mapSortSiblings(list, todayStr) {
+  if (!mapSortOn()) return list;
+  // Decorate with the original index so the third tier stays STABLE — the
+  // tree's own order is meaningful (it is area/id order from storage).
+  return list.map((i, n) => [mapSortRank(i, todayStr), n, i])
+    .sort((a, b) => a[0][0] - b[0][0]
+      || a[0][1].localeCompare(b[0][1])
+      || a[1] - b[1])
+    .map(x => x[2]);
 }
 
 // The gestures every MAP row carries, wherever it is rendered — the tree and
@@ -5683,7 +5726,16 @@ function renderMap() {
     a.items.push(i);
   });
 
-  const areaTreeHtml = areaItems => {
+  // SOMEDAY IS SPLIT OUT (2026-08-10). It used to be interleaved with live
+  // work, and since MAP deliberately badges no 'someday' marker, a parked item
+  // was indistinguishable from an active one — so reading the tree meant
+  // re-deciding the state of every row. Two piles, two levels of rigour.
+  //
+  // The split is at the ROOT: a subtree goes wherever its root goes. An
+  // on_hold PROJECT takes its children with it (they are parked with it), and
+  // a parked action under a live project stays inside that project's
+  // structure, where its absence from the pool is the project's problem.
+  const areaTreeHtml = (areaItems, wantSomeday) => {
     const inView = new Set(areaItems.map(i => i.id));
     const kidsOf = {};
     const roots = [];
@@ -5696,11 +5748,13 @@ function renderMap() {
     // this project a next action" already has a home on GTD's Projects list
     // (the same + that puts the global bar in the project's mode).
     const subtree = item => {
-      const kids = kidsOf[item.id] || [];
+      const kids = mapSortSiblings(kidsOf[item.id] || [], todayStr);
       return rowHtml(item) + (kids.length
         ? `<div class="map-kids">${kids.map(subtree).join('')}</div>` : '');
     };
-    return roots.map(subtree).join('');
+    const parked = r => r.status === 'on_hold';
+    const picked = roots.filter(r => (wantSomeday ? parked(r) : !parked(r)));
+    return mapSortSiblings(picked, todayStr).map(subtree).join('');
   };
 
   const domainKeys = Object.keys(domains).sort((a, b) =>
@@ -5735,6 +5789,14 @@ function renderMap() {
   // list, and filing stays a tree gesture.
   const q = mapView.q.trim();
   const qLower = q.toLowerCase();
+  const sortEl = document.getElementById('map-sort');
+  if (sortEl) {
+    sortEl.textContent = mapSortOn() ? '⇅ due' : '⇅ tree';
+    sortEl.classList.toggle('map-sort-on', mapSortOn());
+    sortEl.title = mapSortOn()
+      ? 'Due dates first (soonest first), then deferred by how soon they return — click for plain tree order'
+      : 'Plain tree order — click to sort by due, then defer';
+  }
   const countEl = document.getElementById('map-q-count');
   if (q) {
     const parentOf = {};
@@ -5786,10 +5848,17 @@ function renderMap() {
     const total = areaKeys.reduce((n, ak) => n + d.areas[ak].items.length, 0);
     return `<div class="map-domain">
       <div class="map-domain-head">${escHtml(d.name)}<span class="map-count">${total}</span></div>
-      ${areaKeys.map(ak => `<div class="map-area-group">
-        <div class="map-area-head">${escHtml(d.areas[ak].name)}<span class="map-count">${d.areas[ak].items.length}</span></div>
-        ${areaTreeHtml(d.areas[ak].items)}
-      </div>`).join('')}
+      ${areaKeys.map(ak => {
+        const live = areaTreeHtml(d.areas[ak].items, false);
+        const later = areaTreeHtml(d.areas[ak].items, true);
+        const nLive = d.areas[ak].items.filter(i => i.status !== 'on_hold').length;
+        const nLater = d.areas[ak].items.length - nLive;
+        return `<div class="map-area-group">
+        <div class="map-area-head">${escHtml(d.areas[ak].name)}<span class="map-count">${nLive}</span></div>
+        ${live}
+        ${later ? `<div class="map-someday-head">Someday / maybe<span class="map-count">${nLater}</span></div>${later}` : ''}
+      </div>`;
+      }).join('')}
     </div>`;
   }).join('') : '<div class="pm-empty">Nothing in the inventory yet — capture into the inbox first.</div>') + inboxHtml;
 
@@ -7441,6 +7510,40 @@ async function openClarifyForItem(item, after) {
   renderClarify();
 }
 
+// THE LAST DOMAIN YOU FILED INTO, for the rest of the day.
+//
+// Clarifying a queue is one sitting: an inbox is usually about one part of
+// your life at a time, so re-picking the domain on every item is a tax on the
+// common case. It expires at MIDNIGHT rather than persisting forever, because
+// "what I was working on" is a fact about a day — carrying yesterday's context
+// into this morning would file today's captures into last night's project.
+//
+// Stored per-day so the expiry needs no timer and survives a restart. It is a
+// DEFAULT, never a decision: the Filing-to row still shows every domain, and
+// an item that already has an area (re-clarified from MAP/GTD/the pool) keeps
+// its own — a suggestion must not overwrite something already decided.
+function lastFiledDomain() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('lastFiled') || 'null');
+    if (raw && raw.date === formatDateYMD(new Date())) return raw.domainId;
+  } catch (e) { /* unparseable = no memory, which is the safe answer */ }
+  return null;
+}
+
+function rememberFiledDomain(areaId) {
+  if (!areaId) return;
+  localStorage.setItem('lastFiled', JSON.stringify({
+    domainId: domainIdForArea(areaId), date: formatDateYMD(new Date()),
+  }));
+}
+
+// The area to land on for a given domain: its default, else its first.
+function defaultAreaForDomain(did) {
+  const areas = state.areas.filter(a => a.active && a.type === 'standard'
+                                        && domainIdForArea(a.id) === did);
+  return (areas.find(a => a.is_default) || areas[0] || {}).id || null;
+}
+
 function clarifyResetItem() {
   const item = clarifyView.queue[0];
   clarifyView.compose = null;
@@ -7464,7 +7567,13 @@ function clarifyResetItem() {
   clarifyView.chase = '';
   clarifyView.notes = item ? (item.notes || '') : '';
   clarifyView.due = item ? (item.deadline || '') : '';
+  // An item that already has an area keeps it. Only a fresh capture — which
+  // has none — takes the remembered domain.
   clarifyView.areaId = item ? item.area_id : null;
+  if (!clarifyView.areaId) {
+    const did = lastFiledDomain();
+    if (did != null) clarifyView.areaId = defaultAreaForDomain(did);
+  }
   clarifyView.projSearch = null;
   clarifyView.projNotesOpen = false;
   clarifyView.refOpen = false;
@@ -7553,8 +7662,11 @@ async function fileClarify(bucket, refListId) {
     // The design has no area control: the block calendar's area is the silent
     // default (same suggestion the old processing table made), a chosen project
     // overrides it server-side, and MAP can re-file later.
+    // Filing is what teaches the memory — the area actually written, not the
+    // one that happened to be showing.
     const areaId = clarifyView.areaId || item.area_id || state.activeAreaId
       || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
+    rememberFiledDomain(areaId);
 
     // (The 'breakdown' bucket — the capture BECOMING the project — was
     // replaced 2026-08-07 by clarifyCreateProject's composer: naming the
@@ -7687,6 +7799,7 @@ async function fileClarifyExternal(bucket, refListId) {
     } else if (bucket !== 'trash' && bucket !== 'do') {
       const areaId = clarifyView.areaId || state.activeAreaId
         || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
+      rememberFiledDomain(areaId);   // the external step teaches it too
       const created = await fetch('/api/inbox', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7937,11 +8050,8 @@ function renderClarify() {
   }));
   sheet.querySelectorAll('.cl-chip[data-domain]').forEach(b => {
     b.addEventListener('click', () => {
-      const did = parseInt(b.dataset.domain);
-      const areas = state.areas.filter(a => a.active && a.type === 'standard'
-                                            && domainIdForArea(a.id) === did);
       // Land on that domain's default area; the area row refines it.
-      clarifyView.areaId = (areas.find(a => a.is_default) || areas[0] || {}).id || null;
+      clarifyView.areaId = defaultAreaForDomain(parseInt(b.dataset.domain));
       renderClarify();
     });
   });

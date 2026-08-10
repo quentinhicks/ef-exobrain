@@ -5687,3 +5687,26 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* Off is a state you should notice — time-bound work is showing regardless
    of the clock, which is exactly the thing you asked to be hidden. */
 #eg-time-gate.ctx-gate-off { color: var(--danger); }
+#map-sort {
+  flex: none;
+  font: 10px var(--font-mono);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+#map-sort.map-sort-on { color: var(--accent); border-color: var(--accent); }
+/* Someday, held apart from live work: same rows, visibly a different pile.
+   MAP badges no 'someday' marker, so without this a parked row and an active
+   one look identical and the tree can't be read without re-deciding each. */
+.map-someday-head {
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin: 10px 0 2px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.map-someday-head + .map-row,
+.map-someday-head ~ .map-row { opacity: 0.72; }
