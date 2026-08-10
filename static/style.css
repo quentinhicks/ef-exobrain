@@ -4499,21 +4499,10 @@ button.eg-domain { cursor: pointer; }
   background: var(--surface-mid);
 }
 
-#gtd-left {
-  background: var(--surface);
-  flex: none;
-}
-
-#gtd-right {
-  flex: none;
-  background: var(--surface-mid);
-  border-top: 1px solid var(--border-soft);
-}
-
-#gtd-left-body,
-#gtd-right-body {
-  padding: 16px 20px;
-}
+/* One ground, the same --surface-mid MAP and the day sit on. The two halves
+   used to be --surface and --surface-mid, which is what made this tab look
+   like a different app. */
+#gtd-body { padding: 16px 20px; }
 
 .gtd-header {
   display: flex;
@@ -4549,7 +4538,13 @@ button.eg-domain { cursor: pointer; }
 
 .gtd-section { margin-bottom: 18px; }
 
+/* The list head is the collapse control — the whole row is the target, so it
+   works on a phone without hunting for a chevron. */
 .gtd-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
   font: 11px var(--font-ui);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -4557,6 +4552,17 @@ button.eg-domain { cursor: pointer; }
   border-bottom: 1px solid var(--border);
   padding-bottom: 3px;
   margin-bottom: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.gtd-section-head:hover { color: var(--text-primary); }
+.gtd-chev { margin-left: auto; font-size: 11px; color: var(--text-secondary); }
+/* Domain groups, the same shape MAP uses. */
+.gtd-domain-head {
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin: 8px 0 2px;
 }
 
 .gtd-stalled-n { font-size: 10px; color: var(--danger); margin-left: 8px; }

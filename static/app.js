@@ -809,6 +809,11 @@ function defaultDomainId() {
   return d ? d.id : null;
 }
 
+function domainName(id) {
+  const d = (state.domains || []).find(x => String(x.id) === String(id));
+  return (d && d.name) || '—';
+}
+
 function domainIdForArea(areaId) {
   const a = areaId ? state.areas.find(p => p.id === areaId) : null;
   return (a && a.domain_id) || defaultDomainId();
@@ -2440,13 +2445,6 @@ function initHub() {
         else el.classList.add('hidden');
         return;
       }
-    }
-    // Same backstop for the GTD tab's open notes.
-    const gtdEl = document.getElementById('tab-gtd');
-    if (gtdEl && !gtdEl.classList.contains('hidden') && gtdView.notesFor != null) {
-      gtdView.notesFor = null; gtdView.notesEdit = false;
-      renderGtd();
-      return;
     }
     if (ctxSheet.tag) { closeCtxSheet(); return; }
     // A dangerous-writing session swallows Esc entirely — its own keydown
@@ -5538,8 +5536,9 @@ function dragEdgeScroll(el) {
 // The gestures every MAP row carries, wherever it is rendered — the tree and
 // the flat search results share them, so a hit behaves exactly like the row it
 // stands for. Drag is NOT here: it is the tree's alone (see renderMap).
-function wireMapRows(body, byId) {
-  const after = async () => { await refreshMap(); await refreshActiveItems(); };
+function wireMapRows(body, byId, afterFn) {
+  const after = afterFn
+    || (async () => { await refreshMap(); await refreshActiveItems(); });
   // Single click opens the clarify sheet, double click still renames. A
   // dblclick always fires a click first, so the single-click action waits out
   // the double-click window before committing.
@@ -5572,7 +5571,7 @@ function wireMapRows(body, byId) {
         settled = true;
         const content = input.value.trim();
         row.draggable = true;
-        if (!save || !content || content === item.content) { renderMap(); return; }
+        if (!save || !content || content === item.content) { await after(); return; }
         await fetch(`/api/inbox/${id}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content }),
@@ -5882,8 +5881,9 @@ async function refreshActiveItems() {
 // deliberately — ordering a project's actions is a structure decision, and this is
 // the projects surface). chainItems is fetched from /api/map on open because
 // the GTD lists payload carries no plain actions.
-const gtdView = { lists: null, notesFor: null, notesEdit: false,
-                  chainFor: null, chainArm: null, chainItems: [] };
+// Notes, dependency ordering and the per-list verbs all moved to the clarify
+// sheet (2026-08-10), so this view holds nothing but its data.
+const gtdView = { lists: null };
 let gtdTagFilter = null;
 
 
@@ -5892,346 +5892,135 @@ async function refreshGtd() {
   renderGtd();
 }
 
+// The four canonical GTD lists, rendered exactly like MAP: one ground, MAP's
+// row (text + badges + a single `›` into the clarify sheet), and grouped by
+// DOMAIN. Rewritten 2026-08-10 — it used to be two columns on two different
+// backgrounds, with a different bespoke control set per list (✎ ⛓ # + →active
+// ✓ × now), which is the "second grammar" problem MAP already solved.
+//
+// Every decision is the sheet's now. A project row opens the PROJECT clarify
+// sheet (kind === 'project' routes it), and someday/deferred/waiting rows open
+// the action sheet — so re-activating, parking, re-dating and deleting are all
+// the same gesture they are everywhere else in the app.
+function gtdCollapsed(key) {
+  return (localStorage.getItem('gtdCollapsed') || '').split(',').includes(key);
+}
+
+function gtdToggleSection(key) {
+  const open = new Set((localStorage.getItem('gtdCollapsed') || '').split(',').filter(Boolean));
+  if (open.has(key)) open.delete(key); else open.add(key);
+  localStorage.setItem('gtdCollapsed', [...open].join(','));
+}
+
 function renderGtd() {
-  const left = document.getElementById('gtd-left-body');
-  const right = document.getElementById('gtd-right-body');
-  if (!left || !right || !gtdView.lists) return;
+  const body = document.getElementById('gtd-body');
+  if (!body || !gtdView.lists) return;
   const { projects, waiting, someday, deferred } = gtdView.lists;
   const all = [...projects, ...waiting, ...someday, ...deferred];
   const allTags = [...new Set(all.flatMap(itemTags))].sort();
   if (gtdTagFilter && !allTags.includes(gtdTagFilter)) gtdTagFilter = null;
   const byTag = list => gtdTagFilter
     ? list.filter(i => itemTags(i).includes(gtdTagFilter)) : list;
+  const todayStr = formatDateYMD(new Date());
+  const stalled = new Set(projects.filter(p => !p.action_count).map(p => p.id));
+  const byId = {};
+  all.forEach(i => { byId[i.id] = i; });
 
-  const crumb = i => i.project_name
-    ? `${i.area_name || '—'} / ${i.project_name}` : (i.area_name || '—');
   // captured_at is SQLite UTC with a space — normalize before parsing or ages
   // drift by the timezone offset.
   const ageDays = i => Math.max(0, Math.floor(
     (Date.now() - new Date((i.captured_at || '').replace(' ', 'T') + 'Z')) / 86400000));
 
-  const row = (item, badges, acts) => `
-    <div class="gtd-row${item.kind === 'project' ? ' gtd-row-project' : ''}" data-id="${item.id}">
-      <span class="gtd-text">${escHtml(item.content)}</span>
-      <span class="gtd-crumb">${escHtml(crumb(item))}</span>
-      ${dueChip(item, 'gtd-tag')}
-      ${itemTags(item).map(t => `<span class="gtd-tag">${escHtml(t)}</span>`).join('')}
-      <button class="gtd-tag-edit" data-id="${item.id}" title="Edit tags">#</button>
-      ${badges || ''}
-      <span class="gtd-acts">${acts || ''}</span>
-    </div>`;
-
-  const notesOpen = gtdView.notesFor;
-  // The ⛓ chain card: this project's actions with [n] positions; drag one
-  // onto the one it comes AFTER (touch: tap to arm, tap the predecessor).
-  const chainCard = p => {
-    const acts = gtdView.chainItems.filter(i =>
-      i.project_id === p.id && i.kind !== 'project');
-    const nums = chainNumbers(acts);
-    return `<div class="cl-chain">
-      <div class="cl-chain-hint">${gtdView.chainArm != null
-        ? 'now tap the action it comes AFTER'
-        : 'drag an action onto the one it comes after · [2] hides until [1] is done'}</div>
-      ${acts.map(a => `
-        <div class="cl-chain-row${gtdView.chainArm === a.id ? ' cl-chain-armed' : ''}"
-          draggable="true" data-id="${a.id}">
-          ${nums[a.id] ? `<span class="cl-chain-n">[${nums[a.id]}]</span>` : '<span class="cl-chain-n cl-chain-free"></span>'}
-          <span class="cl-chain-text">${escHtml(a.content)}</span>
-          ${a.after_id ? `<button class="cl-chain-x" data-id="${a.id}" title="Unchain">✕</button>` : ''}
-        </div>`).join('')
-        || '<div class="gtd-empty">No actions to order yet.</div>'}
+  // MAP's row, verbatim in shape: the text, whatever is worth SCANNING, and
+  // one control. `extra` is the per-list badge set.
+  const rowHtml = (item, extra) => {
+    const isProject = item.kind === 'project';
+    return `<div class="map-row${isProject ? ' map-row-project' : ''}${
+        isProject && stalled.has(item.id) ? ' map-row-stalled' : ''}" data-id="${item.id}">
+      <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
+      ${isProject ? '' : itemTags(item).map(t =>
+        `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
+      ${dueChip(item, 'map-badge')}
+      ${extra || ''}
+      <span class="map-crumb">${escHtml(item.project_name || item.area_name || '—')}</span>
+      <span class="map-acts">
+        <button class="map-open" data-id="${item.id}"
+          title="${isProject ? 'Clarify this project' : 'Clarify this item'}">›</button>
+      </span>
     </div>`;
   };
 
-  const projRows = byTag(projects).map(p =>
-    row(p,
-      `<span class="gtd-age" title="Live actions in this project">${p.action_count} action${p.action_count === 1 ? '' : 's'}</span>` +
-      (p.action_count === 0 ? '<span class="map-badge map-badge-bad">no next action</span>' : ''),
-      (p.action_count >= 2 ? `<button class="gtd-chain-btn${gtdView.chainFor === p.id ? ' gtd-notes-on' : ''}"
-         data-id="${p.id}" title="Dependencies — order this project's actions">⛓</button>` : '') +
-      `<button class="gtd-notes-btn${(p.notes || '').trim() ? ' gtd-notes-on' : ''}" data-id="${p.id}"
-         title="Project notes — support material, not actions">✎</button>`) +
-    (gtdView.chainFor === p.id ? chainCard(p) : '') +
-    (notesOpen === p.id
-      ? (gtdView.notesEdit || !(p.notes || '').trim()
-        ? `<textarea class="gtd-notes" data-id="${p.id}" rows="4"
-             placeholder="Notes, links, thinking — support material for ${escHtml(p.content)}. Markdown works. Actions belong on the list, not in here.">${escHtml(p.notes || '')}</textarea>`
-        : `<div class="gtd-notes-view md-body" data-id="${p.id}" title="Tap to edit">${mdHtml(p.notes)}</div>`)
-      : '') +
-    `<button class="gtd-add-btn map-add-btn" data-area="${p.area_id || ''}" data-project="${p.id}"
-       data-name="${escHtml(p.content)}">+ next action</button>`
-  ).join('');
+  // Domain groups, the level above areas — same cut MAP makes, so the two
+  // surfaces describe the inventory the same way. The area rides on the row as
+  // a breadcrumb rather than becoming a second nesting level: these lists are
+  // flat by design (see the GTD tab notes).
+  const groupByDomain = (list, extraFn) => {
+    const groups = {};
+    list.forEach(i => {
+      const did = i.domain_id || domainIdForArea(i.area_id);
+      (groups[did] = groups[did] || []).push(i);
+    });
+    const keys = Object.keys(groups).sort((a, b) =>
+      (domainName(a) || '').localeCompare(domainName(b) || ''));
+    // One domain in play needs no header — a heading that never varies is noise.
+    const showHeads = keys.length > 1;
+    return keys.map(did => `
+      ${showHeads ? `<div class="gtd-domain-head">${escHtml(domainName(did))}<span class="map-count">${groups[did].length}</span></div>` : ''}
+      ${groups[did].map(i => rowHtml(i, extraFn ? extraFn(i) : '')).join('')}`).join('');
+  };
 
-  const waitRows = byTag(waiting).map(w =>
-    row(w,
-      (w.kind === 'project' ? '<span class="gtd-age">project</span>' : '') +
-      (w.waiting_on ? `<span class="gtd-age gtd-who">${escHtml(w.waiting_on)}</span>` : '') +
-      `<span class="gtd-age" title="Waiting since ${escHtml(w.captured_at || '')}">${ageDays(w)}d</span>` +
-      (w.chase_on ? `<span class="gtd-age" title="Chase date">chase ${escHtml(w.chase_on)}</span>` : ''),
-      `<button class="gtd-activate" data-id="${w.id}" title="Take it back — active again">→ active</button>
-       <button class="gtd-done" data-id="${w.id}" title="Arrived / done">✓</button>`)
-  ).join('');
+  const section = (key, title, list, extraFn, empty, headExtra) => {
+    const shown = byTag(list);
+    const closed = gtdCollapsed(key);
+    return `<div class="gtd-section">
+      <button class="gtd-section-head" data-section="${key}">
+        <span>${title}</span><span class="map-count">${shown.length}</span>
+        ${headExtra || ''}<span class="gtd-chev">${closed ? '›' : '⌄'}</span>
+      </button>
+      ${closed ? '' : (shown.length ? groupByDomain(shown, extraFn)
+        : `<div class="gtd-empty">${empty}</div>`)}
+    </div>`;
+  };
 
-  const someRows = byTag(someday).map(s =>
-    row(s, '',
-      `<button class="gtd-activate" data-id="${s.id}" title="Activate">→ active</button>
-       <button class="gtd-del" data-id="${s.id}" title="Delete">×</button>`)
-  ).join('');
-
-  const defRows = byTag(deferred).map(d =>
-    row(d,
-      `<span class="map-badge">→ ${escHtml(d.defer_until)}</span>` +
-      (d.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${d.pushed} times — too big, not real, or being avoided">pushed ${d.pushed}x</span>` : ''),
-      `<button class="gtd-now" data-id="${d.id}" title="Bring back now">now</button>`)
-  ).join('');
-
-  const stalledN = projects.filter(p => !p.action_count).length;
   const chips = allTags.map(t =>
     `<button class="gtd-chip${t === gtdTagFilter ? ' gtd-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`
   ).join('');
+  const stalledN = projects.filter(p => !p.action_count).length;
 
-  left.innerHTML = `
+  body.innerHTML = `
     <div class="gtd-header">
       <span class="gtd-counts">${projects.length} projects · ${waiting.length} waiting · ${someday.length} someday · ${deferred.length} deferred</span>
       ${allTags.length ? `<span class="gtd-chips">${chips}</span>` : ''}
     </div>
-    <div class="gtd-section">
-      <div class="gtd-section-head">Projects<span class="map-count">${byTag(projects).length}</span>${
-        stalledN ? `<span class="gtd-stalled-n">${stalledN} stalled</span>` : ''}</div>
-      ${projRows || '<div class="gtd-empty">No projects — nothing multi-step is on the books.</div>'}
-    </div>
-    <div class="gtd-section">
-      <div class="gtd-section-head">Waiting for<span class="map-count">${byTag(waiting).length}</span></div>
-      ${waitRows || '<div class="gtd-empty">Nothing handed off.</div>'}
-    </div>`;
-  right.innerHTML = `
-    <div class="gtd-section">
-      <div class="gtd-section-head">Someday / maybe<span class="map-count">${byTag(someday).length}</span></div>
-      ${someRows || '<div class="gtd-empty">Nothing parked.</div>'}
-    </div>
-    <div class="gtd-section">
-      <div class="gtd-section-head">Deferred<span class="map-count">${byTag(deferred).length}</span></div>
-      ${defRows || '<div class="gtd-empty">Nothing deferred — the tickler is empty.</div>'}
-    </div>`;
+    ${section('projects', 'Projects', projects,
+      p => `<span class="map-badge">${p.action_count} action${p.action_count === 1 ? '' : 's'}</span>`,
+      'No projects — nothing multi-step is on the books.',
+      stalledN ? `<span class="gtd-stalled-n">${stalledN} stalled</span>` : '')}
+    ${section('waiting', 'Waiting for', waiting,
+      w => (w.waiting_on ? `<span class="map-badge map-badge-wait">${escHtml(w.waiting_on)}</span>` : '')
+        + `<span class="map-badge" title="Waiting since ${escHtml(w.captured_at || '')}">${ageDays(w)}d</span>`
+        + (w.chase_on ? `<span class="map-badge">chase ${escHtml(w.chase_on)}</span>` : ''),
+      'Nothing handed off.')}
+    ${section('someday', 'Someday / maybe', someday, null, 'Nothing parked.')}
+    ${section('deferred', 'Deferred', deferred,
+      d => `<span class="map-badge">→ ${escHtml(d.defer_until)}</span>`
+        + (d.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${d.pushed} times — too big, not real, or being avoided">pushed ${d.pushed}x</span>` : ''),
+      'Nothing deferred — the tickler is empty.')}`;
 
-  const rootEl = document.getElementById('tab-gtd');
-  const patchItem = (id, body) => fetch(`/api/inbox/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
   const after = async () => { await refreshGtd(); await refreshActiveItems(); };
+  // The SAME gestures MAP's rows carry — click to clarify, double-click to
+  // rename, `›` for the sheet. One implementation, two surfaces.
+  wireMapRows(body, byId, after);
 
-  // Every item is one tap from the sheet that can re-decide it — the same
-  // gesture the Engage pool already has. GTD's text carries no rename, so the
-  // click is free here (MAP's needs the double-click guard).
-  rootEl.querySelectorAll('.gtd-text').forEach(span => {
-    span.addEventListener('click', () => {
-      const id = parseInt(span.closest('.gtd-row').dataset.id);
-      const item = all.find(i => i.id === id);
-      if (item) openClarifyForItem(item, after);
-    });
-  });
-
-  // Notes are Allen's project SUPPORT MATERIAL: they live with the project
-  // and are read in the weekly review, never on the action lists.
-  rootEl.querySelectorAll('.gtd-notes-btn').forEach(b => {
-    b.addEventListener('click', () => {
-      const id = parseInt(b.dataset.id);
-      gtdView.notesFor = gtdView.notesFor === id ? null : id;
-      gtdView.notesEdit = false;
-      renderGtd();
-      if (gtdView.notesFor === id) rootEl.querySelector(`.gtd-notes[data-id="${id}"]`)?.focus();
-    });
-  });
-  // Open notes render as markdown; tapping the rendered view swaps in the
-  // raw-text editor (links inside it still navigate — that's the point of
-  // rendering them).
-  rootEl.querySelectorAll('.gtd-notes-view').forEach(v => {
-    v.addEventListener('click', e => {
-      if (e.target.tagName === 'A') return;
-      gtdView.notesEdit = true;
-      renderGtd();
-      rootEl.querySelector(`.gtd-notes[data-id="${v.dataset.id}"]`)?.focus();
-    });
-  });
-  rootEl.querySelectorAll('.gtd-notes').forEach(ta => {
-    const id = parseInt(ta.dataset.id);
-    const item = all.find(i => i.id === id);
-    let undoPushed = false;
-    const flush = wireNotesAutosave(ta, async value => {
-      if (!item || value === (item.notes || '')) return;
-      if (!undoPushed) {
-        undoPushed = true;
-        undoablePatch(item, ['notes'], `edited notes on "${item.content}"`);
-      }
-      await patchItem(id, { notes: value });
-      // Keep the local copy in step: the next flush must not re-PATCH text
-      // that is already stored, and renderGtd reads this object for the ✎
-      // lit state. It is the same object gtdView.lists holds.
-      item.notes = value;
-    });
-    ta.addEventListener('blur', async () => {
-      await flush();
-      gtdView.notesEdit = false;
-      renderGtd();
-    });
-    ta.addEventListener('keydown', e => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        flush();
-        gtdView.notesFor = null; gtdView.notesEdit = false;
-        renderGtd();
-      }
-    });
-  });
-
-  rootEl.querySelectorAll('.gtd-chip').forEach(b => {
-    b.addEventListener('click', () => {
-      gtdTagFilter = gtdTagFilter === b.dataset.tag ? null : b.dataset.tag;
-      renderGtd();
-    });
-  });
-  rootEl.querySelectorAll('.gtd-activate').forEach(b => {
-    b.addEventListener('click', async () => {
-      const id = parseInt(b.dataset.id);
-      const item = all.find(i => i.id === id);
-      if (item) undoablePatch(item, ['status', 'waiting_on', 'chase_on'],
-                              `activated "${item.content}"`);
-      await patchItem(id, { status: 'active' });
-      await after();
-    });
-  });
-  rootEl.querySelectorAll('.gtd-now').forEach(b => {
-    b.addEventListener('click', async () => {
-      const id = parseInt(b.dataset.id);
-      const item = all.find(i => i.id === id);
-      if (item) undoablePatch(item, ['defer_until'], `un-deferred "${item.content}"`);
-      await patchItem(id, { defer_until: null });
-      await after();
-    });
-  });
-  rootEl.querySelectorAll('.gtd-done, .gtd-del').forEach(b => {
-    b.addEventListener('click', async () => {
-      const id = parseInt(b.dataset.id);
-      const item = all.find(i => i.id === id);
-      await undoableDelete(id, `deleted "${(item && item.content) || 'item'}"`);
-      await after();
-    });
-  });
-
-  // Tags are edited HERE, not on NOW: a 3-second decision belongs on the
-  // weekly surface, not the one glanced at 30x a day.
-  rootEl.querySelectorAll('.gtd-tag-edit').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = parseInt(btn.dataset.id);
-      const item = all.find(i => i.id === id);
-      if (!item) return;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'gtd-tags-input';
-      input.value = itemTags(item).join(' ');
-      input.placeholder = 'tags…';
-      btn.replaceWith(input);
-      input.focus();
-      let settled = false;
-      const finish = async save => {
-        if (settled) return;
-        settled = true;
-        if (!save) { renderGtd(); return; }
-        const tags = input.value.toLowerCase().split(/[\s,#]+/).filter(Boolean).join(' ');
-        if (tags === (item.tags || '')) { renderGtd(); return; }
-        await patchItem(id, { tags });
-        await after();
-      };
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-        // stopPropagation, or this same keydown also reaches initHub's handler
-        // and closes the overlay behind the editor — Esc peels innermost-first.
-        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
-      });
-      input.addEventListener('blur', () => finish(true));
-    });
-  });
-
-  // The ⛓ chain editor. Dropping A onto B (or arming A by tap, then tapping
-  // B) sets A.after_id = B — A comes AFTER B, and the availability predicate
-  // hides A until B completes. Every link/unlink is one undoable PATCH; the
-  // cycle guard here mirrors storage's silent-no-op backstop.
-  rootEl.querySelectorAll('.gtd-chain-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = parseInt(btn.dataset.id);
-      if (gtdView.chainFor === id) { gtdView.chainFor = null; }
-      else {
-        gtdView.chainItems = await fetch('/api/map').then(r => r.json()).catch(() => []);
-        gtdView.chainFor = id;
-        gtdView.chainArm = null;
-      }
-      renderGtd();
-    });
-  });
-  const chainLink = async (fromId, toId) => {
-    if (fromId === toId) return;
-    const byId = {};
-    gtdView.chainItems.forEach(a => { byId[a.id] = a; });
-    let cur = toId;
-    const seen = new Set();
-    while (cur != null && !seen.has(cur)) {
-      if (cur === fromId) { toast('That would make a loop'); return; }
-      seen.add(cur);
-      cur = (byId[cur] || {}).after_id;
-    }
-    const item = byId[fromId];
-    undoablePatch(item, ['after_id'], `chained "${item.content}"`);
-    await patchItem(fromId, { after_id: toId });
-    item.after_id = toId;
-    gtdView.chainArm = null;
+  body.querySelectorAll('.gtd-section-head').forEach(h => h.addEventListener('click', () => {
+    gtdToggleSection(h.dataset.section);
     renderGtd();
-    await refreshActiveItems();   // availability changed — the pool must agree
-  };
-  rootEl.querySelectorAll('.cl-chain-row').forEach(rw => {
-    const id = parseInt(rw.dataset.id);
-    rw.addEventListener('dragstart', e => {
-      e.dataTransfer.setData('text/plain', String(id));
-      e.dataTransfer.effectAllowed = 'link';
-    });
-    rw.addEventListener('dragover', e => e.preventDefault());
-    rw.addEventListener('drop', e => {
-      e.preventDefault();
-      const from = parseInt(e.dataTransfer.getData('text/plain'));
-      if (from) chainLink(from, id);
-    });
-    rw.addEventListener('click', e => {
-      if (e.target.classList.contains('cl-chain-x')) return;
-      if (gtdView.chainArm == null) { gtdView.chainArm = id; renderGtd(); }
-      else if (gtdView.chainArm === id) { gtdView.chainArm = null; renderGtd(); }
-      else chainLink(gtdView.chainArm, id);
-    });
-  });
-  rootEl.querySelectorAll('.cl-chain-x').forEach(b => b.addEventListener('click', async () => {
-    const id = parseInt(b.dataset.id);
-    const item = gtdView.chainItems.find(i => i.id === id);
-    undoablePatch(item, ['after_id'], `unchained "${item.content}"`);
-    await patchItem(id, { after_id: null });
-    item.after_id = null;
-    renderGtd();
-    await refreshActiveItems();
   }));
-
-  // "+ next action" puts the GLOBAL BAR into that project's mode — same
-  // affordance as MAP's, one implementation, no inline form in the list.
-  rootEl.querySelectorAll('.gtd-add-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      barView.mode = { kind: 'project', id: parseInt(btn.dataset.project),
-                       name: btn.dataset.name,
-                       areaId: parseInt(btn.dataset.area) || null };
-      renderBar();
-      document.getElementById('eg-capture').focus();
-    });
-  });
+  body.querySelectorAll('.gtd-chip').forEach(c => c.addEventListener('click', () => {
+    gtdTagFilter = gtdTagFilter === c.dataset.tag ? null : c.dataset.tag;
+    renderGtd();
+  }));
 }
-
-
 // ── Settings → Times: named recurring periods ────────────────
 //
 // The time-axis counterpart of the location presets: a name, the DAYS as an
@@ -8094,6 +7883,10 @@ function renderClarify() {
                 : '<span class="cl-proj-bad">no next action</span>')
         : `captured ${(item.captured_at || '').slice(0, 10)}`}</div>
     </div>`}
+    ${isProj ? `<div class="cl-row">
+      <button class="cl-pill" id="cl-self-add">+ next action</button>
+      ${acts >= 2 ? '<button class="cl-pill" id="cl-self-chain">⛓ order them</button>' : ''}
+    </div>` : ''}
     <div class="cl-sec"><span class="cl-q">${isProj
       ? "What's the outcome?" : "What's the next physical action?"}</span></div>
     <div class="cl-action-wrap"><input type="text" id="cl-action" class="cl-action" value="${escHtml(clarifyView.action)}" autocomplete="off"${ext ? ' placeholder="e.g. Reply to Sam about the venue"' : ''}></div>
@@ -8191,6 +7984,22 @@ function renderClarify() {
   if (due) due.addEventListener('change', e => { clarifyView.due = e.target.value; });
   const proj = sheet.querySelector('#cl-proj');
   if (proj) proj.addEventListener('click', () => { clarifyView.projSearch = ''; renderClarify(); });
+  // A PROJECT's own sheet keeps what its GTD row used to offer: order its
+  // actions, and arm the bar to add one. Removing them from the row was the
+  // point; removing them from the app was not.
+  const selfChain = sheet.querySelector('#cl-self-chain');
+  if (selfChain) selfChain.addEventListener('click', async () => {
+    await openComposeFor({ id: item.id, content: item.content, area_id: item.area_id }, 'pick');
+  });
+  const selfAdd = sheet.querySelector('#cl-self-add');
+  if (selfAdd) selfAdd.addEventListener('click', () => {
+    barView.mode = { kind: 'project', id: item.id, name: item.content,
+                     areaId: item.area_id || null };
+    closeClarify();
+    renderBar();
+    document.getElementById('eg-capture').focus();
+  });
+
   const chainBtn = sheet.querySelector('#cl-proj-chain');
   if (chainBtn) chainBtn.addEventListener('click', async () => {
     const p = (state.projects || []).find(x => x.id === clarifyView.projectId);
