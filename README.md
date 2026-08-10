@@ -8,20 +8,16 @@ Software that provides freedom through giving you control of the future. NOTE: B
 >
 > — Russell Barkley, expert on Adult ADHD
 
-ADHD is commonly understood as a deficit of executive function, which is one's ability to plan, focus, and self-regulate. From 1997 to 2016, the prevalence of ADHD (Attention-Deficit Hyperactivity Disorder) has increased from 6.1% to 10.2% according to [national population surveys](https://pmc.ncbi.nlm.nih.gov/articles/PMC9616454/). The reasons for this increase is unclear, but the fact is that increasing numbers of people have trouble self-regulating: a fact which almost certainly is related to the amount of time tech companies spend optimizing addicting social media algorithms.
-
-We need to develop systems that allow us to be able to regain control over systems that take our attention away from us.
+ADHD is commonly understood as a deficit of executive function, which is one's ability to plan, focus, and self-regulate. From 1997 to 2016, the prevalence of ADHD (Attention-Deficit Hyperactivity Disorder) has increased from 6.1% to 10.2% according to [national population surveys](https://pmc.ncbi.nlm.nih.gov/articles/PMC9616454/). The reasons for this increase is unclear, but the fact is that increasing numbers of people have trouble self-regulating: a fact which almost certainly is related to the amount of time tech companies spend optimizing addicting social media algorithms. **We need to develop systems that allow us to be able to regain control over systems that take our attention away from us.**
 
 ## What's the solution?
 
 > Humankind cannot gain anything without first giving something in return. To obtain, something of equal value must be lost. That is Alchemy's first law of Equivalent Exchange
->
 > — Alphonse Elric, protagonist of Fullmetal Alchemist: Brotherhood
 
-The ef-exobrain software is a piece of personal management software (similar to to-do lists, calendars, etc.) that takes a radical view towards treating executive dysfunction: instead of treating it as our responsibility to internally self-regulate in a world that unfairly increasingly demands our attention, we should be able to fight back by making our obligations as clear as possible at every point in time.
+The ef-exobrain software is a piece of personal management software (similar to to-do lists, calendars, etc.) that takes a radical view towards treating executive dysfunction: instead of treating it as our responsibility to internally self-regulate in a world that unfairly increasingly demands our attention, we should be able to fight back by making our obligations _as clear as possible at every point in time_.
 
 The main principle of this software: everything that one needs to know should be accessible on one view, accessible from any platform. On the main view, we have the following sections:
-
 * **Calendar:** For all timed related tasks and activities. Three different types of calendar data types:
   * **Events**: Specific scheduled events of time on a given day. Created from the events from a Google Calendar API.
   * **Blocks**: Larger recurring blocks of time scheduled out on a weekly basis. Can overlap with events, but these are mainly for time blocking purposes.
@@ -33,12 +29,9 @@ The main principle of this software: everything that one needs to know should be
   * **Action items:** These are specific, physical tasks which you can add context tags to. There is more on this, which I will touch on later.
 * **Capture:** There is a capture bar at the bottom of the screen for any thought that you feel like you need to write down without getting distracted on your current task.
 
-There are more many more features not mentioned here, but they enhance these key components as opposed to adding to it.
-
-In addition, your instance of the app can be accessible on all platforms via web URL.
+There are more many more features not mentioned here, but they enhance these key components as opposed to adding to it. In addition, your instance of the app can be accessible on all platforms via web URL.
 
 This is a productivity workflow largely derived from Getting Things Done by David Allen. Read a summary about it in [GTD in 15 minutes - A Pragmatic Guide to Getting Things Done](https://hamberg.no/gtd). This system takes mostly from Allen's workflow, but we incorporate his emphasis on flexibility with the ability for users to determine their own level of self-imposed structuring:
-
 * By introducing user configurable gates and monetary enforced deadlines, we acknowledge that external stakes are an important aspect of self-regulation.
 * By introducing user configurable time blocking, we emphasize that the ability to structure ones time in weekly time blocks allows the user to portion their time appropriately.
 
