@@ -5,8 +5,9 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import recurrence
 
-_DAY_MAP = {'MO': 0, 'TU': 1, 'WE': 2, 'TH': 3, 'FR': 4, 'SA': 5, 'SU': 6}
+
 
 
 def _parse_dt(val, tzid=None):
@@ -30,76 +31,27 @@ def _fmt(dt):
 
 
 def expand_rrule(rrule_str, dtstart, duration):
-    params = {}
-    for part in rrule_str.split(';'):
-        if '=' in part:
-            k, v = part.split('=', 1)
-            params[k] = v
+    """Occurrences of an iCalendar RRULE, as (start, end) local strings.
 
-    freq = params.get('FREQ', '')
-    interval = int(params.get('INTERVAL', 1))
-    count = int(params['COUNT']) if 'COUNT' in params else None
-
-    until = None
-    if 'UNTIL' in params:
-        u = params['UNTIL']
-        if u.endswith('Z'):
-            until = datetime.strptime(u, '%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
-        elif 'T' in u:
-            until = datetime.strptime(u[:15], '%Y%m%dT%H%M%S')
-        else:
-            until = datetime.strptime(u[:8], '%Y%m%d')
-
-    # cap at 1 year if no explicit bound
-    cap = until or (dtstart + timedelta(days=365))
-
-    byday = [_DAY_MAP[d.strip()[-2:]] for d in params['BYDAY'].split(',')] if 'BYDAY' in params else []
-
-    results = []
-
-    if freq == 'WEEKLY':
-        week_anchor = dtstart - timedelta(days=dtstart.weekday())
-        cur = week_anchor
-        for _ in range(500):
-            if cur > cap:
-                break
-            for dow in (byday or [dtstart.weekday()]):
-                candidate = cur + timedelta(days=dow)
-                if candidate < dtstart or candidate > cap:
-                    continue
-                results.append((_fmt(candidate), _fmt(candidate + duration)))
-                if count and len(results) >= count:
-                    return results
-            cur += timedelta(weeks=interval)
-
-    elif freq == 'DAILY':
-        cur = dtstart
-        for _ in range(500):
-            if cur > cap:
-                break
-            results.append((_fmt(cur), _fmt(cur + duration)))
-            if count and len(results) >= count:
-                break
-            cur += timedelta(days=interval)
-
-    elif freq == 'MONTHLY':
-        cur = dtstart
-        for _ in range(200):
-            if cur > cap:
-                break
-            results.append((_fmt(cur), _fmt(cur + duration)))
-            if count and len(results) >= count:
-                break
-            month = cur.month - 1 + interval
-            year = cur.year + month // 12
-            month = month % 12 + 1
-            try:
-                cur = cur.replace(year=year, month=month)
-            except ValueError:
-                break
-
-    return results
-
+    Delegates the rule grammar to recurrence.py — the same module the app's
+    own recurring things use, so a Google Calendar rule and a locally-defined
+    one can never disagree about what "first Sunday of the month" means. The
+    hand-rolled version this replaced ignored BYDAY under MONTHLY (so
+    "1SU" expanded as "the same date each month") and handled no YEARLY rule
+    at all, which silently dropped every annual event.
+    """
+    rule = recurrence.parse(rrule_str)
+    if not rule:
+        return []
+    # Unbounded rules are capped at a year out, as before — this feeds a
+    # calendar view, not an archive.
+    end = rule.get('UNTIL') or (dtstart.date() + timedelta(days=365))
+    days = recurrence.between(rule, dtstart.date(), dtstart.date(), end)
+    out = []
+    for d in days:
+        start = datetime.combine(d, dtstart.time())
+        out.append((_fmt(start), _fmt(start + duration)))
+    return out
 
 def _download(url):
     with urllib.request.urlopen(url) as response:

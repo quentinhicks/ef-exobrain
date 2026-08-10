@@ -2,6 +2,8 @@ import os
 import re
 import json
 import sqlite3
+
+import recurrence
 import colorsys
 from datetime import date as date_cls, datetime, timedelta, timezone
 
@@ -680,6 +682,25 @@ def init_db():
         conn.execute('SELECT days_of_week FROM flow_step LIMIT 1')
     except Exception:
         conn.execute('ALTER TABLE flow_step ADD COLUMN days_of_week TEXT')
+        conn.commit()
+    # ONE recurrence grammar for everything that repeats (RFC 5545 RRULE, see
+    # recurrence.py). Both tables keep their older, narrower columns as the
+    # fallback: rrule wins where it is set, so nothing written before this
+    # has to be migrated and the two can coexist indefinitely.
+    for table in ('recurring_task', 'flow_step'):
+        try:
+            conn.execute(f'SELECT rrule FROM {table} LIMIT 1')
+        except Exception:
+            conn.execute(f'ALTER TABLE {table} ADD COLUMN rrule TEXT')
+            conn.commit()
+    # A rule needs a start date to have a PHASE: "every 10 days" is meaningless
+    # without one, and anchoring it to a fixed epoch would put the cycle on an
+    # arbitrary footing the user never chose. recurring_task already has
+    # anchor_date; flow_step gets its own, stamped when a rule is set.
+    try:
+        conn.execute('SELECT dtstart FROM flow_step LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE flow_step ADD COLUMN dtstart TEXT')
         conn.commit()
     # A tag bound to a location preset: items carrying the tag are only
     # AVAILABLE (pool-side, client-enforced) while the device is inside that
@@ -1676,7 +1697,16 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
 # Weekday convention matches the rest of the app: 0=Mon .. 6=Sun.
 # 2001-01-01 was a Monday; used as the epoch for week-parity math.
 
+# 2001-01-01 was a Monday — the phase anchor for any rule that has no start
+# date of its own.
+RRULE_EPOCH = date_cls(2001, 1, 1)
+
+
 def _recurring_due(task, today):
+    rule = task.get('rrule') if hasattr(task, 'get') else None
+    if rule:
+        anchor = date_cls.fromisoformat(task['anchor_date']) if task.get('anchor_date') else RRULE_EPOCH
+        return recurrence.occurs_on(rule, anchor, today)
     anchor = date_cls.fromisoformat(task['anchor_date'])
     if today < anchor:
         return False
@@ -3032,10 +3062,15 @@ def get_locations():
 
 
 def step_due_on(step, day):
-    # 0=Mon..6=Sun, the app's one weekday convention (see _recurring_due and
-    # nodes.days_of_week). Empty/NULL = every day: a step with no opinion about
-    # the calendar runs, which is the only safe default for a routine that
-    # gates a QR.
+    # An RRULE wins where one is set; otherwise the older digit-string
+    # weekday grammar. 0=Mon..6=Sun, the app's one weekday convention (see
+    # _recurring_due and nodes.days_of_week). Empty/NULL = every day: a step
+    # with no opinion about the calendar runs, which is the only safe default
+    # for a routine that gates a QR.
+    rule = step.get('rrule')
+    if rule:
+        ds = step.get('dtstart')
+        return recurrence.occurs_on(rule, date_cls.fromisoformat(ds) if ds else RRULE_EPOCH, day)
     dow = step.get('days_of_week')
     return not dow or str(day.weekday()) in dow
 
@@ -3113,8 +3148,16 @@ def create_flow_step(flow_id, content, kind='text', requirement='hard', days_of_
 
 
 def update_flow_step(id, content=None, kind=None, requirement=None, position=None,
-                     days_of_week=_UNSET):
+                     days_of_week=_UNSET, rrule=_UNSET):
     conn = get_conn()
+    if rrule is not _UNSET:
+        conn.execute('UPDATE flow_step SET rrule = ? WHERE id = ?', (rrule or None, id))
+        # Stamp the phase the first time a rule is set, so "every 10 days"
+        # counts from when you asked for it rather than from an epoch.
+        if rrule:
+            conn.execute('''UPDATE flow_step SET dtstart = ?
+                            WHERE id = ? AND (dtstart IS NULL OR dtstart = '')''',
+                         (date_cls.today().isoformat(), id))
     # _UNSET, not None: None IS a value here — it is how "every day" is stored,
     # so clearing the day picker has to be distinguishable from not touching it.
     if days_of_week is not _UNSET:

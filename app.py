@@ -1758,7 +1758,8 @@ def patch_flow_step(id):
     return jsonify(storage.update_flow_step(
         id, content=data.get('content'), kind=data.get('kind'),
         requirement=data.get('requirement'), position=data.get('position'),
-        days_of_week=data.get('days_of_week', storage._UNSET)))
+        days_of_week=data.get('days_of_week', storage._UNSET),
+        rrule=data.get('rrule', storage._UNSET)))
 
 
 @app.route('/api/flow-steps/<int:id>', methods=['DELETE'])
