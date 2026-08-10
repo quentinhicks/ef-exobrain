@@ -1069,6 +1069,29 @@ def get_map_items():
     return out
 
 
+def get_deferred_items():
+    # Everything parked on a FUTURE date, so the day view can show what is
+    # scheduled to come back on the day you are looking at. Fetched once with
+    # no date and filtered client-side, the same way the pool is — walking the
+    # calendar then costs no round trip.
+    today = date_cls.today().isoformat()
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT i.*, a.name AS area_name, a.domain_id AS domain_id,
+                  p.content AS project_name
+           FROM inbox_item i
+           LEFT JOIN area a ON a.id = i.area_id
+           LEFT JOIN inbox_item p ON p.id = i.project_id
+           WHERE i.kind = 'item' AND i.status = 'active'
+             AND i.defer_until IS NOT NULL AND i.defer_until > ?
+           ORDER BY i.defer_until, i.captured_at''',
+        (today,)
+    ).fetchall()
+    out = _apply_inherited_deadlines(conn, [dict(r) for r in rows])
+    conn.close()
+    return out
+
+
 def push_item_to_tomorrow(id):
     # "not today" as a verb, not a date — the whole point is that parking
     # something costs no decision. Local date, to match the rest of the app.

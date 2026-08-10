@@ -5710,3 +5710,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .map-someday-head + .map-row,
 .map-someday-head ~ .map-row { opacity: 0.72; }
+/* Parked work arriving on the day you are looking at. Dimmer than the pool:
+   it is not startable yet, it is a heads-up about what this day already owes. */
+.eg-defer-row { opacity: 0.78; }
+.eg-defer-row .eg-text { cursor: pointer; }

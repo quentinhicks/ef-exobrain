@@ -6349,7 +6349,8 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      // Placements on/after the viewed day, for the pool's
                      // "already scheduled" exclusion (date >= viewed).
                      futurePlaced: [],
-                     routineItems: [], flows: [], domainId: null, dragId: null,
+                     routineItems: [], flows: [], deferred: [],
+                     domainId: null, dragId: null,
                      // armId: the tap-to-place fallback's armed action (touch
                      // has no HTML5 drag events).
                      armId: null,
@@ -6428,7 +6429,7 @@ async function refreshEngage() {
   // and a network drop must not blank the day that is already rendered. See the
   // note on loadAll.
   const [placements, futurePlaced, pool, all, overrides, routineItems, flows,
-         timePresets] = await Promise.all([
+         timePresets, deferred] = await Promise.all([
     fetch(`/api/engage/placements?date=${dateStr}`).then(r => r.json()).catch(() => engageView.placements),
     // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
     // shows what still NEEDS a day, and these have one).
@@ -6444,6 +6445,9 @@ async function refreshEngage() {
     // inside the step editor.
     fetch(`/api/flows?date=${dateStr}`).then(r => r.json()).catch(() => engageView.flows),
     fetch(`/api/time-presets?date=${dateStr}`).then(r => r.json()).catch(() => state.timePresets),
+    // Everything parked on a future date, unfiltered — walking the calendar
+    // then costs no round trip, same as the pool.
+    fetch('/api/inbox/deferred').then(r => r.json()).catch(() => engageView.deferred),
   ]);
   engageView.placements = placements;
   engageView.futurePlaced = futurePlaced;
@@ -6453,6 +6457,7 @@ async function refreshEngage() {
   engageView.routineItems = routineItems;
   engageView.flows = Array.isArray(flows) ? flows : [];
   state.timePresets = Array.isArray(timePresets) ? timePresets : [];
+  engageView.deferred = Array.isArray(deferred) ? deferred : [];
   renderEngage();
 }
 
@@ -6494,8 +6499,13 @@ function renderEngage() {
       // deadline, before_node_id = must be done before it). The link decides
       // whether the QR judges ✓ or ✗, so the hairline says which routine it is
       // waiting on rather than leaving that buried in the step editor.
-      const flows = (engageView.flows || []).filter(
-        fl => fl.qr_node_id === n.id || fl.before_node_id === n.id);
+      // ONLY the routines ATTACHED to this node (qr_node_id) — not the ones
+      // that merely reference it as a deadline (before_node_id). The
+      // difference is real, not cosmetic: `_push_routine_config` flags only
+      // the qr_node_id node on the Worker, so a before_node_id routine gates
+      // NOTHING here. Listing it under this hairline claimed a consequence
+      // that does not exist.
+      const flows = (engageView.flows || []).filter(fl => fl.qr_node_id === n.id);
       rows.push({ kind: 'qr', minute, label: n.label, outcome });
       // Each gating routine is its OWN row directly under the hairline, not a
       // chip crowded onto it — "Morning routine" is a thing you do, and it
@@ -6505,7 +6515,6 @@ function renderEngage() {
       flows.forEach(fl => rows.push({
         kind: 'flow', minute, flowId: fl.id, label: fl.name,
         done: !!(fl.run && fl.run.completed_at),
-        before: fl.before_node_id === n.id,
       }));
     });
 
@@ -6684,6 +6693,25 @@ function renderEngage() {
       || (dueOf(a) || '9999').localeCompare(dueOf(b) || '9999')
       || (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
 
+  // WHAT COMES BACK ON THIS DAY. A deferred item vanishes from every surface
+  // until its date, which is the point — but it also means walking forward to
+  // plan a day showed you nothing of what you had already sent there. Only on
+  // a FUTURE day: on today these are already in the pool (defer_until <=
+  // today is what "available" means), so a section here would be a duplicate.
+  const returning = isToday ? []
+    : (engageView.deferred || []).filter(i => i.defer_until === dateStr);
+  const deferHtml = returning.length ? `
+    <div class="eg-pool-head">Returning this day<span class="map-count">${returning.length}</span></div>
+    <div class="eg-pool">
+      ${returning.map(i => `
+        <div class="eg-row eg-pool-item eg-defer-row" data-id="${i.id}">
+          <span class="eg-text">${escHtml(i.content)}</span>
+          ${itemTags(i).map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
+          ${dueChip(i, 'eg-tag')}
+          <span class="eg-tag">${escHtml(i.project_name || i.area_name || '')}</span>
+        </div>`).join('')}
+    </div>` : '';
+
   const hhmm = m => minutesToHHMM(Math.round(m) % 1440);
 
   const rowHtml = r => {
@@ -6704,8 +6732,7 @@ function renderEngage() {
         <span class="eg-time"></span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-qr-flow${r.done ? ' eg-qr-flow-done' : ''}" data-flow="${r.flowId}"
-          title="${r.done ? 'Completed today' : 'Run this routine'} — the QR ${
-            r.before ? 'above judges ✗ unless this is done first' : 'judges ✗ unless this completes'}">${
+          title="${r.done ? 'Completed today' : 'Run this routine'} — the QR above judges ✗ unless this completes">${
           r.done ? '✓ done' : '▶ run'}</button>
       </div>`;
     }
@@ -6904,6 +6931,7 @@ function renderEngage() {
       ? ` <span class="eg-geo-hidden" title="Hidden by location-bound tags — they return when you're there">⌖ ${geoHidden} elsewhere</span>` : ''}${devHidden
       ? ` <span class="eg-dev-hidden" title="Tagged #${otherDevice} — they show up on the ${otherDevice}">▭ ${devHidden} ${otherDevice}-only</span>` : ''}${timeHidden
       ? ` <span class="eg-dev-hidden" title="Their context is bound to a time period you are not in — they come back when you are">◷ ${timeHidden} out of window</span>` : ''}</div>
+    ${deferHtml}
     <div class="eg-pool">
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
@@ -7044,6 +7072,14 @@ function renderEngage() {
   // Tap = done (as ever). Press-and-hold ~½s = toggle ◐ in progress — a
   // glance state, not availability: predicates ignore it, it just floats
   // the row and marks what you're on. Cleared by another hold or by done.
+  body.querySelectorAll('.eg-defer-row .eg-text').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = parseInt(el.closest('.eg-defer-row').dataset.id);
+      const item = (engageView.deferred || []).find(i => i.id === id);
+      if (item) openClarifyForItem(item, async () => { await refreshEngage(); });
+    });
+  });
+
   body.querySelectorAll('.eg-check[data-id]').forEach(el => {
     const id = parseInt(el.dataset.id);
     const itemOf = () => [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
