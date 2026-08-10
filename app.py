@@ -1782,6 +1782,81 @@ def put_flow_run(id):
     return jsonify(run)
 
 
+# --- Context bindings: time presets, tag→time, tag→device ---
+
+@app.route('/api/time-presets')
+def get_time_presets_route():
+    return jsonify(storage.get_time_presets(request.args.get('date')))
+
+
+@app.route('/api/time-presets', methods=['POST'])
+def post_time_preset():
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    return jsonify(storage.create_time_preset(
+        name, data.get('rrule'), data.get('start_time'),
+        data.get('end_time'), data.get('dtstart'))), 201
+
+
+@app.route('/api/time-presets/<int:id>', methods=['PATCH'])
+def patch_time_preset(id):
+    data = request.get_json()
+    allowed = {k: v for k, v in data.items()
+               if k in ('name', 'rrule', 'start_time', 'end_time', 'dtstart')}
+    return jsonify(storage.update_time_preset(id, **allowed))
+
+
+@app.route('/api/time-presets/<int:id>', methods=['DELETE'])
+def delete_time_preset_route(id):
+    storage.delete_time_preset(id)
+    return '', 204
+
+
+@app.route('/api/tag-times')
+def get_tag_times_route():
+    return jsonify(storage.get_tag_times())
+
+
+@app.route('/api/tag-times', methods=['POST'])
+def post_tag_time():
+    data = request.get_json()
+    tag = (data.get('tag') or '').strip().lower()
+    if not tag or not data.get('preset_id'):
+        return jsonify({'error': 'tag and preset_id are required'}), 400
+    storage.set_tag_time(tag, data['preset_id'])
+    return jsonify(storage.get_tag_times()), 201
+
+
+@app.route('/api/tag-times/<tag>', methods=['DELETE'])
+def delete_tag_time_route(tag):
+    storage.delete_tag_time(tag)
+    return '', 204
+
+
+@app.route('/api/tag-devices')
+def get_tag_devices_route():
+    return jsonify(storage.get_tag_devices())
+
+
+@app.route('/api/tag-devices', methods=['POST'])
+def post_tag_device():
+    data = request.get_json()
+    tag = (data.get('tag') or '').strip().lower()
+    device = (data.get('device') or '').strip().lower()
+    if not tag or device not in ('pc', 'phone'):
+        return jsonify({'error': 'tag and device (pc|phone) are required'}), 400
+    storage.set_tag_device(tag, device)
+    return jsonify(storage.get_tag_devices()), 201
+
+
+@app.route('/api/tag-devices/<tag>', methods=['DELETE'])
+def delete_tag_device_route(tag):
+    storage.delete_tag_device(tag)
+    return '', 204
+
+
 @app.route('/api/tag-locations')
 def get_tag_locations_route():
     return jsonify(storage.get_tag_locations())

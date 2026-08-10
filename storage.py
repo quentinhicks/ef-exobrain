@@ -702,6 +702,33 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE flow_step ADD COLUMN dtstart TEXT')
         conn.commit()
+    # TIME PRESETS — a named recurring period, the time-axis counterpart of the
+    # location presets. `rrule` is the DAYS (recurrence.py); start/end are the
+    # time-of-day window within those days. Both optional: a rule with no
+    # window means "all of those days", a window with no rule means "every day
+    # between these times".
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS time_preset (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            rrule      TEXT,
+            start_time TEXT,
+            end_time   TEXT,
+            dtstart    TEXT
+        )''')
+    # The three things a CONTEXT TAG can be bound to. One row per tag per axis,
+    # keyed by the tag string — tags have no id, they are just tokens in
+    # inbox_item.tags, which is what keeps them free to invent.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS tag_time (
+            tag       TEXT PRIMARY KEY,
+            preset_id INTEGER NOT NULL REFERENCES time_preset(id)
+        )''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS tag_device (
+            tag    TEXT PRIMARY KEY,
+            device TEXT NOT NULL
+        )''')
     # A tag bound to a location preset: items carrying the tag are only
     # AVAILABLE (pool-side, client-enforced) while the device is inside that
     # location's geofence. GTD's @contexts, literally.
@@ -4106,3 +4133,121 @@ def qr_scans_between(from_iso, to_iso):
            WHERE scanned_at >= ? AND scanned_at <= ?''', (from_iso, to_iso)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Context bindings: what a tag is gated by ─────────────────
+#
+# Three axes, one shape each: tag → location (geofence), tag → device
+# (hardware), tag → time_preset (recurring period). All three GATE THE POOL
+# only, and all three are evaluated CLIENT-SIDE — the server just stores the
+# binding, because "am I there / on that / in that window right now" is a
+# question only the device can answer.
+
+def get_time_presets(date=None):
+    # `due` is whether the rule lands on that DATE. The day question is
+    # answered here so recurrence.py stays the only RRULE implementation —
+    # the client is left with the wall-clock half, which is the only part it
+    # can answer and the only part the server cannot.
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute('SELECT * FROM time_preset ORDER BY name').fetchall()]
+    conn.close()
+    day = date_cls.fromisoformat(date) if date else None
+    for r in rows:
+        if not day:
+            r['due'] = None
+        elif not r['rrule']:
+            r['due'] = True          # no rule = every day; the window is the gate
+        else:
+            anchor = date_cls.fromisoformat(r['dtstart']) if r['dtstart'] else RRULE_EPOCH
+            r['due'] = recurrence.occurs_on(r['rrule'], anchor, day)
+        r['label'] = describe_time_preset(r)
+    return rows
+
+
+def describe_time_preset(p):
+    bits = []
+    if p.get('rrule'):
+        bits.append(recurrence.describe(p['rrule']))
+    else:
+        bits.append('every day')
+    if p.get('start_time') or p.get('end_time'):
+        bits.append(f"{p.get('start_time') or '00:00'}–{p.get('end_time') or '24:00'}")
+    return ' · '.join(bits)
+
+
+def create_time_preset(name, rrule=None, start_time=None, end_time=None, dtstart=None):
+    conn = get_conn()
+    cur = conn.execute(
+        'INSERT INTO time_preset (name, rrule, start_time, end_time, dtstart)'
+        ' VALUES (?, ?, ?, ?, ?)',
+        (name, rrule or None, start_time or None, end_time or None,
+         dtstart or date_cls.today().isoformat()))
+    row = conn.execute('SELECT * FROM time_preset WHERE id = ?', (cur.lastrowid,)).fetchone()
+    conn.commit()
+    conn.close()
+    return dict(row)
+
+
+def update_time_preset(id, **fields):
+    conn = get_conn()
+    for k in ('name', 'rrule', 'start_time', 'end_time', 'dtstart'):
+        if k in fields:
+            conn.execute(f'UPDATE time_preset SET {k} = ? WHERE id = ?', (fields[k] or None, id))
+    conn.commit()
+    row = conn.execute('SELECT * FROM time_preset WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_time_preset(id):
+    conn = get_conn()
+    # The binding goes with it, or a tag is left gated by a preset that no
+    # longer exists — which reads as "hidden for no reason" on the pool.
+    conn.execute('DELETE FROM tag_time WHERE preset_id = ?', (id,))
+    conn.execute('DELETE FROM time_preset WHERE id = ?', (id,))
+    conn.commit()
+    conn.close()
+
+
+def get_tag_times():
+    conn = get_conn()
+    rows = conn.execute('SELECT tag, preset_id FROM tag_time').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def set_tag_time(tag, preset_id):
+    conn = get_conn()
+    conn.execute('INSERT OR REPLACE INTO tag_time (tag, preset_id) VALUES (?, ?)',
+                 (tag, preset_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_tag_time(tag):
+    conn = get_conn()
+    conn.execute('DELETE FROM tag_time WHERE tag = ?', (tag,))
+    conn.commit()
+    conn.close()
+
+
+def get_tag_devices():
+    conn = get_conn()
+    rows = conn.execute('SELECT tag, device FROM tag_device').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def set_tag_device(tag, device):
+    conn = get_conn()
+    conn.execute('INSERT OR REPLACE INTO tag_device (tag, device) VALUES (?, ?)',
+                 (tag, device))
+    conn.commit()
+    conn.close()
+
+
+def delete_tag_device(tag):
+    conn = get_conn()
+    conn.execute('DELETE FROM tag_device WHERE tag = ?', (tag,))
+    conn.commit()
+    conn.close()

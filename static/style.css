@@ -5211,7 +5211,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    behind. No scrim — the day already dims via .eg-dimmed; this is behaviour,
    not look. */
 #clarify-backdrop,
-#fr-sheet-backdrop {
+#fr-sheet-backdrop,
+#ctx-sheet-backdrop {
   position: fixed;
   inset: 0;
   z-index: 199;
@@ -5222,7 +5223,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    one datatype over: a list row decides nothing, the sheet decides everything.
    Same geometry, same layer — they are never open at once. */
 #clarify-sheet,
-#fr-sheet {
+#fr-sheet,
+#ctx-sheet {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -5566,7 +5568,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #clarify-backdrop,
 #clarify-sheet,
 #fr-sheet-backdrop,
-#fr-sheet {
+#fr-sheet,
+#ctx-sheet-backdrop,
+#ctx-sheet {
   bottom: var(--gbar-h);
 }
 
@@ -5661,3 +5665,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* The create row before anything is typed: an offer, not an action. */
 .cl-proj-new-empty { color: var(--text-secondary); opacity: .75; }
 .cl-proj-new-empty:hover { opacity: 1; }
+
+/* The context-tag config sheet shares the clarify sheet's geometry and layer
+   (see #clarify-sheet) — they are never open at once. */
+.ctx-bound { color: var(--accent); }
+.ctx-sheet-tag { font: 12px var(--font-mono); color: var(--accent); }
+.ctx-live { color: var(--success); }
+.ctx-dead { color: var(--text-secondary); }

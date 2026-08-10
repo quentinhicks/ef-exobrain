@@ -143,6 +143,11 @@
   <!-- Routine runner: one step per page, over everything (incl. tab-lists). -->
   <div id="flow-run" class="hidden"></div>
 
+  <!-- One context tag's configuration: device, location, time period.
+       Opened by right-click / long-press on a tag chip in the ctx picker. -->
+  <div id="ctx-sheet-backdrop" class="hidden"></div>
+  <div id="ctx-sheet" class="hidden"></div>
+
   <!-- One routine step's settings, as a clarify-shaped sheet: the row on the
        list is text + badges + ›, and every SETTING is decided in here. -->
   <div id="fr-sheet-backdrop" class="hidden"></div>
@@ -274,6 +279,7 @@
         <button class="be-tab-btn" data-betab="recurring">Recurring</button>
         <button class="be-tab-btn" data-betab="qr">QR</button>
         <button class="be-tab-btn" data-betab="locations">Locations</button>
+        <button class="be-tab-btn" data-betab="times">Times</button>
         <button class="be-tab-btn" data-betab="calendars">Calendars</button>
         <button class="be-tab-btn" data-betab="display">Display</button>
       </nav>
@@ -449,6 +455,12 @@
 
         <section class="be-section" data-betab-panel="locations">
           <div id="be-loc-section"></div>
+        </section>
+
+        <!-- Named recurring periods — the time-axis counterpart of the
+             location presets, bound to context tags in the ctx sheet. -->
+        <section class="be-section" data-betab-panel="times">
+          <div id="be-times-section"></div>
         </section>
 
         <section class="be-section" data-betab-panel="calendars">

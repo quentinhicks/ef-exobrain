@@ -128,6 +128,12 @@ const state = {
   // Location-bound tags (tag_location) + the last geolocation fix. FAIL-OPEN:
   // geo.ok false (denied, no hardware, plain-http pywebview) hides nothing.
   tagLocations: [],
+  // The other two binding axes (see the ctx sheet). timePresets carry a
+  // server-computed `due` for the viewed date — recurrence.py stays the only
+  // RRULE implementation, and the client only asks the wall-clock half.
+  tagDevices: [],
+  tagTimes: [],
+  timePresets: [],
   geo: { ok: false },
   settings: {},
   view: { start: 0, end: 1440 },
@@ -146,7 +152,7 @@ const state = {
 // that is already on screen; on first load the initialiser makes that [].
 async function loadAll() {
   const dateStr = formatDateYMD(state.currentDate);
-  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations] = await Promise.all([
+  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes] = await Promise.all([
     fetch('/api/blocks').then(r => r.json()).catch(() => state.blocks),
     fetch('/api/areas').then(r => r.json()).catch(() => state.areas),
     fetch('/api/domains').then(r => r.json()).catch(() => state.domains),
@@ -163,10 +169,14 @@ async function loadAll() {
     fetch('/api/dismissals').then(r => r.json()).catch(() => []),
     fetch('/api/locations').then(r => r.json()).catch(() => state.locations),
     fetch('/api/tag-locations').then(r => r.json()).catch(() => state.tagLocations),
+    fetch('/api/tag-devices').then(r => r.json()).catch(() => state.tagDevices),
+    fetch('/api/tag-times').then(r => r.json()).catch(() => state.tagTimes),
   ]);
 
   state.locations = Array.isArray(locations) ? locations : [];
   state.tagLocations = Array.isArray(tagLocations) ? tagLocations : [];
+  state.tagDevices = Array.isArray(tagDevices) ? tagDevices : [];
+  state.tagTimes = Array.isArray(tagTimes) ? tagTimes : [];
   state.blocks = blocks;
   state.areas = projects;
   state.domains = domains;
@@ -1612,6 +1622,7 @@ function initBlockEditor() {
         b.classList.toggle('active', b === btn));
       document.querySelectorAll('#block-editor-modal .be-section').forEach(s =>
         s.classList.toggle('active', s.dataset.betabPanel === btn.dataset.betab));
+      if (btn.dataset.betab === 'times') renderTimePresets();
     });
   });
   document.getElementById('modal-close').addEventListener('click', closeBlockEditor);
@@ -2430,6 +2441,7 @@ function initHub() {
       renderGtd();
       return;
     }
+    if (ctxSheet.tag) { closeCtxSheet(); return; }
     // A dangerous-writing session swallows Esc entirely — its own keydown
     // handler treats Esc as the abort, and nothing underneath may act on it.
     if (dwView.open) return;
@@ -6212,6 +6224,252 @@ function renderGtd() {
   });
 }
 
+
+// ── Settings → Times: named recurring periods ────────────────
+//
+// The time-axis counterpart of the location presets: a name, the DAYS as an
+// RRULE (recurrence.py — the app's one recurrence grammar), and an optional
+// time-of-day window inside those days. Bound to a context tag in the ctx
+// sheet, where it gates the pool.
+//
+// The day chips write plain BYDAY rules, which covers the common case without
+// a recurrence builder; the raw field is there for everything else, and
+// `label` (server-rendered by recurrence.describe) reads it back so a typo is
+// visible before it silently matches nothing.
+const TIME_SHAPES = [
+  { name: 'Every day', rrule: '' },
+  { name: 'Weekdays', rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR' },
+  { name: 'Weekends', rrule: 'FREQ=WEEKLY;BYDAY=SA,SU' },
+];
+
+async function renderTimePresets() {
+  const el = document.getElementById('be-times-section');
+  if (!el) return;
+  state.timePresets = await fetch(`/api/time-presets?date=${egDateStr()}`)
+    .then(r => r.json()).catch(() => state.timePresets || []);
+  const bound = {};
+  (state.tagTimes || []).forEach(b => { bound[b.preset_id] = (bound[b.preset_id] || []).concat(b.tag); });
+
+  el.innerHTML = `
+    <table class="ac-table">
+      <thead><tr><th>Name</th><th>When</th><th>Tags</th><th></th></tr></thead>
+      <tbody>${(state.timePresets || []).map(p => `
+        <tr>
+          <td class="ac-td-label">${escHtml(p.name)}</td>
+          <td class="ac-td-win ${p.due ? 'ctx-live' : 'ctx-dead'}"
+            title="${p.due ? 'runs today' : 'not today'}">${escHtml(p.label || '')}</td>
+          <td class="ac-td-win">${(bound[p.id] || []).map(escHtml).join(', ') || '—'}</td>
+          <td class="ac-td-actions">
+            <button class="ac-time-del" data-id="${p.id}" title="Delete preset (and its bindings)">✕</button>
+          </td>
+        </tr>`).join('') || '<tr><td colspan="4" class="be-empty">No time presets yet.</td></tr>'}
+      </tbody>
+    </table>
+    <div class="ac-loc-form">
+      <input type="text" id="tp-name" placeholder="Name (e.g. Weekday mornings)">
+      <input type="time" id="tp-start" title="Window start">
+      <input type="time" id="tp-end" title="Window end">
+    </div>
+    <div class="cl-chips">
+      ${TIME_SHAPES.map((sh, i) => `<button class="cl-chip" data-shape="${i}">${sh.name}</button>`).join('')}
+      ${DAY_LETTERS.map((d, n) => `<button class="cl-chip" data-day="${n}" title="${DAY_NAMES[n]}">${d}</button>`).join('')}
+    </div>
+    <div class="ac-loc-form">
+      <input type="text" id="tp-rrule" placeholder="RRULE (blank = every day)">
+      <button id="tp-add">Add preset</button>
+    </div>
+    <div class="be-hint" id="tp-preview"></div>`;
+
+  const rruleEl = el.querySelector('#tp-rrule');
+  const preview = el.querySelector('#tp-preview');
+  const days = new Set();
+  const paint = () => {
+    if (days.size) {
+      rruleEl.value = 'FREQ=WEEKLY;BYDAY='
+        + [...days].sort().map(n => ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'][n]).join(',');
+    }
+    preview.textContent = rruleEl.value ? '' : 'every day';
+    el.querySelectorAll('[data-day]').forEach(b =>
+      b.classList.toggle('cl-chip-on', days.has(parseInt(b.dataset.day))));
+  };
+  el.querySelectorAll('[data-shape]').forEach(b => b.addEventListener('click', () => {
+    days.clear();
+    rruleEl.value = TIME_SHAPES[parseInt(b.dataset.shape)].rrule;
+    paint();
+  }));
+  el.querySelectorAll('[data-day]').forEach(b => b.addEventListener('click', () => {
+    const n = parseInt(b.dataset.day);
+    if (days.has(n)) days.delete(n); else days.add(n);
+    if (!days.size) rruleEl.value = '';
+    paint();
+  }));
+
+  el.querySelector('#tp-add').addEventListener('click', async () => {
+    const name = el.querySelector('#tp-name').value.trim();
+    if (!name) return;
+    await fetch('/api/time-presets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name, rrule: rruleEl.value.trim() || null,
+        start_time: el.querySelector('#tp-start').value || null,
+        end_time: el.querySelector('#tp-end').value || null,
+      }),
+    });
+    await renderTimePresets();
+    renderEngage();
+  });
+  el.querySelectorAll('.ac-time-del').forEach(b => b.addEventListener('click', async () => {
+    await fetch(`/api/time-presets/${b.dataset.id}`, { method: 'DELETE' });
+    // The binding went with it server-side; re-read so the pool agrees.
+    state.tagTimes = await fetch('/api/tag-times').then(r => r.json()).catch(() => []);
+    await renderTimePresets();
+    renderEngage();
+  }));
+}
+
+// ── Context tag configuration ────────────────────────────────
+//
+// Right-click / long-press a TAG chip in the ctx picker and this sheet opens:
+// the three axes a tag can be gated by, in one place. It replaced a popover
+// that could only bind a location, which meant the other two axes had no home
+// at all (device was hardcoded to the literal tags `pc`/`phone`).
+//
+// All three GATE THE POOL and nothing else — the day's fixed points are
+// commitments. Each is evaluated client-side, because "am I there / on that /
+// in that window now" is a question only this device can answer; the server
+// stores the binding and, for time, answers the DAY half with recurrence.py.
+const ctxSheet = { tag: null };
+
+function openCtxSheet(tag) {
+  ctxSheet.tag = tag;
+  renderCtxSheet();
+}
+
+function closeCtxSheet() {
+  ctxSheet.tag = null;
+  document.getElementById('ctx-sheet').classList.add('hidden');
+  document.getElementById('ctx-sheet-backdrop').classList.add('hidden');
+}
+
+async function ctxSheetRefresh() {
+  const [devs, times, presets] = await Promise.all([
+    fetch('/api/tag-devices').then(r => r.json()).catch(() => state.tagDevices),
+    fetch('/api/tag-times').then(r => r.json()).catch(() => state.tagTimes),
+    fetch(`/api/time-presets?date=${egDateStr()}`).then(r => r.json()).catch(() => state.timePresets),
+  ]);
+  state.tagDevices = devs;
+  state.tagTimes = times;
+  state.timePresets = presets;
+  renderCtxSheet();
+  renderEngage();
+}
+
+function renderCtxSheet() {
+  const sheet = document.getElementById('ctx-sheet');
+  const back = document.getElementById('ctx-sheet-backdrop');
+  if (!sheet) return;
+  const tag = ctxSheet.tag;
+  if (!tag) { closeCtxSheet(); return; }
+  sheet.classList.remove('hidden');
+  back.classList.remove('hidden');
+
+  const boundDev = (state.tagDevices || []).find(b => b.tag === tag);
+  const dev = boundDev ? boundDev.device : (DEVICE_TAGS.includes(tag) ? tag : null);
+  const implicit = !boundDev && DEVICE_TAGS.includes(tag);
+  const boundLoc = (state.tagLocations || []).find(b => b.tag === tag);
+  const boundTime = (state.tagTimes || []).find(b => b.tag === tag);
+
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">context</span>
+      <span class="ctx-sheet-tag">${escHtml(tag)}</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="ctx-sheet-close">✕</button>
+    </div>
+    <div class="cl-item">
+      <div class="cl-captured">Items carrying this tag are only available when every
+        binding below is satisfied. Unbound axes never hide anything.</div>
+    </div>
+
+    <div class="cl-sec"><span class="cl-label">▭ Device</span>
+      ${implicit ? '<span class="cl-hint">implied by the tag name</span>' : ''}</div>
+    <div class="cl-chips">
+      ${['pc', 'phone'].map(d => `<button class="cl-chip${dev === d ? ' cl-chip-on' : ''}"
+        data-dev="${d}">${d}</button>`).join('')}
+      ${boundDev ? '<button class="cl-chip" data-dev="none">✕ any device</button>' : ''}
+    </div>
+
+    <div class="cl-sec"><span class="cl-label">⌖ Location</span>
+      <span class="cl-hint">${state.geo.ok ? 'located' : 'no fix — nothing is hidden'}</span></div>
+    <div class="cl-chips">
+      ${(state.locations || []).map(l => `<button class="cl-chip${
+        boundLoc && boundLoc.location_id === l.id ? ' cl-chip-on' : ''}"
+        data-loc="${l.id}">${escHtml(l.name)}</button>`).join('')
+        || '<span class="cl-hint">no presets — add one in Settings → Locations</span>'}
+      ${boundLoc ? '<button class="cl-chip" data-loc="none">✕ anywhere</button>' : ''}
+    </div>
+
+    <div class="cl-sec"><span class="cl-label">◷ Time</span></div>
+    <div class="cl-chips">
+      ${(state.timePresets || []).map(p => `<button class="cl-chip${
+        boundTime && boundTime.preset_id === p.id ? ' cl-chip-on' : ''}"
+        data-time="${p.id}" title="${escHtml(p.label || '')}">${escHtml(p.name)}${
+        p.due === false ? '' : ''}</button>`).join('')
+        || '<span class="cl-hint">no presets — add one in Settings → Times</span>'}
+      ${boundTime ? '<button class="cl-chip" data-time="none">✕ any time</button>' : ''}
+    </div>
+    ${boundTime ? (() => {
+      const p = (state.timePresets || []).find(x => x.id === boundTime.preset_id);
+      if (!p) return '';
+      return `<div class="cl-row"><span class="cl-hint ${p.due ? 'ctx-live' : 'ctx-dead'}">${
+        escHtml(p.label || '')} — ${p.due ? 'runs today' : 'not today'}</span></div>`;
+    })() : ''}
+
+    <div class="cl-row">
+      <button class="cl-pill cl-pill-on" id="ctx-sheet-done">Done</button>
+    </div>`;
+
+  sheet.querySelector('#ctx-sheet-close').addEventListener('click', closeCtxSheet);
+  sheet.querySelector('#ctx-sheet-done').addEventListener('click', closeCtxSheet);
+  back.onclick = closeCtxSheet;
+
+  sheet.querySelectorAll('[data-dev]').forEach(b => b.addEventListener('click', async () => {
+    if (b.dataset.dev === 'none') {
+      await fetch(`/api/tag-devices/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+    } else {
+      await fetch('/api/tag-devices', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag, device: b.dataset.dev }),
+      });
+    }
+    await ctxSheetRefresh();
+  }));
+  sheet.querySelectorAll('[data-loc]').forEach(b => b.addEventListener('click', async () => {
+    if (b.dataset.loc === 'none') {
+      await fetch(`/api/tag-locations/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+      state.tagLocations = state.tagLocations.filter(x => x.tag !== tag);
+    } else {
+      state.tagLocations = await fetch('/api/tag-locations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag, location_id: parseInt(b.dataset.loc) }),
+      }).then(r => r.json());
+    }
+    await ctxSheetRefresh();
+  }));
+  sheet.querySelectorAll('[data-time]').forEach(b => b.addEventListener('click', async () => {
+    if (b.dataset.time === 'none') {
+      await fetch(`/api/tag-times/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+    } else {
+      await fetch('/api/tag-times', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag, preset_id: parseInt(b.dataset.time) }),
+      });
+    }
+    await ctxSheetRefresh();
+  }));
+}
+
+
 // ── Engage — the day panel (GTD Panel Layouts 6c) ─────────────
 // The day as GTD's hard landscape in one column: QR bookends as hairline
 // rules, blocks and gcal events at their times, and next actions DRAGGED
@@ -6241,8 +6499,6 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      // are all conjunctive: every selected tag is required.
                      // Formula: domain ∧ ¬other ∧ ¬other ∧ tag ∧ tag.
                      ctxDomain: null, ctxTags: new Set(), ctxOpen: false,
-                     // Which tag's location-binding popover is open in the menu.
-                     ctxLocFor: null,
                      // Which routine's details card is open (area id). Session
                      // state; survives the re-render a checkoff triggers.
                      routinePop: null };
@@ -6306,7 +6562,8 @@ async function refreshEngage() {
   // Catches fall back to the current values, not [] — this is the home screen,
   // and a network drop must not blank the day that is already rendered. See the
   // note on loadAll.
-  const [placements, futurePlaced, pool, all, overrides, routineItems, flows] = await Promise.all([
+  const [placements, futurePlaced, pool, all, overrides, routineItems, flows,
+         timePresets] = await Promise.all([
     fetch(`/api/engage/placements?date=${dateStr}`).then(r => r.json()).catch(() => engageView.placements),
     // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
     // shows what still NEEDS a day, and these have one).
@@ -6321,6 +6578,7 @@ async function refreshEngage() {
     // — the link is what makes the QR pass or fail, and it was only visible
     // inside the step editor.
     fetch(`/api/flows?date=${dateStr}`).then(r => r.json()).catch(() => engageView.flows),
+    fetch(`/api/time-presets?date=${dateStr}`).then(r => r.json()).catch(() => state.timePresets),
   ]);
   engageView.placements = placements;
   engageView.futurePlaced = futurePlaced;
@@ -6329,6 +6587,7 @@ async function refreshEngage() {
   engageView.overrides = overrides;
   engageView.routineItems = routineItems;
   engageView.flows = Array.isArray(flows) ? flows : [];
+  state.timePresets = Array.isArray(timePresets) ? timePresets : [];
   renderEngage();
 }
 
@@ -6496,11 +6755,43 @@ function renderEngage() {
   // day's fixed points are commitments and are never filtered — this is the
   // pool, same boundary the location gate keeps.
   const device = currentDevice();
+  // A tag is device-bound either by BEING 'pc'/'phone' or by having been bound
+  // to one in the ctx sheet — so `email → pc` gates exactly like `#pc` does,
+  // without the tag having to be named after the hardware.
+  const tagDev = {};
+  DEVICE_TAGS.forEach(t => { tagDev[t] = t; });
+  (state.tagDevices || []).forEach(b => { tagDev[b.tag] = b.device; });
   const deviceOk = i => {
-    const devs = itemTags(i).filter(t => DEVICE_TAGS.includes(t));
+    const devs = itemTags(i).map(t => tagDev[t]).filter(Boolean);
     return !devs.length || devs.includes(device);
   };
   const otherDevice = device === 'pc' ? 'phone' : 'pc';
+
+  // TIME gate: a tag bound to a time preset only counts while you are inside
+  // that recurring period. `due` is the server's answer for the viewed date
+  // (recurrence.py); the minute window is checked here because the wall clock
+  // is the half only the client knows.
+  //
+  // FAIL-OPEN off today, like the geo gate is fail-open with no fix: "in that
+  // window right now" is a statement about now, and applying it to a day you
+  // are only planning would hide work for no reason you could see.
+  const tagTime = {};
+  (state.tagTimes || []).forEach(b => {
+    const p = (state.timePresets || []).find(x => x.id === b.preset_id);
+    if (p) tagTime[b.tag] = p;
+  });
+  const inPeriod = p => {
+    if (!p.due) return false;
+    const from = p.start_time ? timeToMinutes(p.start_time) : 0;
+    const to = p.end_time ? timeToMinutes(p.end_time) : 1440;
+    // An end before the start wraps past midnight (22:00–02:00).
+    return to >= from ? (nowMin >= from && nowMin < to)
+                      : (nowMin >= from || nowMin < to);
+  };
+  const timeOk = i => !isToday || itemTags(i).every(t => {
+    const p = tagTime[t];
+    return !p || inPeriod(p);
+  });
 
   // Scheduled on/after the viewed day = it HAS a day, so it isn't "Not
   // scheduled" on this one. A placement whose day has passed is not in this
@@ -6517,8 +6808,9 @@ function renderEngage() {
   // can't both claim the same item.
   const geoHidden = poolBase.filter(i => !locOk(i)).length;
   const devHidden = poolBase.filter(i => locOk(i) && !deviceOk(i)).length;
+  const timeHidden = poolBase.filter(i => locOk(i) && deviceOk(i) && !timeOk(i)).length;
   const pool = poolBase
-    .filter(i => locOk(i) && deviceOk(i))
+    .filter(i => locOk(i) && deviceOk(i) && timeOk(i))
     // In-progress floats first — "what am I on" is the glance the ◐ exists
     // for — then BY DUE DATE (2026-08-07: deadlines sort the pool; no
     // deadline sorts last), then oldest-first as always.
@@ -6639,17 +6931,18 @@ function renderEngage() {
   };
   const tagChip = t => {
     const on = engageView.ctxTags.has(t);
-    const bound = tagLoc[t];
-    // A device tag is already a gate, so it is marked like a bound one — and
-    // it is NOT bindable to a location (the hardware is the context).
-    const dev = DEVICE_TAGS.includes(t);
+    // Markers STACK — a tag can be gated on all three axes at once, and the
+    // chip has to say so or the pool hides things for invisible reasons.
+    const marks = [];
+    const why = [];
+    const d = tagDev[t];
+    if (d) { marks.push('▭'); why.push(`only on the ${d}`); }
+    if (tagLoc[t]) { marks.push('⌖'); why.push(`only at ${tagLoc[t].name}`); }
+    if (tagTime[t]) { marks.push('◷'); why.push(`only ${tagTime[t].label || 'in its window'}`); }
     return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-ctx="tag:${t}"
-      title="${on ? 'required — click to clear' : 'click to require'}${dev
-        ? ` · ▭ only available on the ${escHtml(t)}`
-        : bound
-        ? ` · ⌖ only at ${escHtml(bound.name)} (right-click / long-press to change)`
-        : ' · right-click / long-press to bind a location'}"
-      >${on ? '∧' : ''}${escHtml(t)}${dev ? '▭' : bound ? '⌖' : ''}</button>`;
+      title="${on ? 'required — click to clear' : 'click to require'}${
+        why.length ? ' · ' + escHtml(why.join(' · ')) : ''} · right-click / long-press to configure"
+      >${on ? '∧' : ''}${escHtml(t)}${marks.join('')}</button>`;
   };
   const poolTags = [...new Set(engageView.pool.flatMap(itemTags))].sort();
   const ctxCount = (engageView.ctxDomain != null ? 1 : 0) + engageView.ctxTags.size;
@@ -6687,16 +6980,6 @@ function renderEngage() {
         .filter(d => String(d.id) === String(ctxDomainId)).map(domainChip).join('')}</div>
       ${poolTags.length ? `<div class="ctx-group">Tags — every selected one required</div>
       <div class="ctx-chips">${poolTags.map(tagChip).join('')}</div>` : ''}
-      ${engageView.ctxLocFor != null ? `
-      <div class="ctx-group">⌖ ${escHtml(engageView.ctxLocFor)} — only available at…</div>
-      <div class="ctx-chips">
-        ${state.locations.map(l => `<button class="ctx-chip ${tagLoc[engageView.ctxLocFor]
-            && tagLoc[engageView.ctxLocFor].id === l.id ? 'ctx-req' : 'ctx-off'}"
-          data-bindloc="${l.id}">${escHtml(l.name)}</button>`).join('')
-          || '<span class="cl-hint">no location presets — add one in the QR manager</span>'}
-        ${tagLoc[engageView.ctxLocFor]
-          ? '<button class="ctx-chip" data-bindloc="none">✕ unbind</button>' : ''}
-      </div>` : ''}
       <div class="ctx-foot">
         <span class="ctx-legend"><b>∧</b> required</span>
         <span class="ctx-legend">${state.geo.ok ? '⌖ located'
@@ -6748,7 +7031,8 @@ function renderEngage() {
     <div class="eg-day">${parts.join('')}</div>
     <div class="eg-pool-head">Not scheduled${geoHidden
       ? ` <span class="eg-geo-hidden" title="Hidden by location-bound tags — they return when you're there">⌖ ${geoHidden} elsewhere</span>` : ''}${devHidden
-      ? ` <span class="eg-dev-hidden" title="Tagged #${otherDevice} — they show up on the ${otherDevice}">▭ ${devHidden} ${otherDevice}-only</span>` : ''}</div>
+      ? ` <span class="eg-dev-hidden" title="Tagged #${otherDevice} — they show up on the ${otherDevice}">▭ ${devHidden} ${otherDevice}-only</span>` : ''}${timeHidden
+      ? ` <span class="eg-dev-hidden" title="Their context is bound to a time period you are not in — they come back when you are">◷ ${timeHidden} out of window</span>` : ''}</div>
     <div class="eg-pool">
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
@@ -6814,7 +7098,6 @@ function renderEngage() {
   });
   header.querySelector('#eg-ctx-btn').addEventListener('click', () => {
     engageView.ctxOpen = !engageView.ctxOpen;
-    engageView.ctxLocFor = null;
     renderEngage();
   });
   // Right-click / long-press a TAG chip binds it to a location preset — the
@@ -6822,32 +7105,14 @@ function renderEngage() {
   // Device tags are skipped: they are already a gate, and the hardware is the
   // context, so a geofence on top of one would be two answers to one question.
   header.querySelectorAll('.ctx-chip[data-ctx^="tag:"]').forEach(b => {
-    if (DEVICE_TAGS.includes(b.dataset.ctx.slice(4))) return;
     const openBind = () => {
-      engageView.ctxLocFor = b.dataset.ctx.slice(4);
-      renderEngage();
+      // Every tag gets the sheet now, device tags included — `pc` can still be
+      // given a location or a time window like any other context.
+      openCtxSheet(b.dataset.ctx.slice(4));
     };
     b.addEventListener('contextmenu', e => { e.preventDefault(); openBind(); });
     onLongPress(b, openBind);
   });
-  header.querySelectorAll('[data-bindloc]').forEach(b => {
-    b.addEventListener('click', async () => {
-      const tag = engageView.ctxLocFor;
-      if (b.dataset.bindloc === 'none') {
-        await fetch(`/api/tag-locations/${encodeURIComponent(tag)}`, { method: 'DELETE' });
-        state.tagLocations = state.tagLocations.filter(x => x.tag !== tag);
-      } else {
-        state.tagLocations = await fetch('/api/tag-locations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tag, location_id: parseInt(b.dataset.bindloc) }),
-        }).then(r => r.json());
-      }
-      engageView.ctxLocFor = null;
-      renderEngage();
-    });
-  });
-
   // Domains single-select (mutually exclusive — picking one IS excluding the
   // rest; clicking the one in force returns to the resting scope). Tags
   // toggle required ↔ off; there is no OR tier.
