@@ -1332,6 +1332,13 @@ function detectDevice() {
     && window.matchMedia('(pointer: coarse)').matches ? 'phone' : 'pc';
 }
 
+// The time gate is ON unless explicitly switched off. Same reasoning as the
+// device override: a lens preference belongs to the machine you are looking
+// through, not to the shared `setting` row.
+function timeGateOn() {
+  return localStorage.getItem('timeGate') !== 'off';
+}
+
 function currentDevice() {
   const override = localStorage.getItem('device');
   return DEVICE_TAGS.includes(override) ? override : detectDevice();
@@ -6788,7 +6795,8 @@ function renderEngage() {
     return to >= from ? (nowMin >= from && nowMin < to)
                       : (nowMin >= from || nowMin < to);
   };
-  const timeOk = i => !isToday || itemTags(i).every(t => {
+  const gateOn = timeGateOn();
+  const timeOk = i => !isToday || !gateOn || itemTags(i).every(t => {
     const p = tagTime[t];
     return !p || inPeriod(p);
   });
@@ -6985,6 +6993,11 @@ function renderEngage() {
         <span class="ctx-legend">${state.geo.ok ? '⌖ located'
           : '⌖ no fix'}</span>
         <button id="eg-dev-swap" title="This device — ${detectDevice()} detected. #pc / #phone items only show on their own device; click to correct it.">▭ ${device}${device === detectDevice() ? '' : ' ✎'}</button>
+        <button id="eg-time-gate" class="${gateOn ? '' : 'ctx-gate-off'}"
+          title="${gateOn
+            ? 'Time-bound contexts are hidden outside their window — click to show them anyway'
+            : 'OFF — time-bound contexts are showing whatever the clock says'}">◷ ${
+          gateOn ? 'on' : 'off'}</button>
         ${state.geo.ok ? '' : '<button id="eg-geo-enable" title="Request location — location-bound tags need a fix">enable</button>'}
         ${ctxCount ? '<button id="eg-ctx-clear">clear</button>' : ''}
       </div>
@@ -7141,6 +7154,13 @@ function renderEngage() {
   // The device override. Detection has no fail-open state to fall back on, so
   // this is the escape hatch: a wrong guess would hide real work silently, and
   // silent is the one thing the pool may never be.
+  const gateBtn = header.querySelector('#eg-time-gate');
+  if (gateBtn) gateBtn.addEventListener('click', () => {
+    if (timeGateOn()) localStorage.setItem('timeGate', 'off');
+    else localStorage.removeItem('timeGate');   // absent = on, so ON is the default state
+    renderEngage();
+  });
+
   const devBtn = header.querySelector('#eg-dev-swap');
   if (devBtn) devBtn.addEventListener('click', () => {
     const next = currentDevice() === 'pc' ? 'phone' : 'pc';
