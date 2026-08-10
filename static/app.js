@@ -8342,6 +8342,10 @@ function renderClarifyProjSearch(sheet, item) {
     clarifyView.projectId = p.id;
     clarifyView.projectName = p.content;
     clarifyView.projSearch = null;
+    // Show what will ACTUALLY happen: filing under a project adopts that
+    // project's area server-side, unconditionally. Leaving the Filing-to row
+    // on some other area would display a destination the write overrides.
+    if (p.area_id) clarifyView.areaId = p.area_id;
     // An EXISTING project with actions already in it goes straight to the
     // composer — filing into a project that has a running order is exactly
     // when you need to say where this one goes. origin 'pick' means nothing

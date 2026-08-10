@@ -1699,9 +1699,23 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
             conn.execute("UPDATE inbox_item SET kind = 'project' WHERE id = ?", (project_id,))
             conn.commit()
             conn.close()
-        # Filing under a project adopts that project's area, so the two can
-        # never disagree. Explicit area_id in the same call still wins.
-        if project_id is not None and area_id is _UNSET:
+        # Filing under a project adopts that project's area, ALWAYS — an
+        # explicit area_id in the same call does NOT win.
+        #
+        # It used to, and that was the "items randomly leave their project" bug.
+        # A single PATCH carrying both (which is exactly what clarify's filing
+        # does) left the item in area A under a project in area B. That breaks
+        # the stated invariant that a project and its actions can never disagree
+        # about area, and the breakage is SILENT until the next write that
+        # touches area alone — which hits the orphan rule below, sees the
+        # mismatch, and clears project_id. The item looked fine when filed and
+        # fell out of the project later, for no reason visible at the time.
+        #
+        # Deliberately unconditional: "file it here" is a statement about
+        # position, and position decides area. To move an item OUT of a project
+        # into another area, send area_id WITHOUT project_id (the orphan rule) or
+        # send project_id = None alongside it.
+        if project_id is not None:
             conn = get_conn()
             row = conn.execute('SELECT area_id FROM inbox_item WHERE id = ?', (project_id,)).fetchone()
             conn.close()
