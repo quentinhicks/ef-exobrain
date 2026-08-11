@@ -61,12 +61,19 @@ async function togglePanel() {
 // One switch moves the WHOLE app: the server re-dates every calculation in
 // the new zone and re-expands the calendar (stored gcal times are naive
 // local), while the phone/laptop clocks follow the device as they always did.
+// The zone actually in force: the setting when there is one, else the device's,
+// which is what an unset setting means. The Display row used to say "local"
+// while the pane's select showed the resolved zone — one fact, two answers.
+function currentTimezone() {
+  return state.settings.timezone
+    || (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+}
+
 async function initTimezone() {
   const sel = document.getElementById('tz-select');
   if (!sel) return;
   const zones = await fetch('/api/timezones').then(r => r.json()).catch(() => []);
-  const current = state.settings.timezone
-    || (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const current = currentTimezone();
   sel.innerHTML = zones.map(z =>
     `<option value="${escHtml(z)}"${z === current ? ' selected' : ''}>${escHtml(z)}</option>`).join('');
   sel.addEventListener('change', async () => {
@@ -1723,7 +1730,7 @@ const SETTINGS_SECTIONS = [
   { key: 'display', name: 'Display', group: 'App',
     desc: 'Theme, timezone, and the NOW panel.',
     summary: () => `${document.documentElement.classList.contains('theme-light') ? 'Light' : 'Dark'}`
-      + ` · ${(state.settings.timezone || '').split('/').pop().replace(/_/g, ' ') || 'local'}` },
+      + ` · ${currentTimezone().split('/').pop().replace(/_/g, ' ')}` },
 ];
 
 function renderSettingsIndex() {
