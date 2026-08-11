@@ -276,104 +276,11 @@ def _sync_journal():
     _push_journal_config()
 
 
-def _qr_admin(method, path, body=None):
-    url = _QR_WORKER_URL + path
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header('Authorization', f'Bearer {_QR_ADMIN_SECRET}')
-    req.add_header('User-Agent', 'productivity-tracker/1.0')
-    if data:
-        req.add_header('Content-Type', 'application/json')
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read()), resp.status
-    except urllib.error.HTTPError as e:
-        body = e.read()
-        try:
-            return json.loads(body), e.code
-        except Exception:
-            return {'error': body.decode(errors='replace')}, e.code
-
-
-def _flush_todo_pushes():
-    if not _QR_INTERNAL_SECRET:
-        return
-    for row in storage.pending_todo_pushes():
-        body = json.dumps({'node_id': row['node_id'], 'date': row['date']}).encode()
-        req = urllib.request.Request(
-            _QR_WORKER_URL + '/internal/todo-submitted', data=body, method='POST'
-        )
-        req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-        req.add_header('Content-Type', 'application/json')
-        req.add_header('User-Agent', 'productivity-tracker/1.0')
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status == 200:
-                    storage.clear_todo_push(row['node_id'], row['date'])
-        except Exception:
-            pass
-
-
 def _parse_ts(ts):
     dt = datetime.fromisoformat(ts.replace('Z', '+00:00').replace(' ', 'T'))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
-
-
-def _sync_todo_content():
-    if not _QR_INTERNAL_SECRET:
-        return 0
-    for todo in storage.get_unsynced_todos():
-        payload = {
-            'date': todo['date'],
-            'content': todo['content'],
-            'updated_at': _parse_ts(todo['updated_at'] or todo['created_at']).isoformat(),
-        }
-        for _ in range(2):
-            req = urllib.request.Request(
-                _QR_WORKER_URL + '/internal/todo-content',
-                data=json.dumps(payload).encode(), method='POST'
-            )
-            req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-            req.add_header('Content-Type', 'application/json')
-            req.add_header('User-Agent', 'productivity-tracker/1.0')
-            try:
-                urllib.request.urlopen(req, timeout=10)
-                storage.clear_todo_synced(todo['date'])
-            except urllib.error.HTTPError as e:
-                if e.code == 409:
-                    remote = json.loads(e.read())
-                    if todo['content'] and not remote.get('content'):
-                        payload['updated_at'] = datetime.now(timezone.utc).isoformat()
-                        continue
-                    storage.apply_remote_todo(remote['date'], remote['content'], remote['updated_at'])
-            except Exception:
-                pass
-            break
-    return len(storage.get_unsynced_todos())
-
-
-def _pull_todo_content():
-    if not _QR_INTERNAL_SECRET:
-        return
-    req = urllib.request.Request(_QR_WORKER_URL + '/internal/todo-content')
-    req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-    req.add_header('User-Agent', 'productivity-tracker/1.0')
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            remote = json.loads(resp.read())
-    except Exception:
-        return
-    if not remote.get('date'):
-        return
-    local = storage.get_todo(remote['date'])
-    local_ts = local and (local['updated_at'] or local['created_at'])
-    if local_ts and _parse_ts(local_ts) >= _parse_ts(remote['updated_at']):
-        return
-    if local and local['content'] and not remote.get('content'):
-        return
-    storage.apply_remote_todo(remote['date'], remote['content'], remote['updated_at'])
 
 
 def _sync_inbox_content():
@@ -435,24 +342,18 @@ def _touch_and_sync_inbox():
     threading.Thread(target=_sync_inbox_content, daemon=True).start()
 
 
-def _startup_todo_sync():
-    _pull_todo_content()
-    today = date_cls.today().isoformat()
-    todo = storage.get_todo(today)
-    if todo and todo['content']:
-        storage.mark_todo_unsynced(today)
-    _sync_todo_content()
+def _startup_inbox_sync():
+    # The capture blob only. The to-do half of this went with the to-do gate.
     _pull_inbox_content()
     if storage.inbox_content_blob():
         storage.mark_inbox_unsynced()
     _sync_inbox_content()
-    _flush_todo_pushes()
 
 
 # Worker-sync threads belong wherever the DATABASE lives: the local/headless
 # process, never a PT_SERVER client (which has no db and must not create one).
 if not os.environ.get('PT_SERVER'):
-    threading.Thread(target=_startup_todo_sync, daemon=True).start()
+    threading.Thread(target=_startup_inbox_sync, daemon=True).start()
     threading.Thread(target=_sync_people, daemon=True).start()
     # Pushes the sleep node id + current habit so the scan page can hand off to
     # /journal, and pulls any phone-written entries into the local mirror.
@@ -1140,21 +1041,17 @@ def get_todo_today():
 def patch_todo_today():
     data = request.get_json()
     today = date_cls.today().isoformat()
-    todo = storage.update_todo(today, **data)
-    if 'content' in data:
-        storage.mark_todo_unsynced(today)
-        threading.Thread(target=_sync_todo_content, daemon=True).start()
-    return jsonify(todo)
+    return jsonify(storage.update_todo(today, **data))
 
 
 @app.route('/api/todo/sync', methods=['POST'])
 def sync_todo():
-    _pull_todo_content()
+    # Dormant with the rest of /api/todo/*, and no longer syncing anything to
+    # the Worker. It keeps the daily backup it always triggered.
     _pull_inbox_content()
     _sync_inbox_content()
-    _flush_todo_pushes()
     threading.Thread(target=_daily_backup, daemon=True).start()
-    return jsonify({'pending': _sync_todo_content()})
+    return jsonify({'pending': 0})
 
 
 @app.route('/api/todo/yesterday')
@@ -1828,15 +1725,10 @@ def locations():
 
 
 # --- Interactive routines (flows) ---
-
-def _push_routine_config(node_id, required):
-    _qr_internal('POST', '/internal/routine-config',
-                 {'node_id': node_id, 'required': 1 if required else 0})
-
-
-def _push_routine_done(node_id, date):
-    _qr_internal('POST', '/internal/routine-done', {'node_id': node_id, 'date': date})
-
+#
+# There is no routine push any more (2026-08-11). The gate is enforced where the
+# database is, by storage.routine_gate_for_node in qr_judge — so linking a
+# routine is a local write and nothing has to be told about it.
 
 @app.route('/api/flows')
 def get_flows_route():
@@ -1860,34 +1752,19 @@ def patch_flow(id):
     kwargs = {}
     if 'name' in data:
         kwargs['name'] = data['name']
-    old = None
     if 'qr_node_id' in data:
-        old = next((f for f in storage.get_flows() if f['id'] == id), None)
         kwargs['qr_node_id'] = data['qr_node_id']
     if 'offset_min' in data:
         kwargs['offset_min'] = data['offset_min']
     if 'before_node_id' in data:
         kwargs['before_node_id'] = data['before_node_id']
     flow = storage.update_flow(id, **kwargs)
-    # Keep the Worker's gating flag in step with the link. (If two flows ever
-    # gate one node, unlinking either unflags it — acceptable; relink fixes.)
-    if old is not None:
-        if old.get('qr_node_id') and old['qr_node_id'] != data['qr_node_id']:
-            threading.Thread(target=_push_routine_config,
-                             args=(old['qr_node_id'], False), daemon=True).start()
-        if data['qr_node_id']:
-            threading.Thread(target=_push_routine_config,
-                             args=(data['qr_node_id'], True), daemon=True).start()
     return jsonify(flow)
 
 
 @app.route('/api/flows/<int:id>', methods=['DELETE'])
 def delete_flow_route(id):
-    old = next((f for f in storage.get_flows() if f['id'] == id), None)
     storage.delete_flow(id)
-    if old and old.get('qr_node_id'):
-        threading.Thread(target=_push_routine_config,
-                         args=(old['qr_node_id'], False), daemon=True).start()
     return '', 204
 
 
@@ -1924,11 +1801,6 @@ def put_flow_run(id):
     date = data.get('date') or date_cls.today().isoformat()
     run = storage.upsert_flow_run(id, date, json.dumps(data.get('steps') or {}),
                                   bool(data.get('completed')))
-    if data.get('completed'):
-        flow = next((f for f in storage.get_flows() if f['id'] == id), None)
-        if flow and flow.get('qr_node_id'):
-            threading.Thread(target=_push_routine_done,
-                             args=(flow['qr_node_id'], date), daemon=True).start()
     return jsonify(run)
 
 
