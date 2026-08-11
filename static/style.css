@@ -5192,6 +5192,17 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .cl-x { font-size: 12px; padding: 6px 4px; background: transparent; color: var(--text-secondary); }
 .cl-x:hover { color: var(--text-primary); }
 
+/* The event sheet's When row, compact: native date/time inputs default wide
+   enough to wrap the 430px column, and three of them plus a dash must read
+   as ONE line — a time span, not a form. Sized by width, not font: 12px mono
+   stays legible, the browser chrome (spinners, calendar glyph) is what gets
+   squeezed out. */
+.ev-when { gap: 5px; flex-wrap: nowrap; }
+.ev-when .cl-date { padding: 4px 5px; }
+#ev-date { width: 124px; }
+#ev-start, #ev-end { width: 82px; }
+.ev-dash { color: var(--text-secondary); font-size: 12px; }
+
 .cl-donow { padding: 2px 14px 12px; font-size: 13px; color: var(--text-secondary); }
 .cl-or { padding-bottom: 12px; }
 
