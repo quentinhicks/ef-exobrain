@@ -9610,6 +9610,11 @@ const clarifyView = {
   projNotesOpen: false, // the chosen PROJECT's notes editor (✎ by the pill)
   areaId: null,       // explicit filing target; null = the block calendar's
   projSearch: null,   // null = main sheet; a string = the 8b search state
+  // Which Do-now you mean: 'done' (the two-minute rule — filing marks it
+  // done) or 'progress' (you are STARTING it, not finishing it). The trio of
+  // verbs is unchanged; this is a variant revealed under Do now, the way
+  // Defer reveals Start-on.
+  doVariant: 'done',
   // The BREAKDOWN composer (2026-08-07). Non-null = the search view is showing
   // the new project's action list instead: { id, name, actions, arm }.
   compose: null,
@@ -9778,6 +9783,9 @@ function clarifyResetItem() {
   clarifyView.compose = null;
   clarifyView.project = !!(item && item.kind === 'project');
   clarifyView.verb = 'defer';
+  // The variant never sticks across items: a sticky 'start it now' would
+  // silently mark the next capture in progress.
+  clarifyView.doVariant = 'done';
   clarifyView.action = item ? item.content : '';
   clarifyView.tags = new Set(item ? itemTags(item) : []);
   clarifyView.showDate = '';
@@ -9886,7 +9894,12 @@ async function fileClarify(bucket, refListId) {
   // A project's "Active" IS the defer exit with no start date — the same
   // write, so it is a label on this surface rather than a bucket of its own.
   if (bucket === 'active') { clarifyView.showDate = ''; bucket = 'defer'; }
+  // "Start it now" is the ACTIVE exit with a started_at stamp — the item is
+  // kept, not deleted, so it routes through the same bucket every other
+  // keep-it exit uses. Only the FINISH variant of Do now marks it done.
   if (clarifyView.external) { await fileClarifyExternal(bucket, refListId); return; }
+  const startNow = bucket === 'do' && clarifyView.doVariant === 'progress';
+  if (startNow) { clarifyView.showDate = ''; clarifyView.showTime = ''; bucket = 'defer'; }
   const item = clarifyView.queue[0];
   if (!item) { closeClarify(); return; }
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
@@ -9951,6 +9964,9 @@ async function fileClarify(bucket, refListId) {
                      notes: clarifyView.notes,
                      deadline: clarifyView.due || null,
                      defer_until: clarifyView.showDate || null };
+      // ◐ is a glance state, not a predicate: nothing gates on started_at, it
+      // just floats the row to the top of the pool and accents it.
+      if (startNow) body.started_at = new Date().toISOString();
       if (clarifyView.projectId) body.project_id = clarifyView.projectId;
       await patch(body);
       if (clarifyView.showDate && clarifyView.showTime) {
@@ -10029,6 +10045,10 @@ async function fileClarify(bucket, refListId) {
 // Do now / Trash store nothing: the thing happened (or died) outside the app.
 async function fileClarifyExternal(bucket, refListId) {
   const content = clarifyView.action.trim();
+  // Same as fileClarify: starting it keeps the item, so it takes the active
+  // path rather than the do-now delete.
+  const startNow = bucket === 'do' && clarifyView.doVariant === 'progress';
+  if (startNow) { clarifyView.showDate = ''; clarifyView.showTime = ''; bucket = 'defer'; }
   if (!content && bucket !== 'trash') return;
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
   if (bucket === 'reference' && !refListId) return;
@@ -10075,6 +10095,7 @@ async function fileClarifyExternal(bucket, refListId) {
                        notes: clarifyView.notes,
                        deadline: clarifyView.due || null,
                        defer_until: clarifyView.showDate || null };
+        if (startNow) body.started_at = new Date().toISOString();
         if (clarifyView.projectId) body.project_id = clarifyView.projectId;
         await patch(body);
         if (clarifyView.showDate && clarifyView.showTime) {
@@ -10131,6 +10152,20 @@ function renderClarify() {
   // contexts, no parent project, nothing to drop into a day — the decision is
   // just its state, its deadline and where it belongs.
   const isProj = clarifyView.project && !clarifyView.external && !!item;
+  // "Do now" means two different things and only one of them was buildable:
+  // FINISH it (the two-minute rule — filing deletes it) or START it. Starting
+  // it is the ACTIVE exit plus a started_at stamp — no new column, no new
+  // status — so the item keeps its area, contexts, due, notes and project,
+  // stays in the pool and renders ◐. Delegate→waiting was the only other way
+  // to say "under way", and that one is person-shaped and leaves the pool.
+  const doProgress = verb === 'do' && clarifyView.doVariant === 'progress';
+  const doVariantChips = () => `
+    <div class="cl-chips">
+      <button class="cl-chip${clarifyView.doVariant === 'done' ? ' cl-chip-on' : ''}"
+        data-dovar="done" title="Two-minute rule — filing marks it done">finish it now</button>
+      <button class="cl-chip${doProgress ? ' cl-chip-on' : ''}"
+        data-dovar="progress" title="Starting it — it stays in the pool, marked ◐">start it now <span class="cl-key">I</span></button>
+    </div>`;
   const verbBtn = (v, label, key) =>
     `<button class="cl-verb${verb === v ? ' cl-verb-on' : ''}" data-verb="${v}">${label} <span class="cl-key">${key}</span></button>`;
 
@@ -10161,8 +10196,9 @@ function renderClarify() {
         <span class="cl-label">Due</span>
         <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
       </div>`;
-  } else if (verb === 'defer') {
+  } else if (verb === 'defer' || doProgress) {
     middle = `
+      ${doProgress ? doVariantChips() : ''}
       <div class="cl-sec"><span class="cl-label">Contexts</span><span class="cl-hint">${clarifyView.tags.size} selected · pick any</span></div>
       <div class="cl-chips">
         ${clarifyView.tagVocab.map(t =>
@@ -10170,11 +10206,11 @@ function renderClarify() {
         <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
       </div>
       <div class="cl-row">
-        <span class="cl-label">Show on</span>
+        ${doProgress ? '' : `<span class="cl-label">Show on</span>
         <input type="date" id="cl-show-date" class="cl-date"
           title="Date alone defers; adding a time places it into that day's schedule" value="${clarifyView.showDate}">
         <input type="time" id="cl-show-time" class="cl-date" value="${clarifyView.showTime}" title="A time schedules it into that day">
-        ${clarifyView.showTime ? '<button id="cl-show-time-x" class="cl-x" title="Clear the time — date alone just defers">✕</button>' : ''}
+        ${clarifyView.showTime ? '<button id="cl-show-time-x" class="cl-x" title="Clear the time — date alone just defers">✕</button>' : ''}`}
         <span class="cl-label">Due</span>
         <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
       </div>
@@ -10190,14 +10226,17 @@ function renderClarify() {
       <textarea id="cl-proj-notes" class="cl-notes" rows="3"
         placeholder="Support material for ${escHtml(clarifyView.projectName)}… markdown ok">${
           escHtml(((state.projects || []).find(p => p.id === clarifyView.projectId) || {}).notes || '')}</textarea>` : ''}`;
+  } else if (verb === 'do') {
+    middle = doVariantChips()
+      + '<div class="cl-donow">Under two minutes — do it now. Filing marks it done.</div>';
   } else {
-    middle = '<div class="cl-donow">Under two minutes — do it now. Filing marks it done.</div>';
+    middle = '';
   }
 
   // Where it lands. Domain first (the obligation level you actually think
   // in), then that domain's areas when the choice is ambiguous. Defaults to
   // the block calendar's area, so the common case is still zero taps.
-  if (verb !== 'do' && verb !== 'trash') {
+  if ((verb !== 'do' || doProgress) && verb !== 'trash') {
     const areas = state.areas.filter(a => a.active && a.type === 'standard');
     const current = areas.find(a => a.id === clarifyView.areaId)
       || areas.find(a => a.id === (state.activeAreaId || (item && item.area_id))) || areas[0];
@@ -10219,7 +10258,7 @@ function renderClarify() {
   const next = clarifyView.queue[1];
   const ext = clarifyView.external;
   // Support material rides along on every keep-it exit; do/trash discard it.
-  const notesHtml = verb === 'do' || verb === 'trash' ? '' : `
+  const notesHtml = (verb === 'do' && !doProgress) || verb === 'trash' ? '' : `
     <div class="cl-sec"><span class="cl-label">Notes</span><span class="cl-hint">support material — optional</span></div>
     <textarea id="cl-notes" class="cl-notes" rows="2"
       placeholder="Links, thinking… markdown ok">${escHtml(clarifyView.notes)}</textarea>`;
@@ -10281,6 +10320,10 @@ function renderClarify() {
       <button id="cl-file">${ext ? 'Add it ⏎' : 'File it ⏎'}</button>
     </div>`;
 
+  sheet.querySelectorAll('[data-dovar]').forEach(b => b.addEventListener('click', () => {
+    clarifyView.doVariant = b.dataset.dovar;
+    renderClarify();
+  }));
   sheet.querySelectorAll('.cl-verb').forEach(b => b.addEventListener('click', () => {
     clarifyView.verb = b.dataset.verb;
     // Active is "no start date" — picking it after Defer has to clear the one
@@ -10882,7 +10925,8 @@ document.addEventListener('keydown', e => {
     else if (k === 'r') { clarifyView.refOpen = !clarifyView.refOpen; renderClarify(); }
     return;
   }
-  if (k === 'd') { clarifyView.verb = 'do'; renderClarify(); }
+  if (k === 'd') { clarifyView.verb = 'do'; clarifyView.doVariant = 'done'; renderClarify(); }
+  else if (k === 'i') { clarifyView.verb = 'do'; clarifyView.doVariant = 'progress'; renderClarify(); }
   else if (k === 'g') { clarifyView.verb = 'delegate'; renderClarify(); }
   else if (k === 'f') { clarifyView.verb = 'defer'; renderClarify(); }
   else if (k === 's') { fileClarify('someday'); }
