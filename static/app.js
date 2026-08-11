@@ -3729,11 +3729,37 @@ function renderStepSheet() {
         ? 'only the lit days' : 'every day'}</span>
     </div>
 
+    <div class="cl-sec"><span class="cl-label">Can be pawned to</span></div>
+    <div class="cl-chips">
+      <select class="fr-pawn-sel" id="fr-pawn-to">
+        <option value=""${s.pawn_to_flow_id ? '' : ' selected'}>— not pawnable —</option>
+        ${(refView.flows || []).filter(x => x.id !== f.id).map(x =>
+          `<option value="${x.id}"${String(s.pawn_to_flow_id) === String(x.id) ? ' selected' : ''}>${
+            escHtml(x.name)}</option>`).join('')}
+      </select>
+      ${s.pawn_to_flow_id ? `<input type="number" min="0" class="fr-pawn-min" id="fr-pawn-min"
+        value="${s.pawn_minutes || ''}" placeholder="min">
+        <span class="cl-hint">minutes it takes — the receiving routine's gate closes
+        that much earlier on a day you pawn it</span>`
+        : '<span class="cl-hint">a pawnable step can be pushed onto a later routine for the day</span>'}
+    </div>
+
     <div class="cl-row">
       <button class="cl-pill fr-sheet-del" id="fr-sheet-del">Remove step</button>
     </div>`;
 
   sheet.querySelector('#fr-sheet-close').addEventListener('click', closeStepSheet);
+  sheet.querySelector('#fr-pawn-to').addEventListener('change', e => {
+    stepSheetPatch({ pawn_to_flow_id: e.target.value ? parseInt(e.target.value) : null },
+      `changed where "${s.content || FLOW_KINDS[s.kind]}" can be pawned`);
+  });
+  const pawnMin = sheet.querySelector('#fr-pawn-min');
+  if (pawnMin) {
+    pawnMin.addEventListener('change', () => {
+      stepSheetPatch({ pawn_minutes: parseInt(pawnMin.value) || null },
+        `changed what "${s.content || FLOW_KINDS[s.kind]}" costs to pawn`);
+    });
+  }
   sheet.querySelectorAll('[data-kind]').forEach(b => b.addEventListener('click', () => {
     if (b.dataset.kind === s.kind) return;
     stepSheetPatch({ kind: b.dataset.kind }, `changed a step in "${f.name}"`);
@@ -3882,6 +3908,50 @@ async function creditFlowStep(step, how) {
   renderFlowRun();
 }
 
+function flowName(flowId) {
+  const f = (engageView.flows || []).find(x => x.id === flowId)
+    || (refView.flows || []).find(x => x.id === flowId);
+  return f ? f.name : 'the later routine';
+}
+
+// Pawning is a DAY-level act: the step leaves today's routine, joins the later
+// one, and takes its minutes with it — so that routine's gate closes earlier. It
+// is deliberately not undoable through the undo stack (the config surfaces are
+// not either); taking it back is the same button on the other side.
+async function pawnStep(step) {
+  const res = await fetch(`/api/flow-steps/${step.id}/pawn`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    toast(err.error || 'Could not pawn that step');
+    return;
+  }
+  const to = flowName(step.pawn_to_flow_id);
+  toast(step.pawn_minutes
+    ? `Pawned to ${to} — its gate closes ${step.pawn_minutes} min earlier`
+    : `Pawned to ${to}`);
+  await afterPawnChange();
+}
+
+async function unpawnStep(step) {
+  await fetch(`/api/flow-steps/${step.id}/pawn`, { method: 'DELETE' });
+  toast('Taken back — the gate is its full length again');
+  await afterPawnChange();
+}
+
+// A pawn changes two things the client caches separately: which routine owns the
+// step today, and the receiving GATE's window. `refreshEngage` re-reads the
+// routines but NOT state.accountabilityNodes, whose day_windows carry the
+// shortened deadline — so without this the hairline keeps yesterday's answer and
+// only a full reload corrects it.
+async function afterPawnChange() {
+  closeFlowRun();
+  state.accountabilityNodes = await fetch('/api/accountability/nodes')
+    .then(r => r.json()).catch(() => state.accountabilityNodes);
+  await refreshEngage();
+  const lists = document.getElementById('tab-lists');
+  if (lists && !lists.classList.contains('hidden')) await refreshRef();
+}
+
 function renderFlowRun() {
   const el = document.getElementById('flow-run');
   if (!el || !flowRunView.open) return;
@@ -3926,11 +3996,26 @@ function renderFlowRun() {
         due != null ? ` · due ${minutesToHHMM(Math.round(due) % 1440)}` : ''}</span>
       <button class="modal-close-btn" id="fr-close">✕</button>
     </div>
-    <div class="fr-page">${page}${credited ? '<div class="fr-note">✓ already credited</div>' : ''}</div>
+    <div class="fr-page">${page}${credited ? '<div class="fr-note">✓ already credited</div>' : ''}
+      ${s.pawned_in ? `<div class="fr-note fr-pawned-in">pawned here from ${
+        escHtml(flowName(s.from_flow_id))} — it costs this routine ${
+        s.pawn_minutes || 0} min, so tonight's gate closes that much earlier</div>` : ''}</div>
     <div class="fr-foot">
       <button id="fr-back" ${flowRunView.idx === 0 ? 'disabled' : ''}>‹ back</button>
       ${s.kind === 'text' && s.requirement === 'soft'
         ? '<button id="fr-soft" class="cl-pill">Did a smaller version</button>' : ''}
+      ${/* PAWN: push this step onto a later routine for today only. Offered only
+            where the step's own setting says it may go somewhere, never on a step
+            already credited, and never on one that is already sitting here
+            because it was pawned in — a step is passed on once. */''}
+      ${s.pawn_to_flow_id && !credited && !s.pawned_in
+        ? `<button id="fr-pawn" class="cl-pill" title="Do it in ${
+          escHtml(flowName(s.pawn_to_flow_id))} instead — that routine's gate closes ${
+          s.pawn_minutes || 0} min earlier">→ ${escHtml(flowName(s.pawn_to_flow_id))}</button>` : ''}
+      ${s.pawned_in && !credited
+        ? `<button id="fr-unpawn" class="cl-pill" title="Send it back to ${
+          escHtml(flowName(s.from_flow_id))} — this gate returns to its full length">← ${
+          escHtml(flowName(s.from_flow_id))}</button>` : ''}
       <button id="fr-done" class="cl-pill cl-pill-on"${
         s.kind === 'social_spec' && day.specOk !== true && s.requirement !== 'soft' ? ' disabled' : ''}>Done ✓</button>
     </div>`;
@@ -3942,6 +4027,10 @@ function renderFlowRun() {
   });
   const soft = el.querySelector('#fr-soft');
   if (soft) soft.addEventListener('click', () => creditFlowStep(s, 'soft'));
+  const pawn = el.querySelector('#fr-pawn');
+  if (pawn) pawn.addEventListener('click', () => pawnStep(s));
+  const unpawn = el.querySelector('#fr-unpawn');
+  if (unpawn) unpawn.addEventListener('click', () => unpawnStep(s));
   el.querySelector('#fr-done').addEventListener('click', async () => {
     if (s.kind === 'journal_night') {
       const today = formatDateYMD(new Date());

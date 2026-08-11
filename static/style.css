@@ -580,6 +580,18 @@ select option {
 
 .se-inline-act { font-size: 13px; color: var(--accent); flex: none; }
 
+/* Pawning: the step's own setting, and the note the receiving routine shows. */
+.fr-pawn-sel { font: 12px var(--font-ui); max-width: 170px; }
+.fr-pawn-min { width: 64px; font-family: var(--font-mono); }
+/* Two classes on purpose: .fr-note is defined later in this file and would win
+   on equal specificity, leaving the consequence looking like ordinary prose. */
+.fr-note.fr-pawned-in {
+  color: var(--gold);
+  border-top: 1px solid var(--border-soft);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
 /* A field whose editor is the PICKER: the row states the schedule in words and
    the › hands it over. A consumer never grows fields of its own for time. */
 .se-openpicker {

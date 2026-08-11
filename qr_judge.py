@@ -116,17 +116,54 @@ def resolve_window(node, ymd, override=None):
     if override is None:
         override = storage.qr_get_override(node['id'], ymd)
     if override:
+        # A day override is a deliberate decision about THIS day, so it stands as
+        # written — the pawn does not shorten it further. Anything else and
+        # dragging tonight's deadline would silently move again.
         return (override['window_start'], override['window_end'],
                 override.get('window_end_offset_days') or 0)
     from_source = source_window_for(node, ymd)
     if from_source:
-        return from_source
+        return _less_pawned(node, ymd, from_source)
     weekly = weekly_window_for(node, ymd)
     if weekly:
-        return (weekly['window_start'], weekly['window_end'],
-                weekly.get('window_end_offset_days') or 0)
-    return (node['window_start'], node['window_end'],
-            node.get('window_end_offset_days') or 0)
+        return _less_pawned(node, ymd, (weekly['window_start'], weekly['window_end'],
+                                        weekly.get('window_end_offset_days') or 0))
+    return _less_pawned(node, ymd, (node['window_start'], node['window_end'],
+                                    node.get('window_end_offset_days') or 0))
+
+
+def _less_pawned(node, ymd, window):
+    """The window, minus the time pawned into the routine this gate gates.
+
+    A step pushed onto a later routine takes its minutes with it, so that routine
+    has more to do inside the same window and the DEADLINE comes earlier. This is
+    a tightening, so it applies at once — every easing waits 24h, and nothing here
+    can ever lengthen a window.
+
+    Applied AFTER the source/weekly/default resolution but NOT after a date
+    override: an override is a deliberate day-level decision about this gate, and
+    the pawn is a consequence of what you moved, so the two compose — the override
+    picks the window and the pawn shortens it. (Callers reaching the override
+    branch return before this, which is the one case where they do not compose;
+    see the note in resolve_window.)
+    """
+    minutes = storage.pawned_minutes_for_node(node['id'], ymd)
+    if minutes <= 0:
+        return window
+    start, end, offset = window
+    end_min = _hhmm_min(end) + int(offset or 0) * 24 * 60 - minutes
+    start_min = _hhmm_min(start)
+    # Never past the opening: a gate you could not satisfy at all is a broken
+    # commitment, not a demanding one.
+    if end_min <= start_min:
+        end_min = start_min
+    new_offset, rest = divmod(end_min, 24 * 60)
+    return (start, f'{rest // 60:02d}:{rest % 60:02d}', new_offset)
+
+
+def _hhmm_min(hhmm):
+    h, m = str(hhmm).split(':')
+    return int(h) * 60 + int(m)
 
 
 def applies_on(node, ymd):

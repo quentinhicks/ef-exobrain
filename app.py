@@ -1891,7 +1891,23 @@ def patch_flow_step(id):
         id, content=data.get('content'), kind=data.get('kind'),
         requirement=data.get('requirement'), position=data.get('position'),
         days_of_week=data.get('days_of_week', storage._UNSET),
-        rrule=data.get('rrule', storage._UNSET)))
+        rrule=data.get('rrule', storage._UNSET),
+        pawn_to_flow_id=data.get('pawn_to_flow_id', storage._UNSET),
+        pawn_minutes=data.get('pawn_minutes', storage._UNSET)))
+
+
+# Pawning is a DAY-level act, not a config edit, so it is its own route rather
+# than a field on the PATCH above: pushing a step onto tonight's routine should
+# never be reachable by accident from a form that edits the routine itself.
+@app.route('/api/flow-steps/<int:id>/pawn', methods=['POST', 'DELETE'])
+def pawn_flow_step_route(id):
+    try:
+        step = storage.pawn_flow_step(id, on=request.method == 'POST')
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if step is None:
+        return jsonify({'error': 'unknown step'}), 404
+    return jsonify(step)
 
 
 @app.route('/api/flow-steps/<int:id>', methods=['DELETE'])

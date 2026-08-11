@@ -871,6 +871,16 @@ def init_db():
     _migrate_time_presets(conn)
     _repair_time_preset_conversion(conn)
     _adopt_gate_schedules(conn)
+    # Pawning a routine step onto a later routine — see pawn_flow_step. Three
+    # lazy ALTERs: two settings and one per-day state.
+    for column, ddl in (('pawn_to_flow_id', 'INTEGER'),
+                        ('pawn_minutes', 'INTEGER'),
+                        ('pawned_date', 'TEXT')):
+        try:
+            conn.execute(f'SELECT {column} FROM flow_step LIMIT 1')
+        except Exception:
+            conn.execute(f'ALTER TABLE flow_step ADD COLUMN {column} {ddl}')
+            conn.commit()
     _seed_social_axes(conn)
     conn.commit()
     conn.close()
@@ -3462,12 +3472,90 @@ def get_flows(date=None):
             (f['id'],)).fetchall()]
         for s in f['steps']:
             s['due'] = step_due_on(s, day) if day else True
+            # Pawned today: it is not this routine's problem any more. `due` is
+            # what the runner filters on and what COMPLETION is measured against,
+            # so clearing it here is the whole mechanic — no runner change needed.
+            if date and s.get('pawned_date') == date:
+                s['due'] = False
+                s['pawned_out'] = True
         if date:
+            # …and it joins the destination for the day, marked so the runner can
+            # say where it came from. Appended, so it is the last thing you do.
+            for s in steps_pawned_into(f['id'], date):
+                s['due'] = True
+                s['pawned_in'] = True
+                s['from_flow_id'] = s['flow_id']
+                f['steps'].append(s)
             run = conn.execute('SELECT * FROM flow_run WHERE flow_id = ? AND date = ?',
                                (f['id'], date)).fetchone()
             f['run'] = dict(run) if run else None
     conn.close()
     return flows
+
+
+# ── Pawning a step onto a later routine (2026-08-11) ─────────
+#
+# A step marked pawnable can be pushed from the routine you are running NOW onto
+# a later one, for ONE DAY. The time it takes goes with it: the receiving routine
+# has more to do inside the same window, so the gate that routine gates gets
+# SHORTER by those minutes — its deadline comes earlier. Shortening demands more,
+# so it applies at once, unlike every easing (which waits 24h).
+#
+# The split matters. `pawn_to_flow_id` + `pawn_minutes` are the step's SETTING:
+# where it may go and what carrying it costs. `pawned_date` is per-day state, the
+# same idiom `routine_item.done_date` uses. That is what keeps a pawn a local
+# change to one day rather than an edit to the routine.
+#
+# The gate shortening is COMPUTED, never written as a qr_override: an override row
+# would collide with the day-level overrides the timeline pill writes, and taking
+# the step back would then have to remember which part of the window was its own
+# doing. Deriving it means un-pawning restores the gate by itself.
+
+def pawned_minutes_for_node(node_id, ymd):
+    """Minutes pawned INTO whatever routine this gate gates, on this date."""
+    if not node_id:
+        return 0
+    conn = get_conn()
+    row = conn.execute(
+        'SELECT COALESCE(SUM(s.pawn_minutes), 0) AS m'
+        '  FROM flow_step s JOIN flow f ON f.id = s.pawn_to_flow_id'
+        ' WHERE s.pawned_date = ? AND f.qr_node_id = ?',
+        (ymd, node_id)).fetchone()
+    conn.close()
+    return int(row['m'] or 0)
+
+
+def steps_pawned_into(flow_id, ymd):
+    """The steps sitting in this routine today because they were pawned here."""
+    conn = get_conn()
+    rows = conn.execute(
+        'SELECT * FROM flow_step WHERE pawn_to_flow_id = ? AND pawned_date = ?'
+        ' ORDER BY position, id', (flow_id, ymd)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def pawn_flow_step(step_id, on=True, date=None):
+    """Push a step onto its destination for one day, or take it back.
+
+    Refuses unless the step HAS a destination — pawning is a per-step setting, so
+    a step with nowhere to go cannot be pawned by any route, including this one.
+    """
+    ymd = date or date_cls.today().isoformat()
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM flow_step WHERE id = ?', (step_id,)).fetchone()
+    if row is None:
+        conn.close()
+        return None
+    if on and not row['pawn_to_flow_id']:
+        conn.close()
+        raise ValueError('this step has no routine to be pawned onto')
+    conn.execute('UPDATE flow_step SET pawned_date = ? WHERE id = ?',
+                 (ymd if on else None, step_id))
+    conn.commit()
+    out = conn.execute('SELECT * FROM flow_step WHERE id = ?', (step_id,)).fetchone()
+    conn.close()
+    return dict(out)
 
 
 def create_flow(name):
@@ -3522,8 +3610,20 @@ def create_flow_step(flow_id, content, kind='text', requirement='hard', days_of_
 
 
 def update_flow_step(id, content=None, kind=None, requirement=None, position=None,
-                     days_of_week=_UNSET, rrule=_UNSET):
+                     days_of_week=_UNSET, rrule=_UNSET,
+                     pawn_to_flow_id=_UNSET, pawn_minutes=_UNSET):
     conn = get_conn()
+    # Where this step may be pawned, and what carrying it costs the routine that
+    # receives it. Clearing the destination un-pawns it too: a step that can no
+    # longer be moved must not be left sitting somewhere it can't be sent.
+    if pawn_to_flow_id is not _UNSET:
+        conn.execute('UPDATE flow_step SET pawn_to_flow_id = ? WHERE id = ?',
+                     (pawn_to_flow_id or None, id))
+        if not pawn_to_flow_id:
+            conn.execute('UPDATE flow_step SET pawned_date = NULL WHERE id = ?', (id,))
+    if pawn_minutes is not _UNSET:
+        conn.execute('UPDATE flow_step SET pawn_minutes = ? WHERE id = ?',
+                     (int(pawn_minutes) if pawn_minutes else None, id))
     if rrule is not _UNSET:
         conn.execute('UPDATE flow_step SET rrule = ? WHERE id = ?', (rrule or None, id))
         # Stamp the phase the first time a rule is set, so "every 10 days"
