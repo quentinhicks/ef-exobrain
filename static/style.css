@@ -5730,3 +5730,26 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .gr-sub-item { display: flex; align-items: flex-start; gap: 7px; padding: 2px 0; cursor: pointer; }
 .gr-sub-label { font-size: 12px; color: var(--text-primary); }
 .gr-sub-done .gr-sub-label { color: var(--text-secondary); text-decoration: line-through; }
+/* The review pass banner: the only chrome the mode adds to the timeline. */
+.rp-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: var(--tint-faint);
+  border-bottom: 1px solid var(--accent);
+  font: 11px var(--font-mono);
+  color: var(--text-secondary);
+}
+.rp-bar-end { background: var(--tint); }
+.rp-step { color: var(--accent); font-weight: 600; }
+.rp-meta { color: var(--text-secondary); }
+#rp-next, #rp-done {
+  font: 11px var(--font-mono);
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+#rp-quit { color: var(--text-secondary); padding: 2px 6px; cursor: pointer; }

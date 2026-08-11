@@ -1885,9 +1885,16 @@ def mark_deadline_done(row_index):
     conn.close()
 
 
+# How far back the day view can see. The weekly review's "previous calendar,
+# 2-3 weeks back" step needs 21; 30 gives it headroom without turning this
+# into an archive query. Retention itself is unbounded (see
+# replace_source_events) — this is only the READ window.
+GCAL_DAYS_BACK = 30
+
+
 def get_gcal_events():
     today = date_cls.today()
-    window_start = (today - timedelta(days=1)).isoformat()
+    window_start = (today - timedelta(days=GCAL_DAYS_BACK)).isoformat()
     window_end = (today + timedelta(days=90)).isoformat()
     conn = get_conn()
     rows = conn.execute(
@@ -1949,10 +1956,26 @@ def delete_calendar_source(id):
 
 
 def replace_source_events(source_id, occurrences, fetched_at):
+    # THE PAST IS KEPT. This used to delete every row for the source and
+    # re-insert whatever the feed currently returns — and an iCal feed only
+    # publishes a rolling window, so each refresh silently threw the past
+    # away. The calendar was a cache of the future, which is exactly the data
+    # the weekly review's "review previous calendar, 2-3 weeks back" step
+    # needs and never had.
+    #
+    # Only from TODAY forward is replaced; anything already stored with an
+    # earlier start stays. Incoming past occurrences are dropped rather than
+    # merged: the feed's version of a past event is not more authoritative
+    # than what we recorded at the time, and re-inserting would resurrect
+    # events you deleted from the calendar after they happened.
+    today = date_cls.today().isoformat()
+    future = [o for o in occurrences if (o.get('start') or '') >= today]
+    occurrences = future
     conn = get_conn()
     try:
         conn.execute('BEGIN')
-        conn.execute('DELETE FROM gcal_event WHERE source_id = ?', (source_id,))
+        conn.execute('DELETE FROM gcal_event WHERE source_id = ? AND start >= ?',
+                     (source_id, today))
         conn.executemany(
             'INSERT INTO gcal_event (uid, summary, start, end, allday, source_id) VALUES (?,?,?,?,?,?)',
             [(o['uid'], o['summary'], o['start'], o['end'], o['allday'], source_id) for o in occurrences]

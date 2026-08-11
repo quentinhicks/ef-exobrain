@@ -256,6 +256,7 @@ let fetchFailed = false;
 let currentTimeTick = null;
 
 function renderTimeline() {
+  renderReviewPassBar();
   state.view = computeViewWindow();
   renderGrid();
   renderDateLabel();
@@ -379,8 +380,9 @@ function updateNavButtons() {
   const diff = Math.round((cur - today) / 86400000);
   const prev = document.getElementById('nav-prev');
   const next = document.getElementById('nav-next');
-  if (prev) prev.disabled = diff <= -3;
-  if (next) next.disabled = diff >= 3;
+  const bounds = navBounds();
+  if (prev) prev.disabled = diff <= bounds.min;
+  if (next) next.disabled = diff >= bounds.max;
 }
 
 
@@ -664,11 +666,120 @@ async function refreshExternal() {
   refreshEngage();
 }
 
+// ── The review pass ──────────────────────────────────────────
+//
+// "Review previous calendar, 2-3 weeks back" is a reading you do IN the
+// calendar, not a list to be drained — the window is a trigger list, and
+// re-reading the same fortnight next week is the mechanism, not waste. So the
+// pass is a MODE over the existing timeline rather than a new surface: it
+// widens the nav bound for its duration, drops you at the far end, and ends
+// when you reach the other.
+//
+// The metadata overlaid on each day is the count of what you CAPTURED that
+// day. A day with events and no captures is the shape of a missed follow-up,
+// which is exactly what this step hunts for.
+function startReviewPass(step) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const iso = d => formatDateYMD(d);
+  const back = step === 'cal_back';
+  const from = new Date(today.getTime() + (back ? -14 : 0) * 86400000);
+  const to = new Date(today.getTime() + (back ? 0 : 14) * 86400000);
+  reviewPass.active = true;
+  reviewPass.step = step;
+  reviewPass.from = iso(from);
+  reviewPass.to = iso(to);
+  state.currentDate = new Date(from);
+  fetchOverridesForDate(state.currentDate).then(() => {
+    openM('cal-overlay');
+    renderTimeline();
+    renderSheetsInbox();
+  });
+}
+
+async function returnToReview() {
+  closeM('cal-overlay');
+  openM('tab-gtd');
+  await refreshGtd();
+  await openGtdReview();
+}
+
+function endReviewPass() {
+  reviewPass.active = false;
+  reviewPass.step = null;
+  const bar = document.getElementById('rp-bar');
+  if (bar) bar.remove();
+  // Snap back inside the everyday window, or the timeline is left somewhere
+  // its own buttons cannot reach.
+  const off = dayOffset(state.currentDate);
+  if (off < -3 || off > 3) {
+    state.currentDate = new Date();
+    fetchOverridesForDate(state.currentDate).then(renderTimeline);
+  }
+}
+
+function renderReviewPassBar() {
+  const host = document.getElementById('cal-overlay');
+  let bar = document.getElementById('rp-bar');
+  if (!reviewPass.active) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'rp-bar';
+    host.insertBefore(bar, host.querySelector('#cal-strips'));
+  }
+  const b = navBounds();
+  const off = dayOffset(state.currentDate);
+  const total = b.max - b.min + 1;
+  const nth = off - b.min + 1;
+  const atEnd = off >= b.max;
+  const dateStr = formatDateYMD(state.currentDate);
+  // What you captured that day. captured_at is SQLite UTC with a space.
+  const captured = (engageView.allItems || []).filter(i =>
+    ((i.captured_at || '').replace(' ', 'T')).slice(0, 10) === dateStr).length;
+  const events = (state.gcalEvents || []).filter(
+    e => (e.start || '').slice(0, 10) === dateStr).length;
+
+  bar.className = atEnd ? 'rp-bar rp-bar-end' : 'rp-bar';
+  bar.innerHTML = `
+    <span class="rp-step">${reviewPass.step === 'cal_back' ? 'Reviewing back' : 'Reviewing ahead'}</span>
+    <span class="rp-prog">day ${nth}/${total}</span>
+    <span class="rp-meta">${events} event${events === 1 ? '' : 's'} · ${
+      captured} captured${events && !captured ? ' ⚠' : ''}</span>
+    <span class="cl-spacer"></span>
+    ${atEnd
+      ? '<button id="rp-done">Mark reviewed ✓</button>'
+      : '<button id="rp-next">Next day →</button>'}
+    <button id="rp-quit" title="Leave without marking it done">✕</button>`;
+
+  const next = bar.querySelector('#rp-next');
+  if (next) next.addEventListener('click', () => document.getElementById('nav-next').click());
+  bar.querySelector('#rp-quit').addEventListener('click', async () => {
+    endReviewPass();
+    await returnToReview();
+  });
+  const done = bar.querySelector('#rp-done');
+  if (done) done.addEventListener('click', async () => {
+    // Arriving at today is not the same as having done the reading, so the
+    // tick is a button rather than automatic.
+    const step = reviewPass.step;
+    if (gtdReview) {
+      gtdReview = await fetch('/api/gtd-review/step', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ week: gtdReview.week_start_date, step, done: true }),
+      }).then(r => r.json());
+    }
+    endReviewPass();
+    // Back to where the pass was started from. openM shows one overlay at a
+    // time, so the calendar had hidden GTD — closing it alone would drop you
+    // on the day screen with the review you were halfway through gone.
+    await returnToReview();
+  });
+}
+
 function initTimeline() {
   document.getElementById('nav-prev').addEventListener('click', async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const cur = new Date(state.currentDate); cur.setHours(0, 0, 0, 0);
-    if (Math.round((cur - today) / 86400000) <= -3) return;
+    if (Math.round((cur - today) / 86400000) <= navBounds().min) return;
     state.currentDate = new Date(state.currentDate.getTime() - 86400000);
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
@@ -676,7 +787,7 @@ function initTimeline() {
   document.getElementById('nav-next').addEventListener('click', async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const cur = new Date(state.currentDate); cur.setHours(0, 0, 0, 0);
-    if (Math.round((cur - today) / 86400000) >= 3) return;
+    if (Math.round((cur - today) / 86400000) >= navBounds().max) return;
     state.currentDate = new Date(state.currentDate.getTime() + 86400000);
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
@@ -807,6 +918,28 @@ let section2RevertTimer = null;
 function defaultDomainId() {
   const d = state.domains.find(x => x.is_default) || state.domains[0];
   return d ? d.id : null;
+}
+
+// ── Calendar navigation bounds ───────────────────────────────
+//
+// ±3 days normally: this is a DAY manager, and the timeline is the day you are
+// in, not a calendar to browse. A review pass widens it for its duration —
+// an explicit, bounded exception with an end, rather than a permanent
+// widening that would undo the scoping.
+const reviewPass = { active: false, from: null, to: null, step: null };
+
+function navBounds() {
+  if (!reviewPass.active) return { min: -3, max: 3 };
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const off = iso => Math.round(
+    (new Date(iso + 'T12:00:00').setHours(0, 0, 0, 0) - today) / 86400000);
+  return { min: off(reviewPass.from), max: off(reviewPass.to) };
+}
+
+function dayOffset(date) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = new Date(date); d.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
 }
 
 function domainName(id) {
@@ -2277,9 +2410,9 @@ const GTD_STEPS = [
   { phase: 'Get Current', key: 'next_actions', label: 'Review next-action lists',
     pushed: true, hint: 'Mark off completed; add follow-on steps.' },
   { phase: 'Get Current', key: 'cal_back', label: 'Review previous calendar, 2–3 weeks back',
-    hint: 'Uncaptured follow-ups. Archive the past with nothing left in it.' },
+    act: 'pass_back', hint: 'Uncaptured follow-ups. Archive the past with nothing left in it.' },
   { phase: 'Get Current', key: 'cal_fwd', label: 'Review upcoming calendar',
-    hint: 'Anything needing preparation that starts now.' },
+    act: 'pass_fwd', hint: 'Anything needing preparation that starts now.' },
   { phase: 'Get Current', key: 'waiting', label: 'Review waiting-for and deferred',
     waiting: true, hint: 'What\'s owed to you? What needs chasing?' },
   { phase: 'Get Current', key: 'projects', label: 'Every active project has a next action',
@@ -2388,6 +2521,8 @@ function renderGtdReview() {
           ${s.act === 'clarify' ? `<button class="gr-act" data-act="clarify">Clarify ${
             counts.inbox} →</button>` : ''}
           ${s.act === 'sweep' ? `<button class="gr-act" data-act="sweep">▶ 5-minute sweep</button>` : ''}
+          ${s.act === 'pass_back' ? '<button class="gr-act" data-act="pass_back">▶ Walk it back 14 days</button>' : ''}
+          ${s.act === 'pass_fwd' ? '<button class="gr-act" data-act="pass_fwd">▶ Walk the next 14 days</button>' : ''}
           ${s.stalled ? stalledList : ''}
           ${s.waiting ? waitingList : ''}
           ${s.pushed ? pushedList : ''}
@@ -2424,6 +2559,8 @@ function renderGtdReview() {
       e.preventDefault();
       e.stopPropagation();      // the button sits inside the step's <label>
       if (btn.dataset.act === 'clarify') { openClarify(); return; }
+      if (btn.dataset.act === 'pass_back') { startReviewPass('cal_back'); return; }
+      if (btn.dataset.act === 'pass_fwd') { startReviewPass('cal_fwd'); return; }
       const d = new Date();
       const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${
         String(d.getDate()).padStart(2, '0')}`;
@@ -7061,7 +7198,8 @@ function renderEngage() {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const target = egViewDate();
     const diff = Math.round((new Date(target).setHours(0, 0, 0, 0) - today) / 86400000);
-    const clamped = Math.max(-3, Math.min(3, diff));
+    const b = navBounds();
+    const clamped = Math.max(b.min, Math.min(b.max, diff));
     state.currentDate = new Date(today.getTime() + clamped * 86400000);
     await fetchOverridesForDate(state.currentDate);
     openM('cal-overlay');
