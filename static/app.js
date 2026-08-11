@@ -6801,10 +6801,14 @@ function mapSortOn() {
 }
 
 function mapSortRank(i, todayStr) {
+  // Due, then PLAIN, then deferred (Quentin, 2026-08-11 — deferred used to
+  // sit second): a deferred row is one you told to leave you alone, so it
+  // reads below the work that is actually on the table, closest-returning
+  // first.
   const due = dueOf(i);
   if (due) return [0, due];
-  if (i.defer_until && i.defer_until > todayStr) return [1, i.defer_until];
-  return [2, ''];
+  if (i.defer_until && i.defer_until > todayStr) return [2, i.defer_until];
+  return [1, ''];
 }
 
 function mapSortSiblings(list, todayStr) {
