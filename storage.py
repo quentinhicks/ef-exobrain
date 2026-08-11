@@ -2,8 +2,10 @@ import os
 import re
 import json
 import sqlite3
+import uuid
 
 import recurrence
+import schedule
 import colorsys
 from datetime import date as date_cls, datetime, timedelta, timezone
 
@@ -702,11 +704,10 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE flow_step ADD COLUMN dtstart TEXT')
         conn.commit()
-    # TIME PRESETS — a named recurring period, the time-axis counterpart of the
-    # location presets. `rrule` is the DAYS (recurrence.py); start/end are the
-    # time-of-day window within those days. Both optional: a rule with no
-    # window means "all of those days", a window with no rule means "every day
-    # between these times".
+    # TIME PRESETS — RETIRED 2026-08-11, superseded by schedule_source (a
+    # preset was a Rule in all but name). The table is kept unread: it is the
+    # only copy of what _migrate_time_presets derived the rule sources from, so
+    # dropping it would make a bad conversion unrecoverable. Nothing reads it.
     conn.execute('''
         CREATE TABLE IF NOT EXISTS time_preset (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -721,8 +722,8 @@ def init_db():
     # inbox_item.tags, which is what keeps them free to invent.
     conn.execute('''
         CREATE TABLE IF NOT EXISTS tag_time (
-            tag       TEXT PRIMARY KEY,
-            preset_id INTEGER NOT NULL REFERENCES time_preset(id)
+            tag        TEXT PRIMARY KEY,
+            source_uid TEXT NOT NULL REFERENCES schedule_source(uid)
         )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS tag_device (
@@ -845,9 +846,93 @@ def init_db():
             created_at     TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(node_id, date)
         )''')
+    # THE SCHEDULE STORE (2026-08-11) — one occurrence source, three
+    # constructors; see schedule.py and CLAUDE.md's "Schedule model". Columns
+    # are JSCalendar (RFC 8984) field names, so what is stored reads as the
+    # standard rather than as a private vocabulary; `kind`, `ends` and
+    # `follows` are the three sf: additions. A NULL title is an UNNAMED source,
+    # private to whatever holds it — naming is what makes it shared, which is
+    # why only named ones appear in Settings → Times.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS schedule_source (
+            uid              TEXT PRIMARY KEY,
+            kind             TEXT NOT NULL,
+            title            TEXT,
+            start            TEXT,
+            duration         TEXT,
+            recurrence_rules TEXT,
+            overrides        TEXT,
+            entries          TEXT,
+            follows          TEXT,
+            ends             TEXT,
+            used_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        )''')
+    _migrate_time_presets(conn)
     _seed_social_axes(conn)
     conn.commit()
     conn.close()
+
+
+# The time presets were the closest thing the app already had to a Rule: a name,
+# the DAYS as an RRULE, and a time-of-day window. They become rule sources, and
+# the tag bindings follow them by uid — a preset's id was an integer and a
+# source's identity is a uid, so the binding table is rebuilt rather than
+# widened. Runs once; the marker is tag_time already having source_uid.
+def _migrate_time_presets(conn):
+    cols = [r[1] for r in conn.execute('PRAGMA table_info(tag_time)').fetchall()]
+    if 'preset_id' not in cols:
+        return                      # fresh database, or already migrated
+    presets = conn.execute('SELECT * FROM time_preset').fetchall()
+    mapping = {}
+    for p in presets:
+        uid = _new_uid('rule')
+        mapping[p['id']] = uid
+        start_time = p['start_time'] or '00:00'
+        anchor = p['dtstart'] or date_cls.today().isoformat()
+        rules = schedule.rules_from_rrule(p['rrule'])
+        conn.execute(
+            'INSERT INTO schedule_source (uid, kind, title, start, duration,'
+            ' recurrence_rules, ends) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (uid, 'rule', p['name'], f'{anchor[:10]}T{start_time}:00',
+             _window_duration(p['start_time'], p['end_time']),
+             json.dumps(rules), None))
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS tag_time_new (
+            tag        TEXT PRIMARY KEY,
+            source_uid TEXT NOT NULL REFERENCES schedule_source(uid)
+        )''')
+    for row in conn.execute('SELECT tag, preset_id FROM tag_time').fetchall():
+        uid = mapping.get(row['preset_id'])
+        if uid:
+            conn.execute('INSERT OR REPLACE INTO tag_time_new (tag, source_uid)'
+                         ' VALUES (?, ?)', (row['tag'], uid))
+    conn.execute('DROP TABLE tag_time')
+    conn.execute('ALTER TABLE tag_time_new RENAME TO tag_time')
+    # time_preset itself is left in place, unread. It is the only copy of what
+    # the migration was derived from, and dropping it would make a bad
+    # conversion unrecoverable.
+    conn.commit()
+
+
+def _window_duration(start_time, end_time):
+    """A start/end window becomes a DURATION — the model never stores an end
+    time, because a duration is what survives a start moving."""
+    if not end_time:
+        return None
+    s = _hhmm(start_time or '00:00')
+    e = _hhmm(end_time)
+    minutes = (e - s) if e > s else (e + 24 * 60 - s)   # a window over midnight
+    return schedule.format_duration(timedelta(minutes=minutes))
+
+
+def _hhmm(text):
+    parts = str(text).split(':')
+    return int(parts[0]) * 60 + int(parts[1] if len(parts) > 1 else 0)
+
+
+def _new_uid(kind):
+    return f'{kind}-{uuid.uuid4().hex[:12]}'
 
 
 def get_areas():
@@ -4286,90 +4371,304 @@ def qr_scans_between(from_iso, to_iso):
 # ── Context bindings: what a tag is gated by ─────────────────
 #
 # Three axes, one shape each: tag → location (geofence), tag → device
-# (hardware), tag → time_preset (recurring period). All three GATE THE POOL
+# (hardware), tag → schedule source (a named period). All three GATE THE POOL
 # only, and all three are evaluated CLIENT-SIDE — the server just stores the
 # binding, because "am I there / on that / in that window right now" is a
 # question only the device can answer.
 
-def get_time_presets(date=None):
-    # `due` is whether the rule lands on that DATE. The day question is
-    # answered here so recurrence.py stays the only RRULE implementation —
-    # the client is left with the wall-clock half, which is the only part it
-    # can answer and the only part the server cannot.
+# ── The schedule store ───────────────────────────────────────
+#
+# One table, three constructors, and the reach every row states in Settings →
+# Times. All SQL for schedules lives here; the semantics (what a source yields)
+# live in schedule.py, which is pure and takes `resolve` as an argument — that
+# split is what keeps a recursive model out of the database layer.
+
+_SOURCE_COLS = ('uid', 'kind', 'title', 'start', 'duration', 'recurrence_rules',
+                'overrides', 'entries', 'follows', 'ends', 'used_at', 'created_at')
+
+
+def _row_to_source(row):
+    """DB row → the JSCalendar-shaped dict schedule.py reads."""
+    if row is None:
+        return None
+    r = dict(row)
+    src = {
+        '@type': 'Group' if r['kind'] == 'schedule' else 'Event',
+        'uid': r['uid'],
+        'sf:kind': r['kind'],
+        'title': r['title'],
+        'start': r['start'],
+        'timeZone': None,               # floating, always — see schedule.py
+        'duration': r['duration'],
+        'recurrenceRules': json.loads(r['recurrence_rules'] or 'null') or [],
+        'recurrenceOverrides': json.loads(r['overrides'] or 'null') or {},
+        'entries': json.loads(r['entries'] or 'null') or [],
+        'sf:follows': json.loads(r['follows'] or 'null'),
+        'sf:ends': json.loads(r['ends'] or 'null'),
+        'used_at': r['used_at'],
+    }
+    return src
+
+
+def _all_sources(conn):
+    rows = conn.execute('SELECT * FROM schedule_source').fetchall()
+    return {r['uid']: _row_to_source(r) for r in rows}
+
+
+def get_schedule_source(uid):
     conn = get_conn()
-    rows = [dict(r) for r in conn.execute('SELECT * FROM time_preset ORDER BY name').fetchall()]
+    row = conn.execute('SELECT * FROM schedule_source WHERE uid = ?', (uid,)).fetchone()
     conn.close()
+    return _row_to_source(row)
+
+
+def schedule_resolver():
+    """A `resolve` for schedule.py backed by one read of the table. Callers
+    that expand more than one source should reuse it rather than paying a query
+    per member."""
+    conn = get_conn()
+    store = _all_sources(conn)
+    conn.close()
+    return store.get, store
+
+
+# What HOLDS a source. Each entry is (label, table, column) and is counted for
+# the reach line in Settings → Times. Consumers gain their column as they are
+# converted (blocks, gates and recurring tasks still carry their own fields
+# today) — adding one here is what makes it counted, so this list is the whole
+# migration checklist.
+_SOURCE_HOLDERS = (
+    ('tag', 'tag_time', 'source_uid'),
+)
+
+
+def _reach(store, holders_by_uid, uid):
+    """Who would be affected by editing this source: the schedules it is a
+    member of, the derived sources following it, and every consumer holding it.
+    Unused says so plainly rather than hiding, which is how the list stays
+    cleanable."""
+    in_schedules = [s for s in store.values()
+                    if s['sf:kind'] == 'schedule' and uid in (s['entries'] or [])]
+    followed_by = [s for s in store.values()
+                   if (s.get('sf:follows') or {}).get('source') == uid]
+    holders = holders_by_uid.get(uid, [])
+    return {
+        'in_schedules': [{'uid': s['uid'], 'title': s['title']} for s in in_schedules],
+        'followed_by': [{'uid': s['uid'], 'title': s['title']} for s in followed_by],
+        'holders': holders,
+        'total': len(in_schedules) + len(followed_by) + len(holders),
+    }
+
+
+def _holders_by_uid(conn):
+    out = {}
+    for label, table, column in _SOURCE_HOLDERS:
+        try:
+            rows = conn.execute(f'SELECT * FROM {table}').fetchall()
+        except sqlite3.OperationalError:
+            continue
+        for r in rows:
+            uid = r[column]
+            if not uid:
+                continue
+            name = r['tag'] if 'tag' in r.keys() else (
+                r['label'] if 'label' in r.keys() else r['name'] if 'name' in r.keys() else '')
+            out.setdefault(uid, []).append({'kind': label, 'name': name})
+    return out
+
+
+def get_schedule_sources(date=None, include_unnamed=False):
+    """Every named source, newest-used first within its kind, each with the
+    sentence that describes it, its reach, and — when a date is given — the
+    wall-clock intervals it covers that day. The intervals are the half a phone
+    can answer for itself, which is why the client is never handed a rule."""
+    conn = get_conn()
+    store = _all_sources(conn)
+    holders = _holders_by_uid(conn)
+    conn.close()
+    resolve = store.get
     day = date_cls.fromisoformat(date) if date else None
-    for r in rows:
-        if not day:
-            r['due'] = None
-        elif not r['rrule']:
-            r['due'] = True          # no rule = every day; the window is the gate
-        else:
-            anchor = date_cls.fromisoformat(r['dtstart']) if r['dtstart'] else RRULE_EPOCH
-            r['due'] = recurrence.occurs_on(r['rrule'], anchor, day)
-        r['label'] = describe_time_preset(r)
-    return rows
+
+    out = []
+    for src in store.values():
+        if not include_unnamed and not src['title']:
+            continue
+        row = {
+            'uid': src['uid'],
+            'kind': src['sf:kind'],
+            'title': src['title'],
+            'start': src['start'],
+            'duration': src['duration'],
+            'recurrenceRules': src['recurrenceRules'],
+            'entries': src['entries'],
+            'follows': src['sf:follows'],
+            'ends': src['sf:ends'],
+            'overrides': src['recurrenceOverrides'],
+            'used_at': src['used_at'],
+            'reach': _reach(store, holders, src['uid']),
+        }
+        try:
+            row['label'] = schedule.describe(src, resolve)
+            row['intervals'] = schedule.day_intervals(src, resolve, day) if day else []
+        except schedule.Cycle:
+            # A cycle can only arrive from hand-edited data — save refuses it —
+            # but a list that dies is worse than a row that admits it.
+            row['label'] = 'broken: this schedule refers to itself'
+            row['intervals'] = []
+        row['due'] = bool(row['intervals']) if day else None
+        out.append(row)
+    out.sort(key=lambda r: (r['kind'] != 'schedule', r['used_at'] or ''), reverse=False)
+    out.sort(key=lambda r: r['used_at'] or '', reverse=True)
+    out.sort(key=lambda r: r['kind'] != 'schedule')
+    return out
 
 
-def describe_time_preset(p):
-    bits = []
-    if p.get('rrule'):
-        bits.append(recurrence.describe(p['rrule']))
-    else:
-        bits.append('every day')
-    if p.get('start_time') or p.get('end_time'):
-        bits.append(f"{p.get('start_time') or '00:00'}–{p.get('end_time') or '24:00'}")
-    return ' · '.join(bits)
-
-
-def create_time_preset(name, rrule=None, start_time=None, end_time=None, dtstart=None):
+def create_schedule_source(kind, **fields):
+    if kind not in schedule.KINDS:
+        raise ValueError('kind must be rule, schedule or derived')
+    uid = _new_uid(kind)
     conn = get_conn()
-    cur = conn.execute(
-        'INSERT INTO time_preset (name, rrule, start_time, end_time, dtstart)'
-        ' VALUES (?, ?, ?, ?, ?)',
-        (name, rrule or None, start_time or None, end_time or None,
-         dtstart or date_cls.today().isoformat()))
-    row = conn.execute('SELECT * FROM time_preset WHERE id = ?', (cur.lastrowid,)).fetchone()
+    conn.execute(
+        'INSERT INTO schedule_source (uid, kind, title, start, duration,'
+        ' recurrence_rules, overrides, entries, follows, ends) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (uid, kind, fields.get('title') or None, fields.get('start') or None,
+         fields.get('duration') or None,
+         _dump(fields.get('recurrenceRules')), _dump(fields.get('overrides')),
+         _dump(fields.get('entries')), _dump(fields.get('follows')),
+         _dump(fields.get('ends'))))
     conn.commit()
     conn.close()
-    return dict(row)
+    _check_acyclic_or_raise(uid)
+    return get_schedule_source(uid)
 
 
-def update_time_preset(id, **fields):
+_SOURCE_WRITABLE = {
+    'title': 'title', 'start': 'start', 'duration': 'duration',
+    'recurrenceRules': 'recurrence_rules', 'overrides': 'overrides',
+    'entries': 'entries', 'follows': 'follows', 'ends': 'ends',
+}
+_SOURCE_JSON = {'recurrenceRules', 'overrides', 'entries', 'follows', 'ends'}
+
+
+def update_schedule_source(uid, **fields):
     conn = get_conn()
-    for k in ('name', 'rrule', 'start_time', 'end_time', 'dtstart'):
-        if k in fields:
-            conn.execute(f'UPDATE time_preset SET {k} = ? WHERE id = ?', (fields[k] or None, id))
+    for key, column in _SOURCE_WRITABLE.items():
+        if key not in fields:
+            continue
+        value = _dump(fields[key]) if key in _SOURCE_JSON else (fields[key] or None)
+        conn.execute(f'UPDATE schedule_source SET {column} = ? WHERE uid = ?', (value, uid))
+    if 'kind' in fields and fields['kind'] in schedule.KINDS:
+        # The picker's two branches change what a source IS — adding a
+        # variation makes a rule into a schedule, choosing a target makes it
+        # derived — so kind is writable, and both directions are reversible.
+        conn.execute('UPDATE schedule_source SET kind = ? WHERE uid = ?',
+                     (fields['kind'], uid))
+    conn.execute("UPDATE schedule_source SET used_at = datetime('now') WHERE uid = ?", (uid,))
     conn.commit()
-    row = conn.execute('SELECT * FROM time_preset WHERE id = ?', (id,)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    _check_acyclic_or_raise(uid)
+    return get_schedule_source(uid)
 
 
-def delete_time_preset(id):
+def touch_schedule_source(uid):
+    """Most-recently-used ordering in Times, which is the only ordering five to
+    fifteen entries need."""
     conn = get_conn()
-    # The binding goes with it, or a tag is left gated by a preset that no
-    # longer exists — which reads as "hidden for no reason" on the pool.
-    conn.execute('DELETE FROM tag_time WHERE preset_id = ?', (id,))
-    conn.execute('DELETE FROM time_preset WHERE id = ?', (id,))
+    conn.execute("UPDATE schedule_source SET used_at = datetime('now') WHERE uid = ?", (uid,))
+    conn.commit()
+    conn.close()
+
+
+def _check_acyclic_or_raise(uid):
+    resolve, store = schedule_resolver()
+    src = store.get(uid)
+    if src:
+        schedule.check_acyclic(uid, src, resolve)
+
+
+def _dump(value):
+    if value is None:
+        return None
+    return json.dumps(value)
+
+
+def delete_schedule_source(uid):
+    """Deleting a NAME never takes anyone's hours away: every holder keeps an
+    unnamed copy of what it had, so deletion is only ever un-sharing. That is
+    what makes deleting always allowed — the panel never has to refuse.
+
+    A schedule's members are left in Times; they are sources in their own right
+    and deleting them is a separate decision.
+    """
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM schedule_source WHERE uid = ?', (uid,)).fetchone()
+    if row is None:
+        conn.close()
+        return
+    store = _all_sources(conn)
+    holders = _holders_by_uid(conn)
+    reach = _reach(store, holders, uid)
+
+    # One unnamed copy per holder, so they stop changing together rather than
+    # stop happening. Members of a copied schedule are shared by the copies —
+    # only the NAME was private to this row.
+    copies = {}
+
+    def private_copy():
+        new_uid = _new_uid(row['kind'])
+        conn.execute(
+            'INSERT INTO schedule_source (uid, kind, title, start, duration,'
+            ' recurrence_rules, overrides, entries, follows, ends)'
+            ' SELECT ?, kind, NULL, start, duration, recurrence_rules, overrides,'
+            ' entries, follows, ends FROM schedule_source WHERE uid = ?',
+            (new_uid, uid))
+        return new_uid
+
+    for label, table, column in _SOURCE_HOLDERS:
+        try:
+            rows = conn.execute(
+                f'SELECT rowid FROM {table} WHERE {column} = ?', (uid,)).fetchall()
+        except sqlite3.OperationalError:
+            continue
+        for r in rows:
+            copies[(table, r['rowid'])] = private_copy()
+            conn.execute(f'UPDATE {table} SET {column} = ? WHERE rowid = ?',
+                         (copies[(table, r['rowid'])], r['rowid']))
+
+    # A schedule that held this source keeps the hours too: its entry is
+    # swapped for that schedule's own copy.
+    for s in reach['in_schedules']:
+        entries = [private_copy() if e == uid else e
+                   for e in (store[s['uid']]['entries'] or [])]
+        conn.execute('UPDATE schedule_source SET entries = ? WHERE uid = ?',
+                     (json.dumps(entries), s['uid']))
+    # A derived source that followed it keeps following the same hours.
+    for s in reach['followed_by']:
+        follows = dict(store[s['uid']]['sf:follows'] or {})
+        follows['source'] = private_copy()
+        conn.execute('UPDATE schedule_source SET follows = ? WHERE uid = ?',
+                     (json.dumps(follows), s['uid']))
+
+    conn.execute('DELETE FROM schedule_source WHERE uid = ?', (uid,))
     conn.commit()
     conn.close()
 
 
 def get_tag_times():
     conn = get_conn()
-    rows = conn.execute('SELECT tag, preset_id FROM tag_time').fetchall()
+    rows = conn.execute('SELECT tag, source_uid FROM tag_time').fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def set_tag_time(tag, preset_id):
+def set_tag_time(tag, source_uid):
     conn = get_conn()
-    conn.execute('INSERT OR REPLACE INTO tag_time (tag, preset_id) VALUES (?, ?)',
-                 (tag, preset_id))
+    conn.execute('INSERT OR REPLACE INTO tag_time (tag, source_uid) VALUES (?, ?)',
+                 (tag, source_uid))
     conn.commit()
     conn.close()
+    touch_schedule_source(source_uid)
 
 
 def delete_tag_time(tag):

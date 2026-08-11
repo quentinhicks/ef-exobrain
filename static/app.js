@@ -5545,9 +5545,27 @@ async function renderGatesBilling(verify) {
         <span class="gb-bar"><i style="width:${pct}%"></i></span>
       </div>
     </div>
-    <div class="be-hint">A charge that would breach the cap is skipped whole, not trimmed.
-      To rotate the token, edit <code>config.json</code> on the server — the field is
-      <code id="gb-cmd">beeminder_auth_token</code>.</div>
+    <div class="be-sub-head">Beeminder credentials</div>
+    <div class="be-list">
+      <div class="be-set-row">
+        <span class="be-set-name">Token</span>
+        <input id="gb-token-in" class="be-set-ctl" type="password" autocomplete="off"
+          placeholder="${b.has_token ? 'set — type to replace' : 'paste your token'}">
+      </div>
+      <div class="be-set-row">
+        <span class="be-set-name">Username</span>
+        <input id="gb-user-in" class="be-set-ctl" autocomplete="off"
+          value="${escHtml(b.user || '')}" placeholder="beeminder username">
+      </div>
+      <div class="be-set-row">
+        <span class="be-set-name"></span>
+        <button id="gb-cred-save" class="be-set-ctl">Save and check</button>
+      </div>
+    </div>
+    <div class="be-hint">The token is stored on the SERVER, in config.json rather than the
+      database — a credential that can move money has no business in a backup set. Nothing
+      can read it back out, including this panel, so a blank field leaves the stored one
+      alone. A charge that would breach the weekly cap is skipped whole, not trimmed.</div>
     <div class="be-sub-head">Judged failures, last 7 days</div>
     ${b.recent.length ? `<div class="be-list">${b.recent.map(r => `
       <div class="be-set-row">
@@ -5567,6 +5585,18 @@ async function renderGatesBilling(verify) {
     await renderGatesBilling(false);
   };
   el.querySelector('#gb-verify').addEventListener('click', () => renderGatesBilling(true));
+  // Saving a credential verifies it in the same gesture: a token you typed and
+  // did not check is a token you believe is working.
+  el.querySelector('#gb-cred-save').addEventListener('click', async () => {
+    const token = el.querySelector('#gb-token-in').value.trim();
+    const user = el.querySelector('#gb-user-in').value.trim();
+    if (!token && !user) { toast('Nothing to save'); return; }
+    await fetch('/api/gates/billing', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ beeminder_auth_token: token, beeminder_user: user }),
+    });
+    await renderGatesBilling(true);
+  });
   // Arming is the one control here that can cost money, so it asks first.
   // Disarming never does, so it does not.
   el.querySelector('#gb-live').addEventListener('click', () => {

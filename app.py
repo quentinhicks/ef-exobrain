@@ -65,6 +65,31 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     config = {}
 
+
+# Server-side config is WRITABLE from the app, one key at a time. It used to be
+# editable only over ssh, which meant a value the settings panel is responsible
+# for could only be set from a terminal — so it never got set. Written 0600 via
+# a temp file + replace, so a crash mid-write can't leave a truncated config
+# that takes the whole app down on the next start. Values are never read BACK
+# out to a client: write-only is the property that matters for a secret, and it
+# is the reading that had to stay impossible, not the writing.
+def _update_config(values):
+    global config
+    try:
+        with open('config.json') as f:
+            current = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        current = {}
+    current.update(values)
+    tmp = 'config.json.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(current, f, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, 'config.json')
+    config = current
+    return current
+
+
 _QR_WORKER_URL = config.get('qr_worker_url', '')
 _QR_ADMIN_SECRET = config.get('qr_admin_secret', '')
 _QR_INTERNAL_SECRET = config.get('qr_internal_secret', '')
@@ -1625,6 +1650,9 @@ def get_gates_billing():
         'spent_cents': storage.qr_weekly_spent_cents(today),
         'token': qr_judge.verify_token() if request.args.get('verify') else None,
         'has_token': bool(s['token']),
+        # The USERNAME is not a secret and the panel has to show who would be
+        # billed. Only the token is withheld.
+        'user': s['user'],
         'has_user': bool(s['user']),
         'recent': storage.qr_charge_rows_between(week_from, today),
     })
@@ -1645,7 +1673,15 @@ def patch_gates_billing():
     for key, clean in allowed.items():
         if key in data:
             storage.set_setting(key, clean(data[key]))
-    return jsonify(qr_judge.charge_settings() | {'token': None})
+    # The Beeminder credential goes to config.json, NOT the setting table: the
+    # db is dumped to backups/ and pushed to object storage, and a bearer token
+    # that can move money does not belong in a backup set. An empty string
+    # means "leave it alone", so saving the username can't wipe the token.
+    creds = {k: str(data[k]).strip() for k in ('beeminder_auth_token', 'beeminder_user')
+             if str(data.get(k) or '').strip()}
+    if creds:
+        _update_config(creds)
+    return jsonify(qr_judge.charge_settings() | {'token': None, 'user': None})
 
 
 @app.route('/api/accountability/nodes', methods=['GET', 'POST'])
@@ -1836,37 +1872,58 @@ def put_flow_run(id):
     return jsonify(run)
 
 
-# --- Context bindings: time presets, tag→time, tag→device ---
+# --- Schedules: the one occurrence source (schedule.py) ------
+#
+# One collection for all three constructors — the picker decides which by what
+# was answered, so the route never asks. `?date=` adds each source's wall-clock
+# intervals for that day, which is the half the client can evaluate itself.
 
-@app.route('/api/time-presets')
-def get_time_presets_route():
-    return jsonify(storage.get_time_presets(request.args.get('date')))
+_SOURCE_FIELDS = ('title', 'start', 'duration', 'recurrenceRules',
+                  'overrides', 'entries', 'follows', 'ends')
 
 
-@app.route('/api/time-presets', methods=['POST'])
-def post_time_preset():
+@app.route('/api/schedules')
+def get_schedules_route():
+    return jsonify(storage.get_schedule_sources(
+        request.args.get('date'),
+        include_unnamed=request.args.get('unnamed') == '1'))
+
+
+@app.route('/api/schedules', methods=['POST'])
+def post_schedule():
     data = request.get_json()
-    name = (data.get('name') or '').strip()
-    if not name:
-        return jsonify({'error': 'name is required'}), 400
-    return jsonify(storage.create_time_preset(
-        name, data.get('rrule'), data.get('start_time'),
-        data.get('end_time'), data.get('dtstart'))), 201
+    kind = data.get('kind')
+    if kind not in schedule.KINDS:
+        return jsonify({'error': 'kind must be rule, schedule or derived'}), 400
+    fields = {k: data[k] for k in _SOURCE_FIELDS if k in data}
+    try:
+        return jsonify(storage.create_schedule_source(kind, **fields)), 201
+    except schedule.Cycle as e:
+        return jsonify({'error': f'that would make {e} contain itself'}), 400
 
 
-@app.route('/api/time-presets/<int:id>', methods=['PATCH'])
-def patch_time_preset(id):
+@app.route('/api/schedules/<uid>', methods=['PATCH'])
+def patch_schedule(uid):
     data = request.get_json()
-    allowed = {k: v for k, v in data.items()
-               if k in ('name', 'rrule', 'start_time', 'end_time', 'dtstart')}
-    return jsonify(storage.update_time_preset(id, **allowed))
+    fields = {k: data[k] for k in _SOURCE_FIELDS if k in data}
+    if data.get('kind') in schedule.KINDS:
+        fields['kind'] = data['kind']
+    try:
+        row = storage.update_schedule_source(uid, **fields)
+    except schedule.Cycle as e:
+        return jsonify({'error': f'that would make {e} contain itself'}), 400
+    return jsonify(row) if row else ('', 404)
 
 
-@app.route('/api/time-presets/<int:id>', methods=['DELETE'])
-def delete_time_preset_route(id):
-    storage.delete_time_preset(id)
+@app.route('/api/schedules/<uid>', methods=['DELETE'])
+def delete_schedule(uid):
+    # Always allowed: every holder keeps an unnamed copy of the hours, so this
+    # un-shares rather than removes. See storage.delete_schedule_source.
+    storage.delete_schedule_source(uid)
     return '', 204
 
+
+# --- Context bindings: tag→time, tag→device -----------------
 
 @app.route('/api/tag-times')
 def get_tag_times_route():
@@ -1877,9 +1934,9 @@ def get_tag_times_route():
 def post_tag_time():
     data = request.get_json()
     tag = (data.get('tag') or '').strip().lower()
-    if not tag or not data.get('preset_id'):
-        return jsonify({'error': 'tag and preset_id are required'}), 400
-    storage.set_tag_time(tag, data['preset_id'])
+    if not tag or not data.get('source_uid'):
+        return jsonify({'error': 'tag and source_uid are required'}), 400
+    storage.set_tag_time(tag, data['source_uid'])
     return jsonify(storage.get_tag_times()), 201
 
 
