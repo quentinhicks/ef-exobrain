@@ -27,10 +27,12 @@ bank virtual number with amount limits (Citi has them; Eno does not).
 wrangler secret put BEEMINDER_AUTH_TOKEN     # in QR-accountability/
 ```
 
-Then delete the stub `return { status: "disabled", … }` line at the top of
-`beeminderCharge()` in index.js (and the eslint-disable pair around the dead
-code) and `wrangler deploy` — with `LIVE_CHARGING = "false"` and
-`CHARGE_DRYRUN = "true"` still set in wrangler.toml. Verify:
+The stub `return { status: "disabled", … }` and its eslint-disable pair were
+removed from `beeminderCharge()` on 2026-08-11, so this step is now: set
+`BEEMINDER_USER` in wrangler.toml (it ships EMPTY, and an empty username makes
+every charge return `failed: beeminder not configured` — a lock in its own
+right) and `wrangler deploy`, with `LIVE_CHARGING = "false"` and
+`CHARGE_DRYRUN = "true"` still set. Verify:
 
 ```
 POST /admin/billing/test-charge          # dry by default; expect status dryrun
@@ -66,3 +68,9 @@ from then on. (Flipping LIVE_CHARGING also works but needs a deploy.)
 - weeklySpentCents counts succeeded + charging + unknown
 - a charge that would breach the cap is skipped WHOLE (`capped`)
 - test-charge is dry unless `?live=1`
+- every amount is read through `chargeCents(env, reason)` — ONE definition, and
+  each fallback equals its wrangler.toml var. It was copied in five places with
+  two different base values (200 in the judge, 1000 in the admin views and the
+  legacy-row reconstruction), so an unset var priced the same failure
+  differently depending on which path asked, and `test-charge?live=1` would
+  have moved $10 instead of $2. Never let those numbers drift apart again.

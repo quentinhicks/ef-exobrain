@@ -814,9 +814,7 @@ export default {
         // equals its var so a missing var can't silently change the price.
         // charge_log stores failure_reason, so which amount fired stays
         // reconstructable from the log without a new column.
-        const amountCents = failureReason === "under_social_floor"
-          ? (env.SOCIAL_CHARGE_AMOUNT_CENTS || "800")
-          : (env.CHARGE_AMOUNT_CENTS || "1000");
+        const amountCents = chargeCents(env, failureReason);
 
         await ensureChargeColumns(env);
         const capCents = Number(env.WEEKLY_CHARGE_CAP_CENTS || "2500");
@@ -1079,8 +1077,8 @@ async function handleAdmin(request, url, env) {
       user: env.BEEMINDER_USER || null,
       live_charging: env.LIVE_CHARGING === "true",
       dryrun: env.CHARGE_DRYRUN === "true",
-      amount_cents: env.CHARGE_AMOUNT_CENTS || "1000",
-      social_amount_cents: env.SOCIAL_CHARGE_AMOUNT_CENTS || "800",
+      amount_cents: String(chargeCents(env, null)),
+      social_amount_cents: String(chargeCents(env, "under_social_floor")),
       weekly_cap_cents: Number(env.WEEKLY_CHARGE_CAP_CENTS || "2500"),
       weekly_spent_cents: await weeklySpentCents(env, localDateStr(new Date(), env.LOCAL_TZ || "UTC")),
       recent_charges: recent,
@@ -1098,7 +1096,7 @@ async function handleAdmin(request, url, env) {
   // not spending money; the weekly cap now bounds it even when it does.
   if (url.pathname === "/admin/billing/test-charge" && request.method === "POST") {
     const live = url.searchParams.get("live") === "1";
-    const amount = env.CHARGE_AMOUNT_CENTS || "1000";
+    const amount = String(chargeCents(env, null));
     if (live) {
       await ensureChargeColumns(env);
       const capCents = Number(env.WEEKLY_CHARGE_CAP_CENTS || "2500");
@@ -1332,9 +1330,19 @@ function isLoosening(field, current, next, node) {
 // that does not depend on a var being right. 'disabled' is not counted by
 // weeklySpentCents, and it is not 'unknown', so nothing here is retryable.
 // Re-enabling is deliberate: delete this block AND flip the vars back.
+// ONE definition of the stakes. These fallbacks were copied in five places
+// with TWO different base values — "200" in the judge, "1000" in the admin
+// views and the legacy-row reconstruction — so an unset var priced the same
+// failure differently depending on which code path asked, and test-charge
+// ?live=1 would have moved $10 instead of $2. Keep each fallback equal to its
+// wrangler.toml var, and read them only through here.
+function chargeCents(env, failureReason) {
+  return Number(failureReason === "under_social_floor"
+    ? (env.SOCIAL_CHARGE_AMOUNT_CENTS || "800")
+    : (env.CHARGE_AMOUNT_CENTS || "200"));
+}
+
 async function beeminderCharge(env, amountCents, note) {
-  return { status: "disabled", id: null, error: "charging disabled" };
-  /* eslint-disable no-unreachable */
   if (!env.BEEMINDER_AUTH_TOKEN || !env.BEEMINDER_USER) {
     return { status: "failed", id: null, error: "beeminder not configured" };
   }
@@ -1369,7 +1377,6 @@ async function beeminderCharge(env, amountCents, note) {
     id: data.id ?? null,
     error: resp.ok ? null : (data.errors?.message || data.error_message || `HTTP ${resp.status}`),
   };
-  /* eslint-enable no-unreachable */
 }
 
 // Lazy tables for the routine gate — same idiom as ensureChargeColumns, so a
@@ -1553,9 +1560,7 @@ async function weeklySpentCents(env, throughDate) {
     r.amount_cents != null ? Number(r.amount_cents)
       // Rows written before amount_cents existed: reconstruct from the reason,
       // which is exactly why the reason is stored.
-      : Number(r.failure_reason === "under_social_floor"
-          ? (env.SOCIAL_CHARGE_AMOUNT_CENTS || "800")
-          : (env.CHARGE_AMOUNT_CENTS || "1000"))
+      : chargeCents(env, r.failure_reason)
   ), 0);
 }
 
