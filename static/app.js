@@ -4028,7 +4028,7 @@ function renderFlowRun() {
   } else if (s.kind === 'social_spec') {
     const okSpec = day.specOk === true;
     page = `<div class="fr-step-big">Social spec</div>
-      <div class="fr-note">${day.spec ? 'spec set' : 'no spec yet'} · ${day.total ?? 0} point${(day.total ?? 0) === 1 ? '' : 's'}${
+      <div class="fr-note">${(day.specs || []).length ? 'spec set' : 'no spec yet'} · ${day.total ?? 0} point${(day.total ?? 0) === 1 ? '' : 's'}${
         okSpec ? ' — spec complete ✓' : ' — set/complete it in ≡ Social'}</div>`;
   }
 
@@ -4984,22 +4984,34 @@ function renderSocial() {
         <span class="so-line${day.doseCleared ? ' so-ok' : ''}" title="The evening line: logged prices sum to D">dose ${day.doseCleared ? '✓' : '·'}</span>
       </div>`;
 
-    // The spec card — today's intended rep, startable from the card alone.
-    if (day.spec && (!f || f.intent !== 'spec')) {
-      main += `
+    // The spec cards — today's intended reps, each startable from its card
+    // alone. A plan can hold several interactions (2026-08-11); the one
+    // carrying the morning line (price >= D) is the anchor of the set, and
+    // the others are stacked on top of it, not instead of it.
+    const specs = day.specs || [];
+    if (!f || f.intent !== 'spec') {
+      specs.forEach((s, i) => {
+        main += `
         <div class="so-card">
-          <div class="so-card-top"><span class="cl-label">Today's spec</span>
-            <span class="so-price">${day.spec.price}</span>
-            ${day.spec.price >= day.d ? '' : `<span class="so-short">${day.d - day.spec.price} short of D</span>`}</div>
-          <div class="so-spec-desc">${escHtml(socialRepDesc(day.spec))}</div>
-          ${day.spec.opener ? `<div class="so-opener">“${escHtml(day.spec.opener)}”</div>` : ''}
+          <div class="so-card-top"><span class="cl-label">${specs.length > 1 ? `Spec ${i + 1}` : "Today's spec"}</span>
+            <span class="so-price">${s.price}</span>
+            ${s.price >= day.d ? '<span class="so-ok">carries the line</span>'
+              : specs.some(x => x.price >= day.d) ? ''
+              : `<span class="so-short">${day.d - s.price} short of D</span>`}</div>
+          <div class="so-spec-desc">${escHtml(socialRepDesc(s))}</div>
+          ${s.opener ? `<div class="so-opener">“${escHtml(s.opener)}”</div>` : ''}
           <div class="so-card-btns">
-            <button id="so-spec-did" title="Log it as done, planned">✓ did it</button>
-            <button id="so-spec-edit" title="Re-spec — free, any time">↻ replace</button>
+            <button class="so-spec-did" data-spec="${s.id}" title="Log it as done, planned">✓ did it</button>
+            <button class="so-spec-edit" data-spec="${s.id}" title="Re-spec — free, any time">↻ replace</button>
+            <button class="so-spec-del" data-spec="${s.id}" title="Unplan it">×</button>
           </div>
         </div>`;
-    } else if (!f) {
-      main += `<button id="so-spec-new" class="so-add">+ plan today's rep <span class="cl-hint">the morning line — person, channel, opener</span></button>`;
+      });
+    }
+    if (!f) {
+      main += specs.length
+        ? `<button id="so-spec-new" class="so-add">+ plan another interaction</button>`
+        : `<button id="so-spec-new" class="so-add">+ plan today's rep <span class="cl-hint">the morning line — person, channel, opener</span></button>`;
     }
 
     if (f) {
@@ -5022,8 +5034,15 @@ function renderSocial() {
             <span class="so-price">${price == null ? '—' : price}</span>
             ${spec && price != null ? (price >= cfg.d
               ? '<span class="so-ok">clears D</span>'
-              : `<span class="so-short">${cfg.d - price} short — upgrade a level</span>`) : ''}
-            <button id="so-form-go" ${price == null || (spec && price < cfg.d) ? 'disabled' : ''}>${spec ? 'Save spec' : 'Log it'}</button>
+              // The morning line is carried by ONE spec hard enough on its
+              // own; once the day has it, further interactions stack at any
+              // priceable level (small ones never add up to the line).
+              : (day.specs || []).some(s => s.price >= cfg.d && s.id !== f.editId)
+                ? '<span class="cl-hint">stacks on the spec that carries the line</span>'
+                : `<span class="so-short">${cfg.d - price} short — upgrade a level</span>`) : ''}
+            <button id="so-form-go" ${price == null || (spec && price < cfg.d
+              && !(day.specs || []).some(s => s.price >= cfg.d && s.id !== f.editId))
+              ? 'disabled' : ''}>${spec ? 'Save spec' : 'Log it'}</button>
             <button id="so-form-x">cancel</button>
           </div>
         </div>`;
@@ -5107,16 +5126,22 @@ function renderSocial() {
     socialView.form = { intent: 'spec', family: 'directed', levels: {}, person: '', opener: '' };
     renderSocial();
   });
-  const specEdit = body.querySelector('#so-spec-edit');
-  if (specEdit) specEdit.addEventListener('click', () => {
-    const s = socialView.day.spec;
-    socialView.form = { intent: 'spec', family: s.family, levels: { ...s.levels },
-                        person: s.person, opener: s.opener };
-    renderSocial();
+  const specById = id => (socialView.day.specs || []).find(s => s.id === parseInt(id));
+  // Replays a removed spec verbatim — id AND price — so an undo after
+  // recalibration restores the plan as it was, not as it would price now.
+  const respec = s => fetch('/api/social/specs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: s.id, date: s.date, family: s.family, levels: s.levels,
+                           person: s.person, opener: s.opener, price: s.price }),
   });
-  const specDid = body.querySelector('#so-spec-did');
-  if (specDid) specDid.addEventListener('click', async () => {
-    const s = socialView.day.spec;
+  body.querySelectorAll('.so-spec-edit').forEach(b => b.addEventListener('click', () => {
+    const s = specById(b.dataset.spec);
+    socialView.form = { intent: 'spec', editId: s.id, family: s.family,
+                        levels: { ...s.levels }, person: s.person, opener: s.opener };
+    renderSocial();
+  }));
+  body.querySelectorAll('.so-spec-did').forEach(b => b.addEventListener('click', async () => {
+    const s = specById(b.dataset.spec);
     const rep = await fetch('/api/social/reps', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ family: s.family, levels: s.levels, person: s.person, planned: 1 }),
@@ -5126,7 +5151,16 @@ function renderSocial() {
       await refreshSocialIfOpen();
     });
     await refreshSocial();
-  });
+  }));
+  body.querySelectorAll('.so-spec-del').forEach(b => b.addEventListener('click', async () => {
+    const s = specById(b.dataset.spec);
+    await fetch(`/api/social/specs/${s.id}`, { method: 'DELETE' });
+    pushUndo('unplanned an interaction', async () => {
+      await respec(s);
+      await refreshSocialIfOpen();
+    });
+    await refreshSocial();
+  }));
 
   const logOpen = body.querySelector('#so-log-open');
   if (logOpen) logOpen.addEventListener('click', () => {
@@ -5160,20 +5194,19 @@ function renderSocial() {
     const go = body.querySelector('#so-form-go');
     if (go) go.addEventListener('click', async () => {
       if (f.intent === 'spec') {
-        const prev = socialView.day.spec;
-        const spec = await fetch('/api/social/spec', {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        // Replacing = add the new, then remove the one being edited; one
+        // undo entry reverses both, so half a replacement can't survive.
+        const prev = f.editId ? specById(f.editId) : null;
+        const spec = await fetch('/api/social/specs', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ family: f.family, levels: f.levels,
                                  person: f.person, opener: f.opener }),
         }).then(r => r.json());
         if (spec.error) return;
-        pushUndo(prev ? 'replaced the spec' : 'planned the rep', async () => {
-          if (prev) await fetch('/api/social/spec', {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ family: prev.family, levels: prev.levels,
-                                   person: prev.person, opener: prev.opener }),
-          });
-          else await fetch('/api/social/spec', { method: 'DELETE' });
+        if (prev) await fetch(`/api/social/specs/${prev.id}`, { method: 'DELETE' });
+        pushUndo(prev ? 'replaced a planned interaction' : 'planned an interaction', async () => {
+          await fetch(`/api/social/specs/${spec.id}`, { method: 'DELETE' });
+          if (prev) await respec(prev);
           await refreshSocialIfOpen();
         });
       } else {
