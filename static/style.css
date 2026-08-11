@@ -4029,10 +4029,9 @@ body.np-body {
   border-radius: 4px;
 }
 /* At rest a gap is 3px — it is whitespace, and whitespace between every pair
-   of rows is what made the day loose. It only has to be a TARGET while
-   something is armed or DRAGGING, so .eg-gap-armed (below, with the touch
-   styles) opens every gap in both cases — a 3px dragover target would be
-   unhittable. */
+   of rows is what made the day loose. It only has to be a TARGET while a DRAG
+   is in flight, so .eg-gap-armed (below) opens every gap then — a 3px dragover
+   target would be unhittable. */
 .eg-gap-over {
   height: 26px;
   background: var(--tint);
@@ -4296,9 +4295,9 @@ body.np-body {
 /* The picker button is a button now, not a <select>. */
 button.eg-domain { cursor: pointer; }
 
-/* Tap-to-place: the armed action + the lit gaps (touch fallback). */
-.eg-armed { background: var(--tint); border-radius: 6px; }
-.eg-armed .eg-text { color: var(--accent); }
+/* Every gap opens while a drag is in flight. Tap-to-arm-then-tap-a-gap went
+   2026-08-11: a two-step gesture whose second target was invisible until the
+   first step, on a surface where Show-on date+time already places an action. */
 .eg-gap-armed {
   height: 22px;
   background: var(--tint-faint);

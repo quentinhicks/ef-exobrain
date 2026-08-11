@@ -7851,9 +7851,6 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      futurePlaced: [],
                      routineItems: [], flows: [], deferred: [],
                      domainId: null, dragId: null,
-                     // armId: the tap-to-place fallback's armed action (touch
-                     // has no HTML5 drag events).
-                     armId: null,
                      // Context filter (the top-right picker). Keys are
                      // namespaced: 'domain:3' / 'tag:light'. Two tiers:
                      // include = OR (widen), require = AND (narrow).
@@ -8449,7 +8446,7 @@ function renderEngage() {
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
           <span class="eg-check${i.started_at ? ' eg-check-started' : ''}" data-id="${i.id}"
-            title="${i.started_at ? 'In progress — tap for done, hold to clear' : 'Tap = done · hold = in progress'}">${i.started_at ? '◐' : ''}</span>
+            title="Done">${i.started_at ? '◐' : ''}</span>
           <span class="eg-text">${escHtml(i.content)}</span>
           ${itemTags(i).filter(t => EST_TAGS.includes(t))
             .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
@@ -8600,33 +8597,32 @@ function renderEngage() {
     });
   });
 
+  // ◐ IN PROGRESS is a long-press / right-click on the ROW, not a timed hold on
+  // the checkbox (2026-08-11). Holding a 14px target for half a second is a
+  // gesture you have to aim, and on a phone the press it competes with is
+  // "complete this" — the most destructive thing on the surface. The row is the
+  // whole width, and long-press is already this app's touch right-click
+  // (onLongPress: timeline dismiss, block cancel, event hide).
+  const startedToggle = async id => {
+    const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+    if (!item) return;
+    undoablePatch(item, ['started_at'], item.started_at
+      ? `cleared in-progress on "${item.content}"`
+      : `marked "${item.content}" in progress`);
+    await patchInboxItem(id, { started_at: item.started_at ? null : new Date().toISOString() });
+    await after();
+  };
+  body.querySelectorAll('.eg-pool-item[data-id], .eg-action[data-id]').forEach(row => {
+    const id = parseInt(row.dataset.id);
+    onLongPress(row, () => startedToggle(id));
+    row.addEventListener('contextmenu', e => { e.preventDefault(); startedToggle(id); });
+  });
+
+  // The checkbox now does ONE thing, which is what a checkbox should do.
   body.querySelectorAll('.eg-check[data-id]').forEach(el => {
     const id = parseInt(el.dataset.id);
-    const itemOf = () => [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
-    let holdTimer = null, held = false;
-    el.addEventListener('pointerdown', e => {
-      if (e.button !== 0) return;
-      held = false;
-      holdTimer = setTimeout(async () => {
-        held = true;
-        const item = itemOf();
-        if (!item) return;
-        undoablePatch(item, ['started_at'], item.started_at
-          ? `cleared in-progress on "${item.content}"`
-          : `marked "${item.content}" in progress`);
-        await patchInboxItem(id, { started_at: item.started_at ? null : new Date().toISOString() });
-        await after();
-      }, 500);
-    });
-    const cancelHold = () => clearTimeout(holdTimer);
-    el.addEventListener('pointerup', cancelHold);
-    el.addEventListener('pointerleave', cancelHold);
-    el.addEventListener('pointercancel', cancelHold);
-    // iOS long-press otherwise summons the callout/context menu.
-    el.addEventListener('contextmenu', e => e.preventDefault());
     el.addEventListener('click', async () => {
-      if (held) { held = false; return; }   // the hold consumed this gesture
-      const item = itemOf();
+      const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
       await undoableDelete(id, `completed "${(item && item.content) || 'action'}"`);
       await after();
     });
@@ -8813,7 +8809,6 @@ function renderEngage() {
   // Drag an action (pool or already-placed) into a gap.
   const placeAt = async (id, minute) => {
     engageView.dragId = null;
-    engageView.armId = null;
     const was = engageView.placements.find(p => p.item_id === id);
     await fetch('/api/engage/placements', {
       method: 'POST',
@@ -8848,34 +8843,20 @@ function renderEngage() {
     row.addEventListener('dragend', () => {
       engageView.dragId = null;
       body.querySelectorAll('.eg-gap-over').forEach(g => g.classList.remove('eg-gap-over'));
-      if (engageView.armId == null)
-        body.querySelectorAll('.eg-gap').forEach(g => g.classList.remove('eg-gap-armed'));
+      body.querySelectorAll('.eg-gap').forEach(g => g.classList.remove('eg-gap-armed'));
       row.classList.remove('eg-dragging');
     });
-    // Tap a POOL row's text → the clarify sheet for that one item (re-decide
-    // it from the day; "Place in day" inside the sheet arms it for touch
-    // placement). Tap a PLACED action's text → arm it to move, as before.
-    // Mouse users still have drag for both.
+    // ANY row's text opens the clarify sheet — pool or placed. The
+    // tap-to-arm-then-tap-a-gap placement is gone (2026-08-11): it was a
+    // two-step gesture with an invisible second target, and the sheet's Show-on
+    // date+TIME already places an action on any day. One path, not two.
     row.addEventListener('click', e => {
       if (!e.target.classList.contains('eg-text')) return;
       const id = parseInt(row.dataset.id);
-      if (engageView.armId != null) {           // arming in progress: toggle off
-        engageView.armId = engageView.armId === id ? null : id;
-        renderEngage();
-        return;
-      }
-      const poolItem = row.classList.contains('eg-pool-item')
-        && engageView.pool.find(i => i.id === id);
-      if (poolItem) { openClarifyForItem(poolItem); return; }
-      engageView.armId = id;
-      renderEngage();
+      const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+      if (item) openClarifyForItem(item, after);
     });
   });
-  if (engageView.armId != null) {
-    const armed = body.querySelector(`.eg-pool-item[data-id="${engageView.armId}"], .eg-action[data-id="${engageView.armId}"]`);
-    if (armed) armed.classList.add('eg-armed');
-    body.querySelectorAll('.eg-gap').forEach(g => g.classList.add('eg-gap-armed'));
-  }
 
   dragEdgeScroll(body);   // a drag can reach gaps above/below the fold
   body.querySelectorAll('.eg-gap').forEach(gap => {
@@ -8891,10 +8872,6 @@ function renderEngage() {
       const id = engageView.dragId || parseInt(e.dataTransfer.getData('text/plain'));
       if (!id) return;
       await placeAt(id, parseFloat(gap.dataset.minute));
-    });
-    gap.addEventListener('click', async () => {
-      if (engageView.armId == null) return;
-      await placeAt(engageView.armId, parseFloat(gap.dataset.minute));
     });
   });
 
