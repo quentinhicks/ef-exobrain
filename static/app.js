@@ -2364,11 +2364,11 @@ const SETTINGS_SHEETS = {
           : it && it.today_state && it.today_state.scan ? [{ key: 'todayres', label: 'Today',
             kind: 'static', text: `✓ scanned ${it.today_state.scan.scanned_at.slice(11, 16)}` }] : []),
         ...(it ? [{ key: 'link', label: 'Scan link', kind: 'action',
-          text: `${state.settings.qr_worker_url || ''}/scan/${it.token}`,
+          text: `${state.settings.gate_scan_url || ''}/scan/${it.token}`,
           action: 'Copy',
           hint: 'The QR code to print. Anyone with this URL can satisfy the gate.',
           run: n => {
-            navigator.clipboard?.writeText(`${state.settings.qr_worker_url || ''}/scan/${n.token}`);
+            navigator.clipboard?.writeText(`${state.settings.gate_scan_url || ''}/scan/${n.token}`);
             toast('Scan link copied');
           } }] : []),
 
@@ -2408,7 +2408,7 @@ const SETTINGS_SHEETS = {
         });
         if (!resp.ok) return `Create failed (${resp.status}).`;
         const node = await resp.json();
-        const workerUrl = state.settings.qr_worker_url || '';
+        const workerUrl = state.settings.gate_scan_url || '';
         alert(`Gate created. Its scan URL:\n${workerUrl}/scan/${node.token}`);
         await renderQrManager();
         return null;
