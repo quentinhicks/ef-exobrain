@@ -2291,7 +2291,7 @@ const SETTINGS_SHEETS = {
     confirm: () => 'Delete this gate permanently? Its scan link stops working.',
     blank: () => ({
       label: '', start: '', end: '', offset: false, days: [0, 1, 2, 3, 4, 5, 6],
-      location: '', radius: '', weekly: {}, stake: '',
+      location: '', radius: '', weekly: {}, stake: '', routine: '',
     }),
     load: n => {
       let weekly = {};
@@ -2314,6 +2314,8 @@ const SETTINGS_SHEETS = {
         // Dollars in the field, cents in the column. Blank means "use the
         // default", which is a different thing from zero.
         stake: n.charge_cents == null ? '' : (n.charge_cents / 100).toFixed(2),
+        routine: n.routine_id == null ? '' : String(n.routine_id),
+        routine0: n.routine_id == null ? '' : String(n.routine_id),
       };
     },
     fields: (v, it) => {
@@ -2329,6 +2331,15 @@ const SETTINGS_SHEETS = {
         { key: 'location', label: 'Location', kind: 'select', half: true,
           options: () => seLocationOptions(it ? '— keep current —' : '— none —') },
         { key: 'radius', label: 'Radius', kind: 'number', half: true, suffix: 'm' },
+        // The routine this gate demands. It was settable only from the routine
+        // editor, which put the rule that decides ✓/✗ on a different surface
+        // from the gate it decides about — so a gate could be judged on a
+        // condition that appeared nowhere in its own settings.
+        ...(it ? [{ key: 'routine', label: 'Requires routine', kind: 'select',
+          options: () => [{ value: '', name: '— presence only —' }].concat(
+            (state.gateRoutines || []).map(f => ({ value: String(f.id), name: f.name }))),
+          hint: 'Scanning alone won\'t pass this gate until the routine is done.'
+            + ' Removing the requirement takes effect at once — unlike every other easing.' }] : []),
         ...(it ? [{ key: 'stake', label: 'Stake', kind: 'number', step: '0.25', min: 0,
           half: true, placeholder: 'default',
           hint: 'What failing this gate costs. Blank uses the default in Billing below.'
@@ -2407,6 +2418,23 @@ const SETTINGS_SHEETS = {
       };
       const stake = String(v.stake).trim() === '' ? null : Math.round(parseFloat(v.stake) * 100);
       if (stake !== (n.charge_cents == null ? null : n.charge_cents)) body.charge_cents = stake;
+      // The link lives on the FLOW (flow.qr_node_id), so moving it is two
+      // writes: release the routine that held this gate, then claim it. The
+      // flows route keeps the Worker's routine_required flag in step both ways.
+      if (v.routine !== v.routine0) {
+        if (v.routine0) {
+          await fetch(`/api/flows/${v.routine0}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qr_node_id: null }),
+          });
+        }
+        if (v.routine) {
+          await fetch(`/api/flows/${v.routine}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qr_node_id: n.id }),
+          });
+        }
+      }
       // Store only the days that differ from the new defaults; the rest inherit.
       const weeklyMap = {};
       Object.keys(v.weekly).forEach(dow => {
@@ -5354,9 +5382,10 @@ async function renderQrManager() {
   let nodes = null;
   let locations = null;
   try {
-    [nodes, locations] = await Promise.all([
+    [nodes, locations, state.gateRoutines] = await Promise.all([
       fetch('/api/accountability/nodes').then(r => r.json()),
       fetch('/api/locations').then(r => r.json()),
+      fetch('/api/flows').then(r => r.json()).catch(() => []),
     ]);
   } catch (e) {
     nodes = null;
@@ -5589,9 +5618,14 @@ function gateRowOpts(n) {
       + (st.scan.geofence_pass === 0 ? ' — outside the geofence' : '');
   }
 
+  // Only a NON-default stake earns a badge on the row: a default is not
+  // information, but a gate that costs four times its neighbours is.
+  const stake = n.charge_cents != null ? ` · $${(n.charge_cents / 100).toFixed(2)}` : '';
+  const needs = n.routine ? ` · needs ${n.routine}` : '';
+
   return {
     id: n.id, name: n.label, dim: !n.active,
-    meta: `${win} · ${formatDays(nodeDays)}`,
+    meta: `${win} · ${formatDays(nodeDays)}${stake}${needs}`,
     sub: today || geo,
     badge,
   };

@@ -1598,12 +1598,12 @@ def _node_payload(node, today, routines=None):
     # `routine` is what makes this gate PASS beyond presence, and it is set in
     # the routine editor rather than here — so the gate has to say it, or the
     # rule that judges it is invisible from the surface that configures it.
-    routine = next((f['name'] for f in (routines or [])
-                    if f.get('qr_node_id') == node['id']), None)
+    rt = next((f for f in (routines or []) if f.get('qr_node_id') == node['id']), None)
     return dict(node,
                 today_override=ov,
                 today_state=storage.qr_node_day_state(node['id'], today),
-                routine=routine,
+                routine=rt['name'] if rt else None,
+                routine_id=rt['id'] if rt else None,
                 pending_changes=storage.qr_get_pending_changes(node['id']))
 
 
