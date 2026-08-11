@@ -8885,6 +8885,9 @@ const clarifyView = {
   peopleNames: [], tagVocab: [],
   single: false,      // one item from the pool, not the inbox queue
   external: false,    // the end-of-cycle step: stuff that lives on paper/email
+  // Set by `+ next action`: the project every action written in this sitting
+  // is filed into. Survives clarifyResetItem, cleared when the sheet closes.
+  forProject: null,
   // A PROJECT is a different decision from an action, so the sheet is a
   // different sheet: an outcome has no next-physical-action, no context, no
   // parent project and nothing to place in a day. What it does have is a
@@ -8943,6 +8946,34 @@ async function openClarify() {
 // three column families, so a clarify from GTD or MAP can change what those
 // lists should be showing — Engage passes nothing, because closeClarify's
 // renderInbox plus the day's own refresh already cover it.
+// A NEW action, clarified as it is written, filed straight into a project.
+//
+// `+ next action` used to arm the capture bar in `◉ <project>` mode, which
+// meant the action arrived unclarified: no context, no due date, no show-on —
+// and the only way to add them was to find the row again on another lens and
+// open this sheet from there. Two passes over one decision. The external step
+// already knew how to clarify something that has no row yet, so this is that
+// step with the project pre-chosen.
+//
+// `forProject` SURVIVES a reset, so filing one action leaves you ready to write
+// the next into the same project — the "one more, one more, done" rhythm the
+// bar had, without giving up the clarification.
+async function openClarifyNewAction(project, after) {
+  await clarifyLoadAux();
+  clarifyView.queue = [];
+  clarifyView.total = 0;
+  clarifyView.single = false;
+  clarifyView.external = true;
+  clarifyView.open = true;
+  clarifyView.after = after || null;
+  clarifyView.forProject = { id: project.id, name: project.content || project.name,
+                             areaId: project.area_id || null };
+  clarifyResetItem();
+  renderClarify();
+  setTimeout(() => { const el = document.getElementById('cl-action'); if (el) el.focus(); }, 30);
+}
+
+
 async function openClarifyForItem(item, after) {
   await clarifyLoadAux();
   clarifyView.queue = [item];
@@ -9008,6 +9039,13 @@ function clarifyResetItem() {
   }
   clarifyView.projectId = null;
   clarifyView.projectName = '';
+  // Writing several actions into one project is one sitting; re-picking the
+  // project per action is the tax this exists to remove.
+  if (clarifyView.forProject && clarifyView.external) {
+    clarifyView.projectId = clarifyView.forProject.id;
+    clarifyView.projectName = clarifyView.forProject.name;
+    clarifyView.verb = 'defer';
+  }
   clarifyView.who = '';
   clarifyView.chase = '';
   clarifyView.notes = item ? (item.notes || '') : '';
@@ -9081,6 +9119,7 @@ function closeClarify() {
   clarifyView.open = false;
   clarifyView.single = false;
   clarifyView.external = false;
+  clarifyView.forProject = null;
   clarifyView.after = null;
   document.getElementById('clarify-sheet').classList.add('hidden');
   document.getElementById('clarify-backdrop').classList.add('hidden');
@@ -9437,11 +9476,17 @@ function renderClarify() {
   sheet.innerHTML = `
     <div class="cl-head">
       <span class="cl-eyebrow">Clarify${isProj ? ' · project' : ''}</span>
-      <span class="cl-count">${ext ? 'outside the app' : `${n} of ${clarifyView.total}`}</span>
+      <span class="cl-count">${ext
+        ? (clarifyView.forProject ? 'new action' : 'outside the app')
+        : `${n} of ${clarifyView.total}`}</span>
       <span class="cl-spacer"></span>
       <span class="cl-hint">one at a time · esc / tap off</span>
     </div>
-    ${ext ? `
+    ${ext && clarifyView.forProject ? `
+    <div class="cl-item">
+      <div class="cl-title">${escHtml(clarifyView.forProject.name)}</div>
+      <div class="cl-captured">a new next action, filed here as you write it</div>
+    </div>` : ext ? `
     <div class="cl-item">
       <div class="cl-title">Anything still in your head — or on it?</div>
       <div class="cl-captured">sticky notes · emails · paper. Type the next physical action; the source stays where it is.</div>
@@ -9559,13 +9604,8 @@ function renderClarify() {
     await openComposeFor({ id: item.id, content: item.content, area_id: item.area_id }, 'pick');
   });
   const selfAdd = sheet.querySelector('#cl-self-add');
-  if (selfAdd) selfAdd.addEventListener('click', () => {
-    barView.mode = { kind: 'project', id: item.id, name: item.content,
-                     areaId: item.area_id || null };
-    closeClarify();
-    renderBar();
-    document.getElementById('eg-capture').focus();
-  });
+  if (selfAdd) selfAdd.addEventListener('click', () =>
+    openClarifyNewAction(item, clarifyView.after));
 
   const chainBtn = sheet.querySelector('#cl-proj-chain');
   if (chainBtn) chainBtn.addEventListener('click', async () => {
