@@ -775,7 +775,8 @@ def init_db():
         )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS social_spec (
-            date       TEXT PRIMARY KEY,
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT NOT NULL,
             family     TEXT NOT NULL,
             levels     TEXT NOT NULL DEFAULT '{}',
             person     TEXT NOT NULL DEFAULT '',
@@ -783,6 +784,30 @@ def init_db():
             price      INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )''')
+    # A day used to hold ONE spec (date was the primary key); a plan can be
+    # several interactions now (2026-08-11), so specs are id-keyed rows. The
+    # old shape has no id column — rebuild in place, keeping the rows.
+    try:
+        conn.execute('SELECT id FROM social_spec LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE social_spec RENAME TO social_spec_v1')
+        conn.execute('''
+            CREATE TABLE social_spec (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                date       TEXT NOT NULL,
+                family     TEXT NOT NULL,
+                levels     TEXT NOT NULL DEFAULT '{}',
+                person     TEXT NOT NULL DEFAULT '',
+                opener     TEXT NOT NULL DEFAULT '',
+                price      INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )''')
+        conn.execute('''INSERT INTO social_spec
+                        (date, family, levels, person, opener, price, created_at)
+                        SELECT date, family, levels, person, opener, price, created_at
+                        FROM social_spec_v1''')
+        conn.execute('DROP TABLE social_spec_v1')
+        conn.commit()
     # QR accountability (2026-08-08, migrated off Cloudflare Workers + D1).
     # Prefixed qr_ because 'nodes' is too generic to share a 50-table schema.
     # The Worker's routine gate, /todo page and phone capture pages are NOT
@@ -4054,48 +4079,61 @@ def get_social_d():
 
 def get_social_day(date):
     conn = get_conn()
-    spec = conn.execute('SELECT * FROM social_spec WHERE date = ?', (date,)).fetchone()
+    specs = [dict(r) for r in conn.execute(
+        'SELECT * FROM social_spec WHERE date = ? ORDER BY id', (date,)).fetchall()]
     reps = [dict(r) for r in conn.execute(
         'SELECT * FROM social_rep WHERE date = ? ORDER BY id', (date,)).fetchall()]
     conn.close()
-    spec = dict(spec) if spec else None
-    if spec:
-        spec['levels'] = json.loads(spec['levels'] or '{}')
+    for s in specs:
+        s['levels'] = json.loads(s['levels'] or '{}')
     for r in reps:
         r['levels'] = json.loads(r['levels'] or '{}')
     d = get_social_d()
     total = sum(r['price'] for r in reps)
     return {
-        'date': date, 'd': d, 'spec': spec, 'reps': reps, 'total': total,
-        # The two lines. specOk = a spec exists that arithmetically clears D;
-        # doseCleared = today's prices sum to D. Dryrun ✓/✗ only — no charge.
-        'specOk': bool(spec and d is not None and spec['price'] >= d),
+        'date': date, 'd': d, 'specs': specs, 'reps': reps, 'total': total,
+        # The two lines. specOk = SOME intended rep arithmetically clears D —
+        # a plan may hold several interactions, but the morning line is still
+        # carried by one that is hard enough on its own (stacking small ones
+        # never adds up to it). doseCleared = today's prices sum to D.
+        # Dryrun ✓/✗ only — no charge.
+        'specOk': d is not None and any(s['price'] >= d for s in specs),
         'doseCleared': d is not None and total >= d,
     }
 
 
-def upsert_social_spec(date, family, levels, person, opener):
-    price = social_price(family, levels)
+def add_social_spec(date, family, levels, person, opener, id=None, price=None):
+    # An explicit id+price replays an undo verbatim, same pattern as
+    # add_social_rep — a recalibration between delete and undo must not
+    # reprice the plan.
+    if price is None:
+        price = social_price(family, levels)
     if price is None:
         return None
     conn = get_conn()
-    conn.execute('''INSERT OR REPLACE INTO social_spec
-                    (date, family, levels, person, opener, price)
-                    VALUES (?, ?, ?, ?, ?, ?)''',
-                 (date, family, json.dumps(levels), person or '', opener or '', price))
+    cur = conn.execute('''INSERT INTO social_spec
+                          (id, date, family, levels, person, opener, price)
+                          VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                       (id, date, family, json.dumps(levels), person or '',
+                        opener or '', price))
     conn.commit()
-    row = conn.execute('SELECT * FROM social_spec WHERE date = ?', (date,)).fetchone()
+    row = conn.execute('SELECT * FROM social_spec WHERE id = ?',
+                       (cur.lastrowid,)).fetchone()
     conn.close()
     out = dict(row)
     out['levels'] = json.loads(out['levels'] or '{}')
     return out
 
 
-def delete_social_spec(date):
+def delete_social_spec(id):
+    # Returns the deleted row's date so the caller can rebuild that day's
+    # pool items without a second query.
     conn = get_conn()
-    conn.execute('DELETE FROM social_spec WHERE date = ?', (date,))
+    row = conn.execute('SELECT date FROM social_spec WHERE id = ?', (id,)).fetchone()
+    conn.execute('DELETE FROM social_spec WHERE id = ?', (id,))
     conn.commit()
     conn.close()
+    return row['date'] if row else None
 
 
 def add_social_rep(data):

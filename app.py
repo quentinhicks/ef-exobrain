@@ -629,46 +629,49 @@ def get_social_day_route():
     return jsonify(storage.get_social_day(date))
 
 
-# The day's spec'd conversation is also a NEXT ACTION: setting a spec mints a
-# pool item ("Social plan: …", tag 5m — the message is already drafted — due
-# today), so the plan shows up where the day is worked, not only in the Social
-# tab. One per date: re-speccing replaces it; deleting the spec removes it.
+# Each spec'd interaction is also a NEXT ACTION: it mints a pool item
+# ("Social plan: …", tag 5m — the message is already drafted — due today), so
+# the plan shows up where the day is worked, not only in the Social tab. One
+# item PER SPEC (a day's plan may hold several interactions since 2026-08-11);
+# the whole set is rebuilt from the day's specs on every spec write, so
+# add/remove can't drift from what is planned.
 _SOCIAL_ITEM_PREFIX = 'Social plan: '
 
-def _social_spec_item(date, spec):
+def _social_spec_items(date):
     for it in storage.get_inbox_items_like(_SOCIAL_ITEM_PREFIX + '%', date):
         storage.delete_inbox_item(it['id'])
-    if spec is None:
-        return
-    who = spec.get('person') or ''
-    opener = (spec.get('opener') or '').strip()
-    label = _SOCIAL_ITEM_PREFIX + (', '.join(x for x in [who, opener] if x) or 'run the spec')
     # The pool JOINs area, so an area-less row would never show: default area.
     default = next((a for a in storage.get_areas()
                     if a.get('is_default') and a.get('active')), None)
-    item = storage.create_inbox_item(label[:120], 'active',
-                                     default['id'] if default else None, None, '5m')
-    storage.update_inbox_item(item['id'], deadline=date)
+    for spec in storage.get_social_day(date)['specs']:
+        who = spec.get('person') or ''
+        opener = (spec.get('opener') or '').strip()
+        label = _SOCIAL_ITEM_PREFIX + (', '.join(x for x in [who, opener] if x) or 'run the spec')
+        item = storage.create_inbox_item(label[:120], 'active',
+                                         default['id'] if default else None, None, '5m')
+        storage.update_inbox_item(item['id'], deadline=date)
 
 
-@app.route('/api/social/spec', methods=['PUT'])
-def put_social_spec():
+@app.route('/api/social/specs', methods=['POST'])
+def post_social_spec():
     data = request.get_json()
     date = data.get('date') or date_cls.today().isoformat()
-    spec = storage.upsert_social_spec(date, data.get('family', 'directed'),
-                                      data.get('levels') or {},
-                                      data.get('person'), data.get('opener'))
+    # id+price present only when an undo replays a removed spec verbatim.
+    spec = storage.add_social_spec(date, data.get('family', 'directed'),
+                                   data.get('levels') or {},
+                                   data.get('person'), data.get('opener'),
+                                   id=data.get('id'), price=data.get('price'))
     if spec is None:
         return jsonify({'error': 'unpriceable — calibrate the chosen levels first'}), 400
-    _social_spec_item(date, dict(spec) if not isinstance(spec, dict) else spec)
-    return jsonify(spec)
+    _social_spec_items(date)
+    return jsonify(spec), 201
 
 
-@app.route('/api/social/spec', methods=['DELETE'])
-def delete_social_spec_route():
-    date = request.args.get('date') or date_cls.today().isoformat()
-    storage.delete_social_spec(date)
-    _social_spec_item(date, None)
+@app.route('/api/social/specs/<int:id>', methods=['DELETE'])
+def delete_social_spec_route(id):
+    date = storage.delete_social_spec(id)
+    if date:
+        _social_spec_items(date)
     return '', 204
 
 
