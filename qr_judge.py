@@ -21,6 +21,8 @@ import json
 import math
 import sys
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 
 import storage
@@ -140,8 +142,10 @@ def judge(now=None, verbose=False):
                 # each tick, which is what the Worker did too.
                 continue
 
-            storage.qr_reserve_judgment(node['id'], ymd, reason, 'would_fire')
-            lines.append('X   %s%s: %s -> would_fire' % (node['label'], tag, reason))
+            status = charge_for_failure(node, ymd, reason)
+            if status is None:
+                continue          # another tick reserved it first
+            lines.append('X   %s%s: %s -> %s' % (node['label'], tag, reason, status))
 
     if verbose:
         for line in lines:
@@ -209,6 +213,16 @@ LOOSEN_DELAY_H = 24
 
 
 def is_loosening(field, current, nxt, node=None):
+    if field == 'charge_cents':
+        # LOWERING the stake is loosening, so it waits 24h like every other
+        # way of making a gate easier. Raising it is immediate: nothing about
+        # the delay exists to protect you from committing harder. Clearing it
+        # back to the default counts as whichever direction that move is.
+        cur = current if current not in (None, '') else None
+        new = nxt if nxt not in (None, '') else None
+        if new is None or cur is None:
+            return new is not None and cur is not None and int(new) < int(cur)
+        return int(new) < int(cur)
     if field == 'window_start':
         return str(nxt) > str(current)          # a later start is less demanding
     if field == 'window_end':
@@ -273,3 +287,140 @@ def apply_node_patch(node, fields, now=None):
         else:
             immediate[field] = value
     return immediate, pending
+
+# ── Charging ─────────────────────────────────────────────────
+#
+# Ported from the Worker 2026-08-11 (see storage.qr_settle_charge for the
+# rails and why each exists). Four independent locks, all default-off, so a
+# half-finished setup cannot move money:
+#
+#   1. gate_charging_live setting is '0'
+#   2. gate_charge_dryrun setting is '1'
+#   3. beeminder_auth_token absent from config.json
+#   4. beeminder_user absent from config.json
+#
+# The token lives in CONFIG.JSON, never in the database: it is the local
+# equivalent of a Worker secret — a file on the box, gitignored, invisible to
+# the API and to any surface the app renders. The Gates panel can therefore
+# verify it but not read or set it, which was the deliberate choice.
+BEEMINDER_CHARGES_URL = 'https://www.beeminder.com/api/v1/charges.json'
+BEEMINDER_ME_URL = 'https://www.beeminder.com/api/v1/users/me.json'
+
+
+def _cfg():
+    try:
+        with open('config.json') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def charge_settings():
+    # There is no get_setting(); settings arrive as one dict. Defaults here are
+    # the SAFE end of every axis: not live, dry, capped, cheapest.
+    cfg = _cfg()
+    st = storage.get_settings() or {}
+    return {
+        'live': st.get('gate_charging_live') == '1',
+        'dryrun': st.get('gate_charge_dryrun', '1') != '0',
+        'cap_cents': int(st.get('gate_weekly_cap_cents') or 2500),
+        'default_cents': int(st.get('gate_charge_cents') or 200),
+        'token': cfg.get('beeminder_auth_token') or '',
+        'user': cfg.get('beeminder_user') or '',
+    }
+
+
+def node_charge_cents(node, settings):
+    # NULL on the node means "use the default", never "free" — a gate with no
+    # explicit stake still costs the default, or setting one to 0 by accident
+    # would silently disarm it.
+    v = node.get('charge_cents')
+    return int(v) if v not in (None, '') else int(settings['default_cents'])
+
+
+def beeminder_charge(settings, amount_cents, note, sender=None):
+    """Returns (status, charge_id). Statuses mirror the Worker exactly."""
+    if not settings['token'] or not settings['user']:
+        return 'failed', None            # nothing was sent
+    dollars = '%.2f' % max(1.0, amount_cents / 100.0)   # their minimum is $1
+    body = {'auth_token': settings['token'], 'user_id': settings['user'],
+            'amount': dollars, 'note': note}
+    if settings['dryrun']:
+        body['dryrun'] = '1'
+    send = sender or _http_post
+    try:
+        ok, data = send(BEEMINDER_CHARGES_URL, body)
+    except Exception:
+        # The request may have REACHED Beeminder and created the charge — only
+        # the response was lost. 'unknown', never 'failed': a failed charge is
+        # one the system may retry, and retrying one that went through is how
+        # you get billed repeatedly. 'unknown' counts against the cap for the
+        # same reason.
+        return 'unknown', None
+    if not ok:
+        return 'failed', None
+    return ('dryrun' if settings['dryrun'] else 'succeeded'), (data or {}).get('id')
+
+
+def _http_post(url, body):
+    data = urllib.parse.urlencode(body).encode()
+    req = urllib.request.Request(url, data, method='POST')
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return 200 <= r.status < 300, json.loads(r.read() or b'{}')
+
+
+def verify_token(sender=None):
+    """Is the configured token usable, and who does it bill? Never returns it."""
+    s = charge_settings()
+    if not s['token']:
+        return {'valid': False, 'reason': 'no token in config.json'}
+    if not s['user']:
+        return {'valid': False, 'reason': 'no beeminder_user in config.json'}
+    send = sender or _http_get
+    try:
+        ok, data = send('%s?auth_token=%s' % (BEEMINDER_ME_URL,
+                                              urllib.parse.quote(s['token'])))
+    except Exception as e:
+        return {'valid': False, 'reason': 'could not reach beeminder: %s' % e}
+    if not ok:
+        return {'valid': False, 'reason': 'beeminder rejected the token'}
+    name = (data or {}).get('username')
+    if name and s['user'] and name != s['user']:
+        return {'valid': False, 'reason': 'token belongs to %s, not %s' % (name, s['user'])}
+    return {'valid': True, 'username': name or s['user']}
+
+
+def _http_get(url):
+    with urllib.request.urlopen(url, timeout=20) as r:
+        return 200 <= r.status < 300, json.loads(r.read() or b'{}')
+
+
+def charge_for_failure(node, ymd, reason, sender=None):
+    """The whole money path for one judged failure. Returns the status stored.
+
+    Reserve BEFORE charging, and only the tick that won the reservation may
+    call Beeminder. Every early return still leaves a row, so the day is
+    judged exactly once whatever happens to the money.
+    """
+    storage.qr_ensure_charge_columns()
+    s = charge_settings()
+    amount = node_charge_cents(node, s)
+    spent = storage.qr_weekly_spent_cents(ymd)
+    capped = s['live'] and (spent + amount) > s['cap_cents']
+    will_charge = s['live'] and not capped
+
+    status = 'capped' if capped else ('charging' if will_charge else 'would_fire')
+    won = storage.qr_reserve_judgment(
+        node['id'], ymd, reason, status, amount if will_charge else None)
+    if not won:
+        return None          # another tick owns this day; do not touch money
+
+    if not will_charge:
+        return status
+
+    final, charge_id = beeminder_charge(
+        s, amount, '%s: %s on %s' % (node['label'], reason, ymd), sender)
+    # 'failed' means nothing was sent, so it must not count against the cap.
+    storage.qr_settle_charge(node['id'], ymd, final, charge_id,
+                             None if final == 'failed' else amount)
+    return final

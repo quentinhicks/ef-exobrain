@@ -4004,7 +4004,7 @@ def qr_create_node(label, token, window_start, window_end, offset_days=0,
 
 QR_NODE_FIELDS = ('label', 'window_start', 'window_end', 'window_end_offset_days',
                   'geofence_lat', 'geofence_lng', 'geofence_radius_m', 'active',
-                  'days_of_week', 'weekly_windows')
+                  'days_of_week', 'weekly_windows', 'charge_cents')
 
 
 def qr_update_node(node_id, fields):
@@ -4142,6 +4142,21 @@ def qr_judgment_exists(node_id, date):
     return row is not None
 
 
+def qr_ensure_charge_columns():
+    # Lazy ALTERs, same pattern as everywhere else. charge_id holds Beeminder's
+    # id; charge_cents on the NODE is the per-gate stake, NULL meaning "use the
+    # global default" so an unset value can never mean "free".
+    conn = get_conn()
+    for table, col, decl in (('qr_charge_log', 'charge_id', 'TEXT'),
+                             ('qr_node', 'charge_cents', 'INTEGER')):
+        try:
+            conn.execute(f'SELECT {col} FROM {table} LIMIT 1')
+        except Exception:
+            conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
+            conn.commit()
+    conn.close()
+
+
 def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cents=None):
     # Returns True only if THIS call created the row. The insert is the
     # reservation: it happens before anything acts on the judgment, so a
@@ -4156,6 +4171,57 @@ def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cen
     won = cur.rowcount > 0
     conn.close()
     return won
+
+
+# ── Gate charging: the money half, ported from the Worker 2026-08-11 ─────
+#
+# Transcribed rather than rewritten. The Worker's rails were audited and are
+# reproduced exactly; each one exists because of a specific way money left
+# unexpectedly in 2026-08:
+#
+#   · qr_reserve_judgment is the LOCK (INSERT OR IGNORE + rowcount), so only
+#     the tick that created the row may charge. It already existed.
+#   · the row is written BEFORE the API call, as 'charging'.
+#   · a lost response is 'unknown': terminal, never retried, and COUNTED
+#     against the cap. Retrying a charge that actually went through is how you
+#     get billed repeatedly.
+#   · the cap counts succeeded + charging + unknown — every state where money
+#     might have left, not just confirmed ones.
+#   · a charge that would breach the cap is skipped WHOLE, never partially.
+
+def qr_settle_charge(node_id, date, charge_status, charge_id, amount_cents):
+    conn = get_conn()
+    conn.execute(
+        '''UPDATE qr_charge_log
+           SET charge_status = ?, charge_id = ?, amount_cents = ?
+           WHERE node_id = ? AND date = ?''',
+        (charge_status, charge_id, amount_cents, node_id, date))
+    conn.commit()
+    conn.close()
+
+
+def qr_weekly_spent_cents(through_date):
+    # A rolling 7 local days ending on through_date.
+    since = (date_cls.fromisoformat(through_date) - timedelta(days=6)).isoformat()
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT amount_cents FROM qr_charge_log
+           WHERE date >= ? AND date <= ?
+             AND charge_status IN ('succeeded', 'charging', 'unknown')''',
+        (since, through_date)).fetchall()
+    conn.close()
+    return sum(int(r['amount_cents'] or 0) for r in rows)
+
+
+def qr_charge_rows_between(from_date, to_date):
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT node_id, date, failure_reason, charge_status, amount_cents, charge_id
+           FROM qr_charge_log WHERE date >= ? AND date <= ?
+           ORDER BY date DESC, node_id''',
+        (from_date, to_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def qr_get_charge_log(limit=200):
