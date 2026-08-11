@@ -1482,6 +1482,7 @@ def get_gates_billing():
         'dryrun': s['dryrun'],
         'cap_cents': s['cap_cents'],
         'default_cents': s['default_cents'],
+        'fee_cents': s['fee_cents'],
         'spent_cents': storage.qr_weekly_spent_cents(today),
         'judge_last_run': (storage.get_settings() or {}).get('gate_judge_last_run'),
         'token': qr_judge.verify_token() if request.args.get('verify') else None,
@@ -1505,6 +1506,7 @@ def patch_gates_billing():
         'gate_charge_dryrun': lambda v: '1' if v else '0',
         'gate_weekly_cap_cents': lambda v: str(max(0, int(v))),
         'gate_charge_cents': lambda v: str(max(0, int(v))),
+        'gate_card_fee_cents': lambda v: str(max(0, int(v))),
     }
     for key, clean in allowed.items():
         if key in data:

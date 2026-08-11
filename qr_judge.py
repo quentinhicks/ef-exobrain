@@ -440,6 +440,11 @@ def charge_settings():
         'dryrun': st.get('gate_charge_dryrun', '1') != '0',
         'cap_cents': int(st.get('gate_weekly_cap_cents') or 2500),
         'default_cents': int(st.get('gate_charge_cents') or 200),
+        # A fixed per-charge card fee the card provider takes on its own
+        # (Privacy.com charges one per transaction). The STAKE stays the total
+        # a failure costs; Beeminder is billed stake minus this, so the fee
+        # never silently raises the price of failing above what was set.
+        'fee_cents': int(st.get('gate_card_fee_cents') or 0),
         'token': cfg.get('beeminder_auth_token') or '',
         'user': cfg.get('beeminder_user') or '',
     }
@@ -546,8 +551,14 @@ def charge_for_failure(node, ymd, reason, sender=None):
     if not will_charge:
         return status
 
+    # The card fee is part of the stake, not on top of it: bill Beeminder the
+    # remainder. The cap and the log keep the FULL stake — that is what the
+    # failure costs. Beeminder's own $1 floor still applies to the remainder,
+    # so a stake under fee + $1 costs slightly more than it says; set stakes
+    # at or above that line.
+    bill = amount - s['fee_cents']
     final, charge_id = beeminder_charge(
-        s, amount, '%s: %s on %s' % (node['label'], reason, ymd), sender)
+        s, bill, '%s: %s on %s' % (node['label'], reason, ymd), sender)
     # 'failed' means nothing was sent, so it must not count against the cap.
     storage.qr_settle_charge(node['id'], ymd, final, charge_id,
                              None if final == 'failed' else amount)

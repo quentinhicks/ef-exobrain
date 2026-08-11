@@ -2486,10 +2486,11 @@ const SETTINGS_SHEETS = {
   billing: {
     title: () => 'Billing',
     save: () => 'Save and check',
-    blank: () => ({ token: '', user: '', stake: '', cap: '' }),
+    blank: () => ({ token: '', user: '', stake: '', cap: '', fee: '' }),
     load: b => ({
       token: '', user: b.user || '',
       stake: (b.default_cents / 100).toFixed(2), cap: (b.cap_cents / 100).toFixed(2),
+      fee: (b.fee_cents / 100).toFixed(2),
     }),
     fields: (v, b) => [
       { key: 'token', label: 'Beeminder token', kind: 'password',
@@ -2500,11 +2501,17 @@ const SETTINGS_SHEETS = {
       { key: 'stake', label: 'Default stake', kind: 'number', step: '0.25', min: 0, half: true },
       { key: 'cap', label: 'Weekly cap', kind: 'number', step: '1', min: 0, half: true,
         hint: 'A charge that would breach the cap is skipped whole, not trimmed.' },
+      { key: 'fee', label: 'Card fee per charge', kind: 'number', step: '0.05', min: 0, half: true,
+        hint: 'What the card provider takes on each transaction (Privacy: $0.50). The stake'
+          + ' stays the total cost of failing — Beeminder is billed the stake minus this.'
+          + ' Beeminder’s own $1 minimum applies to the remainder, so keep every stake'
+          + ' at least the fee plus $1.' },
     ],
     submit: async v => {
       const body = {
         gate_charge_cents: Math.round(parseFloat(v.stake) * 100) || 0,
         gate_weekly_cap_cents: Math.round(parseFloat(v.cap) * 100) || 0,
+        gate_card_fee_cents: Math.round(parseFloat(v.fee) * 100) || 0,
       };
       // Empty means "leave it alone", so saving the cap can't wipe the token.
       if (String(v.token).trim()) body.beeminder_auth_token = String(v.token).trim();
@@ -6065,7 +6072,9 @@ async function renderGatesBilling(verify) {
       <button class="be-set-row gb-rowbtn" data-gbsheet="1">
         <span class="gb-mark"></span>
         <span class="be-set-name">Stake / weekly cap</span>
-        <span class="gb-val">${(b.default_cents / 100).toFixed(2)} / ${(b.cap_cents / 100).toFixed(2)}</span>
+        <span class="gb-val">${(b.default_cents / 100).toFixed(2)} / ${(b.cap_cents / 100).toFixed(2)}${
+          b.fee_cents ? ` <span class="gb-fee" title="Each stake bills Beeminder the stake minus this card fee">(${
+            ((b.default_cents - b.fee_cents) / 100).toFixed(2)} + ${(b.fee_cents / 100).toFixed(2)} fee)</span>` : ''}</span>
         <span class="be-chev">›</span>
       </button>
       <div class="be-set-row">

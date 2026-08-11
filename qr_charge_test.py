@@ -223,5 +223,37 @@ node = fresh(token='')
 check('no token configured reads as invalid, not as an error',
       qr_judge.verify_token(me())['valid'] is False, qr_judge.verify_token(me()))
 
+# ── the card fee ─────────────────────────────────────────────
+# The card provider takes a fixed fee per transaction on its own, so the
+# stake must be split: Beeminder gets stake minus fee, and the FULL stake is
+# what the log and the cap count — the fee is part of what failing costs,
+# not a surcharge on top of it.
+
+node = fresh(default=200)
+storage.set_setting('gate_card_fee_cents', '50')
+calls = []
+qr_judge.charge_for_failure(node, '2026-08-20', 'absent', sender(calls))
+check('the fee comes OUT of the stake ($2 stake bills $1.50)',
+      calls and calls[0]['amount'] == '1.50', calls)
+check('the log keeps the full stake (what failing cost)',
+      status_of(node['id'], '2026-08-20')['amount_cents'] == 200,
+      status_of(node['id'], '2026-08-20'))
+check('and the cap counts the full stake too',
+      storage.qr_weekly_spent_cents('2026-08-20') == 200,
+      storage.qr_weekly_spent_cents('2026-08-20'))
+
+node = fresh(default=200)
+calls = []
+qr_judge.charge_for_failure(node, '2026-08-21', 'absent', sender(calls))
+check('no fee configured bills the whole stake (default 0)',
+      calls and calls[0]['amount'] == '2.00', calls)
+
+node = fresh(default=120)
+storage.set_setting('gate_card_fee_cents', '50')
+calls = []
+qr_judge.charge_for_failure(node, '2026-08-22', 'absent', sender(calls))
+check('a stake under fee + $1 clamps the remainder to Beeminder\'s $1 floor',
+      calls and calls[0]['amount'] == '1.00', calls)
+
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

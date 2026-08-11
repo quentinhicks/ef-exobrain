@@ -5680,6 +5680,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .gb-mark.gb-bad { color: var(--danger); }
 .gb-mark.gb-idle { color: var(--text-secondary); }
 .gb-val { font: 11px var(--font-mono); color: var(--text-secondary); }
+.gb-fee { opacity: 0.7; }
 .gb-rowbtn { width: 100%; background: none; border: none; cursor: pointer; text-align: left; font: inherit; }
 .gb-seg { display: flex; border: 1px solid var(--border-soft); border-radius: 6px; overflow: hidden; }
 .gb-seg button {
