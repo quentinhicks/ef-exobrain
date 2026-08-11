@@ -2236,13 +2236,43 @@ async function checkActiveBlock() {
 // "every active project has a next action" is the review's load-bearing check
 // and it is not runnable by hand.
 
+// The inboxes "collect loose papers" actually means for THIS setup. Ticking
+// them is per-week state, stored as `collect:<slug>` in the review's own
+// {key: timestamp} blob — no migration, which is why that shape was chosen.
+//
+// EDIT THIS LIST. It is deliberately a plain constant rather than a table:
+// the set changes when your life changes, not often, and a table would need a
+// manager screen to earn itself. Counts in the hints are what was actually
+// sitting there on 2026-08-10.
+const COLLECT_INBOXES = [
+  { key: 'physical', label: 'Desk, bag, pockets, wallet, notebook',
+    hint: 'Anything paper or physical that is standing in for a thought.' },
+  { key: 'downloads', label: 'Downloads + Desktop',
+    hint: 'Files you saved meaning to do something with.' },
+  { key: 'drive', label: 'Google Drive root',
+    hint: '103 loose files as of 2026-08-10 — the biggest unprocessed pile you own.' },
+  { key: 'email_princeton', label: 'Princeton email' },
+  { key: 'email_sf', label: 'Sentient Futures email' },
+  { key: 'email_personal', label: 'Personal email' },
+  { key: 'slack', label: 'Slack — DMs, mentions, saved items' },
+  { key: 'asana', label: 'Asana' },
+  { key: 'github', label: 'GitHub notifications, review requests, open PRs' },
+  { key: 'granola', label: 'Granola meeting notes',
+    hint: 'Action items from the week\'s recordings.' },
+  { key: 'phone', label: 'Phone — notes, voice memos, screenshots, camera roll' },
+  { key: 'messages', label: 'Texts, WhatsApp, LinkedIn' },
+  { key: 'browser', label: 'Open browser tabs',
+    hint: 'A tab you have not closed is an undecided action.' },
+  { key: 'paper_mail', label: 'Physical mail' },
+];
+
 const GTD_STEPS = [
   { phase: 'Get Clear', key: 'collect', label: 'Collect loose papers and materials',
-    hint: 'Desk, bag, pockets, phone notes, downloads — all into "in".' },
+    collect: true, hint: 'Every inbox you own, swept into "in".' },
   { phase: 'Get Clear', key: 'in_zero', label: 'Get "in" to empty', count: 'inbox',
-    hint: 'Every item through the clarify tree. Be ruthless; purge what isn\'t needed.' },
+    act: 'clarify', hint: 'Every item through the clarify tree. Be ruthless; purge what isn\'t needed.' },
   { phase: 'Get Clear', key: 'mind_sweep', label: 'Empty your head',
-    hint: 'Anything still in your head that isn\'t written down.' },
+    act: 'sweep', hint: 'Five minutes, no stopping. Anything still in your head that isn\'t written down.' },
 
   { phase: 'Get Current', key: 'next_actions', label: 'Review next-action lists',
     pushed: true, hint: 'Mark off completed; add follow-on steps.' },
@@ -2307,6 +2337,20 @@ function renderGtdReview() {
       s.count === 'inbox' ? 'in "in"' : s.count === 'deferred' ? 'deferred' : 'maybe'}</span>`;
   };
 
+  // Sub-steps keep the same shape as steps: a key in the blob, ticked with a
+  // timestamp. Their own row so a half-done sweep is visible next week.
+  const collectDone = COLLECT_INBOXES.filter(b => steps['collect:' + b.key]).length;
+  const collectList = `<div class="gr-sub">
+    <div class="gr-sub-head">${collectDone}/${COLLECT_INBOXES.length} swept</div>
+    ${COLLECT_INBOXES.map(b => `
+      <label class="gr-sub-item${steps['collect:' + b.key] ? ' gr-sub-done' : ''}">
+        <input type="checkbox" class="gr-cb" data-step="collect:${b.key}"${
+          steps['collect:' + b.key] ? ' checked' : ''}>
+        <span><span class="gr-sub-label">${escHtml(b.label)}</span>${
+          b.hint ? `<span class="gr-step-hint">${escHtml(b.hint)}</span>` : ''}</span>
+      </label>`).join('')}
+  </div>`;
+
   const stalledList = counts.stalled.length
     ? `<ul class="gr-stalled">${counts.stalled.map(p =>
         `<li>${escHtml(p.content)}<span class="gr-stalled-area">${escHtml(p.area_name || '—')}</span></li>`).join('')}</ul>`
@@ -2340,6 +2384,10 @@ function renderGtdReview() {
         <span class="gr-step-body">
           <span class="gr-step-label">${escHtml(s.label)}${badge(s)}</span>
           ${s.hint ? `<span class="gr-step-hint">${escHtml(s.hint)}</span>` : ''}
+          ${s.collect ? collectList : ''}
+          ${s.act === 'clarify' ? `<button class="gr-act" data-act="clarify">Clarify ${
+            counts.inbox} →</button>` : ''}
+          ${s.act === 'sweep' ? `<button class="gr-act" data-act="sweep">▶ 5-minute sweep</button>` : ''}
           ${s.stalled ? stalledList : ''}
           ${s.waiting ? waitingList : ''}
           ${s.pushed ? pushedList : ''}
@@ -2368,6 +2416,21 @@ function renderGtdReview() {
         ? `<div class="gr-completed">Filed ${escHtml(gtdReview.completed_at)}</div>`
         : `<button id="gr-finish" class="be-btn-primary">Finish review</button>`}
     </div>`;
+
+  // The two steps that are a DOING, not a ticking. A review step you can act
+  // on from where you read it is a step that gets done.
+  panel.querySelectorAll('.gr-act').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();      // the button sits inside the step's <label>
+      if (btn.dataset.act === 'clarify') { openClarify(); return; }
+      const d = new Date();
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${
+        String(d.getDate()).padStart(2, '0')}`;
+      openDangerousWriting({ goalKind: 'time', goalTime: 5, hardcore: false,
+                             logName: `${iso} emptied`, autostart: true });
+    });
+  });
 
   panel.querySelectorAll('.gr-cb').forEach(cb => {
     cb.addEventListener('change', async () => {
@@ -3355,7 +3418,7 @@ const dwView = {
   open: false, phase: 'setup',       // setup | writing | releasing
   goalKind: 'time', goalTime: 10, goalWords: 500,
   hardcore: false,
-  text: '', startedAt: 0,
+  text: '', startedAt: 0, logName: null,
   idleTimer: null, warnTimer: null, tick: null,
 };
 
@@ -3363,11 +3426,24 @@ function dwWordCount(s) {
   return (s.trim().match(/\S+/g) || []).length;
 }
 
-function openDangerousWriting() {
+// opts lets another surface prescribe the session — the weekly review's mind
+// sweep is "five minutes, no stopping", not a form to fill in. `logName` fixes
+// the resulting log's name instead of deriving it from the first line, so the
+// sweep is findable next week as `YYYY-MM-DD emptied`.
+function openDangerousWriting(opts) {
+  const o = opts || {};
   dwView.open = true;
   dwView.phase = 'setup';
   dwView.text = '';
+  dwView.logName = o.logName || null;
+  if (o.goalKind) dwView.goalKind = o.goalKind;
+  if (o.goalTime) dwView.goalTime = o.goalTime;
+  if (o.goalWords) dwView.goalWords = o.goalWords;
+  if (o.hardcore != null) dwView.hardcore = o.hardcore;
   renderDangerous();
+  // Prescribed sessions skip the setup card: the point is to start writing,
+  // and a confirmation step is a place to not start.
+  if (o.autostart) dwBegin();
 }
 
 function closeDangerousWriting() {
@@ -3375,6 +3451,7 @@ function closeDangerousWriting() {
   dwView.open = false;
   dwView.phase = 'setup';
   dwView.text = '';
+  dwView.logName = null;
   document.getElementById('dw-session').classList.add('hidden');
 }
 
@@ -3409,9 +3486,10 @@ async function dwSucceed() {
   const d = new Date();
   const stamp = `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()}`;
   const first = text.replace(/\s+/g, ' ').trim().slice(0, 48).replace(/[\\/:*?"<>|]/g, '');
+  const name = dwView.logName || `${stamp} ${first || 'writing'}`;
   const log = await fetch('/api/logs', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: `${stamp} ${first || 'writing'}` }),
+    body: JSON.stringify({ name }),
   }).then(r => r.json());
   const body = text;
   await fetch(`/api/logs/${encodeURIComponent(log.name)}`, {

@@ -5714,3 +5714,19 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    it is not startable yet, it is a heads-up about what this day already owes. */
 .eg-defer-row { opacity: 0.78; }
 .eg-defer-row .eg-text { cursor: pointer; }
+/* A review step you can act on from where you read it. */
+.gr-act {
+  display: inline-block;
+  margin-top: 5px;
+  font: 11px var(--font-mono);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.gr-sub { margin: 6px 0 2px 4px; padding-left: 10px; border-left: 1px solid var(--border); }
+.gr-sub-head { font: 10px var(--font-mono); color: var(--text-secondary); margin-bottom: 3px; }
+.gr-sub-item { display: flex; align-items: flex-start; gap: 7px; padding: 2px 0; cursor: pointer; }
+.gr-sub-label { font-size: 12px; color: var(--text-primary); }
+.gr-sub-done .gr-sub-label { color: var(--text-secondary); text-decoration: line-through; }
