@@ -4,8 +4,8 @@
 #
 # JUDGMENT IS PRESENCE-ONLY: a window is judged the moment it closes, and the
 # test is a satisfying scan (geofence-passing where a geofence is set). The
-# retired to-do gate and the routine gate are both gone — a QR URL is location
-# proof again, and the routine surfaces live in-app as flows.
+# retired to-do gate is gone — a QR URL is location proof plus, where a routine
+# is LINKED to the gate, that routine having been done (see routine_gate_for_node).
 #
 # CHARGING IS NOT PORTED. The Worker's money path was disabled at five layers
 # and re-enabling it is a deliberate, staged protocol (QR-accountability/
@@ -130,7 +130,16 @@ def judge(now=None, verbose=False):
                 node.get('geofence_lat') is None or s.get('geofence_pass') == 1
                 for s in scans)
 
-            reason = None if satisfied else 'absent'
+            # A LINKED routine is the second half of the test. Order matters:
+            # no scan at all is the more basic failure, so it wins the reason —
+            # "routine not done" on a day you were never there would send you
+            # to fix the wrong thing.
+            routine_done = storage.routine_gate_for_node(node['id'], ymd)
+            reason = None
+            if not satisfied:
+                reason = 'absent'
+            elif routine_done is False:
+                reason = 'routine_incomplete'
             tag = '' if ymd == today else ' (%s)' % ymd
             if reason is None:
                 # NO ROW ON SUCCESS — qr_charge_log is a FAILURE log, and

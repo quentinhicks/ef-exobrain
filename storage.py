@@ -3435,6 +3435,25 @@ def delete_flow_step(id):
     conn.close()
 
 
+def routine_gate_for_node(node_id, date):
+    # Does a routine gate this node on this date, and was it done?
+    #
+    # Returns None when nothing gates it (the common case — a gate is presence
+    # proof), else True/False. `qr_node_id` is the GATING link; `before_node_id`
+    # is only a deadline reference, so matching on it here would make a gate
+    # judge on a routine it has no relationship to.
+    conn = get_conn()
+    row = conn.execute(
+        '''SELECT f.id, r.completed_at FROM flow f
+           LEFT JOIN flow_run r ON r.flow_id = f.id AND r.date = ?
+           WHERE f.qr_node_id = ? ORDER BY f.position, f.id LIMIT 1''',
+        (date, node_id)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return bool(row['completed_at'])
+
+
 def upsert_flow_run(flow_id, date, steps, completed):
     conn = get_conn()
     done_at = datetime.now(timezone.utc).isoformat() if completed else None
