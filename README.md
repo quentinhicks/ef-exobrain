@@ -9,6 +9,7 @@ Software that provides freedom through giving you control of the future. NOTE: B
 ## What's the problem?
 
 > Lacking self-control robs you of free will
+> 
 > — Russell Barkley, expert on Adult ADHD
 
 ADHD is commonly understood as a deficit of executive function, which is one's ability to plan, focus, and self-regulate. From 1997 to 2016, the prevalence of ADHD (Attention-Deficit Hyperactivity Disorder) has increased from 6.1% to 10.2% according to [national population surveys](https://pmc.ncbi.nlm.nih.gov/articles/PMC9616454/). The reasons for this increase is unclear, but the fact is that increasing numbers of people have trouble self-regulating: a fact which almost certainly is related to the amount of time tech companies spend optimizing addicting social media algorithms. **We need to develop systems that allow us to be able to regain control over systems that take our attention away from us.**
@@ -16,6 +17,7 @@ ADHD is commonly understood as a deficit of executive function, which is one's a
 ## What's the solution?
 
 > Humankind cannot gain anything without first giving something in return. To obtain, something of equal value must be lost. That is Alchemy's first law of Equivalent Exchange
+> 
 > — Alphonse Elric, protagonist of Fullmetal Alchemist: Brotherhood
 
 The ef-exobrain software is a piece of personal management software (similar to to-do lists, calendars, etc.) that takes a radical view towards treating executive dysfunction: instead of treating it as our responsibility to internally self-regulate in a world that unfairly increasingly demands our attention, we should be able to fight back by making our obligations _as clear as possible at every point in time_.
