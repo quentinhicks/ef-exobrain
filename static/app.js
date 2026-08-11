@@ -807,6 +807,7 @@ function initTimeline() {
     renderTimeline();
   });
   document.getElementById('refresh-btn').addEventListener('click', refreshExternal);
+  document.getElementById('tl-add-event').addEventListener('click', openEvSheet);
 
   // Ctrl+Z is global (see the undo core). Timeline dismissals register on the
   // same stack, so one keystroke walks back through everything in order.
@@ -2374,11 +2375,11 @@ const SETTINGS_SHEETS = {
           : it && it.today_state && it.today_state.scan ? [{ key: 'todayres', label: 'Today',
             kind: 'static', text: `✓ scanned ${it.today_state.scan.scanned_at.slice(11, 16)}` }] : []),
         ...(it ? [{ key: 'link', label: 'Scan link', kind: 'action',
-          text: `${state.settings.qr_worker_url || ''}/scan/${it.token}`,
+          text: `${state.settings.gate_scan_url || ''}/scan/${it.token}`,
           action: 'Copy',
           hint: 'The QR code to print. Anyone with this URL can satisfy the gate.',
           run: n => {
-            navigator.clipboard?.writeText(`${state.settings.qr_worker_url || ''}/scan/${n.token}`);
+            navigator.clipboard?.writeText(`${state.settings.gate_scan_url || ''}/scan/${n.token}`);
             toast('Scan link copied');
           } }] : []),
 
@@ -2418,7 +2419,7 @@ const SETTINGS_SHEETS = {
         });
         if (!resp.ok) return `Create failed (${resp.status}).`;
         const node = await resp.json();
-        const workerUrl = state.settings.qr_worker_url || '';
+        const workerUrl = state.settings.gate_scan_url || '';
         alert(`Gate created. Its scan URL:\n${workerUrl}/scan/${node.token}`);
         await renderQrManager();
         return null;
@@ -3136,6 +3137,9 @@ function initHub() {
       }
     }
     if (ctxSheet.tag) { closeCtxSheet(); return; }
+    // The new-event sheet peels before the Calendar overlay it opened from
+    // (the focused-input case stopPropagates and never reaches here).
+    if (evSheet.open) { closeEvSheet(); return; }
     // A dangerous-writing session swallows Esc entirely — its own keydown
     // handler treats Esc as the abort, and nothing underneath may act on it.
     if (dwView.open) return;
@@ -3816,6 +3820,113 @@ function refRenameEl(span, save) {
   input.addEventListener('blur', () => finish(true));
 }
 
+// ── New calendar event: the write half of the gcal mirror ─────
+//
+// Creates go to Google (POST /api/gcal/events — service account, see
+// aggregator.create_gcal_event) and the server inserts the event locally in
+// the same request, because the iCal feed is cached for hours and a write
+// that doesn't render reads as a write that failed. The client then just
+// re-reads /api/gcal — a db-only read, no external fetch — so the event's
+// color and shape come from the same query as every other event.
+// Undo deletes the event from Google AND the local mirror; created-by-us is
+// the one thing the read-only-mirror rule lets the app delete.
+const evSheet = { open: false };
+
+function openEvSheet() {
+  evSheet.open = true;
+  renderEvSheet();
+}
+
+function closeEvSheet() {
+  evSheet.open = false;
+  document.getElementById('ev-sheet').classList.add('hidden');
+  document.getElementById('ev-sheet-backdrop').classList.add('hidden');
+}
+
+// Re-read the local mirror and repaint both surfaces that draw it.
+async function reloadGcal() {
+  state.gcalEvents = await fetch('/api/gcal').then(r => r.json())
+    .catch(() => state.gcalEvents);
+  renderTimeline();
+  renderEngage();
+}
+
+function renderEvSheet() {
+  const sheet = document.getElementById('ev-sheet');
+  const back = document.getElementById('ev-sheet-backdrop');
+  sheet.classList.remove('hidden');
+  back.classList.remove('hidden');
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">new calendar event</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="ev-close">✕</button>
+    </div>
+    <div class="cl-action-wrap">
+      <input type="text" class="cl-action" id="ev-summary" placeholder="What is it?">
+    </div>
+    <div class="cl-sec"><span class="cl-label">When</span></div>
+    <div class="cl-row ev-when">
+      <input type="date" class="cl-date" id="ev-date"
+        value="${escHtml(formatDateYMD(state.currentDate))}">
+      <input type="time" class="cl-date" id="ev-start">
+      <span class="ev-dash">–</span>
+      <input type="time" class="cl-date" id="ev-end" title="Blank = one hour">
+    </div>
+    ${recentList('evtime').length ? `<div class="cl-chips">
+      ${recentList('evtime').slice(0, 4).map(t => {
+        const [s, e] = t.split('|');
+        return `<button class="cl-chip" data-evtime="${escHtml(t)}">${
+          escHtml(s + (e ? '–' + e : ''))}</button>`;
+      }).join('')}
+    </div>` : ''}
+    <div class="cl-row">
+      <button class="cl-pill" id="ev-save">Add to Google Calendar</button>
+    </div>`;
+
+  const save = async () => {
+    const summary = sheet.querySelector('#ev-summary').value.trim();
+    const date = sheet.querySelector('#ev-date').value;
+    const start = sheet.querySelector('#ev-start').value;
+    const end = sheet.querySelector('#ev-end').value;
+    if (!summary) { toast('The event needs a name'); return; }
+    if (!date || !start) { toast('The event needs a date and a start time'); return; }
+    const resp = await fetch('/api/gcal/events', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summary, date, start, end: end || null }),
+    });
+    const created = await resp.json();
+    // The sheet stays open on failure — the config-missing message has to be
+    // readable, and closing would throw the typed event away with it.
+    if (!resp.ok) { toast(created.error || 'Google refused the write'); return; }
+    // Times have no natural sort, so the sheet remembers the ones you use —
+    // the chips above the When row (see recentBump).
+    recentBump('evtime', start + '|' + (end || ''));
+    pushUndo(`added event "${summary}"`, async () => {
+      const r = await fetch(`/api/gcal/events/${encodeURIComponent(created.event_id)}`
+        + `?uid=${encodeURIComponent(created.uid)}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error('delete failed');
+      await reloadGcal();
+    });
+    closeEvSheet();
+    await reloadGcal();
+  };
+
+  sheet.querySelector('#ev-close').addEventListener('click', closeEvSheet);
+  sheet.querySelector('#ev-save').addEventListener('click', save);
+  sheet.querySelectorAll('[data-evtime]').forEach(b => b.addEventListener('click', () => {
+    const [s, e] = b.dataset.evtime.split('|');
+    sheet.querySelector('#ev-start').value = s;
+    sheet.querySelector('#ev-end').value = e || '';
+  }));
+  sheet.querySelectorAll('input').forEach(el => el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.stopPropagation(); save(); }
+    else if (e.key === 'Escape') { e.stopPropagation(); closeEvSheet(); }
+  }));
+  back.addEventListener('click', closeEvSheet);
+  sheet.querySelector('#ev-summary').focus();
+}
+
 // ── The routine RUNNER: one step per page ─────────────────────
 //
 // Pages credit into flowRunView.steps ({step_id: 'done'|'soft'}); every
@@ -3915,7 +4026,7 @@ function renderFlowRun() {
   } else if (s.kind === 'social_spec') {
     const okSpec = day.specOk === true;
     page = `<div class="fr-step-big">Social spec</div>
-      <div class="fr-note">${day.spec ? 'spec set' : 'no spec yet'} · ${day.total ?? 0} point${(day.total ?? 0) === 1 ? '' : 's'}${
+      <div class="fr-note">${(day.specs || []).length ? 'spec set' : 'no spec yet'} · ${day.total ?? 0} point${(day.total ?? 0) === 1 ? '' : 's'}${
         okSpec ? ' — spec complete ✓' : ' — set/complete it in ≡ Social'}</div>`;
   }
 
@@ -4871,22 +4982,34 @@ function renderSocial() {
         <span class="so-line${day.doseCleared ? ' so-ok' : ''}" title="The evening line: logged prices sum to D">dose ${day.doseCleared ? '✓' : '·'}</span>
       </div>`;
 
-    // The spec card — today's intended rep, startable from the card alone.
-    if (day.spec && (!f || f.intent !== 'spec')) {
-      main += `
+    // The spec cards — today's intended reps, each startable from its card
+    // alone. A plan can hold several interactions (2026-08-11); the one
+    // carrying the morning line (price >= D) is the anchor of the set, and
+    // the others are stacked on top of it, not instead of it.
+    const specs = day.specs || [];
+    if (!f || f.intent !== 'spec') {
+      specs.forEach((s, i) => {
+        main += `
         <div class="so-card">
-          <div class="so-card-top"><span class="cl-label">Today's spec</span>
-            <span class="so-price">${day.spec.price}</span>
-            ${day.spec.price >= day.d ? '' : `<span class="so-short">${day.d - day.spec.price} short of D</span>`}</div>
-          <div class="so-spec-desc">${escHtml(socialRepDesc(day.spec))}</div>
-          ${day.spec.opener ? `<div class="so-opener">“${escHtml(day.spec.opener)}”</div>` : ''}
+          <div class="so-card-top"><span class="cl-label">${specs.length > 1 ? `Spec ${i + 1}` : "Today's spec"}</span>
+            <span class="so-price">${s.price}</span>
+            ${s.price >= day.d ? '<span class="so-ok">carries the line</span>'
+              : specs.some(x => x.price >= day.d) ? ''
+              : `<span class="so-short">${day.d - s.price} short of D</span>`}</div>
+          <div class="so-spec-desc">${escHtml(socialRepDesc(s))}</div>
+          ${s.opener ? `<div class="so-opener">“${escHtml(s.opener)}”</div>` : ''}
           <div class="so-card-btns">
-            <button id="so-spec-did" title="Log it as done, planned">✓ did it</button>
-            <button id="so-spec-edit" title="Re-spec — free, any time">↻ replace</button>
+            <button class="so-spec-did" data-spec="${s.id}" title="Log it as done, planned">✓ did it</button>
+            <button class="so-spec-edit" data-spec="${s.id}" title="Re-spec — free, any time">↻ replace</button>
+            <button class="so-spec-del" data-spec="${s.id}" title="Unplan it">×</button>
           </div>
         </div>`;
-    } else if (!f) {
-      main += `<button id="so-spec-new" class="so-add">+ plan today's rep <span class="cl-hint">the morning line — person, channel, opener</span></button>`;
+      });
+    }
+    if (!f) {
+      main += specs.length
+        ? `<button id="so-spec-new" class="so-add">+ plan another interaction</button>`
+        : `<button id="so-spec-new" class="so-add">+ plan today's rep <span class="cl-hint">the morning line — person, channel, opener</span></button>`;
     }
 
     if (f) {
@@ -4909,8 +5032,15 @@ function renderSocial() {
             <span class="so-price">${price == null ? '—' : price}</span>
             ${spec && price != null ? (price >= cfg.d
               ? '<span class="so-ok">clears D</span>'
-              : `<span class="so-short">${cfg.d - price} short — upgrade a level</span>`) : ''}
-            <button id="so-form-go" ${price == null || (spec && price < cfg.d) ? 'disabled' : ''}>${spec ? 'Save spec' : 'Log it'}</button>
+              // The morning line is carried by ONE spec hard enough on its
+              // own; once the day has it, further interactions stack at any
+              // priceable level (small ones never add up to the line).
+              : (day.specs || []).some(s => s.price >= cfg.d && s.id !== f.editId)
+                ? '<span class="cl-hint">stacks on the spec that carries the line</span>'
+                : `<span class="so-short">${cfg.d - price} short — upgrade a level</span>`) : ''}
+            <button id="so-form-go" ${price == null || (spec && price < cfg.d
+              && !(day.specs || []).some(s => s.price >= cfg.d && s.id !== f.editId))
+              ? 'disabled' : ''}>${spec ? 'Save spec' : 'Log it'}</button>
             <button id="so-form-x">cancel</button>
           </div>
         </div>`;
@@ -4994,16 +5124,22 @@ function renderSocial() {
     socialView.form = { intent: 'spec', family: 'directed', levels: {}, person: '', opener: '' };
     renderSocial();
   });
-  const specEdit = body.querySelector('#so-spec-edit');
-  if (specEdit) specEdit.addEventListener('click', () => {
-    const s = socialView.day.spec;
-    socialView.form = { intent: 'spec', family: s.family, levels: { ...s.levels },
-                        person: s.person, opener: s.opener };
-    renderSocial();
+  const specById = id => (socialView.day.specs || []).find(s => s.id === parseInt(id));
+  // Replays a removed spec verbatim — id AND price — so an undo after
+  // recalibration restores the plan as it was, not as it would price now.
+  const respec = s => fetch('/api/social/specs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: s.id, date: s.date, family: s.family, levels: s.levels,
+                           person: s.person, opener: s.opener, price: s.price }),
   });
-  const specDid = body.querySelector('#so-spec-did');
-  if (specDid) specDid.addEventListener('click', async () => {
-    const s = socialView.day.spec;
+  body.querySelectorAll('.so-spec-edit').forEach(b => b.addEventListener('click', () => {
+    const s = specById(b.dataset.spec);
+    socialView.form = { intent: 'spec', editId: s.id, family: s.family,
+                        levels: { ...s.levels }, person: s.person, opener: s.opener };
+    renderSocial();
+  }));
+  body.querySelectorAll('.so-spec-did').forEach(b => b.addEventListener('click', async () => {
+    const s = specById(b.dataset.spec);
     const rep = await fetch('/api/social/reps', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ family: s.family, levels: s.levels, person: s.person, planned: 1 }),
@@ -5013,7 +5149,16 @@ function renderSocial() {
       await refreshSocialIfOpen();
     });
     await refreshSocial();
-  });
+  }));
+  body.querySelectorAll('.so-spec-del').forEach(b => b.addEventListener('click', async () => {
+    const s = specById(b.dataset.spec);
+    await fetch(`/api/social/specs/${s.id}`, { method: 'DELETE' });
+    pushUndo('unplanned an interaction', async () => {
+      await respec(s);
+      await refreshSocialIfOpen();
+    });
+    await refreshSocial();
+  }));
 
   const logOpen = body.querySelector('#so-log-open');
   if (logOpen) logOpen.addEventListener('click', () => {
@@ -5047,20 +5192,19 @@ function renderSocial() {
     const go = body.querySelector('#so-form-go');
     if (go) go.addEventListener('click', async () => {
       if (f.intent === 'spec') {
-        const prev = socialView.day.spec;
-        const spec = await fetch('/api/social/spec', {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        // Replacing = add the new, then remove the one being edited; one
+        // undo entry reverses both, so half a replacement can't survive.
+        const prev = f.editId ? specById(f.editId) : null;
+        const spec = await fetch('/api/social/specs', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ family: f.family, levels: f.levels,
                                  person: f.person, opener: f.opener }),
         }).then(r => r.json());
         if (spec.error) return;
-        pushUndo(prev ? 'replaced the spec' : 'planned the rep', async () => {
-          if (prev) await fetch('/api/social/spec', {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ family: prev.family, levels: prev.levels,
-                                   person: prev.person, opener: prev.opener }),
-          });
-          else await fetch('/api/social/spec', { method: 'DELETE' });
+        if (prev) await fetch(`/api/social/specs/${prev.id}`, { method: 'DELETE' });
+        pushUndo(prev ? 'replaced a planned interaction' : 'planned an interaction', async () => {
+          await fetch(`/api/social/specs/${spec.id}`, { method: 'DELETE' });
+          if (prev) await respec(prev);
           await refreshSocialIfOpen();
         });
       } else {
@@ -7809,9 +7953,6 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      futurePlaced: [],
                      routineItems: [], flows: [], deferred: [],
                      domainId: null, dragId: null,
-                     // armId: the tap-to-place fallback's armed action (touch
-                     // has no HTML5 drag events).
-                     armId: null,
                      // Context filter (the top-right picker). Keys are
                      // namespaced: 'domain:3' / 'tag:light'. Two tiers:
                      // include = OR (widen), require = AND (narrow).
@@ -8407,7 +8548,7 @@ function renderEngage() {
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
           <span class="eg-check${i.started_at ? ' eg-check-started' : ''}" data-id="${i.id}"
-            title="${i.started_at ? 'In progress — tap for done, hold to clear' : 'Tap = done · hold = in progress'}">${i.started_at ? '◐' : ''}</span>
+            title="Done">${i.started_at ? '◐' : ''}</span>
           <span class="eg-text">${escHtml(i.content)}</span>
           ${itemTags(i).filter(t => EST_TAGS.includes(t))
             .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
@@ -8558,33 +8699,32 @@ function renderEngage() {
     });
   });
 
+  // ◐ IN PROGRESS is a long-press / right-click on the ROW, not a timed hold on
+  // the checkbox (2026-08-11). Holding a 14px target for half a second is a
+  // gesture you have to aim, and on a phone the press it competes with is
+  // "complete this" — the most destructive thing on the surface. The row is the
+  // whole width, and long-press is already this app's touch right-click
+  // (onLongPress: timeline dismiss, block cancel, event hide).
+  const startedToggle = async id => {
+    const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+    if (!item) return;
+    undoablePatch(item, ['started_at'], item.started_at
+      ? `cleared in-progress on "${item.content}"`
+      : `marked "${item.content}" in progress`);
+    await patchInboxItem(id, { started_at: item.started_at ? null : new Date().toISOString() });
+    await after();
+  };
+  body.querySelectorAll('.eg-pool-item[data-id], .eg-action[data-id]').forEach(row => {
+    const id = parseInt(row.dataset.id);
+    onLongPress(row, () => startedToggle(id));
+    row.addEventListener('contextmenu', e => { e.preventDefault(); startedToggle(id); });
+  });
+
+  // The checkbox now does ONE thing, which is what a checkbox should do.
   body.querySelectorAll('.eg-check[data-id]').forEach(el => {
     const id = parseInt(el.dataset.id);
-    const itemOf = () => [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
-    let holdTimer = null, held = false;
-    el.addEventListener('pointerdown', e => {
-      if (e.button !== 0) return;
-      held = false;
-      holdTimer = setTimeout(async () => {
-        held = true;
-        const item = itemOf();
-        if (!item) return;
-        undoablePatch(item, ['started_at'], item.started_at
-          ? `cleared in-progress on "${item.content}"`
-          : `marked "${item.content}" in progress`);
-        await patchInboxItem(id, { started_at: item.started_at ? null : new Date().toISOString() });
-        await after();
-      }, 500);
-    });
-    const cancelHold = () => clearTimeout(holdTimer);
-    el.addEventListener('pointerup', cancelHold);
-    el.addEventListener('pointerleave', cancelHold);
-    el.addEventListener('pointercancel', cancelHold);
-    // iOS long-press otherwise summons the callout/context menu.
-    el.addEventListener('contextmenu', e => e.preventDefault());
     el.addEventListener('click', async () => {
-      if (held) { held = false; return; }   // the hold consumed this gesture
-      const item = itemOf();
+      const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
       await undoableDelete(id, `completed "${(item && item.content) || 'action'}"`);
       await after();
     });
@@ -8771,7 +8911,6 @@ function renderEngage() {
   // Drag an action (pool or already-placed) into a gap.
   const placeAt = async (id, minute) => {
     engageView.dragId = null;
-    engageView.armId = null;
     const was = engageView.placements.find(p => p.item_id === id);
     await fetch('/api/engage/placements', {
       method: 'POST',
@@ -8806,34 +8945,20 @@ function renderEngage() {
     row.addEventListener('dragend', () => {
       engageView.dragId = null;
       body.querySelectorAll('.eg-gap-over').forEach(g => g.classList.remove('eg-gap-over'));
-      if (engageView.armId == null)
-        body.querySelectorAll('.eg-gap').forEach(g => g.classList.remove('eg-gap-armed'));
+      body.querySelectorAll('.eg-gap').forEach(g => g.classList.remove('eg-gap-armed'));
       row.classList.remove('eg-dragging');
     });
-    // Tap a POOL row's text → the clarify sheet for that one item (re-decide
-    // it from the day; "Place in day" inside the sheet arms it for touch
-    // placement). Tap a PLACED action's text → arm it to move, as before.
-    // Mouse users still have drag for both.
+    // ANY row's text opens the clarify sheet — pool or placed. The
+    // tap-to-arm-then-tap-a-gap placement is gone (2026-08-11): it was a
+    // two-step gesture with an invisible second target, and the sheet's Show-on
+    // date+TIME already places an action on any day. One path, not two.
     row.addEventListener('click', e => {
       if (!e.target.classList.contains('eg-text')) return;
       const id = parseInt(row.dataset.id);
-      if (engageView.armId != null) {           // arming in progress: toggle off
-        engageView.armId = engageView.armId === id ? null : id;
-        renderEngage();
-        return;
-      }
-      const poolItem = row.classList.contains('eg-pool-item')
-        && engageView.pool.find(i => i.id === id);
-      if (poolItem) { openClarifyForItem(poolItem); return; }
-      engageView.armId = id;
-      renderEngage();
+      const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+      if (item) openClarifyForItem(item, after);
     });
   });
-  if (engageView.armId != null) {
-    const armed = body.querySelector(`.eg-pool-item[data-id="${engageView.armId}"], .eg-action[data-id="${engageView.armId}"]`);
-    if (armed) armed.classList.add('eg-armed');
-    body.querySelectorAll('.eg-gap').forEach(g => g.classList.add('eg-gap-armed'));
-  }
 
   dragEdgeScroll(body);   // a drag can reach gaps above/below the fold
   body.querySelectorAll('.eg-gap').forEach(gap => {
@@ -8849,10 +8974,6 @@ function renderEngage() {
       const id = engageView.dragId || parseInt(e.dataTransfer.getData('text/plain'));
       if (!id) return;
       await placeAt(id, parseFloat(gap.dataset.minute));
-    });
-    gap.addEventListener('click', async () => {
-      if (engageView.armId == null) return;
-      await placeAt(engageView.armId, parseFloat(gap.dataset.minute));
     });
   });
 
@@ -9080,6 +9201,28 @@ function rememberFiledDomain(areaId) {
   localStorage.setItem('lastFiled', JSON.stringify({
     domainId: domainIdForArea(areaId), date: formatDateYMD(new Date()),
   }));
+}
+
+// ── Recency memory for pickers with NO natural sort (2026-08-11) ──
+//
+// Where a list has a real order (due dates, the tree, relevance) that order
+// wins; where it has none — which project, which time — the best available
+// sort is "what you picked last". LIFO with dedup, capped small: this is a
+// hand of recent cards, not a history. localStorage like every other lens
+// preference (mapSort, the device override, lastFiled) — what THIS machine
+// picked recently is a fact about this machine. Values are opaque to the
+// helpers; stale ids fall out at render time when the lookup misses.
+const RECENT_MAX = 8;
+
+function recentList(key) {
+  try { return JSON.parse(localStorage.getItem('recent.' + key)) || []; }
+  catch { return []; }
+}
+
+function recentBump(key, value) {
+  const list = recentList(key).filter(v => v !== value);
+  list.unshift(value);
+  localStorage.setItem('recent.' + key, JSON.stringify(list.slice(0, RECENT_MAX)));
 }
 
 // The area to land on for a given domain: its default, else its first.
@@ -9805,6 +9948,26 @@ function renderClarifyProjSearch(sheet, item) {
         <span class="cl-proj-meta${p.action_count ? '' : ' cl-proj-bad'}">${escHtml(p.area_name || '—')} · ${countMeta(p)}</span>
       </button>`).join('')}` : '';
 
+  // Then the projects picked most recently — the area groups below sort
+  // alphabetically, which is no sort at all when you're filing the fifth
+  // capture into the same project. Semantic wins over recent (a match to
+  // THIS item beats a habit), and typing anything replaces both with the
+  // filter. Stale ids (completed/deleted projects) miss the lookup and drop.
+  const bestIds = new Set(best.map(p => p.id));
+  const recent = !q
+    ? recentList('project')
+        .map(id => state.projects.find(p => p.id === id))
+        .filter(p => p && p.status !== 'on_hold' && !bestIds.has(p.id))
+        .slice(0, 4)
+    : [];
+  const recentHtml = recent.length ? `
+    <div class="cl-proj-group">Recently used</div>
+    ${recent.map(p => `
+      <button class="cl-proj-row" data-proj="${p.id}">
+        <span class="cl-proj-name">${escHtml(p.content)}</span>
+        <span class="cl-proj-meta${p.action_count ? '' : ' cl-proj-bad'}">${escHtml(p.area_name || '—')} · ${countMeta(p)}</span>
+      </button>`).join('')}` : '';
+
   const rows = Object.keys(byArea).sort().map(area => `
     <div class="cl-proj-group">${escHtml(area)} · ${byArea[area].length} open</div>
     ${byArea[area].map(p => `
@@ -9848,7 +10011,7 @@ function renderClarifyProjSearch(sheet, item) {
       : `<button class="cl-proj-row cl-proj-new cl-proj-new-empty" id="cl-proj-new-hint">
       <span>+ New project — name it above</span>
     </button>`}
-    <div class="cl-proj-list">${bestHtml}${rows}${dorm}</div>
+    <div class="cl-proj-list">${bestHtml}${recentHtml}${rows}${dorm}</div>
     <button class="cl-proj-row" id="cl-proj-none">No project — file as a standalone action</button>`;
 
   const input = sheet.querySelector('#cl-proj-q');
@@ -9869,6 +10032,7 @@ function renderClarifyProjSearch(sheet, item) {
   if (newHint) newHint.addEventListener('click', () => input.focus());
   sheet.querySelectorAll('.cl-proj-row[data-proj]').forEach(b => b.addEventListener('click', async () => {
     const p = state.projects.find(x => x.id === parseInt(b.dataset.proj));
+    recentBump('project', p.id);
     clarifyView.projectId = p.id;
     clarifyView.projectName = p.content;
     clarifyView.projSearch = null;
@@ -9912,6 +10076,7 @@ async function clarifyCreateProject(name) {
     body: JSON.stringify({ content: name, area_id: areaId }),
   }).then(r => r.json());
   state.projects = await fetch('/api/projects').then(r => r.json());
+  recentBump('project', p.id);
   clarifyView.projectId = p.id;
   clarifyView.projectName = p.content;
   clarifyView.projSearch = null;

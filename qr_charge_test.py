@@ -175,6 +175,34 @@ imm, pend = qr_judge.apply_node_patch({'charge_cents': None}, {'charge_cents': 1
 check('setting a stake below the default waits (it is a cut)',
       pend.get('charge_cents') == 100 and not imm, (imm, pend))
 
+# ── the id Beeminder actually sends ──────────────────────────
+#
+# It is Mongo extended JSON, not a string. Storing the raw dict raised inside
+# qr_settle_charge — after the charge had gone through — leaving a real $2 charge
+# recorded as 'charging' forever. The fake sender used above returned a tidy
+# {'id': 'ch_1'}, which is exactly why the suite passed while production broke.
+check('a Mongo-style id is flattened to its hex string',
+      qr_judge._charge_id({'id': {'$oid': '6a7b640af0168a84df09b4cf'}})
+      == '6a7b640af0168a84df09b4cf',
+      qr_judge._charge_id({'id': {'$oid': '6a7b640af0168a84df09b4cf'}}))
+check('a plain string id still passes through',
+      qr_judge._charge_id({'id': 'ch_1'}) == 'ch_1', qr_judge._charge_id({'id': 'ch_1'}))
+check('a missing id is None, not a crash',
+      qr_judge._charge_id({}) is None and qr_judge._charge_id(None) is None, 'raised')
+check('an unrecognised shape is kept as text rather than dropped',
+      isinstance(qr_judge._charge_id({'id': {'weird': 1}}), str),
+      qr_judge._charge_id({'id': {'weird': 1}}))
+
+node = fresh()
+calls = []
+qr_judge.charge_for_failure(node, '2026-08-12', 'absent',
+                            sender(calls, data={'id': {'$oid': 'abc123'}}))
+row = status_of(node['id'], '2026-08-12')
+check('a charge settles cleanly with the real id shape',
+      row['charge_status'] == 'succeeded', row)
+check('and the reference is stored as text',
+      row.get('charge_id') == 'abc123' or row.get('charge_ref') == 'abc123', dict(row))
+
 # ── verify_token never leaks, and catches a mismatch ─────────
 def me(ok=True, username='u'):
     def send(url):
