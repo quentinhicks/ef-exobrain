@@ -1047,72 +1047,27 @@ async function refreshInboxCount() {
 // on screen, so it is the receipt (the old chip's toast existed only because
 // that count used to be covered). MAP's ◉ filing target is untouched — it
 // routes CLARIFY filing, a different write; only bar typing is governed here.
-const barView = { mode: null, logInbox: false };
-
-function barModeNow() {
-  if (barView.mode) return barView.mode;
-  const logsEl = document.getElementById('logs-overlay');
-  if (logsEl && !logsEl.classList.contains('hidden') && !logsView.open
-      && !barView.logInbox) return { kind: 'newlog' };
-  // Reference lists derive the same way logs do: the INDEX names a new list,
-  // an OPEN list appends to it; the chip is the way back to plain capture.
-  const refEl = document.getElementById('tab-lists');
-  if (refEl && !refEl.classList.contains('hidden') && !refView.inbox) {
-    const flow = refView.flows.find(x => x.id === refView.openFlow);
-    if (flow) return { kind: 'flowstep', id: flow.id, name: flow.name };
-    const open = refView.lists.find(l => l.id === refView.open);
-    if (open) return { kind: 'ref', id: open.id, name: open.name };
-    return { kind: 'reflist' };
-  }
-  return { kind: 'inbox' };
-}
-
+// The bar is for CAPTURING, nothing else (Quentin, 2026-08-11). The derived
+// modes — ✎ log, ✎ list, ◉ <list>, ◉ <routine> — are gone: typed text lands
+// in the inbox from every surface, and every list datatype adds through its
+// own button + the entry sheet (see openEntrySheet). barView/barModeNow went
+// with them.
 function renderBar() {
   const bar = document.getElementById('global-bar');
   if (!bar) return;
-  const m = barModeNow();
-  const d = new Date();
-  const chip = m.kind === 'project' || m.kind === 'area' || m.kind === 'ref'
-      || m.kind === 'flowstep'
-    ? `◉ ${escHtml(m.name)}`
-    : m.kind === 'newlog' ? '✎ log'
-    : m.kind === 'reflist' ? '✎ list' : '';
-  const ph = m.kind === 'project' ? 'next action…'
-    : m.kind === 'area' ? `item in ${m.name}…`
-    : m.kind === 'ref' ? `add to ${m.name}…`
-    : m.kind === 'flowstep' ? 'add a step…'
-    : m.kind === 'reflist' ? 'new list…'
-    : m.kind === 'newlog' ? `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()} topic…`
-    : 'Capture anything…';
   bar.innerHTML = `
-    ${chip ? `<button id="bar-mode" title="Typed text lands here — tap for plain inbox capture">${chip}</button>`
-           : '<span class="eg-cap-plus">+</span>'}
-    <input type="text" id="eg-capture" placeholder="${escHtml(ph)}" autocomplete="off">
+    <span class="eg-cap-plus">+</span>
+    <input type="text" id="eg-capture" placeholder="Capture anything…" autocomplete="off">
     <button id="eg-undo" class="${undoStack.length ? '' : 'hidden'}" title="Undo">↩︎</button>
     <button id="eg-clarify" title="Process the inbox">Clarify ${state.inbox.length}</button>
     <button id="eg-hub" title="Everything else">≡</button>
   `;
 
-  const modeBtn = bar.querySelector('#bar-mode');
-  if (modeBtn) modeBtn.addEventListener('click', () => {
-    if (barView.mode) barView.mode = null;
-    // Derived modes: the chip is the way back to plain capture. On Lists that
-    // opt-out lasts for the SURFACE, not the visit — renderRef clears it on
-    // every surface change, so walking into a routine re-arms ◉ <routine>
-    // instead of leaving you in plain capture with no way back but Esc.
-    else if (m.kind === 'newlog') barView.logInbox = true;
-    else refView.inbox = true;
-    renderBar();
-    document.getElementById('eg-capture').focus();
-  });
-
   const input = bar.querySelector('#eg-capture');
   input.addEventListener('keydown', async e => {
     if (e.key === 'Escape') {
-      // Peel like everything else: text first, then the mode, then let the
-      // overlay's own Esc take over.
+      // Peel: text first, then let the overlay's own Esc take over.
       if (input.value) { e.stopPropagation(); input.value = ''; return; }
-      if (barView.mode) { e.stopPropagation(); barView.mode = null; renderBar(); return; }
       input.blur();
       return;
     }
@@ -1123,78 +1078,11 @@ function renderBar() {
     const raw = input.value.trim();
     if (!raw) return;
     input.value = '';
-    const mode = barModeNow();
-    if (mode.kind === 'project' || mode.kind === 'area') {
-      const { content, tags } = parseTags(raw);
-      const created = await fetch('/api/inbox', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, status: 'active',
-                               area_id: mode.areaId ?? mode.id,
-                               project_id: mode.kind === 'project' ? mode.id : null,
-                               tags: tags.join(' ') }),
-      }).then(r => r.json());
-      pushUndo(`added "${content}"`, async () => {
-        await fetch(`/api/inbox/${created.id}`, { method: 'DELETE' });
-        await refreshAfterUndo();
-      });
-      // Mode persists for rapid entry; repaint whatever lists are open.
-      await refreshAfterUndo();
-      document.getElementById('eg-capture').focus();
-    } else if (mode.kind === 'newlog') {
-      const log = await fetch('/api/logs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: raw }),
-      }).then(r => r.json());
-      logsView.open = log.name;
-      logsView.content = log.content;
-      logsView.dirty = false;
-      renderLogs();
-    } else if (mode.kind === 'ref') {
-      const created = await fetch('/api/ref/items', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ list_id: mode.id, content: raw }),
-      }).then(r => r.json());
-      pushUndo(`added "${raw}" to ${mode.name}`, async () => {
-        await fetch(`/api/ref/items/${created.id}`, { method: 'DELETE' });
-        await refreshAfterUndo();
-      });
-      await refreshRef();
-      document.getElementById('eg-capture').focus();
-    } else if (mode.kind === 'flowstep') {
-      const created = await fetch(`/api/flows/${mode.id}/steps`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: raw }),
-      }).then(r => r.json());
-      pushUndo(`added step "${raw}"`, async () => {
-        await fetch(`/api/flow-steps/${created.id}`, { method: 'DELETE' });
-        await refreshAfterUndo();
-      });
-      await refreshRef();
-      document.getElementById('eg-capture').focus();
-    } else if (mode.kind === 'reflist') {
-      const created = await fetch('/api/ref/lists', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: raw }),
-      }).then(r => r.json());
-      pushUndo(`created list "${raw}"`, async () => {
-        await fetch(`/api/ref/lists/${created.id}`, { method: 'DELETE' });
-        await refreshAfterUndo();
-      });
-      refView.open = created.id;
-      await refreshRef();
-      document.getElementById('eg-capture').focus();
-    } else {
-      if (await captureToInbox(raw)) {
-        // MAP's untriaged "in" pile is on screen when capturing from MAP —
-        // the new row appearing there is the receipt.
-        const mapEl = document.getElementById('map-overlay');
-        if (mapEl && !mapEl.classList.contains('hidden')) await refreshMap();
-      }
+    if (await captureToInbox(raw)) {
+      // MAP's untriaged "in" pile is on screen when capturing from MAP —
+      // the new row appearing there is the receipt.
+      const mapEl = document.getElementById('map-overlay');
+      if (mapEl && !mapEl.classList.contains('hidden')) await refreshMap();
     }
   });
 
@@ -3272,6 +3160,8 @@ function initHub() {
     // The new-event sheet peels before the Calendar overlay it opened from
     // (the focused-input case stopPropagates and never reaches here).
     if (evSheet.open) { closeEvSheet(); return; }
+    // The entry sheet likewise peels before whatever surface opened it.
+    if (entrySheet.open) { closeEntrySheet(); return; }
     // A dangerous-writing session swallows Esc entirely — its own keydown
     // handler treats Esc as the abort, and nothing underneath may act on it.
     if (dwView.open) return;
@@ -3285,11 +3175,13 @@ function initHub() {
       closeFlowRun();
       return;
     }
-    // Lists peels an open list / flow editor back to the index first.
+    // Lists peels an open list / flow editor back one LEVEL first — a nested
+    // list goes to its parent, everything else to the index.
     const refEl = document.getElementById('tab-lists');
     if (refEl && !refEl.classList.contains('hidden')
         && (refView.open != null || refView.openFlow != null)) {
-      refView.open = null;
+      const openList = refView.lists.find(l => l.id === refView.open);
+      refView.open = (openList && openList.parent_id) || null;
       refView.openFlow = null;
       renderRef();
       return;
@@ -3314,9 +3206,7 @@ function initHub() {
       else if (dest === 'lists') {
         refView.open = null;
         refView.openFlow = null;
-        refView.inbox = false;
-        refView.lastSurface = null;
-        openM('tab-lists');   // unhide FIRST — renderRef's bar mode derives from it
+        openM('tab-lists');
         refreshRef();
       }
       else if (dest === 'map') { openMap(); }
@@ -3365,7 +3255,6 @@ async function closeLogsView() {
   await flushLogSave();
   document.getElementById('logs-overlay').classList.add('hidden');
   logsView.open = null;
-  barView.logInbox = false;   // next Logs visit starts back in ✎ log mode
   renderBar();
   // No sync call on close: the PUT already wrote the file on the server, which
   // is the single copy every device reads. Logs used to be git-pushed from
@@ -3380,20 +3269,10 @@ async function closeLogsView() {
 // both written through the global bar's derived modes; the clarify sheet's
 // Reference exit files an inbox item's text here (the missing half of GTD's
 // non-actionable keep, next to Someday/Maybe).
-const refView = { lists: [], open: null, inbox: false,
+const refView = { lists: [], open: null,
                   // Interactive routines (flows) share this surface: a
                   // ROUTINES section on the index, openFlow = the step editor.
-                  flows: [], openFlow: null,
-                  // The surface `inbox` was dismissed on — renderRef compares
-                  // it to decide when the dismissal has expired.
-                  lastSurface: null };
-
-// Which of the three Lists surfaces is showing.
-function refSurfaceKey() {
-  if (refView.openFlow != null) return 'flow:' + refView.openFlow;
-  if (refView.open != null) return 'list:' + refView.open;
-  return 'index';
-}
+                  flows: [], openFlow: null };
 
 // 0=Mon..6=Sun, matching storage.step_due_on and every other days_of_week in
 // the app. Empty = every day.
@@ -3431,20 +3310,22 @@ function flowDueMin(f) {
   return m;
 }
 
+// One list row, used by the index (root lists) and by an open list (its
+// children): name, open-items count, a ▸n marker when it holds sublists.
+function refListRow(l) {
+  const subs = refView.lists.filter(x => x.parent_id === l.id).length;
+  return `<div class="ref-row" data-id="${l.id}">
+    <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}</span>
+    ${subs ? `<span class="map-count" title="${subs} list${subs === 1 ? '' : 's'} inside">▸${subs}</span>` : ''}
+    <span class="map-count">${l.items.filter(i => !i.done).length}</span>
+    <button class="ref-del" data-id="${l.id}" title="Delete list">×</button>
+  </div>`;
+}
+
 function renderRef() {
   const body = document.getElementById('ref-body');
   const title = document.getElementById('ref-title');
   if (!body) return;
-  // Changing surface re-arms the bar: dismissing ◉ <routine> is a statement
-  // about the routine you were looking at, not about Lists for the rest of
-  // the visit — so walking out and back in gives the mode back. Must run
-  // BEFORE renderBar, which is what reads the flag.
-  const surface = refSurfaceKey();
-  if (refView.lastSurface !== surface) {
-    refView.lastSurface = surface;
-    refView.inbox = false;
-  }
-  renderBar();   // the bar derives ✎ list / ◉ <list> from this surface
 
   const openFlow = refView.flows.find(f => f.id === refView.openFlow);
   if (openFlow) { renderFlowEditor(body, title, openFlow); return; }
@@ -3468,19 +3349,18 @@ function renderRef() {
         <button class="ref-del" data-flow-del="${f.id}" title="Delete routine">×</button>
       </div>`;
     };
+    // The index shows lists at the ROOT; nested lists live inside their
+    // parent (2026-08-11), the same split-at-the-root MAP's someday pile uses.
+    const rootLists = refView.lists.filter(l => !l.parent_id);
     body.innerHTML = `
       <div class="gtd-section-head">Routines</div>
       <div class="ref-list">${refView.flows.map(flowRow).join('')
-        || '<div class="gtd-empty">No routines — type a name in the bar and pick ✎ routine mode… or just create one below.</div>'}
+        || '<div class="gtd-empty">No routines yet.</div>'}
       <button id="fr-new" class="map-add-btn">+ routine</button></div>
       <div class="gtd-section-head">Reference</div>
-      <div class="ref-list">${refView.lists.map(l => `
-      <div class="ref-row" data-id="${l.id}">
-        <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}</span>
-        <span class="map-count">${l.items.filter(i => !i.done).length}</span>
-        <button class="ref-del" data-id="${l.id}" title="Delete list">×</button>
-      </div>`).join('')
-      || '<div class="gtd-empty">No lists yet — name one in the bar below.</div>'}</div>`;
+      <div class="ref-list">${rootLists.map(l => refListRow(l)).join('')
+      || '<div class="gtd-empty">No lists yet.</div>'}
+      <button id="ref-new" class="map-add-btn">+ list</button></div>`;
 
     // Routine rows: tap = step editor, double-click = rename, ▶ = runner,
     // × = delete (undo replays). The single click waits out the double-click
@@ -3530,6 +3410,23 @@ function renderRef() {
       refView.openFlow = created.id;
       await refreshRef();
     });
+    const refNew = body.querySelector('#ref-new');
+    if (refNew) refNew.addEventListener('click', () => openEntrySheet({
+      title: 'New list', placeholder: 'Name the list…', button: 'Create',
+      closeOnAdd: true,
+      add: async name => {
+        const created = await fetch('/api/ref/lists', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        }).then(r => r.json());
+        pushUndo(`created list "${name}"`, async () => {
+          await fetch(`/api/ref/lists/${created.id}`, { method: 'DELETE' });
+          await refreshAfterUndo();
+        });
+        refView.open = created.id;
+        await refreshRef();
+      },
+    }));
     body.querySelectorAll('[data-flow-del]').forEach(b => b.addEventListener('click', async () => {
       const id = parseInt(b.dataset.flowDel);
       const f = refView.flows.find(x => x.id === id);
@@ -3599,23 +3496,99 @@ function renderRef() {
   }
 
   title.textContent = open.name;
+  const parent = open.parent_id ? refView.lists.find(l => l.id === open.parent_id) : null;
+  const children = refView.lists.filter(l => l.parent_id === open.id);
   body.innerHTML = `
-    <button id="ref-back" class="log-back-btn">‹ All lists</button>
+    <button id="ref-back" class="log-back-btn">‹ ${parent ? escHtml(parent.name) : 'All lists'}</button>
+    ${children.length ? `<div class="ref-list ref-sublists">${
+      children.map(l => refListRow(l)).join('')}</div>` : ''}
     <div class="ref-list">${open.items.map(i => `
-      <div class="ref-row" data-id="${i.id}">
-        <span class="eg-check ref-check${i.done ? ' ref-checked' : ''}" data-id="${i.id}"
+      <div class="ref-row" data-item="${i.id}">
+        <span class="eg-check ref-check${i.done ? ' ref-checked' : ''}" data-item="${i.id}"
           title="${i.done ? 'Uncheck' : 'Check off'}">${i.done ? '✓' : ''}</span>
         <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
-        <button class="ref-del" data-id="${i.id}" title="Remove">×</button>
+        <button class="ref-del" data-item="${i.id}" title="Remove">×</button>
       </div>`).join('')
-      || '<div class="gtd-empty">Empty — add the first line in the bar below.</div>'}</div>`;
+      || (children.length ? '' : '<div class="gtd-empty">Empty.</div>')}
+    <button id="ref-add-item" class="map-add-btn">+ item</button>
+    <button id="ref-add-sub" class="map-add-btn">+ list inside</button></div>`;
 
+  // Back peels one LEVEL, not to the index — nesting made "up" and "out"
+  // different things.
   document.getElementById('ref-back').addEventListener('click', () => {
-    refView.open = null;
+    refView.open = open.parent_id || null;
     renderRef();
   });
+  document.getElementById('ref-add-item').addEventListener('click', () => openEntrySheet({
+    title: open.name, placeholder: `Add to ${open.name}…`,
+    add: async raw => {
+      const created = await fetch('/api/ref/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ list_id: open.id, content: raw }),
+      }).then(r => r.json());
+      pushUndo(`added "${raw}" to ${open.name}`, async () => {
+        await fetch(`/api/ref/items/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      await refreshRef();
+    },
+  }));
+  document.getElementById('ref-add-sub').addEventListener('click', () => openEntrySheet({
+    title: `List inside ${open.name}`, placeholder: 'Name the list…', button: 'Create',
+    closeOnAdd: true,
+    add: async name => {
+      const created = await fetch('/api/ref/lists', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, parent_id: open.id }),
+      }).then(r => r.json());
+      pushUndo(`created list "${name}" in ${open.name}`, async () => {
+        await fetch(`/api/ref/lists/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      refView.open = created.id;
+      await refreshRef();
+    },
+  }));
+  // Child-list rows: same gestures as the index rows.
+  body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span => {
+    let t = null;
+    span.addEventListener('click', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        refView.open = parseInt(span.closest('.ref-row').dataset.id);
+        renderRef();
+      }, 220);
+    });
+    span.addEventListener('dblclick', () => {
+      clearTimeout(t);
+      refRename(span, id => name =>
+        fetch(`/api/ref/lists/${id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        }));
+    });
+  });
+  body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
+    const id = parseInt(b.dataset.id);
+    const l = refView.lists.find(x => x.id === id);
+    await fetch(`/api/ref/lists/${id}`, { method: 'DELETE' });
+    pushUndo(`deleted list "${l.name}"`, async () => {
+      const nl = await fetch('/api/ref/lists', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: l.name, parent_id: l.parent_id }),
+      }).then(r => r.json());
+      for (const it of l.items) {
+        await fetch('/api/ref/items', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ list_id: nl.id, content: it.content, done: it.done }),
+        });
+      }
+      await refreshAfterUndo();
+    });
+    await refreshRef();
+  }));
   body.querySelectorAll('.ref-check').forEach(c => c.addEventListener('click', async () => {
-    const id = parseInt(c.dataset.id);
+    const id = parseInt(c.dataset.item);
     const it = open.items.find(x => x.id === id);
     const to = it.done ? 0 : 1;
     await fetch(`/api/ref/items/${id}`, {
@@ -3631,17 +3604,20 @@ function renderRef() {
     });
     await refreshRef();
   }));
-  body.querySelectorAll('.ref-text').forEach(span => {
+  body.querySelectorAll('.ref-row[data-item] .ref-text').forEach(span => {
     span.addEventListener('dblclick', () => {
-      refRename(span, id => content =>
-        fetch(`/api/ref/items/${id}`, {
+      const id = parseInt(span.closest('.ref-row').dataset.item);
+      refRenameEl(span, async content => {
+        await fetch(`/api/ref/items/${id}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content }),
-        }));
+        });
+        await refreshRef();
+      });
     });
   });
-  body.querySelectorAll('.ref-del').forEach(b => b.addEventListener('click', async () => {
-    const id = parseInt(b.dataset.id);
+  body.querySelectorAll('.ref-del[data-item]').forEach(b => b.addEventListener('click', async () => {
+    const id = parseInt(b.dataset.item);
     const it = open.items.find(x => x.id === id);
     await fetch(`/api/ref/items/${id}`, { method: 'DELETE' });
     pushUndo(`removed "${it.content}"`, async () => {
@@ -3657,8 +3633,28 @@ function renderRef() {
 
 // The step editor for one routine: reorder (↑↓), kind picker, soft/hard
 // toggle, rename, delete — plus the gate link (deadline anchor + judgment gate).
-const FLOW_KINDS = { text: 'text', social_spec: 'social spec',
+// social_spec and social_dose are the app's TWO SOCIAL LINES, and they are
+// deliberately separate step kinds (2026-08-11): spec is the MORNING question
+// (is an intended rep planned that clears D) and dose is the EVENING one (did
+// today's logged reps actually sum to D). A night routine that gates on the
+// spec asks whether you made a plan, which a gate with money behind it must
+// not mistake for having done the thing.
+const FLOW_KINDS = { text: 'text', checklist: 'checklist',
+                     social_spec: 'social spec (planned)',
+                     social_dose: 'social dose (done)',
                      journal_night: 'nightly journal', crm_fill: 'CRM fill' };
+
+// How long until a pending easing lands, in whole hours (ceil — "1h" until
+// it is genuinely under an hour away).
+function pendingHours(p) {
+  return Math.max(0, Math.ceil((new Date(p.apply_at) - Date.now()) / 3600000));
+}
+
+function stepPending(s) {
+  if (!s.pending) return null;
+  try { return typeof s.pending === 'string' ? JSON.parse(s.pending) : s.pending; }
+  catch { return null; }
+}
 
 function renderFlowEditor(body, title, f) {
   title.textContent = f.name;
@@ -3687,8 +3683,24 @@ function renderFlowEditor(body, title, f) {
         <button class="fr-down" data-step="${s.id}" title="Move down">↓</button>
         <button class="fr-open" data-step="${s.id}" title="Settings for this step">›</button>
       </div>`).join('')
-      || '<div class="gtd-empty">No steps — add lines in the bar below.</div>'}</div>
+      || '<div class="gtd-empty">No steps yet.</div>'}
+    <button id="fr-add-step" class="map-add-btn">+ step</button></div>
     <button class="fr-play fr-play-big" data-flow="${f.id}">▶ Run</button>`;
+
+  body.querySelector('#fr-add-step').addEventListener('click', () => openEntrySheet({
+    title: `${f.name} · add step`, placeholder: 'What is the step?',
+    add: async raw => {
+      const created = await fetch(`/api/flows/${f.id}/steps`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: raw }),
+      }).then(r => r.json());
+      pushUndo(`added step "${raw}"`, async () => {
+        await fetch(`/api/flow-steps/${created.id}`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      await refreshRef();
+    },
+  }));
 
   body.querySelector('#ref-back').addEventListener('click', () => {
     refView.openFlow = null;
@@ -3775,6 +3787,10 @@ function stepBadges(s) {
       .map(d => DAY_NAMES[Number(d)]).join(', ')}">${days}</span>`);
   }
   if (s.requirement === 'soft') out.push('<span class="fr-badge">soft</span>');
+  if (s.kind === 'checklist') out.push('<span class="fr-badge">☰</span>');
+  const p = stepPending(s);
+  if (p) out.push(`<span class="fr-badge fr-badge-pending" title="A gated routine eases on a 24h delay">${
+    p.field === 'delete' ? 'removes' : p.field === 'requirement' ? 'soft' : 'days'} in ${pendingHours(p)}h</span>`);
   return out.join('');
 }
 
@@ -3847,6 +3863,16 @@ function renderStepSheet() {
       `<button class="cl-chip${s.kind === k ? ' cl-chip-on' : ''}" data-kind="${k}">${
         FLOW_KINDS[k]}</button>`).join('')}</div>
 
+    ${s.kind === 'checklist' ? `
+    <div class="cl-sec"><span class="cl-label">Checklist</span></div>
+    <div class="cl-row">
+      <select id="fr-sheet-list" class="map-area">
+        <option value="">— pick a list —</option>
+        ${refView.lists.map(l => `<option value="${l.id}"${
+          l.id === s.ref_list_id ? ' selected' : ''}>${escHtml(l.name)}</option>`).join('')}
+      </select>
+      <span class="cl-hint">the runner walks its items, unchecked each run</span>
+    </div>` : ''}
     <div class="cl-sec"><span class="cl-label">Counts as done</span></div>
     <div class="cl-chips">
       <button class="cl-chip${s.requirement === 'hard' ? ' cl-chip-on' : ''}" data-req="hard"
@@ -3856,6 +3882,20 @@ function renderStepSheet() {
       <span class="cl-hint">${s.requirement === 'soft'
         ? 'a smaller version still credits' : 'the real thing, or it does not count'}</span>
     </div>
+    ${s.requirement === 'soft' || (stepPending(s) || {}).field === 'requirement' ? `
+    <div class="cl-row">
+      <input type="text" class="cl-action" id="fr-sheet-soft"
+        placeholder="Name the smaller version (optional)"
+        value="${escHtml(s.soft_content || '')}"
+        title="Shown on the runner's soft button, so 'a smaller version' is a decision made now, not at 11pm">
+    </div>` : ''}
+    ${stepPending(s) ? `
+    <div class="cl-row fr-pending-row">
+      <span class="cl-hint">⏳ ${stepPending(s).field === 'delete' ? 'removal lands'
+        : stepPending(s).field === 'requirement' ? 'goes soft'
+        : 'day change lands'} in ${pendingHours(stepPending(s))}h — a gated routine eases on a 24h delay</span>
+      <button class="cl-pill" id="fr-sheet-unpend">Cancel</button>
+    </div>` : ''}
 
     <div class="cl-sec"><span class="cl-label">Runs on</span></div>
     <div class="cl-chips fr-sheet-days">
@@ -3902,9 +3942,26 @@ function renderStepSheet() {
   }));
   sheet.querySelectorAll('[data-req]').forEach(b => b.addEventListener('click', () => {
     if (b.dataset.req === s.requirement) return;
+    if (b.dataset.req === 'soft' && s.requirement === 'hard' && f.qr_node_id) {
+      toast('A gated routine eases on a 24h delay — soft lands tomorrow');
+    }
     stepSheetPatch({ requirement: b.dataset.req },
       `made "${s.content || FLOW_KINDS[s.kind]}" ${b.dataset.req}`);
   }));
+  const listSel = sheet.querySelector('#fr-sheet-list');
+  if (listSel) listSel.addEventListener('change', () => stepSheetPatch(
+    { ref_list_id: listSel.value ? parseInt(listSel.value) : null },
+    `linked a checklist to "${s.content || 'the step'}"`));
+  const softTxt = sheet.querySelector('#fr-sheet-soft');
+  if (softTxt) softTxt.addEventListener('change', () => stepSheetPatch(
+    { soft_content: softTxt.value },
+    `named the smaller version of "${s.content || FLOW_KINDS[s.kind]}"`));
+  const unpend = sheet.querySelector('#fr-sheet-unpend');
+  if (unpend) unpend.addEventListener('click', async () => {
+    await fetch(`/api/flow-steps/${s.id}/pending`, { method: 'DELETE' });
+    await refreshRef();
+    renderStepSheet();
+  });
   // A step with NO days runs every day, so the picker starts all lit — turning
   // one off from there has to mean "every day EXCEPT this", not "no days",
   // which is why the empty value is expanded to the full week before the digit
@@ -3939,7 +3996,20 @@ function renderStepSheet() {
     });
   }
   sheet.querySelector('#fr-sheet-del').addEventListener('click', async () => {
-    await fetch(`/api/flow-steps/${s.id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/flow-steps/${s.id}`, { method: 'DELETE' })
+      .then(r => r.json()).catch(() => ({}));
+    if (res.pending) {
+      // The 24h easing gate deferred it — the undo is the CANCEL, and the
+      // sheet stays open showing the pending state.
+      pushUndo(`scheduled removal of "${s.content || FLOW_KINDS[s.kind]}"`, async () => {
+        await fetch(`/api/flow-steps/${s.id}/pending`, { method: 'DELETE' });
+        await refreshAfterUndo();
+      });
+      toast('A gated routine eases on a 24h delay — removal is scheduled');
+      await refreshRef();
+      renderStepSheet();
+      return;
+    }
     pushUndo(`removed "${s.content || FLOW_KINDS[s.kind]}"`, async () => {
       await fetch(`/api/flows/${f.id}/steps`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4085,6 +4155,77 @@ function renderEvSheet() {
   sheet.querySelector('#ev-summary').focus();
 }
 
+// ── The ENTRY SHEET: one input, risen from the bottom ─────────
+//
+// The capture bar is for CAPTURING (Quentin, 2026-08-11) — its derived modes
+// (✎ log, ✎ list, ◉ <list>, ◉ <routine>) made typed text land somewhere other
+// than the inbox depending on what was open, which is exactly the ambiguity a
+// capture bar cannot afford. Every list-shaped datatype now adds through a
+// button on its own surface that opens THIS sheet: same geometry as clarify,
+// same peel rules, one input. Rapid entry survives — Enter adds and the sheet
+// stays open (unless the spec says adding OPENS the thing, e.g. a new log) —
+// and Enter on an empty input is Done, the bar's old rhythm.
+const entrySheet = { open: false, spec: null };
+
+function openEntrySheet(spec) {
+  entrySheet.open = true;
+  entrySheet.spec = spec;
+  renderEntrySheet();
+}
+
+function closeEntrySheet() {
+  entrySheet.open = false;
+  entrySheet.spec = null;
+  document.getElementById('en-sheet').classList.add('hidden');
+  document.getElementById('en-sheet-backdrop').classList.add('hidden');
+}
+
+function renderEntrySheet() {
+  const sheet = document.getElementById('en-sheet');
+  const back = document.getElementById('en-sheet-backdrop');
+  const spec = entrySheet.spec;
+  sheet.classList.remove('hidden');
+  back.classList.remove('hidden');
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">${escHtml(spec.title)}</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="en-close">✕</button>
+    </div>
+    <div class="cl-action-wrap">
+      <input type="text" class="cl-action" id="en-input"
+        placeholder="${escHtml(spec.placeholder || '')}" autocomplete="off">
+    </div>
+    ${spec.hint ? `<div class="cl-donow">${escHtml(spec.hint)}</div>` : ''}
+    <div class="cl-row">
+      <button class="cl-pill" id="en-add">${escHtml(spec.button || 'Add')}</button>
+      <button class="cl-pill" id="en-done">Done</button>
+    </div>`;
+
+  const input = sheet.querySelector('#en-input');
+  const add = async () => {
+    const raw = input.value.trim();
+    if (!raw) { closeEntrySheet(); return; }   // empty Enter = done
+    input.value = '';
+    await spec.add(raw);
+    if (spec.closeOnAdd) { closeEntrySheet(); return; }
+    input.focus();
+  };
+  sheet.querySelector('#en-close').addEventListener('click', closeEntrySheet);
+  sheet.querySelector('#en-done').addEventListener('click', closeEntrySheet);
+  sheet.querySelector('#en-add').addEventListener('click', add);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.stopPropagation(); add(); }
+    else if (e.key === 'Escape') {
+      e.stopPropagation();
+      if (input.value) { input.value = ''; return; }   // peel text first
+      closeEntrySheet();
+    }
+  });
+  back.addEventListener('click', closeEntrySheet);
+  input.focus();
+}
+
 // ── The routine RUNNER: one step per page ─────────────────────
 //
 // Pages credit into flowRunView.steps ({step_id: 'done'|'soft'}); every
@@ -4094,16 +4235,23 @@ function renderEvSheet() {
 // journal_day, CRM fill posts the same 'entries' satisfy the People flow
 // sends, the social page reads the day's spec status.
 const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
-                      journal: null, crmFilled: false };
+                      journal: null, crmFilled: false,
+                      // Checklist steps: per-RUN ticks ({step_id: {item_id:
+                      // true}}), session-local — the ref list is a reusable
+                      // template and its own done flags stay untouched.
+                      refLists: [], checks: {} };
 
 async function openFlowRun(flowId) {
   const today = formatDateYMD(new Date());
-  const [flows, day, journal, habits] = await Promise.all([
+  const [flows, day, journal, habits, refLists] = await Promise.all([
     fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => []),
     fetch(`/api/social/day?date=${today}`).then(r => r.json()).catch(() => null),
     fetch('/api/journal').then(r => r.json()).catch(() => null),
     fetch('/api/habits').then(r => r.json()).catch(() => null),
+    fetch('/api/ref').then(r => r.json()).catch(() => []),
   ]);
+  flowRunView.refLists = refLists;
+  flowRunView.checks = {};
   const flow = flows.find(f => f.id === flowId);
   if (!flow) return;
   // THE RUN IS TODAY'S STEPS. `due` is the server's answer (storage.step_due_on
@@ -4210,8 +4358,24 @@ function renderFlowRun() {
   if (s.kind === 'text') {
     page = `<div class="fr-step-big">${escHtml(s.content)}</div>
       ${s.requirement === 'soft'
-        ? '<div class="fr-note">soft — a smaller version still counts</div>'
+        ? `<div class="fr-note">soft — ${s.soft_content
+            ? `“${escHtml(s.soft_content)}” still counts`
+            : 'a smaller version still counts'}</div>`
         : '<div class="fr-note fr-note-hard">hard — the real thing</div>'}`;
+  } else if (s.kind === 'checklist') {
+    const list = (flowRunView.refLists || []).find(l => l.id === s.ref_list_id);
+    const checks = flowRunView.checks[s.id] || {};
+    page = `<div class="fr-step-big">${escHtml(s.content || (list ? list.name : 'Checklist'))}</div>
+      ${list ? `<div class="ref-list">${list.items.map(i => `
+        <div class="ref-row">
+          <span class="eg-check ref-check${checks[i.id] ? ' ref-checked' : ''}"
+            data-chk="${i.id}">${checks[i.id] ? '✓' : ''}</span>
+          <span class="ref-text${checks[i.id] ? ' ref-done' : ''}">${escHtml(i.content)}</span>
+        </div>`).join('') || '<div class="gtd-empty">The linked list is empty.</div>'}</div>`
+        : '<div class="fr-note">No list linked — pick one in the step\'s settings (›).</div>'}
+      ${s.requirement === 'soft'
+        ? '<div class="fr-note">soft — a partial pass still counts</div>'
+        : '<div class="fr-note fr-note-hard">hard — every item, or it does not count</div>'}`;
   } else if (s.kind === 'journal_night') {
     const j = flowRunView.journal || {};
     const hb = flowRunView.habits || {};
@@ -4252,8 +4416,13 @@ function renderFlowRun() {
   } else if (s.kind === 'social_spec') {
     const okSpec = day.specOk === true;
     page = `<div class="fr-step-big">Social spec</div>
-      <div class="fr-note">${(day.specs || []).length ? 'spec set' : 'no spec yet'} · ${day.total ?? 0} point${(day.total ?? 0) === 1 ? '' : 's'}${
-        okSpec ? ' — spec complete ✓' : ' — set/complete it in ≡ Social'}</div>`;
+      <div class="fr-note">${(day.specs || []).length ? 'spec set' : 'no spec yet'}${
+        okSpec ? ' — an intended rep clears D ✓' : ' — plan one in ≡ Social'}</div>`;
+  } else if (s.kind === 'social_dose') {
+    const okDose = day.doseCleared === true;
+    page = `<div class="fr-step-big">Social dose</div>
+      <div class="fr-note">${day.total ?? 0} / ${day.d ?? '—'} point${(day.total ?? 0) === 1 ? '' : 's'}${
+        okDose ? ' — the day is clear ✓' : ' — log what you actually did in ≡ Social'}</div>`;
   }
 
   el.innerHTML = `
@@ -4269,8 +4438,9 @@ function renderFlowRun() {
         s.pawn_minutes || 0} min, so tonight's gate closes that much earlier</div>` : ''}</div>
     <div class="fr-foot">
       <button id="fr-back" ${flowRunView.idx === 0 ? 'disabled' : ''}>‹ back</button>
-      ${s.kind === 'text' && s.requirement === 'soft'
-        ? '<button id="fr-soft" class="cl-pill">Did a smaller version</button>' : ''}
+      ${(s.kind === 'text' || s.kind === 'checklist') && s.requirement === 'soft'
+        ? `<button id="fr-soft" class="cl-pill">${s.soft_content
+            ? escHtml(s.soft_content) : 'Did a smaller version'}</button>` : ''}
       ${/* PAWN: push this step onto a later routine for today only. Offered only
             where the step's own setting says it may go somewhere, never on a step
             already credited, and never on one that is already sitting here
@@ -4284,7 +4454,10 @@ function renderFlowRun() {
           escHtml(flowName(s.from_flow_id))} — this gate returns to its full length">← ${
           escHtml(flowName(s.from_flow_id))}</button>` : ''}
       <button id="fr-done" class="cl-pill cl-pill-on"${
-        s.kind === 'social_spec' && day.specOk !== true && s.requirement !== 'soft' ? ' disabled' : ''}>Done ✓</button>
+        s.requirement !== 'soft'
+          && ((s.kind === 'social_spec' && day.specOk !== true)
+              || (s.kind === 'social_dose' && day.doseCleared !== true))
+          ? ' disabled' : ''}>Done ✓</button>
     </div>`;
   el.classList.remove('hidden');
 
@@ -4294,11 +4467,38 @@ function renderFlowRun() {
   });
   const soft = el.querySelector('#fr-soft');
   if (soft) soft.addEventListener('click', () => creditFlowStep(s, 'soft'));
+  // Per-RUN ticks: they live in flowRunView.checks, never on ref_item — the
+  // list is a template you run again tomorrow, so writing its own `done`
+  // (which is PERMANENT, unlike routine_item's daily flag) would consume it.
+  el.querySelectorAll('[data-chk]').forEach(c => c.addEventListener('click', () => {
+    const marks = flowRunView.checks[s.id] = flowRunView.checks[s.id] || {};
+    const id = parseInt(c.dataset.chk);
+    if (marks[id]) delete marks[id]; else marks[id] = true;
+    renderFlowRun();
+  }));
   const pawn = el.querySelector('#fr-pawn');
   if (pawn) pawn.addEventListener('click', () => pawnStep(s));
   const unpawn = el.querySelector('#fr-unpawn');
   if (unpawn) unpawn.addEventListener('click', () => unpawnStep(s));
   el.querySelector('#fr-done').addEventListener('click', async () => {
+    // A HARD checklist step means every item — the same rule the nightly
+    // journal's habit marks follow, for the same reason: a checklist you can
+    // Done through unticked is checkbox theatre.
+    if (s.kind === 'checklist' && s.requirement !== 'soft') {
+      const list = (flowRunView.refLists || []).find(l => l.id === s.ref_list_id);
+      // No list, or an empty one, must NOT credit: a hard step that passes
+      // because there was nothing to check is the failure mode this gate
+      // exists to prevent, and on a gated routine it would hand you a ✓ for
+      // an unconfigured step.
+      if (!list || !list.items.length) {
+        toast(list ? 'That checklist is empty — add items or make the step soft'
+                   : 'No checklist linked — pick a list in the step settings (›)');
+        return;
+      }
+      const marks = flowRunView.checks[s.id] || {};
+      const left = list.items.filter(i => !marks[i.id]).length;
+      if (left) { toast(`${left} item${left === 1 ? '' : 's'} left on the checklist`); return; }
+    }
     if (s.kind === 'journal_night') {
       // Marks land per habit, on habit_day. A hard step demands every forming
       // habit be marked — viewing without answering is checkbox theatre; soft
@@ -5072,10 +5272,6 @@ function renderLogs() {
   const body = document.getElementById('logs-body');
   const title = document.getElementById('logs-title');
   if (!body) return;
-  // The bar derives its mode from this surface (✎ log on the list, plain
-  // inbox capture in the editor) — repaint it with every transition.
-  renderBar();
-
   if (!logsView.open) {
     title.textContent = 'Logs';
     const rows = sortedLogs().map(l => `
@@ -5091,19 +5287,34 @@ function renderLogs() {
         </button>
       </div>
       <div class="log-list">${rows || '<div class="log-empty">No logs yet</div>'}</div>
+      <button id="log-new" class="map-add-btn">+ log</button>
       <button id="log-dangerous" class="dw-entry" title="Stop typing and the draft is destroyed">⚡ Dangerous writing</button>`;
     body.querySelectorAll('.log-row').forEach(row => {
       row.addEventListener('click', () => openLog(row.dataset.name));
     });
     document.getElementById('log-dangerous')
       .addEventListener('click', openDangerousWriting);
+    const d = new Date();
+    document.getElementById('log-new').addEventListener('click', () => openEntrySheet({
+      title: 'New log',
+      placeholder: `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()} topic…`,
+      button: 'Create', closeOnAdd: true,
+      add: async raw => {
+        const log = await fetch('/api/logs', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: raw }),
+        }).then(r => r.json());
+        logsView.open = log.name;
+        logsView.content = log.content;
+        logsView.dirty = false;
+        renderLogs();
+      },
+    }));
     document.getElementById('log-sort').addEventListener('click', () => {
       logsView.desc = !logsView.desc;
       renderLogs();
       document.getElementById('logs-body').scrollTop = 0;
     });
-    // Creating a log is the GLOBAL BAR's job on this view (✎ log mode, see
-    // the renderBar call above) — the list carries no form of its own.
     return;
   }
 
@@ -10370,16 +10581,13 @@ function renderClarifyProjSearch(sheet, item) {
     // project's area server-side, unconditionally. Leaving the Filing-to row
     // on some other area would display a destination the write overrides.
     if (p.area_id) clarifyView.areaId = p.area_id;
-    // An EXISTING project with actions already in it goes straight to the
-    // composer — filing into a project that has a running order is exactly
-    // when you need to say where this one goes. origin 'pick' means nothing
-    // has been filed yet, so leaving returns to the sheet rather than
-    // advancing the queue (unlike the create-a-project path, which files the
-    // item as action [1] first).
-    if (p.action_count > 0) {
-      await openComposeFor(p, 'pick');
-      return;
-    }
+    // Picking a project does NOT open the composer (Quentin, 2026-08-11).
+    // It used to, whenever the project already had actions — but the composer
+    // ALSO opens after filing, so ordering was asked twice per item: once
+    // before you had finished clarifying, once after. The post-filing prompt
+    // is the one that arrives when the order is actually in your head; this
+    // one just interrupted the sheet. The ⛓ pill beside the project pill
+    // stays as the explicit way in.
     renderClarify();
   }));
   sheet.querySelector('#cl-proj-none').addEventListener('click', () => {
@@ -10452,16 +10660,6 @@ async function clarifyCreateProject(name) {
   }
   await openComposeFor({ id: p.id, content: p.content, area_id: areaId }, 'new');
 }
-
-// Open the composer on an EXISTING project. clarifyCreateProject does the
-// same for a project it just made; this is the other door into it.
-async function openComposeFor(proj) {
-  clarifyView.compose = { id: proj.id, name: proj.content,
-                          areaId: proj.area_id, actions: [], arm: null };
-  clarifyView.projSearch = null;
-  await refreshCompose();
-}
-
 
 // Two ways in, and the difference is whether the item has been filed yet:
 //   'new'  — clarifyCreateProject already filed it as action [1]; leaving

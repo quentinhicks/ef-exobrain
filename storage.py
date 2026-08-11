@@ -897,15 +897,34 @@ def init_db():
     _repair_time_preset_conversion(conn)
     _adopt_gate_schedules(conn)
     # Pawning a routine step onto a later routine — see pawn_flow_step. Three
-    # lazy ALTERs: two settings and one per-day state.
+    # lazy ALTERs: two settings and one per-day state — plus (2026-08-11) the
+    # NAMED soft version, the checklist link, and the 24h easing gate
+    # (`pending` JSON {field, value, apply_at}, applied on read — see
+    # apply_due_flow_pendings).
     for column, ddl in (('pawn_to_flow_id', 'INTEGER'),
                         ('pawn_minutes', 'INTEGER'),
-                        ('pawned_date', 'TEXT')):
+                        ('pawned_date', 'TEXT'),
+                        ('soft_content', 'TEXT'),
+                        ('ref_list_id', 'INTEGER'),
+                        ('pending', 'TEXT')):
         try:
             conn.execute(f'SELECT {column} FROM flow_step LIMIT 1')
         except Exception:
             conn.execute(f'ALTER TABLE flow_step ADD COLUMN {column} {ddl}')
             conn.commit()
+    try:
+        conn.execute('SELECT pending FROM flow LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE flow ADD COLUMN pending TEXT')
+        conn.commit()
+    # Reference lists NEST (2026-08-11): a list can live inside a list. The
+    # split at the root is what the index shows; delete splices children up a
+    # level, the same rule projects follow.
+    try:
+        conn.execute('SELECT parent_id FROM ref_list LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE ref_list ADD COLUMN parent_id INTEGER')
+        conn.commit()
     # Habits v2 (2026-08-11). An EXPERIMENT is an object with an ending: it
     # runs (one at a time), resolves with a note, and is EVALUATED only at the
     # weekly review — extend / habit / drop. A HABIT is a standing commitment
@@ -1929,10 +1948,11 @@ def get_ref_lists():
     return lists
 
 
-def create_ref_list(name):
+def create_ref_list(name, parent_id=None):
     conn = get_conn()
     row = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM ref_list').fetchone()
-    cur = conn.execute('INSERT INTO ref_list (name, position) VALUES (?, ?)', (name, row['p']))
+    cur = conn.execute('INSERT INTO ref_list (name, position, parent_id) VALUES (?, ?, ?)',
+                       (name, row['p'], parent_id or None))
     out = conn.execute('SELECT * FROM ref_list WHERE id = ?', (cur.lastrowid,)).fetchone()
     conn.commit()
     conn.close()
@@ -1952,6 +1972,11 @@ def update_ref_list(id, name):
 
 def delete_ref_list(id):
     conn = get_conn()
+    # Children splice up one level rather than vanishing with the parent —
+    # deleting a folder-of-lists must not silently take the lists.
+    row = conn.execute('SELECT parent_id FROM ref_list WHERE id = ?', (id,)).fetchone()
+    conn.execute('UPDATE ref_list SET parent_id = ? WHERE parent_id = ?',
+                 (row['parent_id'] if row else None, id))
     conn.execute('DELETE FROM ref_item WHERE list_id = ?', (id,))
     conn.execute('DELETE FROM ref_list WHERE id = ?', (id,))
     conn.commit()
@@ -3738,6 +3763,7 @@ def step_due_on(step, day):
 
 def get_flows(date=None):
     conn = get_conn()
+    apply_due_flow_pendings(conn)
     flows = [dict(r) for r in conn.execute('SELECT * FROM flow ORDER BY position, id').fetchall()]
     # Every step is returned whatever the date — the editor has to show the
     # whole routine to edit it. `due` is the annotation the RUNNER filters on,
@@ -3849,12 +3875,32 @@ def create_flow(name):
 
 def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node_id=_UNSET):
     conn = get_conn()
+    cur = conn.execute('SELECT qr_node_id, offset_min FROM flow WHERE id = ?', (id,)).fetchone()
+    apply_at = (datetime.now() + timedelta(hours=24)).isoformat()
     if name is not None:
         conn.execute('UPDATE flow SET name = ? WHERE id = ?', (name, id))
     if qr_node_id is not _UNSET:
-        conn.execute('UPDATE flow SET qr_node_id = ? WHERE id = ?', (qr_node_id, id))
+        # UNLINKING a gated routine is the largest easing there is — the gate
+        # stops judging on it entirely — so it waits 24h. Linking (or moving
+        # the link) tightens and applies now, clearing any pending easing.
+        if cur and cur['qr_node_id'] and not qr_node_id:
+            conn.execute('UPDATE flow SET pending = ? WHERE id = ?',
+                         (json.dumps({'field': 'qr_node_id', 'value': None,
+                                      'apply_at': apply_at}), id))
+        else:
+            conn.execute('UPDATE flow SET qr_node_id = ?, pending = NULL WHERE id = ?',
+                         (qr_node_id, id))
     if offset_min is not _UNSET:
-        conn.execute('UPDATE flow SET offset_min = ? WHERE id = ?', (offset_min, id))
+        # A LATER offset moves the shown deadline later: easing, 24h. Earlier
+        # (or clearing) applies now.
+        new_off = offset_min if offset_min is not None else 0
+        old_off = (cur['offset_min'] or 0) if cur else 0
+        if cur and cur['qr_node_id'] and new_off > old_off:
+            conn.execute('UPDATE flow SET pending = ? WHERE id = ?',
+                         (json.dumps({'field': 'offset_min', 'value': offset_min,
+                                      'apply_at': apply_at}), id))
+        else:
+            conn.execute('UPDATE flow SET offset_min = ? WHERE id = ?', (offset_min, id))
     if before_node_id is not _UNSET:
         conn.execute('UPDATE flow SET before_node_id = ? WHERE id = ?', (before_node_id, id))
     conn.commit()
@@ -3886,10 +3932,83 @@ def create_flow_step(flow_id, content, kind='text', requirement='hard', days_of_
     return dict(out)
 
 
+# ── The 24h easing gate for routines (2026-08-11) ─────────────
+#
+# A gate-linked routine is a money-backed commitment, so EVERY easing waits
+# 24h, the same rule the gates themselves follow: step hard→soft, removing a
+# run-day, deleting a step, unlinking the flow from its gate, pushing the
+# offset later. One pending change per row (`pending` JSON: field, value,
+# apply_at), applied on read through apply_due_flow_pendings — the editor,
+# the runner and the judge all read via get_flows/routine_gate_for_node, so
+# on-read is the choke point and no scheduler exists to miss.
+# Tightening the same field applies immediately AND cancels the pending: the
+# way back is always instant.
+def _pend_step(conn, id, field, value):
+    apply_at = (datetime.now() + timedelta(hours=24)).isoformat()
+    conn.execute('UPDATE flow_step SET pending = ? WHERE id = ?',
+                 (json.dumps({'field': field, 'value': value, 'apply_at': apply_at}), id))
+
+
+def _clear_step_pending(conn, id, field):
+    row = conn.execute('SELECT pending FROM flow_step WHERE id = ?', (id,)).fetchone()
+    if not row or not row['pending']:
+        return
+    try:
+        if json.loads(row['pending']).get('field') != field:
+            return
+    except ValueError:
+        pass
+    conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (id,))
+
+
+def apply_due_flow_pendings(conn):
+    now = datetime.now().isoformat()
+    for row in conn.execute(
+            'SELECT id, pending FROM flow_step WHERE pending IS NOT NULL').fetchall():
+        try:
+            p = json.loads(row['pending'])
+        except ValueError:
+            conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (row['id'],))
+            continue
+        if (p.get('apply_at') or '') > now:
+            continue
+        field = p.get('field')
+        if field == 'delete':
+            conn.execute('DELETE FROM flow_step WHERE id = ?', (row['id'],))
+        elif field in ('requirement', 'days_of_week'):
+            conn.execute(f'UPDATE flow_step SET {field} = ?, pending = NULL WHERE id = ?',
+                         (p.get('value'), row['id']))
+        else:
+            conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (row['id'],))
+    for row in conn.execute(
+            'SELECT id, pending FROM flow WHERE pending IS NOT NULL').fetchall():
+        try:
+            p = json.loads(row['pending'])
+        except ValueError:
+            conn.execute('UPDATE flow SET pending = NULL WHERE id = ?', (row['id'],))
+            continue
+        if (p.get('apply_at') or '') > now:
+            continue
+        field = p.get('field')
+        if field in ('qr_node_id', 'offset_min'):
+            conn.execute(f'UPDATE flow SET {field} = ?, pending = NULL WHERE id = ?',
+                         (p.get('value'), row['id']))
+        else:
+            conn.execute('UPDATE flow SET pending = NULL WHERE id = ?', (row['id'],))
+    conn.commit()
+
+
 def update_flow_step(id, content=None, kind=None, requirement=None, position=None,
                      days_of_week=_UNSET, rrule=_UNSET,
-                     pawn_to_flow_id=_UNSET, pawn_minutes=_UNSET):
+                     pawn_to_flow_id=_UNSET, pawn_minutes=_UNSET,
+                     soft_content=_UNSET, ref_list_id=_UNSET):
     conn = get_conn()
+    if soft_content is not _UNSET:
+        conn.execute('UPDATE flow_step SET soft_content = ? WHERE id = ?',
+                     ((soft_content or '').strip() or None, id))
+    if ref_list_id is not _UNSET:
+        conn.execute('UPDATE flow_step SET ref_list_id = ? WHERE id = ?',
+                     (ref_list_id or None, id))
     # Where this step may be pawned, and what carrying it costs the routine that
     # receives it. Clearing the destination un-pawns it too: a step that can no
     # longer be moved must not be left sitting somewhere it can't be sent.
@@ -3912,14 +4031,39 @@ def update_flow_step(id, content=None, kind=None, requirement=None, position=Non
     # _UNSET, not None: None IS a value here — it is how "every day" is stored,
     # so clearing the day picker has to be distinguishable from not touching it.
     if days_of_week is not _UNSET:
-        conn.execute('UPDATE flow_step SET days_of_week = ? WHERE id = ?',
-                     (days_of_week or None, id))
+        cur = conn.execute('''SELECT s.days_of_week, f.qr_node_id
+                              FROM flow_step s JOIN flow f ON s.flow_id = f.id
+                              WHERE s.id = ?''', (id,)).fetchone()
+        old = set(str(cur['days_of_week'] or '0123456')) if cur else set()
+        new = set(str(days_of_week or '0123456'))
+        # REMOVING a day is an easing (fewer nights the gate demands this), so
+        # on a gated routine it waits 24h; adding days tightens and applies now.
+        if cur and cur['qr_node_id'] and (old - new):
+            _pend_step(conn, id, 'days_of_week', days_of_week or None)
+        else:
+            conn.execute('UPDATE flow_step SET days_of_week = ? WHERE id = ?',
+                         (days_of_week or None, id))
+            _clear_step_pending(conn, id, 'days_of_week')
     if content is not None:
         conn.execute('UPDATE flow_step SET content = ? WHERE id = ?', (content, id))
     if kind is not None:
         conn.execute('UPDATE flow_step SET kind = ? WHERE id = ?', (kind, id))
     if requirement is not None:
-        conn.execute('UPDATE flow_step SET requirement = ? WHERE id = ?', (requirement, id))
+        # On a GATE-LINKED routine, hard→soft is an EASING of a money-backed
+        # commitment, so it waits 24h like every other easing (the gates'
+        # rule). Tightening — or any change on an ungated routine — applies at
+        # once, and always clears a pending easing of the same field: asking
+        # for hard again IS the cancel.
+        cur = conn.execute('''SELECT s.requirement, f.qr_node_id
+                              FROM flow_step s JOIN flow f ON s.flow_id = f.id
+                              WHERE s.id = ?''', (id,)).fetchone()
+        if (cur and cur['qr_node_id'] and requirement == 'soft'
+                and cur['requirement'] == 'hard'):
+            _pend_step(conn, id, 'requirement', 'soft')
+        else:
+            conn.execute('UPDATE flow_step SET requirement = ? WHERE id = ?',
+                         (requirement, id))
+            _clear_step_pending(conn, id, 'requirement')
     if position is not None:
         conn.execute('UPDATE flow_step SET position = ? WHERE id = ?', (position, id))
     conn.commit()
@@ -3929,10 +4073,33 @@ def update_flow_step(id, content=None, kind=None, requirement=None, position=Non
 
 
 def delete_flow_step(id):
+    # Deleting a step from a GATED routine eases what the gate demands, so it
+    # waits 24h like every other easing (pending 'delete'; the row stays,
+    # badged, and deleting again within the window is a no-op re-stamp).
+    # Ungated routines delete at once. Returns {'pending': True} when deferred
+    # so the client can register the CANCEL as the undo instead of a re-create.
     conn = get_conn()
+    row = conn.execute('''SELECT f.qr_node_id FROM flow_step s
+                          JOIN flow f ON s.flow_id = f.id
+                          WHERE s.id = ?''', (id,)).fetchone()
+    if row and row['qr_node_id']:
+        _pend_step(conn, id, 'delete', None)
+        conn.commit()
+        conn.close()
+        return {'pending': True}
     conn.execute('DELETE FROM flow_step WHERE id = ?', (id,))
     conn.commit()
     conn.close()
+    return {'pending': False}
+
+
+def cancel_flow_step_pending(id):
+    conn = get_conn()
+    conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (id,))
+    conn.commit()
+    row = conn.execute('SELECT * FROM flow_step WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def routine_gate_for_node(node_id, date):
@@ -3943,6 +4110,9 @@ def routine_gate_for_node(node_id, date):
     # is only a deadline reference, so matching on it here would make a gate
     # judge on a routine it has no relationship to.
     conn = get_conn()
+    # The judge reads through here, not get_flows — a due easing (an unlink,
+    # a softened step) must reach judgment without waiting for a UI read.
+    apply_due_flow_pendings(conn)
     row = conn.execute(
         '''SELECT f.id, r.completed_at FROM flow f
            LEFT JOIN flow_run r ON r.flow_id = f.id AND r.date = ?

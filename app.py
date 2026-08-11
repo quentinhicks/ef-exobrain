@@ -555,7 +555,7 @@ def post_ref_list():
     name = (data.get('name') or '').strip()
     if not name:
         return jsonify({'error': 'name is required'}), 400
-    return jsonify(storage.create_ref_list(name)), 201
+    return jsonify(storage.create_ref_list(name, data.get('parent_id'))), 201
 
 
 @app.route('/api/ref/lists/<int:id>', methods=['PATCH'])
@@ -1685,7 +1685,9 @@ def patch_flow_step(id):
         days_of_week=data.get('days_of_week', storage._UNSET),
         rrule=data.get('rrule', storage._UNSET),
         pawn_to_flow_id=data.get('pawn_to_flow_id', storage._UNSET),
-        pawn_minutes=data.get('pawn_minutes', storage._UNSET)))
+        pawn_minutes=data.get('pawn_minutes', storage._UNSET),
+        soft_content=data.get('soft_content', storage._UNSET),
+        ref_list_id=data.get('ref_list_id', storage._UNSET)))
 
 
 # Pawning is a DAY-level act, not a config edit, so it is its own route rather
@@ -1704,8 +1706,13 @@ def pawn_flow_step_route(id):
 
 @app.route('/api/flow-steps/<int:id>', methods=['DELETE'])
 def delete_flow_step_route(id):
-    storage.delete_flow_step(id)
-    return '', 204
+    # {'pending': True} = the 24h easing gate deferred it (gated routine).
+    return jsonify(storage.delete_flow_step(id))
+
+
+@app.route('/api/flow-steps/<int:id>/pending', methods=['DELETE'])
+def cancel_flow_step_pending_route(id):
+    return jsonify(storage.cancel_flow_step_pending(id) or {})
 
 
 @app.route('/api/flows/<int:id>/run', methods=['PUT'])
