@@ -1283,6 +1283,88 @@ def patch_journal(date):
     return jsonify(row)
 
 
+# --- Habits and their experiments ---
+#
+# Three surfaces, one write class each (the lens rule, applied to habits):
+# the NIGHTLY journal step makes marks, the WEEKLY review passes verdicts,
+# the JOURNAL tab reads everything. No Settings page — deciding happens in
+# the review, so a fourth surface would just restate these.
+
+@app.route('/api/habits')
+def get_habits_route():
+    today = date_cls.today().isoformat()
+    return jsonify(dict(storage.get_habits_overview(today),
+                        experiments=storage.get_habit_experiments_overview(today),
+                        marks_today=storage.habit_marks_for(today)))
+
+
+@app.route('/api/habits', methods=['POST'])
+def post_habit():
+    content = (request.get_json() or {}).get('content', '').strip()
+    if not content:
+        return jsonify({'error': 'content is required'}), 400
+    return jsonify(storage.create_habit(content, date_cls.today().isoformat())), 201
+
+
+@app.route('/api/habits/<int:id>', methods=['PATCH'])
+def patch_habit(id):
+    data = request.get_json() or {}
+    status = data.get('status')
+    # 'forming' is how a verdict is undone; the other two are conclusions.
+    if status not in ('forming', 'graduated', 'dropped'):
+        return jsonify({'error': 'status must be forming, graduated or dropped'}), 400
+    row = storage.set_habit_status(id, status, (data.get('verdict') or '').strip() or None)
+    if not row:
+        return jsonify({'error': 'no such habit'}), 404
+    return jsonify(row)
+
+
+@app.route('/api/habits/<int:id>/mark', methods=['POST'])
+def post_habit_mark(id):
+    data = request.get_json() or {}
+    date = data.get('date') or date_cls.today().isoformat()
+    kwargs = {}
+    if 'mark' in data:
+        if data['mark'] not in ('ehh', 'good', 'great', None):
+            return jsonify({'error': 'mark must be ehh, good or great'}), 400
+        kwargs['mark'] = data['mark']
+    if 'effort' in data:
+        if data['effort'] not in ('auto', 'deliberate', None):
+            return jsonify({'error': 'effort must be auto or deliberate'}), 400
+        kwargs['effort'] = data['effort']
+    return jsonify(storage.mark_habit_day(id, date, **kwargs))
+
+
+@app.route('/api/habit-experiments', methods=['POST'])
+def post_habit_experiment():
+    content = (request.get_json() or {}).get('content', '').strip()
+    if not content:
+        return jsonify({'error': 'content is required'}), 400
+    row = storage.create_habit_experiment(content, date_cls.today().isoformat())
+    if row is None:
+        return jsonify({'error': 'an experiment is already running — resolve it first'}), 409
+    return jsonify(row), 201
+
+
+@app.route('/api/habit-experiments/<int:id>', methods=['PATCH'])
+def patch_habit_experiment(id):
+    data = request.get_json() or {}
+    if 'resolution' in data:
+        row = storage.resolve_habit_experiment(id, (data.get('resolution') or '').strip())
+        return jsonify(row) if row else (jsonify({'error': 'not running'}), 404)
+    outcome = data.get('outcome')
+    if outcome == 'resolved':
+        # The undo half of an evaluation.
+        storage.unevaluate_habit_experiment(id)
+        return jsonify({'ok': True})
+    if outcome not in ('extend', 'habit', 'drop'):
+        return jsonify({'error': 'outcome must be extend, habit or drop'}), 400
+    out = storage.evaluate_habit_experiment(id, outcome)
+    if out is None:
+        return jsonify({'error': 'only a resolved experiment can be evaluated'}), 404
+    return jsonify(out)
+
+
 # --- GTD weekly review ---
 
 @app.route('/api/gtd-review')

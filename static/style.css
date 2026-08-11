@@ -5700,3 +5700,23 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .gb-amt { font: 10px var(--font-mono); color: var(--danger); min-width: 40px; text-align: right; }
 .gb-more { display: block; width: 100%; background: none; border: none; cursor: pointer;
   padding: 11px 20px; text-align: left; font: 12px var(--font-sans); color: var(--accent); }
+
+/* ── Habits: nightly marks, review tallies, journal ledger ───
+   Two axes per forming habit on the nightly page (mark = adherence, effort =
+   the automaticity probe); verdicts in the review; the standing view in the
+   Journal tab. Never on Engage. */
+.fr-habit { margin-top: 14px; border-top: 1px solid var(--border-soft); padding-top: 8px; }
+.fr-habit-name { font: 600 13px var(--font-sans); color: var(--text-primary); margin-bottom: 4px; }
+.gr-habit-tally { margin: 12px 0 4px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;
+  display: flex; flex-direction: column; gap: 8px; }
+.gr-ht-head { font: 10px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-secondary); }
+.gr-ht-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font: 13px var(--font-sans); }
+.gr-ht-counts { font: 11px var(--font-mono); color: var(--text-secondary); }
+.gr-ht-suggest { font: 12px var(--font-sans); color: var(--success); }
+.gr-ht-verbs { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.gr-ht-input { flex: 1; min-width: 160px; font: 12px var(--font-sans); }
+/* The health spectrum: inline hsl (computed red->green), grey under 5 marks. */
+.gr-hb-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; align-self: center; }
+.jh-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font: 13px/1.7 var(--font-sans); }
+.jh-done { color: var(--text-secondary); }
+.jh-legacy { color: var(--text-secondary); font-size: 12px; }

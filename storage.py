@@ -906,6 +906,44 @@ def init_db():
         except Exception:
             conn.execute(f'ALTER TABLE flow_step ADD COLUMN {column} {ddl}')
             conn.commit()
+    # Habits v2 (2026-08-11). An EXPERIMENT is an object with an ending: it
+    # runs (one at a time), resolves with a note, and is EVALUATED only at the
+    # weekly review — extend / habit / drop. A HABIT is a standing commitment
+    # rated nightly on two axes: mark (adherence — did it happen) and effort
+    # (automaticity — did it run on its own; SRBAI-style, asked not inferred).
+    # Value is the experiment's question and is settled before a habit exists,
+    # which is why habit_day carries no 1-7. habit_week stays untouched as
+    # read-only history.
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS habit_experiment (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            content      TEXT NOT NULL,
+            started_on   TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'running',
+            resolution   TEXT,
+            resolved_on  TEXT,
+            outcome      TEXT,
+            evaluated_on TEXT,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS habit (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            content       TEXT NOT NULL,
+            started_on    TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'forming',
+            verdict       TEXT,
+            ended_on      TEXT,
+            experiment_id INTEGER,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS habit_day (
+            habit_id INTEGER NOT NULL,
+            date     TEXT NOT NULL,
+            mark     TEXT CHECK(mark IS NULL OR mark IN ('ehh','good','great')),
+            effort   TEXT CHECK(effort IS NULL OR effort IN ('auto','deliberate')),
+            PRIMARY KEY (habit_id, date)
+        );
+    ''')
     _seed_social_axes(conn)
     conn.commit()
     conn.close()
@@ -3064,6 +3102,181 @@ def list_habit_weeks(limit=12):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def _habit_stats(conn, habit_id, today):
+    # Three windows, three questions. Last 14 days of MARKS -> the health
+    # spectrum (grey under 5 marks — two data points must not render a
+    # confident colour). Last 10 days of EFFORT answers -> graduation (>= 70%
+    # ran-on-its-own, and at least 5 answers so 1/1 can't read as 100%).
+    # All-time counts -> the review tally.
+    d14 = (date_cls.fromisoformat(today) - timedelta(days=14)).isoformat()
+    d10 = (date_cls.fromisoformat(today) - timedelta(days=10)).isoformat()
+    rows = conn.execute(
+        'SELECT date, mark, effort FROM habit_day WHERE habit_id = ?', (habit_id,)).fetchall()
+    t = {'ehh': 0, 'good': 0, 'great': 0, 'days': 0}
+    recent_n = recent_score = auto = answered = 0
+    for r in rows:
+        if r['mark']:
+            t[r['mark']] += 1
+            t['days'] += 1
+            if r['date'] > d14:
+                recent_n += 1
+                recent_score += {'ehh': 0, 'good': 1, 'great': 2}[r['mark']]
+        if r['effort'] and r['date'] > d10:
+            answered += 1
+            auto += 1 if r['effort'] == 'auto' else 0
+    t['health'] = None if recent_n < 5 else round(recent_score / (2 * recent_n), 2)
+    t['auto_recent'] = auto
+    t['effort_answered'] = answered
+    return t
+
+
+def get_habits_overview(today):
+    conn = get_conn()
+    habits = [dict(r) for r in conn.execute(
+        'SELECT * FROM habit ORDER BY started_on DESC, id DESC').fetchall()]
+    for h in habits:
+        h['tally'] = _habit_stats(conn, h['id'], today)
+        t = h['tally']
+        age = (date_cls.fromisoformat(today) - date_cls.fromisoformat(h['started_on'])).days
+        # Quentin's rule (2026-08-11): habits take a while — ~30 days old, and
+        # the last 10 days mostly running on their own. Adherence is NOT a
+        # condition here: the spectrum shows behaviour health, the effort probe
+        # decides formation, and a deep-green white-knuckle habit is not done.
+        h['suggest'] = bool(h['status'] == 'forming' and age >= 30
+                            and t['effort_answered'] >= 5
+                            and t['auto_recent'] / t['effort_answered'] >= 0.7)
+    legacy = [dict(r) for r in conn.execute(
+        'SELECT * FROM habit_week ORDER BY week_start_date DESC').fetchall()]
+    conn.close()
+    return {'forming': [h for h in habits if h['status'] == 'forming'],
+            'ledger': [h for h in habits if h['status'] != 'forming'],
+            'legacy': legacy}
+
+
+def create_habit(content, started_on, experiment_id=None):
+    conn = get_conn()
+    cur = conn.execute(
+        'INSERT INTO habit (content, started_on, experiment_id) VALUES (?,?,?)',
+        (content, started_on, experiment_id))
+    conn.commit()
+    row = conn.execute('SELECT * FROM habit WHERE id = ?', (cur.lastrowid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def set_habit_status(id, status, verdict=None, today=None):
+    conn = get_conn()
+    conn.execute(
+        'UPDATE habit SET status = ?, verdict = ?, ended_on = ? WHERE id = ?',
+        (status, verdict,
+         None if status == 'forming' else (today or date_cls.today().isoformat()), id))
+    conn.commit()
+    row = conn.execute('SELECT * FROM habit WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def mark_habit_day(habit_id, date, mark=_UNSET, effort=_UNSET):
+    # Partial upsert: each axis lands independently, and re-tapping overwrites —
+    # which is why the nightly marks need no undo entry.
+    conn = get_conn()
+    conn.execute('INSERT OR IGNORE INTO habit_day (habit_id, date) VALUES (?,?)',
+                 (habit_id, date))
+    if mark is not _UNSET:
+        conn.execute('UPDATE habit_day SET mark = ? WHERE habit_id = ? AND date = ?',
+                     (mark, habit_id, date))
+    if effort is not _UNSET:
+        conn.execute('UPDATE habit_day SET effort = ? WHERE habit_id = ? AND date = ?',
+                     (effort, habit_id, date))
+    conn.commit()
+    row = conn.execute('SELECT * FROM habit_day WHERE habit_id = ? AND date = ?',
+                       (habit_id, date)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def habit_marks_for(date):
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM habit_day WHERE date = ?', (date,)).fetchall()
+    conn.close()
+    return {r['habit_id']: dict(r) for r in rows}
+
+
+def create_habit_experiment(content, started_on):
+    # ONE experiment at a time — one variable is what makes it an experiment,
+    # and it is what keeps the nightly 1-7 unambiguous. Refusing here is the
+    # backstop; the review only offers "start" when nothing is running.
+    conn = get_conn()
+    if conn.execute("SELECT id FROM habit_experiment WHERE status = 'running'").fetchone():
+        conn.close()
+        return None
+    cur = conn.execute('INSERT INTO habit_experiment (content, started_on) VALUES (?,?)',
+                       (content, started_on))
+    conn.commit()
+    row = conn.execute('SELECT * FROM habit_experiment WHERE id = ?', (cur.lastrowid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def resolve_habit_experiment(id, resolution, today=None):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE habit_experiment SET status = 'resolved', resolution = ?, resolved_on = ?
+           WHERE id = ? AND status = 'running'""",
+        (resolution, today or date_cls.today().isoformat(), id))
+    conn.commit()
+    row = conn.execute('SELECT * FROM habit_experiment WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def evaluate_habit_experiment(id, outcome, today=None):
+    # The verb is passed at the WEEKLY REVIEW, never before: a resolved
+    # experiment stays awaiting-evaluation however long ago it resolved.
+    # 'habit' is the one outcome with a side effect — the habit starts here.
+    today = today or date_cls.today().isoformat()
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM habit_experiment WHERE id = ? AND status = 'resolved'", (id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    conn.execute(
+        """UPDATE habit_experiment SET status = 'evaluated', outcome = ?, evaluated_on = ?
+           WHERE id = ?""", (outcome, today, id))
+    conn.commit()
+    conn.close()
+    habit = create_habit(row['content'], today, id) if outcome == 'habit' else None
+    return {'experiment': dict(row, status='evaluated', outcome=outcome,
+                               evaluated_on=today), 'habit': habit}
+
+
+def unevaluate_habit_experiment(id):
+    # The undo half of evaluate: back to awaiting, and the habit it minted (if
+    # any) goes with it — half an undo would strand a habit nothing decided on.
+    conn = get_conn()
+    conn.execute(
+        """UPDATE habit_experiment SET status = 'resolved', outcome = NULL, evaluated_on = NULL
+           WHERE id = ?""", (id,))
+    conn.execute('DELETE FROM habit WHERE experiment_id = ?', (id,))
+    conn.commit()
+    conn.close()
+
+
+def get_habit_experiments_overview(today):
+    d30 = (date_cls.fromisoformat(today) - timedelta(days=30)).isoformat()
+    conn = get_conn()
+    running = conn.execute("SELECT * FROM habit_experiment WHERE status = 'running'").fetchone()
+    awaiting = [dict(r) for r in conn.execute(
+        "SELECT * FROM habit_experiment WHERE status = 'resolved' ORDER BY resolved_on").fetchall()]
+    evaluated = [dict(r) for r in conn.execute(
+        "SELECT * FROM habit_experiment WHERE status = 'evaluated' AND evaluated_on >= ? ORDER BY evaluated_on DESC",
+        (d30,)).fetchall()]
+    conn.close()
+    return {'running': dict(running) if running else None,
+            'awaiting': awaiting, 'evaluated': evaluated}
 
 
 # --- Monthly Reviews ---

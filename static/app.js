@@ -2917,6 +2917,7 @@ let gtdReview = null;
 // the top, toggled by #gtd-review-head. No modal.
 async function openGtdReview() {
   gtdReview = await fetch('/api/gtd-review').then(r => r.json());
+  gtdReview.habits = await fetch('/api/habits').then(r => r.json()).catch(() => null);
   renderGtdReview();
   document.getElementById('review-panel').classList.remove('hidden');
   updateReviewNavDot();
@@ -2928,6 +2929,99 @@ function initGtdReviewFold() {
     if (panel.classList.contains('hidden')) openGtdReview();
     else panel.classList.add('hidden');
   });
+}
+
+// The two review tallies. Two vocabularies on purpose, no shared words:
+// an EXPERIMENT resolves and is evaluated here — extend (adopt the change in
+// another context) / habit (start forming it) / drop — and a HABIT is judged
+// here — graduate (it is automatic; stop tracking) / continue / drop (turned
+// out not worth it once installed — a verdict, not a failure). Graduation is
+// a DECISION, not a threshold: the rule (30 days old, last 10 days >= 70%
+// ran-on-its-own) only suggests, showing its inputs.
+function habitHealthDot(t) {
+  // Grey until 5 marks in the window — two data points must not render a
+  // confident colour. The spectrum is computed (red 0 -> green 120), which is
+  // why it is an inline hsl and not a theme var; 45% lightness reads on both
+  // themes.
+  if (t.health == null) return '<span class="gr-hb-dot" style="background:var(--border-soft)" title="fewer than 5 marks in 14 days"></span>';
+  return `<span class="gr-hb-dot" style="background:hsl(${Math.round(t.health * 120)},55%,45%)" title="adherence ${Math.round(t.health * 100)}% over 14 days"></span>`;
+}
+
+function habitReviewHtml(hb) {
+  if (!hb) return '';
+  const ex = hb.experiments || {};
+  const exBlock = `
+    <div class="gr-ht-head">Experiment</div>
+    ${ex.running ? `<div class="gr-ht-line">${escHtml(ex.running.content)}
+        <span class="gr-ht-counts">running since ${escHtml(ex.running.started_on)}</span>
+        <button class="cl-pill" data-exresolve="${ex.running.id}">resolve</button></div>`
+      : `<div class="gr-ht-line"><input type="text" id="gr-exp-new" class="gr-ht-input"
+          placeholder="start one — change a single cue, response cost, or reward">
+        <button class="cl-pill" id="gr-exp-start">start</button></div>`}
+    ${(ex.awaiting || []).map(e => `<div class="gr-ht-line" data-exid="${e.id}">
+      ${escHtml(e.content)} <span class="gr-ht-counts">resolved: ${escHtml(e.resolution || '—')}</span>
+      <span class="gr-ht-verbs">
+        <button class="cl-pill" data-exverb="extend" title="it worked — adopt it in another context too">extend</button>
+        <button class="cl-pill" data-exverb="habit" title="start forming it as a tracked habit">habit</button>
+        <button class="cl-pill" data-exverb="drop">drop</button>
+      </span></div>`).join('')}`;
+  const hbBlock = (hb.forming || []).length ? `
+    <div class="gr-ht-head">Habits forming</div>
+    ${hb.forming.map(h => {
+      const t = h.tally;
+      const asked = t.effort_answered;
+      return `<div class="gr-ht-line" data-hbid="${h.id}">
+        ${habitHealthDot(t)} <b>${escHtml(h.content)}</b>
+        <span class="gr-ht-counts">great ${t.great} · good ${t.good} · ehh ${t.ehh}${
+          asked ? ` · on its own ${t.auto_recent}/${asked} of last 10d` : ''}</span>
+        ${h.suggest ? '<span class="gr-ht-suggest">30+ days, mostly automatic — graduate?</span>' : ''}
+        <span class="gr-ht-verbs">
+          <button class="cl-pill${h.suggest ? ' cl-pill-on' : ''}" data-hbverb="graduated">graduate</button>
+          <button class="cl-pill" data-hbverb="continue">continue</button>
+          <button class="cl-pill" data-hbverb="dropped">drop</button>
+        </span></div>`;
+    }).join('')}
+    ${hb.forming.length > 3 ? `<div class="gr-ht-counts">${hb.forming.length} habits forming — the marks get less honest as this grows.</div>` : ''}`
+    : '';
+  return `<div class="gr-habit-tally">${exBlock}${hbBlock}</div>`;
+}
+
+async function habitVerb(id, verb, name) {
+  if (verb === 'continue') { toast(`continuing: ${name}`); return; }
+  const verdict = prompt(verb === 'graduated'
+    ? 'One line for the ledger — what made it stick?'
+    : 'One line for the ledger — why drop it?') || null;
+  await fetch(`/api/habits/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: verb, verdict }),
+  });
+  pushUndo(`${verb === 'graduated' ? 'graduated' : 'dropped'} "${name}"`, async () => {
+    await fetch(`/api/habits/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'forming' }),
+    });
+    await openGtdReview();
+  });
+  toast(`${verb}: ${name}`);
+  await openGtdReview();
+}
+
+async function experimentVerb(id, verb, name) {
+  const res = await fetch(`/api/habit-experiments/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ outcome: verb }),
+  }).then(r => r.json());
+  // Undoing an evaluation also unmints the habit it may have created — half
+  // an undo would strand a habit nothing decided on.
+  pushUndo(`${verb === 'habit' ? 'promoted' : verb + 'ed'} experiment "${name}"`, async () => {
+    await fetch(`/api/habit-experiments/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ outcome: 'resolved' }),
+    });
+    await openGtdReview();
+  });
+  toast(verb === 'habit' ? `now forming: ${name}` : `${verb}: ${name}`);
+  await openGtdReview();
 }
 
 function renderGtdReview() {
@@ -3020,6 +3114,7 @@ function renderGtdReview() {
   const weekLabel = new Date(gtdReview.week_start_date + 'T00:00:00')
     .toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const habit = gtdReview.habit && gtdReview.habit.habit ? gtdReview.habit.habit : '';
+  const habits = gtdReview.habits;
 
   panel.innerHTML = `
     <div class="gr-head">
@@ -3028,9 +3123,10 @@ function renderGtdReview() {
     </div>
     <div class="gr-criterion">Done when you can say: “I know right now everything I'm not doing but could be doing if I decided to.”</div>
     ${html}
+    ${habitReviewHtml(gtdReview.habits)}
     <div class="gr-footer">
-      <label class="gr-field"><span>This week's habit</span>
-        <input type="text" id="gr-habit" value="${escHtml(habit)}" placeholder="optional — rated nightly on the sleep gate"></label>
+      <label class="gr-field"><span>New habit (free text — experiments are the usual way in)</span>
+        <input type="text" id="gr-habit" value="" placeholder="optional — starts forming this week, rated nightly"></label>
       <label class="gr-field"><span>Note</span>
         <input type="text" id="gr-note" value="${escHtml(gtdReview.note || '')}" placeholder="optional"></label>
       ${gtdReview.completed_at
@@ -3055,6 +3151,38 @@ function renderGtdReview() {
     });
   });
 
+  panel.querySelectorAll('[data-hbverb]').forEach(b => b.addEventListener('click', () => {
+    const row = b.closest('[data-hbid]');
+    const h = gtdReview.habits.forming.find(x => x.id === parseInt(row.dataset.hbid));
+    habitVerb(h.id, b.dataset.hbverb, h.content);
+  }));
+  panel.querySelectorAll('[data-exverb]').forEach(b => b.addEventListener('click', () => {
+    const row = b.closest('[data-exid]');
+    const e = gtdReview.habits.experiments.awaiting.find(x => x.id === parseInt(row.dataset.exid));
+    experimentVerb(e.id, b.dataset.exverb, e.content);
+  }));
+  const exResolve = panel.querySelector('[data-exresolve]');
+  if (exResolve) exResolve.addEventListener('click', async () => {
+    const note = prompt('How did it resolve? One line — this is the evidence the verbs judge.');
+    if (note == null) return;
+    await fetch(`/api/habit-experiments/${exResolve.dataset.exresolve}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resolution: note }),
+    });
+    await openGtdReview();
+  });
+  const exStart = panel.querySelector('#gr-exp-start');
+  if (exStart) exStart.addEventListener('click', async () => {
+    const content = panel.querySelector('#gr-exp-new').value.trim();
+    if (!content) return;
+    const res = await fetch('/api/habit-experiments', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!res.ok) { toast((await res.json()).error || 'could not start'); return; }
+    await openGtdReview();
+  });
+
   panel.querySelectorAll('.gr-cb').forEach(cb => {
     cb.addEventListener('change', async () => {
       gtdReview = await fetch('/api/gtd-review/step', {
@@ -3063,7 +3191,7 @@ function renderGtdReview() {
         body: JSON.stringify({ week: gtdReview.week_start_date, step: cb.dataset.step, done: cb.checked }),
       }).then(r => r.json());
       gtdReview.counts = counts;
-      gtdReview.habit = habit ? { habit } : null;
+      gtdReview.habits = habits;
       renderGtdReview();
     });
   });
@@ -3072,13 +3200,21 @@ function renderGtdReview() {
   if (finish) {
     finish.addEventListener('click', async () => {
       finish.disabled = true;
+      // The free-text path mints a real habit row (habit_week is history now);
+      // the finish route no longer receives it.
+      const newHabit = document.getElementById('gr-habit').value.trim();
+      if (newHabit) {
+        await fetch('/api/habits', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: newHabit }),
+        });
+      }
       await fetch('/api/gtd-review/finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           week: gtdReview.week_start_date,
           note: document.getElementById('gr-note').value,
-          habit: document.getElementById('gr-habit').value,
         }),
       });
       state.review.due = false;
@@ -3966,10 +4102,11 @@ const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
 
 async function openFlowRun(flowId) {
   const today = formatDateYMD(new Date());
-  const [flows, day, journal] = await Promise.all([
+  const [flows, day, journal, habits] = await Promise.all([
     fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => []),
     fetch(`/api/social/day?date=${today}`).then(r => r.json()).catch(() => null),
     fetch('/api/journal').then(r => r.json()).catch(() => null),
+    fetch('/api/habits').then(r => r.json()).catch(() => null),
   ]);
   const flow = flows.find(f => f.id === flowId);
   if (!flow) return;
@@ -3991,6 +4128,7 @@ async function openFlowRun(flowId) {
   flowRunView.journal = journal && journal.days
     ? journal.days.find(x => x.date === today) || null : null;
   flowRunView.crmFilled = false;
+  flowRunView.habits = habits;
   flowRunView.open = true;
   renderFlowRun();
 }
@@ -4080,13 +4218,35 @@ function renderFlowRun() {
         : '<div class="fr-note fr-note-hard">hard — the real thing</div>'}`;
   } else if (s.kind === 'journal_night') {
     const j = flowRunView.journal || {};
+    const hb = flowRunView.habits || {};
+    const marks = hb.marks_today || {};
+    const running = hb.experiments && hb.experiments.running;
+    // Two different questions, deliberately separated (2026-08-11): the 1-7 is
+    // the EXPERIMENT's instrument — is this change worth keeping? — because
+    // value is what an experiment exists to decide. A habit's value was
+    // settled before it became one, so each forming habit asks only the two
+    // formation questions: mark (adherence — did it happen) and effort
+    // (automaticity — did it run on its own). No 1-7 on habits, ever: keeping
+    // one would invite re-litigating nightly what the experiment already
+    // answered.
     page = `<div class="fr-step-big">Nightly journal</div>
       <textarea id="fr-jn-bottleneck" class="cl-notes" rows="2"
         placeholder="Today's bottleneck…">${escHtml(j.bottleneck || '')}</textarea>
+      ${running ? `<div class="fr-note">experiment: ${escHtml(running.content)} — how did it feel today?</div>` : ''}
       <textarea id="fr-jn-exp" class="cl-notes" rows="2"
-        placeholder="Active experiment…">${escHtml(j.active_experiment || '')}</textarea>
+        placeholder="${running ? 'Observations on the experiment…' : 'Active experiment…'}">${escHtml(j.active_experiment || '')}</textarea>
       <div class="fr-rating">${[1, 2, 3, 4, 5, 6, 7].map(n =>
-        `<button class="fr-rate${j.rating === n ? ' fr-rate-on' : ''}" data-rate="${n}">${n}</button>`).join('')}</div>`;
+        `<button class="fr-rate${j.rating === n ? ' fr-rate-on' : ''}" data-rate="${n}">${n}</button>`).join('')}</div>
+      ${(hb.forming || []).map(h => {
+        const m = marks[h.id] || {};
+        return `<div class="fr-habit" data-habit="${h.id}">
+          <div class="fr-habit-name">${escHtml(h.content)}</div>
+          <div class="fr-rating fr-hb-mark">${['ehh', 'good', 'great'].map(v =>
+            `<button class="fr-rate${m.mark === v ? ' fr-rate-on' : ''}" data-mark="${v}">${v}</button>`).join('')}</div>
+          <div class="fr-rating fr-hb-effort">${[['auto', 'ran on its own'], ['deliberate', 'took effort']].map(([v, t]) =>
+            `<button class="fr-rate${m.effort === v ? ' fr-rate-on' : ''}" data-effort="${v}">${t}</button>`).join('')}</div>
+        </div>`;
+      }).join('')}`;
   } else if (s.kind === 'crm_fill') {
     page = `<div class="fr-step-big">CRM nightly fill</div>
       <div class="fr-note">${flowRunView.crmFilled
@@ -4144,6 +4304,29 @@ function renderFlowRun() {
   if (unpawn) unpawn.addEventListener('click', () => unpawnStep(s));
   el.querySelector('#fr-done').addEventListener('click', async () => {
     if (s.kind === 'journal_night') {
+      // Marks land per habit, on habit_day. A hard step demands every forming
+      // habit be marked — viewing without answering is checkbox theatre; soft
+      // lets a partial night through.
+      const rows = [...el.querySelectorAll('.fr-habit')];
+      const unmarked = rows.filter(r => !r.querySelector('.fr-hb-mark .fr-rate-on'));
+      if (unmarked.length && s.requirement !== 'soft') {
+        toast(`Rate ${unmarked.length} habit${unmarked.length === 1 ? '' : 's'} first`);
+        return;
+      }
+      for (const r of rows) {
+        const mark = r.querySelector('.fr-hb-mark .fr-rate-on');
+        const eff = r.querySelector('.fr-hb-effort .fr-rate-on');
+        if (!mark && !eff) continue;
+        const body = { date: formatDateYMD(new Date()) };
+        if (mark) body.mark = mark.dataset.mark;
+        if (eff) body.effort = eff.dataset.effort;
+        await fetch(`/api/habits/${r.dataset.habit}/mark`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+    }
+    if (s.kind === 'journal_night') {
       const today = formatDateYMD(new Date());
       const rate = el.querySelector('.fr-rate-on');
       await fetch(`/api/journal/${today}`, {
@@ -4158,7 +4341,9 @@ function renderFlowRun() {
     creditFlowStep(s, 'done');
   });
   el.querySelectorAll('.fr-rate').forEach(b => b.addEventListener('click', () => {
-    el.querySelectorAll('.fr-rate').forEach(x => x.classList.remove('fr-rate-on'));
+    // Exclusive within the GROUP, not the page — the ledger page holds two
+    // independent questions, and answering one must not clear the other.
+    b.parentElement.querySelectorAll('.fr-rate').forEach(x => x.classList.remove('fr-rate-on'));
     b.classList.add('fr-rate-on');
   }));
   const crm = el.querySelector('#fr-crm-fill');
@@ -6088,7 +6273,7 @@ async function loadJournalData() {
     .catch(() => null)
     || await fetch('/api/journal').then(r => r.json()).catch(() => ({ days: [], habit: null }));
   journalView.habit = data.habit;
-  renderJournalHabit(data.habit);
+  renderJournalHabit(await fetch('/api/habits').then(r => r.json()).catch(() => null));
   renderJournalCards(data.days || []);
 }
 
@@ -6131,16 +6316,37 @@ function renderJournalCards(days) {
     s.addEventListener('change', () => save(s.closest('.jn-card'), s.dataset.field, s.value)));
 }
 
-function renderJournalHabit(habit) {
+// The STANDING VIEW of the habit system (2026-08-11): forming habits with
+// their health spectrum, the running experiment, the ledger of concluded
+// commitments with verdicts, and the old habit_week rows read-only at the
+// bottom — they were real commitments. Reads only: marks are made in the
+// nightly step, verdicts at the weekly review. No Settings page, on purpose —
+// a fourth surface would restate these three.
+function renderJournalHabit(hb) {
   const el = document.getElementById('journal-habit');
   if (!el) return;
-  if (habit && habit.habit) {
-    el.innerHTML = `<span class="jh-label">Habit this week</span>` +
-      `<span class="jh-value">${escHtml(habit.habit)}</span>` +
-      `<span class="jh-since">since ${escHtml(habit.week_start_date)}</span>`;
-  } else {
-    el.innerHTML = `<span class="jh-empty">No habit set — add one when you file your weekly review.</span>`;
+  if (!hb) { el.innerHTML = '<span class="jh-empty">Habits unavailable.</span>'; return; }
+  const ex = hb.experiments || {};
+  const rows = [];
+  if (ex.running) {
+    rows.push(`<div class="jh-row"><span class="jh-label">experiment</span>
+      ${escHtml(ex.running.content)} <span class="jh-since">since ${escHtml(ex.running.started_on)}</span></div>`);
   }
+  (ex.awaiting || []).forEach(e => rows.push(
+    `<div class="jh-row"><span class="jh-label">resolved</span>
+      ${escHtml(e.content)} <span class="jh-since">awaits the weekly review</span></div>`));
+  (hb.forming || []).forEach(h => rows.push(
+    `<div class="jh-row">${habitHealthDot(h.tally)} ${escHtml(h.content)}
+      <span class="jh-since">forming since ${escHtml(h.started_on)}${
+        h.suggest ? ' · mostly automatic — review will offer graduation' : ''}</span></div>`));
+  (hb.ledger || []).forEach(h => rows.push(
+    `<div class="jh-row jh-done"><span class="jh-label">${h.status === 'graduated' ? '✓' : '✗'}</span>
+      ${escHtml(h.content)}${h.verdict ? ` <span class="jh-since">— ${escHtml(h.verdict)}</span>` : ''}</div>`));
+  (hb.legacy || []).forEach(w => rows.push(
+    `<div class="jh-row jh-legacy">${escHtml(w.habit)}
+      <span class="jh-since">week of ${escHtml(w.week_start_date)} (pre-ledger)</span></div>`));
+  el.innerHTML = rows.length ? rows.join('')
+    : '<span class="jh-empty">No habits or experiments yet — start one at the weekly review.</span>';
 }
 
 // --- nightly-fill window + 10-min hard-capped session ---
