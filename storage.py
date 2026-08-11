@@ -870,6 +870,7 @@ def init_db():
         )''')
     _migrate_time_presets(conn)
     _repair_time_preset_conversion(conn)
+    _adopt_gate_schedules(conn)
     _seed_social_axes(conn)
     conn.commit()
     conn.close()
@@ -966,6 +967,150 @@ def _repair_time_preset_conversion(conn):
         conn.execute('UPDATE schedule_source SET start = ?, duration = ? WHERE uid = ?',
                      (want_start, want_duration, row['uid']))
     conn.commit()
+
+
+# A gate's hours become a schedule source (2026-08-11). Additive, the way every
+# other adoption in this repo is: `qr_node.source_uid` WINS where set, and
+# window_start / window_end / window_end_offset_days / days_of_week /
+# weekly_windows stay as the fallback and as the record the conversion came from.
+# Nothing is dropped, so a bad conversion is re-derivable and the Worker-side
+# copy of those columns keeps working.
+#
+# The shape falls out of the data: a gate with no per-day windows is ONE rule; a
+# gate with weekly_windows is a SCHEDULE, one rule per day, each with its own
+# duration — which is exactly the case the model exists for ("Wednesday is
+# shorter"). The source is UNNAMED, so a gate's hours stay private to it and
+# Settings → Times is not filled with one entry per gate; naming one in the
+# picker is what would share it.
+def _adopt_gate_schedules(conn):
+    cols = [r[1] for r in conn.execute('PRAGMA table_info(qr_node)').fetchall()]
+    if not cols:
+        return
+    if 'source_uid' not in cols:
+        conn.execute('ALTER TABLE qr_node ADD COLUMN source_uid TEXT')
+        conn.commit()
+    rows = conn.execute('SELECT * FROM qr_node WHERE source_uid IS NULL').fetchall()
+    for n in rows:
+        uid = _gate_source_from_windows(conn, n)
+        conn.execute('UPDATE qr_node SET source_uid = ? WHERE id = ?', (uid, n['id']))
+    if rows:
+        conn.commit()
+
+
+def qr_ensure_node_source(node_id):
+    """Derive a gate's source from its window columns if it has none yet. Called
+    when a gate is created, so a new gate arrives with a schedule rather than
+    waiting for the next start-up's adoption pass."""
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM qr_node WHERE id = ?', (node_id,)).fetchone()
+    if row is None or row['source_uid']:
+        conn.close()
+        return None
+    uid = _gate_source_from_windows(conn, row)
+    conn.execute('UPDATE qr_node SET source_uid = ? WHERE id = ?', (uid, node_id))
+    conn.commit()
+    conn.close()
+    return uid
+
+
+def qr_windows_from_source(uid, days=21):
+    """The legacy window columns a gate needs, derived from a source.
+
+    A gate created from the picker has no window fields of its own, but
+    `window_start` / `window_end` / `days_of_week` are still the fallback and are
+    what the Worker-side copy reads, so they are derived here rather than left to
+    a default that would disagree with the schedule.
+    """
+    resolve, _ = schedule_resolver()
+    src = resolve(uid)
+    if not src:
+        return {}
+    today = date_cls.today()
+    try:
+        occs = schedule.occurrences(src, resolve, today, today + timedelta(days=days))
+    except schedule.Cycle:
+        return {}
+    if not occs:
+        return {}
+    # days_of_week is Mon=0..Sun=6 (qr_judge._dow_of uses weekday()), which is
+    # the same convention as weekly_windows' keys.
+    dows = sorted({str(s.weekday()) for s, _ in occs})
+    first_start, first_end = occs[0]
+    return {
+        'window_start': first_start.strftime('%H:%M'),
+        'window_end': first_end.strftime('%H:%M'),
+        'window_end_offset_days': (first_end.date() - first_start.date()).days,
+        'days_of_week': ''.join(dows),
+    }
+
+
+def qr_gate_day_windows(node, days=14, start=None):
+    """The gate's effective window for each of the next `days` dates, as the
+    JUDGE resolves it (qr_judge.resolve_window). The client is given this rather
+    than a rule, so the timeline, the engage day and the panel cannot disagree
+    with what will actually be judged."""
+    import qr_judge
+    start = start or date_cls.today()
+    resolve, _ = schedule_resolver()
+    out = {}
+    for i in range(days):
+        day = (start + timedelta(days=i)).isoformat()
+        if not qr_judge.applies_on(node, day):
+            continue
+        w = qr_judge.resolve_window(node, day)
+        out[day] = {'window_start': w[0], 'window_end': w[1],
+                    'window_end_offset_days': w[2]}
+    return out
+
+
+def _gate_source_from_windows(conn, node):
+    """One rule, or a schedule of per-day rules. Returns the new source's uid."""
+    days = str(node['days_of_week'] or '0123456')
+    weekly = {}
+    if node['weekly_windows']:
+        try:
+            weekly = json.loads(node['weekly_windows']) or {}
+        except (ValueError, TypeError):
+            weekly = {}
+
+    def rule_uid(day_nums, start, end, offset):
+        # RRULE_EPOCH as the anchor, so no past date is left empty — a gate is
+        # judged against days that have already happened.
+        minutes = _hhmm(end) + (int(offset or 0) * 24 * 60) - _hhmm(start)
+        if minutes <= 0:
+            minutes += 24 * 60            # a window that crosses midnight
+        uid = _new_uid('rule')
+        rule = {'@type': 'RecurrenceRule', 'frequency': 'weekly',
+                'byDay': [{'@type': 'NDay', 'day': schedule._DAYS[int(d)]}
+                          for d in sorted(day_nums)]}
+        conn.execute(
+            'INSERT INTO schedule_source (uid, kind, title, start, duration,'
+            ' recurrence_rules) VALUES (?, ?, NULL, ?, ?, ?)',
+            (uid, 'rule', f'{RRULE_EPOCH.isoformat()}T{start}:00',
+             schedule.format_duration(timedelta(minutes=minutes)), json.dumps([rule])))
+        return uid
+
+    # Days that have their own window are grouped by that window, so five
+    # identical per-day entries collapse to one rule rather than five.
+    groups = {}
+    for d in days:
+        w = weekly.get(str(d)) or {}
+        key = (w.get('window_start') or node['window_start'],
+               w.get('window_end') or node['window_end'],
+               int(w.get('window_end_offset_days') or node['window_end_offset_days'] or 0))
+        groups.setdefault(key, []).append(d)
+
+    if len(groups) == 1:
+        (start, end, offset), day_nums = next(iter(groups.items()))
+        return rule_uid(day_nums, start, end, offset)
+
+    entries = [rule_uid(day_nums, start, end, offset)
+               for (start, end, offset), day_nums in groups.items()]
+    uid = _new_uid('schedule')
+    conn.execute(
+        'INSERT INTO schedule_source (uid, kind, title, entries)'
+        ' VALUES (?, ?, NULL, ?)', (uid, 'schedule', json.dumps(entries)))
+    return uid
 
 
 def _window_duration(start_time, end_time):
@@ -4146,7 +4291,7 @@ def qr_create_node(label, token, window_start, window_end, offset_days=0,
 
 QR_NODE_FIELDS = ('label', 'window_start', 'window_end', 'window_end_offset_days',
                   'geofence_lat', 'geofence_lng', 'geofence_radius_m', 'active',
-                  'days_of_week', 'weekly_windows', 'charge_cents')
+                  'days_of_week', 'weekly_windows', 'charge_cents', 'source_uid')
 
 
 def qr_update_node(node_id, fields):
@@ -4496,6 +4641,7 @@ def schedule_resolver():
 # migration checklist.
 _SOURCE_HOLDERS = (
     ('tag', 'tag_time', 'source_uid'),
+    ('gate', 'qr_node', 'source_uid'),
 )
 
 

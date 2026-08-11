@@ -462,6 +462,52 @@ def occurs_on(src, resolve, day):
     return bool(day_intervals(src, resolve, day))
 
 
+# ── Comparing two schedules ──────────────────────────────────
+#
+# What a gate's 24h delay rests on. The old predicates were field-by-field — a
+# later start is looser, an earlier end is looser, a dropped day is looser — and
+# a source has no such fields, so the question is asked of the OCCURRENCES
+# instead: has the new schedule stopped covering a minute the old one covered?
+#
+# Strictly stronger than comparing fields. Changing weekly to monthly, moving
+# the anchor and adding an end date all remove covered minutes, and none of them
+# is visible as a loosened field.
+
+def covered_minutes(src, resolve, day):
+    """Every minute of `day` this source covers, as ints in [0, 1440)."""
+    out = set()
+    for iv in day_intervals(src, resolve, day):
+        start = _minute_of(iv['start'])
+        end = 1440 if iv['end'] == '24:00' else _minute_of(iv['end'])
+        out.update(range(start, max(start, end)))
+    return out
+
+
+def _minute_of(hhmm):
+    h, m = hhmm.split(':')
+    return int(h) * 60 + int(m)
+
+
+def demands_less(old, new, resolve, start, days=14):
+    """True if `new` asks less of you than `old` on any day in the horizon.
+
+    A gate is a commitment, so this is the direction that has to wait: losing a
+    day, starting later, ending earlier and shortening a window all appear here
+    as a minute that was covered and no longer is. Tightening — a longer window,
+    an extra day — only adds minutes, and returns False.
+
+    Fourteen days is enough to see a fortnightly rule's phase. A change that
+    only differs beyond that horizon is an edit to a distant commitment rather
+    than an escape from an imminent one.
+    """
+    start = _as_date(start)
+    for i in range(days):
+        day = start + timedelta(days=i)
+        if covered_minutes(old, resolve, day) - covered_minutes(new, resolve, day):
+            return True
+    return False
+
+
 # ── Description ──────────────────────────────────────────────
 #
 # The sentence at the foot of the picker, and the row's own subtitle in Times.

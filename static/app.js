@@ -1821,6 +1821,11 @@ function seFieldHtml(f, v) {
   let control = '';
   if (f.kind === 'static') {
     control = `<div class="se-static">${escHtml(f.text)}</div>`;
+  } else if (f.kind === 'openpicker') {
+    // The row states the schedule in words and hands the editing to the picker.
+    // A consumer never grows fields of its own for "when does this run".
+    control = `<button type="button" class="se-openpicker" data-f="${f.key}">
+      <span>${escHtml(f.text || 'not set')}</span><span class="be-chev">›</span></button>`;
   } else if (f.kind === 'action') {
     // A state the sheet can only clear, not edit — a gate's today-only window.
     control = `<div class="se-static">${escHtml(f.text)}</div>`
@@ -1907,7 +1912,9 @@ function wireSeSheet(fields) {
   fields.forEach(f => {
     const wrap = el.querySelector(`[data-f="${f.key}"]`);
     if (!wrap) return;
-    if (f.kind === 'action') {
+    if (f.kind === 'openpicker') {
+      wrap.addEventListener('click', () => f.open(v));
+    } else if (f.kind === 'action') {
       wrap.addEventListener('click', async () => {
         await f.run(seSheet.item);
         closeSeSheet();
@@ -2292,26 +2299,19 @@ const SETTINGS_SHEETS = {
     canRemove: n => !n.active,
     confirm: () => 'Delete this gate permanently? Its scan link stops working.',
     blank: () => ({
-      label: '', start: '', end: '', offset: false, days: [0, 1, 2, 3, 4, 5, 6],
-      location: '', radius: '', weekly: {}, stake: '', routine: '',
+      label: '', source: '', sourceLabel: '',
+      location: '', radius: '', stake: '', routine: '',
     }),
     load: n => {
-      let weekly = {};
-      if (n.weekly_windows) { try { weekly = JSON.parse(n.weekly_windows) || {}; } catch (e) { /* stored blank */ } }
-      const perDay = {};
-      Object.keys(weekly).forEach(d => {
-        perDay[d] = { start: weekly[d].window_start, end: weekly[d].window_end,
-          offset: weekly[d].window_end_offset_days ? 1 : 0 };
-      });
       // A gate with a pending deactivation reads as Inactive here, so turning
       // it back on is what cancels that — `active0` remembers which way the
       // toggle started, since `n.active` is still 1 while the disable waits.
       const off = (n.pending_changes || []).some(p => p.field === 'active' && String(p.new_value) === '0');
       const active = !!n.active && !off;
       return {
-        start: n.window_start, end: n.window_end, offset: !!n.window_end_offset_days,
-        days: (n.days_of_week || '0123456').split('').map(Number),
-        location: '', radius: n.geofence_radius_m || '', weekly: perDay,
+        source: n.source_uid || '', source0: n.source_uid || '',
+        sourceLabel: n.schedule_label || '',
+        location: '', radius: n.geofence_radius_m || '',
         active, active0: active,
         // Dollars in the field, cents in the column. Blank means "use the
         // default", which is a different thing from zero.
@@ -2324,12 +2324,23 @@ const SETTINGS_SHEETS = {
       const pending = it ? (it.pending_changes || []).filter(p => p.field !== 'active') : [];
       return [
         ...(it ? [] : [{ key: 'label', label: 'Label', kind: 'text', placeholder: 'e.g. Desk' }]),
-        { key: 'start', label: 'From', kind: 'time', half: true },
-        { key: 'end', label: 'To', kind: 'time', half: true },
-        { key: 'offset', label: 'Crosses midnight', kind: 'check', on: 'Ends next day', off: 'Same day' },
-        { key: 'days', label: 'Days', kind: 'days', rerender: !!it },
-        ...(it ? [{ key: 'weekly', label: 'Per-day times', kind: 'weekly',
-          hint: 'Days matching the window above follow it; an edited day keeps its own.' }] : []),
+        // WHEN this gate runs is a schedule source, edited in the picker — the
+        // same object a block or a task would hold. The four fields that used to
+        // live here (from, to, crosses-midnight, days) and the per-day windows
+        // are all expressible as one rule or one schedule, so the gate no longer
+        // carries a second grammar for time.
+        { key: 'source', label: 'Repeats', kind: 'openpicker',
+          text: v.sourceLabel || 'not set yet',
+          hint: it ? 'Anything that makes the schedule easier waits 24h.' : null,
+          open: draft => openPicker({
+            sourceUid: draft.source || null,
+            noFollows: true,
+            onSaved: async (uid, src) => {
+              draft.source = uid;
+              draft.sourceLabel = src.label || describeDraft();
+              renderSeSheet();
+            },
+          }) },
         { key: 'location', label: 'Location', kind: 'select', half: true,
           options: () => seLocationOptions(it ? '— keep current —' : '— none —') },
         { key: 'radius', label: 'Radius', kind: 'number', half: true, suffix: 'm' },
@@ -2383,26 +2394,26 @@ const SETTINGS_SHEETS = {
           hint: 'Anything that makes a gate easier waits 24h, so it can\'t be loosened '
             + 'in the moment you want to dodge it.',
           text: pending.map(p => `${GATE_FIELDS[p.field] || p.field} → `
-            + `${p.field === 'charge_cents' ? '$' + ((p.new_value || 0) / 100).toFixed(2) : p.new_value}`
+            + `${p.field === 'charge_cents' ? '$' + ((p.new_value || 0) / 100).toFixed(2)
+              : p.new_label || p.new_value}`
             + ` (applies ${new Date(p.apply_at).toLocaleString()})`).join('; ') }] : []),
       ];
     },
     submit: async (v, n) => {
-      const days = v.days.slice().sort().join('');
-      if (!days) return 'Select at least one day.';
       if (!n) {
-        if (!v.label.trim() || !v.start || !v.end) return 'Label, from and to are required.';
+        if (!v.label.trim()) return 'A gate needs a label.';
+        if (!v.source) return 'Set when this gate runs.';
         const loc = (state.locations || []).find(l => String(l.id) === String(v.location));
         const radius = parseInt(v.radius);
+        // No window fields: the server derives them from the source, so the
+        // legacy columns and the schedule cannot disagree from the start.
         const resp = await fetch('/api/accountability/nodes', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            label: v.label.trim(), window_start: v.start, window_end: v.end,
-            window_end_offset_days: v.offset ? 1 : 0,
+            label: v.label.trim(), source_uid: v.source,
             geofence_lat: loc ? loc.lat : null,
             geofence_lng: loc ? loc.lng : null,
             geofence_radius_m: loc ? (isNaN(radius) ? loc.radius_m : radius) : null,
-            days_of_week: days,
           }),
         });
         if (!resp.ok) return `Create failed (${resp.status}).`;
@@ -2413,11 +2424,11 @@ const SETTINGS_SHEETS = {
         return null;
       }
       const body = {
-        window_start: v.start, window_end: v.end,
-        window_end_offset_days: v.offset ? 1 : 0,
         geofence_radius_m: parseInt(v.radius) || n.geofence_radius_m,
-        days_of_week: days,
       };
+      // The schedule goes through the same 24h test as everything else, but the
+      // test is now over OCCURRENCES (schedule.demands_less) rather than fields.
+      if (v.source && v.source !== v.source0) body.source_uid = v.source;
       const stake = String(v.stake).trim() === '' ? null : Math.round(parseFloat(v.stake) * 100);
       if (stake !== (n.charge_cents == null ? null : n.charge_cents)) body.charge_cents = stake;
       // The link lives on the FLOW (flow.qr_node_id), so moving it is two
@@ -2437,19 +2448,6 @@ const SETTINGS_SHEETS = {
           });
         }
       }
-      // Store only the days that differ from the new defaults; the rest inherit.
-      const weeklyMap = {};
-      Object.keys(v.weekly).forEach(dow => {
-        if (!days.includes(dow)) return;
-        const w = v.weekly[dow];
-        if (w.start !== body.window_start || w.end !== body.window_end
-          || (w.offset ? 1 : 0) !== body.window_end_offset_days) {
-          weeklyMap[dow] = { window_start: w.start, window_end: w.end,
-            window_end_offset_days: w.offset ? 1 : 0 };
-        }
-      });
-      const weeklyJson = JSON.stringify(weeklyMap);
-      if (weeklyJson !== (n.weekly_windows || '{}')) body.weekly_windows = weeklyJson;
       if (v.location) {
         const loc = state.locations.find(l => String(l.id) === String(v.location));
         body.geofence_lat = loc.lat;
@@ -5328,7 +5326,14 @@ function timeToMinutes(timeStr) {
 // Effective default window for a weekday (0=Mon..6=Sun): the node's
 // weekly_windows entry for that day, else the node-wide defaults.
 // Mirrors the Worker's weeklyWindowFor resolution.
+// A gate's effective window for a weekday. `day_windows` is the SERVER's
+// resolution — the same qr_judge.resolve_window the judgment uses — keyed by
+// date, so the first date matching the weekday answers for it. Falling back to
+// weekly_windows/defaults keeps a gate that has no source yet working, which is
+// what makes the adoption additive.
 function nodeWindowForDow(node, dow) {
+  const fromSource = nodeSourceWindowForDow(node, dow);
+  if (fromSource) return fromSource;
   let w = null;
   if (node.weekly_windows) {
     try { w = JSON.parse(node.weekly_windows)[String(dow)] || null; } catch (e) { w = null; }
@@ -5336,6 +5341,17 @@ function nodeWindowForDow(node, dow) {
   return w
     ? { window_start: w.window_start, window_end: w.window_end, window_end_offset_days: w.window_end_offset_days || 0 }
     : { window_start: node.window_start, window_end: node.window_end, window_end_offset_days: node.window_end_offset_days };
+}
+
+function nodeSourceWindowForDow(node, dow) {
+  const days = node.day_windows;
+  if (!days) return null;
+  for (const date of Object.keys(days).sort()) {
+    // Mon=0..Sun=6, matching qr_judge._dow_of and weekly_windows' keys.
+    const jsDow = new Date(date + 'T12:00:00').getDay();
+    if ((jsDow + 6) % 7 === Number(dow)) return days[date];
+  }
+  return null;
 }
 
 function localDatePlusDays(dateStr, days) {
@@ -5449,6 +5465,7 @@ const GATE_FIELDS = {
   charge_cents: 'stake', window_start: 'from', window_end: 'to',
   window_end_offset_days: 'crosses midnight', days_of_week: 'days',
   geofence_radius_m: 'radius', weekly_windows: 'per-day times', active: 'state',
+  source_uid: 'schedule',
 };
 
 const GATE_REASONS = {
@@ -5735,7 +5752,7 @@ function gateRowOpts(n) {
   else if (pendingDisable) badge = 'deactivating';
   else if (n.today_override) badge = 'today';
   else if (otherPending.length) badge = 'pending';
-  else if (Object.keys(weekly).length) badge = 'per-day';
+  else if (!n.schedule_label && Object.keys(weekly).length) badge = 'per-day';
 
   // Today's ANSWER where there is one — scanned, or judged and why. A row that
   // only restates its own settings can't tell you the gate is broken.
@@ -5761,7 +5778,7 @@ function gateRowOpts(n) {
 
   return {
     id: n.id, name: n.label, dim: !n.active,
-    meta: `${win} · ${formatDays(nodeDays)} · ${geo}${stake}`,
+    meta: `${n.schedule_label || win + ' · ' + formatDays(nodeDays)} · ${geo}${stake}`,
     sub: sub || null,
     badge,
     subClass: n.routine ? 'be-row-req' : '',
@@ -6964,6 +6981,32 @@ const EXTENTS = [
 const ONLY_ON = [
   ['', 'every day it runs'], ['mo,tu,we,th,fr', 'weekdays only'], ['sa,su', 'weekends only'],
 ];
+// An ISO duration in words, for any value — not just the presets. A source that
+// arrived from somewhere else (a gate's 10-hour window, a hand-written rule) has
+// to be shown as it is and, more importantly, has to survive being saved
+// unchanged: an unlisted value must appear in its own dropdown or Done would
+// quietly replace it with the first option.
+function isoHuman(iso) {
+  if (!iso) return 'no duration';
+  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(iso);
+  if (!m) return iso;
+  const [, d, h, min] = m.map(x => (x ? Number(x) : 0));
+  if (d && !h && !min) return `${d} day${d === 1 ? '' : 's'}`;
+  const bits = [];
+  if (d) bits.push(`${d}d`);
+  if (h) bits.push(`${h} hr`);
+  if (min) bits.push(h ? String(min) : `${min} min`);
+  return bits.join(' ') || '0 min';
+}
+
+function durationOptions(current) {
+  const opts = DURATIONS.map(([v, l]) => [v, v ? `for ${l}` : l]);
+  if (current && !DURATIONS.some(([v]) => v === current)) {
+    opts.unshift([current, `for ${isoHuman(current)}`]);
+  }
+  return opts;
+}
+
 const SP_DAYS = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'];
 const SP_DAY_NAMES = { mo: 'Mon', tu: 'Tue', we: 'Wed', th: 'Thu', fr: 'Fri', sa: 'Sat', su: 'Sun' };
 const DAY_PRESETS = [
@@ -7027,12 +7070,20 @@ function draftFromSource(src) {
 }
 
 async function openPicker(opts) {
+  // A consumer (a gate, and later a block or a task) opens this with the uid it
+  // holds and a callback, rather than from a Times row. `noFollows` withholds
+  // the derived branch: a commitment must not inherit its hours from something
+  // editable without the 24h delay, and a skip propagating from upstream would
+  // silently stop a gate opening (see CLAUDE.md, "Gates hold a schedule").
   // The picker's own menus need every source, unnamed ones included: a
   // schedule's members are unnamed once they were created by a variation.
   state.allSources = await fetch('/api/schedules?unnamed=1')
     .then(r => r.json()).catch(() => []);
-  const src = opts.source;
+  const src = opts.source
+    || (opts.sourceUid ? (state.allSources || []).find(x => x.uid === opts.sourceUid) : null);
   pickerView.open = true;
+  pickerView.noFollows = !!opts.noFollows;
+  pickerView.onSaved = opts.onSaved || null;
   pickerView.uid = src ? src.uid : null;
   pickerView.error = null;
   pickerView.dayMenu = null;
@@ -7042,7 +7093,8 @@ async function openPicker(opts) {
   };
   // "+ New schedule" opens with the name field already showing, because the
   // thing being made is the named set rather than one pattern.
-  pickerView.wantName = !!opts.wantSchedule || !!(src && src.kind !== 'rule');
+  pickerView.wantName = !opts.onSaved
+    && (!!opts.wantSchedule || !!(src && src.kind !== 'rule'));
   document.getElementById('sp-sheet').classList.remove('hidden');
   document.getElementById('sp-sheet-backdrop').classList.remove('hidden');
   renderPicker();
@@ -7134,7 +7186,7 @@ function patternRows(rule, idx, compact) {
   }
   rows.push(`<div class="sp-row">${label('At')}
     <input class="sp-input sp-time" type="time" data-sp="at" data-idx="${idx}" value="${rule.at}">
-    ${spSelect('duration', DURATIONS.map(([v, l]) => [v, v ? `for ${l}` : l]),
+    ${spSelect('duration', durationOptions(rule.duration),
       rule.duration, ` data-idx="${idx}"`)}</div>`);
   return rows.join('');
 }
@@ -7145,10 +7197,12 @@ function renderPicker() {
   const el = document.getElementById('sp-sheet');
   let body = '';
 
-  // The Follows row is the first of the two branch controls, and it stays at
-  // the top whatever the draft currently is.
-  body += `<div class="sp-row"><span class="sp-label">Follows</span>${
-    spSelect('follows', followOptions(), (d.follows || {}).source || '')}</div>`;
+  // The Follows row is the first of the two branch controls, and it stays at the
+  // top whatever the draft currently is — unless the caller withheld it.
+  if (!pickerView.noFollows) {
+    body += `<div class="sp-row"><span class="sp-label">Follows</span>${
+      spSelect('follows', followOptions(), (d.follows || {}).source || '')}</div>`;
+  }
   if (pickerView.wantName || d.rules.length > 1) {
     body += `<div class="sp-row"><span class="sp-label">Name</span>
       <input class="sp-input" data-sp="title" value="${escHtml(d.title)}"
@@ -7300,8 +7354,7 @@ function describeDraft() {
       bits.push(r.monthMode === 'date' ? `the ${r.monthDay}th`
         : `the ${(NTHS.find(([v]) => String(v) === String(r.nth)) || [])[1]} ${SP_DAY_NAMES[r.nthDay]}`);
     }
-    const dur = (DURATIONS.find(([v]) => v === r.duration) || [])[1];
-    bits.push(`at ${r.at}` + (r.duration ? ` for ${dur}` : ''));
+    bits.push(`at ${r.at}` + (r.duration ? ` for ${isoHuman(r.duration)}` : ''));
     return bits.join(' ');
   };
   let text = one(d.rules[0]);
@@ -7511,7 +7564,7 @@ async function savePicker() {
     renderPicker();
     return;
   }
-  const named = pickerView.wantName || d.rules.length > 1;
+  const named = (pickerView.wantName || d.rules.length > 1) && !pickerView.onSaved;
   if (named && !d.title.trim()) {
     pickerView.error = kind === 'derived'
       ? 'Give this a name so it can be reused.' : 'A schedule needs a name.';
@@ -7521,15 +7574,21 @@ async function savePicker() {
   const btn = document.querySelector('#sp-sheet .sp-done');
   if (btn) btn.disabled = true;
 
+  // Opened by a CONSUMER, the picker never edits the source in place: it creates
+  // a new one and hands back the uid, so the holder can compare old against new.
+  // For a gate that comparison IS the 24h delay — editing its source in place
+  // would change its hours immediately and silently skip the loosening test.
+  const target = pickerView.onSaved ? null : pickerView.uid;
+  let saved = null;
   try {
     if (kind === 'derived') {
-      await saveSource(pickerView.uid, {
+      saved = await saveSource(target, {
         kind: 'derived', title: d.title || null, follows: d.follows,
         entries: null, recurrenceRules: null, start: null, duration: null,
         ends: null,
       });
     } else if (kind === 'rule') {
-      await saveSource(pickerView.uid, {
+      saved = await saveSource(target, {
         kind: 'rule', title: d.title || null, ...ruleBody(d.rules[0]),
         entries: null, follows: null, ends: d.ends,
       });
@@ -7539,10 +7598,11 @@ async function savePicker() {
       const entries = [];
       for (const r of d.rules) {
         const body = { kind: 'rule', ...ruleBody(r) };
-        const saved = await saveSource(r.uid, r.uid ? body : { ...body, title: null });
-        entries.push(saved.uid);
+        const keep = pickerView.onSaved ? null : r.uid;
+        const member = await saveSource(keep, keep ? body : { ...body, title: null });
+        entries.push(member.uid);
       }
-      await saveSource(pickerView.uid, {
+      saved = await saveSource(target, {
         kind: 'schedule', title: d.title.trim(), entries, ends: d.ends,
         recurrenceRules: null, start: null, duration: null, follows: null,
       });
@@ -7550,12 +7610,21 @@ async function savePicker() {
     // A member dropped from the set is unnamed and now unreferenced, so it goes
     // with the edit rather than lingering in the Rules list.
     for (const uid of d.removed) {
+      if (pickerView.onSaved) break;   // the old set is still what the holder has
       const src = (state.allSources || []).find(s => s.uid === uid);
       if (src && !src.title) await fetch(`/api/schedules/${uid}`, { method: 'DELETE' });
     }
   } catch (e) {
     pickerView.error = e.message;
     renderPicker();
+    return;
+  }
+  // Opened by a consumer: hand it the source and let it decide what to write.
+  // Times is not repainted, because this was never a Times row.
+  if (pickerView.onSaved) {
+    const done = pickerView.onSaved;
+    closePicker();
+    await done(saved.uid, saved);
     return;
   }
   closePicker();

@@ -23,9 +23,10 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import date as date_cls, datetime, timedelta
 
 import storage
+import schedule
 
 # The process runs in the app's timezone (app.py's _apply_timezone sets TZ from
 # the setting), so naive local datetimes are correct here — same convention as
@@ -61,15 +62,65 @@ def weekly_window_for(node, ymd):
     return weekly.get(_dow_of(ymd)) or None
 
 
+def source_window_for(node, ymd, resolve=None):
+    """The gate's window for a date, taken from its SCHEDULE SOURCE (2026-08-11).
+
+    A gate is judged once per date — `qr_scan` and `qr_charge_log` are both
+    UNIQUE(node_id, date) — so a source yielding two intervals on one day
+    contributes the first one that STARTS that day. That last part is the whole
+    subtlety: day_intervals clips at both edges, so a 23:00→07:00 gate appears on
+    every date twice, as last night's tail (00:00–07:00) and tonight's head
+    (23:00–24:00). Taking the earliest would judge the tail and silently turn a
+    sleep gate into a 7-hour morning window.
+    """
+    occ = _starting_occurrence(node, ymd, resolve)
+    if not occ:
+        return None
+    start, end = occ
+    return (start.strftime('%H:%M'), end.strftime('%H:%M'),
+            (end.date() - start.date()).days)
+
+
+def _starting_occurrence(node, ymd, resolve=None):
+    """The occurrence that STARTS on `ymd`, unclipped.
+
+    Deliberately not day_intervals(): that clips to the day, so a 23:00→07:00
+    window comes back as 23:00–24:00 and the gate would be judged as closing at
+    midnight. A gate needs the real end and the day offset, which only the raw
+    occurrence carries.
+    """
+    uid = node.get('source_uid')
+    if not uid:
+        return None
+    if resolve is None:
+        resolve, _ = storage.schedule_resolver()
+    src = resolve(uid)
+    if not src:
+        return None
+    day = date_cls.fromisoformat(ymd)
+    try:
+        occs = schedule.occurrences(src, resolve, day, day)
+    except schedule.Cycle:
+        return None
+    return next(((s, e) for s, e in occs if s.date() == day), None)
+
+
 def resolve_window(node, ymd, override=None):
-    # date override > weekly window > node defaults. This ordering is mirrored
-    # in the timeline, the engage day and the QR manager; changing it here
-    # without changing them makes the app disagree with the judge.
+    # date override > SOURCE > weekly window > node defaults. This ordering is
+    # mirrored in the timeline, the engage day and the Gates panel; changing it
+    # here without changing them makes the app disagree with the judge.
+    #
+    # The source sits above the legacy columns rather than replacing them: the
+    # adoption is additive (storage._adopt_gate_schedules), so a gate whose
+    # source is somehow missing still judges against the window it always had.
     if override is None:
         override = storage.qr_get_override(node['id'], ymd)
     if override:
         return (override['window_start'], override['window_end'],
                 override.get('window_end_offset_days') or 0)
+    from_source = source_window_for(node, ymd)
+    if from_source:
+        return from_source
     weekly = weekly_window_for(node, ymd)
     if weekly:
         return (weekly['window_start'], weekly['window_end'],
@@ -79,6 +130,15 @@ def resolve_window(node, ymd, override=None):
 
 
 def applies_on(node, ymd):
+    # With a source, "does it run today" is whether the source has an occurrence
+    # — days_of_week is only the fallback for a gate that has no source yet.
+    # A gate RUNS on a date when its schedule has an occurrence STARTING that
+    # date — not merely covering it, or a Monday 23:00 gate would also claim
+    # Tuesday, which is the day its window happens to end on.
+    if node.get('source_uid'):
+        resolve, _ = storage.schedule_resolver()
+        if resolve(node['source_uid']):
+            return bool(_starting_occurrence(node, ymd, resolve))
     days = node.get('days_of_week')
     return days is None or _dow_of(ymd) in str(days)
 
@@ -217,6 +277,19 @@ LOOSEN_DELAY_H = 24
 
 
 def is_loosening(field, current, nxt, node=None):
+    if field == 'source_uid':
+        # A source has no fields to compare, so the question is asked of the
+        # OCCURRENCES: has the new schedule stopped covering a minute the old one
+        # covered? See schedule.demands_less — it catches weekly→monthly, a moved
+        # anchor and an added end date, none of which is a loosened field.
+        resolve, _ = storage.schedule_resolver()
+        old, new = resolve(current), resolve(nxt)
+        if not old or not new:
+            return bool(old) and not new      # losing the schedule entirely is looser
+        try:
+            return schedule.demands_less(old, new, resolve, date_cls.today())
+        except schedule.Cycle:
+            return True                       # cannot prove it is tighter
     if field == 'charge_cents':
         # LOWERING the stake is loosening, so it waits 24h like every other
         # way of making a gate easier. Raising it is immediate: nothing about

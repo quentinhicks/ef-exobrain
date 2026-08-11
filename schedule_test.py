@@ -288,6 +288,72 @@ eq('day_intervals: and Sunday gets nothing from it',
 
 eq('occurs_on: the predicate', S.occurs_on(STORE['rule-mtwf'], resolve, D(2026, 8, 12)), False)
 
+# ── demands_less — what a gate's 24h delay rests on ──────────
+#
+# The old predicates were field-by-field. These are the same intents expressed
+# as occurrences, plus the three the field version could not see at all.
+
+def sched(uid, days, at, dur, freq='weekly', **kw):
+    STORE[uid] = rule(uid, f'2026-08-10T{at}:00', dur, freq=freq, days=days, **kw)
+    return STORE[uid]
+
+
+base = sched('dl-base', ['mo', 'tu', 'we', 'th', 'fr'], '09:00', 'PT10H')
+FROM = D(2026, 8, 10)
+
+eq('demands_less: identical is not looser',
+   S.demands_less(base, sched('dl-same', ['mo', 'tu', 'we', 'th', 'fr'], '09:00', 'PT10H'),
+                  resolve, FROM), False)
+eq('demands_less: dropping a day IS looser',
+   S.demands_less(base, sched('dl-drop', ['mo', 'tu', 'we', 'th'], '09:00', 'PT10H'),
+                  resolve, FROM), True)
+eq('demands_less: adding a day is not',
+   S.demands_less(base, sched('dl-add', ['mo', 'tu', 'we', 'th', 'fr', 'sa'], '09:00', 'PT10H'),
+                  resolve, FROM), False)
+eq('demands_less: a later start IS looser',
+   S.demands_less(base, sched('dl-late', ['mo', 'tu', 'we', 'th', 'fr'], '10:00', 'PT9H'),
+                  resolve, FROM), True)
+eq('demands_less: an earlier start with the same end is not',
+   S.demands_less(base, sched('dl-early', ['mo', 'tu', 'we', 'th', 'fr'], '08:00', 'PT11H'),
+                  resolve, FROM), False)
+eq('demands_less: an earlier end IS looser',
+   S.demands_less(base, sched('dl-short', ['mo', 'tu', 'we', 'th', 'fr'], '09:00', 'PT9H'),
+                  resolve, FROM), True)
+# An earlier start that also ends earlier loses the tail — a shift is not a
+# tightening, which is the case a naive "starts earlier is stricter" would miss.
+eq('demands_less: shifting the whole window earlier IS looser',
+   S.demands_less(base, sched('dl-shift', ['mo', 'tu', 'we', 'th', 'fr'], '08:00', 'PT10H'),
+                  resolve, FROM), True)
+
+# The three the FIELD comparison could not see.
+eq('demands_less: weekly → monthly IS looser (no field changed)',
+   S.demands_less(base, sched('dl-monthly', ['mo'], '09:00', 'PT10H', freq='monthly',
+                              rule={'byDay': [{'day': 'mo', 'nthOfPeriod': 1}]}),
+                  resolve, FROM), True)
+eq('demands_less: an added end date IS looser',
+   S.demands_less(base, sched('dl-ends', ['mo', 'tu', 'we', 'th', 'fr'], '09:00', 'PT10H',
+                              **{'sf:ends': {'date': '2026-08-12'}}),
+                  resolve, FROM), True)
+eq('demands_less: doubling the interval IS looser',
+   S.demands_less(base, sched('dl-fortnight', ['mo', 'tu', 'we', 'th', 'fr'], '09:00', 'PT10H',
+                              rule={'interval': 2}),
+                  resolve, FROM), True)
+
+# A per-day schedule against the flat rule it came from: Wednesday is shorter,
+# so the SET demands less even though every other day is unchanged.
+STORE['dl-perday-wed'] = rule('dl-perday-wed', '2026-08-12T09:00:00', 'PT4H', days=['we'])
+STORE['dl-perday-rest'] = rule('dl-perday-rest', '2026-08-10T09:00:00', 'PT10H',
+                               days=['mo', 'tu', 'th', 'fr'])
+STORE['dl-perday'] = {'uid': 'dl-perday', 'sf:kind': 'schedule', 'title': 'Studio',
+                      'entries': ['dl-perday-rest', 'dl-perday-wed']}
+eq('demands_less: one shorter day makes the whole set looser',
+   S.demands_less(base, STORE['dl-perday'], resolve, FROM), True)
+eq('demands_less: and back the other way is a tightening',
+   S.demands_less(STORE['dl-perday'], base, resolve, FROM), False)
+
+eq('covered_minutes: a 10-hour window is 600 minutes',
+   len(S.covered_minutes(base, resolve, D(2026, 8, 10))), 600)
+
 # ── the sentence at the foot of the picker ───────────────────
 
 eq('describe: a consecutive run reads as a range',

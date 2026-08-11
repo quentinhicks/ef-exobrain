@@ -580,6 +580,25 @@ select option {
 
 .se-inline-act { font-size: 13px; color: var(--accent); flex: none; }
 
+/* A field whose editor is the PICKER: the row states the schedule in words and
+   the › hands it over. A consumer never grows fields of its own for time. */
+.se-openpicker {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 11px 12px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.se-openpicker > span:first-child { flex: 1; }
+.se-openpicker:hover { border-color: var(--accent); }
+
 /* Seven keys, one row, always — MTWRFSU keeps every day one character wide. */
 .se-days {
   display: grid;

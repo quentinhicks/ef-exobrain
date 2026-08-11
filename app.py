@@ -1625,12 +1625,36 @@ def _node_payload(node, today, routines=None):
     # the routine editor rather than here — so the gate has to say it, or the
     # rule that judges it is invisible from the surface that configures it.
     rt = next((f for f in (routines or []) if f.get('qr_node_id') == node['id']), None)
+    # `schedule_label` and `day_windows` come from the SAME resolution the judge
+    # uses (qr_judge.resolve_window), so the panel, the timeline and the judge
+    # cannot disagree about when a gate runs. The client is never handed a rule.
+    resolve, _ = storage.schedule_resolver()
+    src = resolve(node.get('source_uid')) if node.get('source_uid') else None
+    label = ''
+    if src:
+        try:
+            label = schedule.describe(src, resolve)
+        except schedule.Cycle:
+            label = 'broken: this schedule refers to itself'
+    # A pending change to the schedule is a UID in the table, which is unreadable
+    # on a sheet. The server knows what it means, so it says it here.
+    pending = storage.qr_get_pending_changes(node['id'])
+    for p in pending:
+        if p['field'] == 'source_uid':
+            new_src = resolve(p['new_value'])
+            if new_src:
+                try:
+                    p['new_label'] = schedule.describe(new_src, resolve)
+                except schedule.Cycle:
+                    p['new_label'] = 'a schedule that refers to itself'
     return dict(node,
                 today_override=ov,
                 today_state=storage.qr_node_day_state(node['id'], today),
                 routine=rt['name'] if rt else None,
                 routine_id=rt['id'] if rt else None,
-                pending_changes=storage.qr_get_pending_changes(node['id']))
+                schedule_label=label,
+                day_windows=storage.qr_gate_day_windows(node),
+                pending_changes=pending)
 
 
 @app.route('/api/gates/billing')
@@ -1694,12 +1718,23 @@ def accountability_nodes():
         # 43 chars of URL-safe base64, the same shape the Worker minted: the
         # token IS the scan credential, so it has to be unguessable.
         token = secrets.token_urlsafe(32)
+        # A gate created FROM the picker arrives with a source and no window
+        # fields. Those columns are still the fallback (and the Worker-side copy
+        # reads them), so they are derived from the source rather than guessed.
+        if d.get('source_uid'):
+            d = dict(d, **storage.qr_windows_from_source(d['source_uid']))
         node_id = storage.qr_create_node(
             d.get('label', 'Untitled'), token,
             d.get('window_start', '09:00'), d.get('window_end', '10:00'),
             d.get('window_end_offset_days') or 0,
             d.get('geofence_lat'), d.get('geofence_lng'), d.get('geofence_radius_m'),
             d.get('days_of_week') or '0123456', d.get('weekly_windows'))
+        # A new gate gets its schedule immediately, rather than waiting for the
+        # next start-up's adoption pass.
+        if d.get('source_uid'):
+            storage.qr_update_node(node_id, {'source_uid': d['source_uid']})
+        else:
+            storage.qr_ensure_node_source(node_id)
         node = [n for n in storage.qr_get_nodes() if n['id'] == node_id][0]
         return jsonify(_node_payload(node, today)), 201
     routines = storage.get_flows()
@@ -1734,6 +1769,11 @@ def patch_accountability_node(id):
     immediate, pending = qr_judge.apply_node_patch(node, request.get_json() or {})
     if immediate:
         storage.qr_update_node(id, immediate)
+        # Newest intent wins in BOTH directions: a field tightened now must drop
+        # any deferred loosening still queued for it, or that older change would
+        # land 24h later and quietly undo the tightening.
+        for field in immediate:
+            storage.qr_cancel_pending_change(id, field)
     apply_at = (datetime.now() + timedelta(hours=qr_judge.LOOSEN_DELAY_H)).isoformat()
     for field, value in pending.items():
         storage.qr_cancel_pending_change(id, field)   # newest intent wins
@@ -1884,6 +1924,17 @@ _SOURCE_FIELDS = ('title', 'start', 'duration', 'recurrenceRules',
                   'overrides', 'entries', 'follows', 'ends')
 
 
+def _with_label(row):
+    if not row:
+        return row
+    resolve, _ = storage.schedule_resolver()
+    try:
+        row['label'] = schedule.describe(resolve(row['uid']), resolve)
+    except schedule.Cycle:
+        row['label'] = 'broken: this schedule refers to itself'
+    return row
+
+
 @app.route('/api/schedules')
 def get_schedules_route():
     return jsonify(storage.get_schedule_sources(
@@ -1899,7 +1950,7 @@ def post_schedule():
         return jsonify({'error': 'kind must be rule, schedule or derived'}), 400
     fields = {k: data[k] for k in _SOURCE_FIELDS if k in data}
     try:
-        return jsonify(storage.create_schedule_source(kind, **fields)), 201
+        return jsonify(_with_label(storage.create_schedule_source(kind, **fields))), 201
     except schedule.Cycle as e:
         return jsonify({'error': f'that would make {e} contain itself'}), 400
 
@@ -1914,7 +1965,7 @@ def patch_schedule(uid):
         row = storage.update_schedule_source(uid, **fields)
     except schedule.Cycle as e:
         return jsonify({'error': f'that would make {e} contain itself'}), 400
-    return jsonify(row) if row else ('', 404)
+    return jsonify(_with_label(row)) if row else ('', 404)
 
 
 @app.route('/api/schedules/<uid>', methods=['DELETE'])
