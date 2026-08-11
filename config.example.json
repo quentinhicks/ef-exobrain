@@ -1,6 +1,9 @@
 {
   "gcal_ical_url": "",
   "birthdays_ical_url": "",
+  "gcal_write_calendar_id": "",
+  "gcal_write_source_id": null,
+  "gcal_credentials_path": "credentials.json",
   "sheets_url": "",
   "sheets_credentials_path": "credentials.json",
   "weekly_review_day": 0,

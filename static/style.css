@@ -5038,7 +5038,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #fr-sheet-backdrop,
 #ctx-sheet-backdrop,
 #se-sheet-backdrop,
-#sp-sheet-backdrop {
+#sp-sheet-backdrop,
+#ev-sheet-backdrop {
   position: fixed;
   inset: 0;
   z-index: 199;
@@ -5052,7 +5053,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #fr-sheet,
 #ctx-sheet,
 #se-sheet,
-#sp-sheet {
+#sp-sheet,
+#ev-sheet {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -5398,7 +5400,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #se-sheet-backdrop,
 #se-sheet,
 #sp-sheet-backdrop,
-#sp-sheet {
+#sp-sheet,
+#ev-sheet-backdrop,
+#ev-sheet {
   bottom: var(--gbar-h);
 }
 

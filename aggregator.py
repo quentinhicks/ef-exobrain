@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -118,6 +119,61 @@ def fetch_gcal_named(url):
     if m:
         name = m.group(1).strip()
     return name, _parse_events(unfolded)
+
+
+# ── Calendar WRITES (2026-08-11) ──────────────────────────────
+#
+# Reads stay on the iCal feed; creates go through the Calendar API with a
+# service account (the calendar must be shared with the service account's
+# email, "Make changes to events"). Google stays the source of truth — the
+# app also inserts the created event locally (see insert_gcal_event) only
+# because the iCal feed is cached server-side for hours, and a write that
+# doesn't show up reads as a write that failed. The next feed refresh
+# re-asserts the same row (same uid), so the optimistic copy is never load-
+# bearing for more than one refresh cycle.
+#
+# google-auth is imported lazily: the feature is config-gated and the app
+# must keep running (and the exe keep building) where it isn't installed.
+
+GCAL_API = 'https://www.googleapis.com/calendar/v3/calendars'
+
+
+def _gcal_session(creds_path):
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import AuthorizedSession
+    creds = service_account.Credentials.from_service_account_file(
+        creds_path, scopes=['https://www.googleapis.com/auth/calendar.events'])
+    return AuthorizedSession(creds)
+
+
+def create_gcal_event(creds_path, calendar_id, summary, start, end):
+    # start/end are naive LOCAL datetimes (the app's one convention);
+    # astimezone() stamps the process TZ's offset for that date, so DST
+    # can't shift a winter event written in summer.
+    body = {'summary': summary,
+            'start': {'dateTime': start.astimezone().isoformat()},
+            'end': {'dateTime': end.astimezone().isoformat()}}
+    sess = _gcal_session(creds_path)
+    resp = sess.post(
+        f'{GCAL_API}/{urllib.parse.quote(calendar_id)}/events',
+        json=body, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    # The iCal feed's UID is the API's iCalUID — that match is what lets the
+    # next refresh replace the optimistic row instead of duplicating it.
+    return {'event_id': data['id'],
+            'uid': data.get('iCalUID') or data['id'] + '@google.com'}
+
+
+def delete_gcal_event(creds_path, calendar_id, event_id):
+    # Only ever called to undo a create this app made. 404/410 count as done:
+    # the event is gone, which is what undo promised.
+    sess = _gcal_session(creds_path)
+    resp = sess.delete(
+        f'{GCAL_API}/{urllib.parse.quote(calendar_id)}/events/{urllib.parse.quote(event_id)}',
+        timeout=15)
+    if resp.status_code not in (200, 204, 404, 410):
+        resp.raise_for_status()
 
 
 def _parse_bool(val):

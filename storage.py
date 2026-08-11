@@ -2051,6 +2051,28 @@ def get_gcal_events():
     return [dict(r) for r in rows]
 
 
+# The optimistic half of a calendar WRITE: the event just created on Google,
+# inserted locally so it renders before the (hours-stale) iCal feed catches
+# up. Same uid the feed will publish, so replace_source_events re-asserts it
+# rather than duplicating it on the next refresh.
+def insert_gcal_event(source_id, uid, summary, start, end):
+    conn = get_conn()
+    conn.execute(
+        '''INSERT OR REPLACE INTO gcal_event (uid, summary, start, end, allday, source_id)
+           VALUES (?,?,?,?,0,?)''',
+        (uid, summary, start, end, source_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_gcal_event_by_uid(source_id, uid):
+    conn = get_conn()
+    conn.execute('DELETE FROM gcal_event WHERE source_id = ? AND uid = ?',
+                 (source_id, uid))
+    conn.commit()
+    conn.close()
+
+
 def get_calendar_sources():
     conn = get_conn()
     rows = conn.execute('SELECT * FROM calendar_source ORDER BY id').fetchall()

@@ -807,6 +807,7 @@ function initTimeline() {
     renderTimeline();
   });
   document.getElementById('refresh-btn').addEventListener('click', refreshExternal);
+  document.getElementById('tl-add-event').addEventListener('click', openEvSheet);
 
   // Ctrl+Z is global (see the undo core). Timeline dismissals register on the
   // same stack, so one keystroke walks back through everything in order.
@@ -3138,6 +3139,9 @@ function initHub() {
       }
     }
     if (ctxSheet.tag) { closeCtxSheet(); return; }
+    // The new-event sheet peels before the Calendar overlay it opened from
+    // (the focused-input case stopPropagates and never reaches here).
+    if (evSheet.open) { closeEvSheet(); return; }
     // A dangerous-writing session swallows Esc entirely — its own keydown
     // handler treats Esc as the abort, and nothing underneath may act on it.
     if (dwView.open) return;
@@ -3816,6 +3820,113 @@ function refRenameEl(span, save) {
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
   });
   input.addEventListener('blur', () => finish(true));
+}
+
+// ── New calendar event: the write half of the gcal mirror ─────
+//
+// Creates go to Google (POST /api/gcal/events — service account, see
+// aggregator.create_gcal_event) and the server inserts the event locally in
+// the same request, because the iCal feed is cached for hours and a write
+// that doesn't render reads as a write that failed. The client then just
+// re-reads /api/gcal — a db-only read, no external fetch — so the event's
+// color and shape come from the same query as every other event.
+// Undo deletes the event from Google AND the local mirror; created-by-us is
+// the one thing the read-only-mirror rule lets the app delete.
+const evSheet = { open: false };
+
+function openEvSheet() {
+  evSheet.open = true;
+  renderEvSheet();
+}
+
+function closeEvSheet() {
+  evSheet.open = false;
+  document.getElementById('ev-sheet').classList.add('hidden');
+  document.getElementById('ev-sheet-backdrop').classList.add('hidden');
+}
+
+// Re-read the local mirror and repaint both surfaces that draw it.
+async function reloadGcal() {
+  state.gcalEvents = await fetch('/api/gcal').then(r => r.json())
+    .catch(() => state.gcalEvents);
+  renderTimeline();
+  renderEngage();
+}
+
+function renderEvSheet() {
+  const sheet = document.getElementById('ev-sheet');
+  const back = document.getElementById('ev-sheet-backdrop');
+  sheet.classList.remove('hidden');
+  back.classList.remove('hidden');
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">new calendar event</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="ev-close">✕</button>
+    </div>
+    <div class="cl-action-wrap">
+      <input type="text" class="cl-action" id="ev-summary" placeholder="What is it?">
+    </div>
+    <div class="cl-sec"><span class="cl-label">When</span></div>
+    <div class="cl-row ev-when">
+      <input type="date" class="cl-date" id="ev-date"
+        value="${escHtml(formatDateYMD(state.currentDate))}">
+      <input type="time" class="cl-date" id="ev-start">
+      <span class="ev-dash">–</span>
+      <input type="time" class="cl-date" id="ev-end" title="Blank = one hour">
+    </div>
+    ${recentList('evtime').length ? `<div class="cl-chips">
+      ${recentList('evtime').slice(0, 4).map(t => {
+        const [s, e] = t.split('|');
+        return `<button class="cl-chip" data-evtime="${escHtml(t)}">${
+          escHtml(s + (e ? '–' + e : ''))}</button>`;
+      }).join('')}
+    </div>` : ''}
+    <div class="cl-row">
+      <button class="cl-pill" id="ev-save">Add to Google Calendar</button>
+    </div>`;
+
+  const save = async () => {
+    const summary = sheet.querySelector('#ev-summary').value.trim();
+    const date = sheet.querySelector('#ev-date').value;
+    const start = sheet.querySelector('#ev-start').value;
+    const end = sheet.querySelector('#ev-end').value;
+    if (!summary) { toast('The event needs a name'); return; }
+    if (!date || !start) { toast('The event needs a date and a start time'); return; }
+    const resp = await fetch('/api/gcal/events', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summary, date, start, end: end || null }),
+    });
+    const created = await resp.json();
+    // The sheet stays open on failure — the config-missing message has to be
+    // readable, and closing would throw the typed event away with it.
+    if (!resp.ok) { toast(created.error || 'Google refused the write'); return; }
+    // Times have no natural sort, so the sheet remembers the ones you use —
+    // the chips above the When row (see recentBump).
+    recentBump('evtime', start + '|' + (end || ''));
+    pushUndo(`added event "${summary}"`, async () => {
+      const r = await fetch(`/api/gcal/events/${encodeURIComponent(created.event_id)}`
+        + `?uid=${encodeURIComponent(created.uid)}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error('delete failed');
+      await reloadGcal();
+    });
+    closeEvSheet();
+    await reloadGcal();
+  };
+
+  sheet.querySelector('#ev-close').addEventListener('click', closeEvSheet);
+  sheet.querySelector('#ev-save').addEventListener('click', save);
+  sheet.querySelectorAll('[data-evtime]').forEach(b => b.addEventListener('click', () => {
+    const [s, e] = b.dataset.evtime.split('|');
+    sheet.querySelector('#ev-start').value = s;
+    sheet.querySelector('#ev-end').value = e || '';
+  }));
+  sheet.querySelectorAll('input').forEach(el => el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.stopPropagation(); save(); }
+    else if (e.key === 'Escape') { e.stopPropagation(); closeEvSheet(); }
+  }));
+  back.addEventListener('click', closeEvSheet);
+  sheet.querySelector('#ev-summary').focus();
 }
 
 // ── The routine RUNNER: one step per page ─────────────────────
@@ -8982,6 +9093,28 @@ function rememberFiledDomain(areaId) {
   }));
 }
 
+// ── Recency memory for pickers with NO natural sort (2026-08-11) ──
+//
+// Where a list has a real order (due dates, the tree, relevance) that order
+// wins; where it has none — which project, which time — the best available
+// sort is "what you picked last". LIFO with dedup, capped small: this is a
+// hand of recent cards, not a history. localStorage like every other lens
+// preference (mapSort, the device override, lastFiled) — what THIS machine
+// picked recently is a fact about this machine. Values are opaque to the
+// helpers; stale ids fall out at render time when the lookup misses.
+const RECENT_MAX = 8;
+
+function recentList(key) {
+  try { return JSON.parse(localStorage.getItem('recent.' + key)) || []; }
+  catch { return []; }
+}
+
+function recentBump(key, value) {
+  const list = recentList(key).filter(v => v !== value);
+  list.unshift(value);
+  localStorage.setItem('recent.' + key, JSON.stringify(list.slice(0, RECENT_MAX)));
+}
+
 // The area to land on for a given domain: its default, else its first.
 function defaultAreaForDomain(did) {
   const areas = state.areas.filter(a => a.active && a.type === 'standard'
@@ -9696,6 +9829,26 @@ function renderClarifyProjSearch(sheet, item) {
         <span class="cl-proj-meta${p.action_count ? '' : ' cl-proj-bad'}">${escHtml(p.area_name || '—')} · ${countMeta(p)}</span>
       </button>`).join('')}` : '';
 
+  // Then the projects picked most recently — the area groups below sort
+  // alphabetically, which is no sort at all when you're filing the fifth
+  // capture into the same project. Semantic wins over recent (a match to
+  // THIS item beats a habit), and typing anything replaces both with the
+  // filter. Stale ids (completed/deleted projects) miss the lookup and drop.
+  const bestIds = new Set(best.map(p => p.id));
+  const recent = !q
+    ? recentList('project')
+        .map(id => state.projects.find(p => p.id === id))
+        .filter(p => p && p.status !== 'on_hold' && !bestIds.has(p.id))
+        .slice(0, 4)
+    : [];
+  const recentHtml = recent.length ? `
+    <div class="cl-proj-group">Recently used</div>
+    ${recent.map(p => `
+      <button class="cl-proj-row" data-proj="${p.id}">
+        <span class="cl-proj-name">${escHtml(p.content)}</span>
+        <span class="cl-proj-meta${p.action_count ? '' : ' cl-proj-bad'}">${escHtml(p.area_name || '—')} · ${countMeta(p)}</span>
+      </button>`).join('')}` : '';
+
   const rows = Object.keys(byArea).sort().map(area => `
     <div class="cl-proj-group">${escHtml(area)} · ${byArea[area].length} open</div>
     ${byArea[area].map(p => `
@@ -9739,7 +9892,7 @@ function renderClarifyProjSearch(sheet, item) {
       : `<button class="cl-proj-row cl-proj-new cl-proj-new-empty" id="cl-proj-new-hint">
       <span>+ New project — name it above</span>
     </button>`}
-    <div class="cl-proj-list">${bestHtml}${rows}${dorm}</div>
+    <div class="cl-proj-list">${bestHtml}${recentHtml}${rows}${dorm}</div>
     <button class="cl-proj-row" id="cl-proj-none">No project — file as a standalone action</button>`;
 
   const input = sheet.querySelector('#cl-proj-q');
@@ -9760,6 +9913,7 @@ function renderClarifyProjSearch(sheet, item) {
   if (newHint) newHint.addEventListener('click', () => input.focus());
   sheet.querySelectorAll('.cl-proj-row[data-proj]').forEach(b => b.addEventListener('click', async () => {
     const p = state.projects.find(x => x.id === parseInt(b.dataset.proj));
+    recentBump('project', p.id);
     clarifyView.projectId = p.id;
     clarifyView.projectName = p.content;
     clarifyView.projSearch = null;
@@ -9803,6 +9957,7 @@ async function clarifyCreateProject(name) {
     body: JSON.stringify({ content: name, area_id: areaId }),
   }).then(r => r.json());
   state.projects = await fetch('/api/projects').then(r => r.json());
+  recentBump('project', p.id);
   clarifyView.projectId = p.id;
   clarifyView.projectName = p.content;
   clarifyView.projSearch = null;
