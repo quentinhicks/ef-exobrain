@@ -161,6 +161,20 @@ imm, pend = qr_judge.apply_node_patch({'charge_cents': 800}, {'charge_cents': 20
 check('CUTTING the stake waits 24h like any other loosening',
       pend.get('charge_cents') == 200 and not imm, (imm, pend))
 
+# Clearing a stake is a move to the DEFAULT, so it waits or not depending on
+# which direction that is. Comparing the raw values would let a $9 stake be
+# cleared down to a $2 default with no delay.
+node = fresh(default=200)
+imm, pend = qr_judge.apply_node_patch({'charge_cents': 800}, {'charge_cents': None})
+check('CLEARING a stake above the default still waits 24h',
+      pend.get('charge_cents') is None and 'charge_cents' in pend and not imm, (imm, pend))
+imm, pend = qr_judge.apply_node_patch({'charge_cents': 100}, {'charge_cents': None})
+check('clearing a stake BELOW the default applies at once (it is a raise)',
+      'charge_cents' in imm and not pend, (imm, pend))
+imm, pend = qr_judge.apply_node_patch({'charge_cents': None}, {'charge_cents': 100})
+check('setting a stake below the default waits (it is a cut)',
+      pend.get('charge_cents') == 100 and not imm, (imm, pend))
+
 # ── verify_token never leaks, and catches a mismatch ─────────
 def me(ok=True, username='u'):
     def send(url):

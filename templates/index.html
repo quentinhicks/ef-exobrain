@@ -269,195 +269,36 @@
     </div>
   </div>
 
-  <!-- Settings modal (was: Block Editor) -->
+  <!-- Settings modal (was: Block Editor). Three surfaces, one grammar
+       (11a): the INDEX carries current state on every row; a SECTION is a
+       plain list with one add affordance; adding and editing both raise
+       #se-sheet, so a form never sits inside the scroll. Back is the only
+       navigation. Ported from Claude Design (project
+       82343144-9c74-405a-8a03-5d1a2c5b82c7, file GTD Panel Layouts.dc.html,
+       panel 11a). -->
   <div id="modal-overlay" class="hidden">
     <div id="block-editor-modal">
       <div class="modal-header">
-        <span class="modal-title">Settings</span>
+        <button id="be-back" class="be-back hidden">‹ Settings</button>
+        <span class="modal-title" id="be-title">Settings</span>
+        <span class="be-head-spacer"></span>
         <button id="modal-close" class="modal-close-btn">✕</button>
       </div>
-      <nav class="be-tabs">
-        <button class="be-tab-btn active" data-betab="blocks">Blocks</button>
-        <button class="be-tab-btn" data-betab="areas">Areas</button>
-        <button class="be-tab-btn" data-betab="recurring">Recurring</button>
-        <button class="be-tab-btn" data-betab="qr">Gates</button>
-        <button class="be-tab-btn" data-betab="locations">Locations</button>
-        <button class="be-tab-btn" data-betab="times">Times</button>
-        <button class="be-tab-btn" data-betab="calendars">Calendars</button>
-        <button class="be-tab-btn" data-betab="display">Display</button>
-      </nav>
-      <div class="modal-body">
 
-        <section class="be-section" data-betab-panel="display">
-          <div class="be-form-heading">Display</div>
-          <div class="be-form-row">
-            <label class="be-label">Theme</label>
-            <button class="be-btn-secondary be-display-btn" id="theme-toggle">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path id="theme-icon-moon" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-                <g id="theme-icon-sun" class="hidden">
-                  <circle cx="12" cy="12" r="4"/>
-                  <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
-                </g>
-              </svg>
-              <span id="theme-label">Dark</span>
-            </button>
-          </div>
-          <div class="be-form-row">
-            <label class="be-label">Timezone</label>
-            <select id="tz-select" class="be-tz-select"></select>
-          </div>
-          <div class="be-form-row">
-            <label class="be-label">NOW panel</label>
-            <button class="be-btn-secondary be-display-btn" id="panel-toggle">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <g id="panel-icon-on">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </g>
-                <g id="panel-icon-off" class="hidden">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-                  <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-                  <line x1="1" y1="1" x2="23" y2="23"/>
-                </g>
-              </svg>
-              <span id="panel-toggle-label">Panel</span>
-            </button>
-          </div>
-        </section>
+      <!-- 1 · index. Rendered from SETTINGS_SECTIONS so the row and its
+           current-state summary can never disagree about what exists. -->
+      <div id="be-index"></div>
 
-        <section class="be-section" data-betab-panel="areas">
-          <div id="be-areas-list"></div>
-          <form id="be-add-area-form" class="be-inline-form">
-            <input type="text" id="be-area-name" placeholder="Area name" autocomplete="off">
-            <select id="be-area-type">
-              <option value="standard">Standard</option>
-              <option value="review">Review</option>
-              <option value="sleep">Sleep</option>
-              <option value="routine">Routine</option>
-            </select>
-            <select id="be-area-domain"></select>
-            <button type="submit">Add</button>
-          </form>
-          <div class="be-form-heading">Domains</div>
-          <div id="be-domains-list"></div>
-          <form id="be-add-domain-form" class="be-inline-form">
-            <input type="text" id="be-domain-name" placeholder="Domain name" autocomplete="off">
-            <button type="submit">Add</button>
-          </form>
-        </section>
+      <!-- 2 · section. One pane per section, all inside one scroll; the
+           heading above them names whichever is active. -->
+      <div id="be-panes" class="hidden">
+        <div class="be-sec-head">
+          <div class="be-sec-title" id="be-sec-title"></div>
+          <div class="be-sec-desc" id="be-sec-desc"></div>
+        </div>
 
-        <section class="be-section active" data-betab-panel="blocks">
-          <div id="be-blocks-list"></div>
-          <div class="be-block-form-wrap">
-            <div class="be-form-heading" id="be-block-form-title">Add Block</div>
-            <form id="be-block-form">
-              <div class="be-form-row">
-                <label class="be-label">Label</label>
-                <input type="text" id="be-block-label-input" autocomplete="off">
-              </div>
-              <div class="be-form-row">
-                <label class="be-label">Color</label>
-                <div id="be-color-picker" class="be-color-picker"></div>
-              </div>
-              <div class="be-form-row">
-                <label class="be-label">Days</label>
-                <div id="be-days-picker" class="be-days-picker"></div>
-              </div>
-              <div class="be-form-row">
-                <label class="be-label">Time</label>
-                <input type="time" id="be-block-start">
-                <span class="be-time-sep">–</span>
-                <input type="time" id="be-block-end">
-              </div>
-              <div class="be-form-row">
-                <label class="be-label">Area</label>
-                <select id="be-block-area-select">
-                  <option value="">— none —</option>
-                </select>
-              </div>
-              <div class="be-form-row">
-                <label class="be-label">Location</label>
-                <select id="be-block-location-select">
-                  <option value="">— none —</option>
-                </select>
-              </div>
-              <div class="be-form-actions">
-                <button type="submit" class="be-btn-primary">Save</button>
-                <button type="button" id="be-block-cancel" class="be-btn-secondary hidden">Cancel</button>
-              </div>
-            </form>
-            <div id="be-block-error" class="be-error"></div>
-          </div>
-        </section>
-
-        <section class="be-section" data-betab-panel="recurring">
-          <div id="be-recurring-list"></div>
-          <div class="be-block-form-wrap">
-            <div class="be-form-heading">Add Recurring Task</div>
-            <form id="be-recurring-form">
-              <div class="be-form-row">
-                <label class="be-label">Name</label>
-                <input type="text" id="be-rec-name" autocomplete="off">
-              </div>
-              <div class="be-form-row">
-                <label class="be-label">Area</label>
-                <select id="be-rec-area"></select>
-              </div>
-              <div class="be-form-row">
-                <label class="be-label">Repeats</label>
-                <select id="be-rec-kind">
-                  <option value="weekly">Days of the week</option>
-                  <option value="monthly_nth">Nth weekday of the month</option>
-                  <option value="monthly_date">Day of the month</option>
-                  <option value="every_n_days">Every N days</option>
-                </select>
-              </div>
-              <div class="be-form-row be-rec-row-weekly">
-                <label class="be-label">Days</label>
-                <div id="be-rec-days-picker" class="be-days-picker"></div>
-              </div>
-              <div class="be-form-row be-rec-row-weekly">
-                <label class="be-label">Every</label>
-                <input type="number" id="be-rec-interval-weeks" min="1" value="1" class="be-rec-num"> week(s)
-              </div>
-              <div class="be-form-row be-rec-row-nth hidden">
-                <label class="be-label">On the</label>
-                <select id="be-rec-nth">
-                  <option value="1">1st</option>
-                  <option value="2">2nd</option>
-                  <option value="3">3rd</option>
-                  <option value="4">4th</option>
-                  <option value="5">5th</option>
-                </select>
-                <select id="be-rec-weekday"></select>
-              </div>
-              <div class="be-form-row be-rec-row-months hidden">
-                <label class="be-label">Every</label>
-                <input type="number" id="be-rec-interval-months" min="1" value="1" class="be-rec-num"> month(s)
-              </div>
-              <div class="be-form-row be-rec-row-ndays hidden">
-                <label class="be-label">Every</label>
-                <input type="number" id="be-rec-interval-days" min="1" value="10" class="be-rec-num"> day(s)
-              </div>
-              <div class="be-form-row">
-                <label class="be-label">Starting</label>
-                <input type="date" id="be-rec-anchor">
-              </div>
-              <div class="be-form-actions">
-                <button type="submit" class="be-btn-primary">Add</button>
-              </div>
-            </form>
-            <div id="be-recurring-error" class="be-error"></div>
-          </div>
-        </section>
-
-        <section class="be-section" data-betab-panel="qr">
-          <div id="be-qr-section"></div>
-        </section>
-
-        <section class="be-section" data-betab-panel="locations">
-          <div id="be-loc-section"></div>
+        <section class="be-section" data-betab-panel="blocks">
+          <div id="be-blocks-list" class="be-list"></div>
         </section>
 
         <!-- Named recurring periods — the time-axis counterpart of the
@@ -466,24 +307,83 @@
           <div id="be-times-section"></div>
         </section>
 
+        <section class="be-section" data-betab-panel="recurring">
+          <div id="be-recurring-list" class="be-list"></div>
+        </section>
+
+        <section class="be-section" data-betab-panel="areas">
+          <div id="be-areas-list" class="be-list"></div>
+          <div class="be-sub-head">Domains</div>
+          <div id="be-domains-list" class="be-list"></div>
+        </section>
+
+        <section class="be-section" data-betab-panel="locations">
+          <div id="be-loc-section"></div>
+        </section>
+
+        <section class="be-section" data-betab-panel="qr">
+          <div id="be-qr-section"></div>
+        </section>
+
         <section class="be-section" data-betab-panel="calendars">
-          <div id="be-calendars-list"></div>
-          <form id="be-add-calendar-form" class="be-inline-form be-calendar-form">
-            <input type="url" id="be-calendar-url" placeholder="Paste iCal URL" autocomplete="off">
-            <div id="be-calendar-color-picker" class="be-color-picker"></div>
-            <button type="submit">Add</button>
-          </form>
-          <div id="be-calendar-error" class="be-error"></div>
-          <div id="be-calendar-status" class="be-push-status"></div>
-          <div class="be-gcal-row">
-            <button id="be-download-ics-btn" class="be-btn-secondary">Download .ics (8 weeks)</button>
-            <span id="be-ics-status" class="be-push-status"></span>
+          <div id="be-calendars-list" class="be-list"></div>
+          <div class="be-list">
+            <div class="be-set-row">
+              <span class="be-set-name">Export</span>
+              <button id="be-download-ics-btn" class="be-btn-secondary">Download .ics (8 weeks)</button>
+            </div>
+          </div>
+          <div id="be-ics-status" class="be-push-status"></div>
+        </section>
+
+        <section class="be-section" data-betab-panel="display">
+          <div class="be-list">
+            <div class="be-set-row">
+              <span class="be-set-name">Theme</span>
+              <button class="be-btn-secondary be-display-btn" id="theme-toggle">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path id="theme-icon-moon" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                  <g id="theme-icon-sun" class="hidden">
+                    <circle cx="12" cy="12" r="4"/>
+                    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+                  </g>
+                </svg>
+                <span id="theme-label">Dark</span>
+              </button>
+            </div>
+            <div class="be-set-row">
+              <span class="be-set-name">Timezone</span>
+              <select id="tz-select" class="be-tz-select"></select>
+            </div>
+            <div class="be-set-row">
+              <span class="be-set-name">NOW panel</span>
+              <button class="be-btn-secondary be-display-btn" id="panel-toggle">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <g id="panel-icon-on">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </g>
+                  <g id="panel-icon-off" class="hidden">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                    <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                    <line x1="1" y1="1" x2="23" y2="23"/>
+                  </g>
+                </svg>
+                <span id="panel-toggle-label">Panel</span>
+              </button>
+            </div>
           </div>
         </section>
 
       </div>
     </div>
   </div>
+
+  <!-- 3 · sheet. Every settings datatype adds and edits in THIS object, with
+       its own Save; it shares #clarify-sheet's geometry and z-layer, and the
+       section behind it dims rather than scrolls. -->
+  <div id="se-sheet-backdrop" class="hidden"></div>
+  <div id="se-sheet" class="hidden"></div>
 
   <!-- THE global bar: one context-sensitive bottom bar for the whole app.
        Every overlay opens ABOVE it (bottom: var(--gbar-h)), so capture, undo,

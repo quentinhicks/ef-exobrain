@@ -2,8 +2,14 @@ name = "qr-accountability"
 main = "index.js"
 compatibility_date = "2024-01-01"
 
+# CRON DISARMED 2026-08-11. Judgment moved to qr_judge.py on the VM
+# (deploy/qpa-judge.service) and charging followed it on 2026-08-11, so this
+# Worker's scheduled handler was judging a D1 that nothing writes to any more —
+# a second judge reading stale scans. Harmless while charging was off; a way to
+# be charged for failures that never happened the moment it wasn't. The scan
+# routes and /admin views stay reachable; only the clock is gone.
 [triggers]
-crons = ["*/5 * * * *"]
+crons = []
 
 [vars]
 LOCAL_TZ = "America/Los_Angeles"

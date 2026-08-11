@@ -218,11 +218,13 @@ def is_loosening(field, current, nxt, node=None):
         # way of making a gate easier. Raising it is immediate: nothing about
         # the delay exists to protect you from committing harder. Clearing it
         # back to the default counts as whichever direction that move is.
-        cur = current if current not in (None, '') else None
-        new = nxt if nxt not in (None, '') else None
-        if new is None or cur is None:
-            return new is not None and cur is not None and int(new) < int(cur)
-        return int(new) < int(cur)
+        # A blank resolves to the DEFAULT, because that is what will actually
+        # be charged — comparing the raw values would let clearing a $9 stake
+        # down to a $2 default through immediately, which is the loophole.
+        default = charge_settings()['default_cents']
+        cur = int(current) if current not in (None, '') else default
+        new = int(nxt) if nxt not in (None, '') else default
+        return new < cur
     if field == 'window_start':
         return str(nxt) > str(current)          # a later start is less demanding
     if field == 'window_end':

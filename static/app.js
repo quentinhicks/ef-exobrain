@@ -1509,23 +1509,6 @@ function renderInbox() {
 }
 
 
-// Project picker options, grouped by area. Filing an item under a project makes
-// it adopt that project's area server-side, so the area select follows along.
-function projectOptions(parentId) {
-  const byArea = {};
-  state.projects.forEach(p => {
-    const area = p.area_name || '—';
-    (byArea[area] = byArea[area] || []).push(p);
-  });
-  const groups = Object.keys(byArea).sort().map(area =>
-    `<optgroup label="${escHtml(area)}">` +
-    byArea[area].map(p =>
-      `<option value="${p.id}"${p.id === parentId ? ' selected' : ''}>${escHtml(p.content)}</option>`
-    ).join('') + '</optgroup>'
-  ).join('');
-  return `<option value=""${parentId ? '' : ' selected'}>—</option>${groups}`;
-}
-
 // ── Sheets Inbox ─────────────────────────────────────────────
 
 function renderSheetsInbox() {
@@ -1671,7 +1654,22 @@ function rgbaColor(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-// ── Block editor ─────────────────────────────────────────────
+// ── Settings — index → section → sheet (11a) ─────────────────
+//
+// Ported from Claude Design (project 82343144-9c74-405a-8a03-5d1a2c5b82c7,
+// file `GTD Panel Layouts.dc.html`, panel 11a). Three surfaces, one grammar:
+//
+//   index    every row names a section AND says its current state
+//   section  a plain list with one add affordance; back is the only navigation
+//   sheet    adding and editing raise the SAME sheet, with its own Save, so a
+//            form never sits inside the section's scroll
+//
+// What this replaced spent two wrapping rows of tabs on navigation and then
+// switched grammar for every form — floating label column, seven wrapping
+// checkboxes, a card inside a scroll inside a panel. Now each list row is
+// `text + meta + ›` and each form is ONE object (#se-sheet) declared by a
+// SETTINGS_SHEETS entry, which is the rule the rest of the app already
+// follows (see "Direction — list datatypes decide in a sheet, not on the row").
 
 // 10 muted pastels, shared by the block and calendar color pickers
 const BLOCK_COLORS = [
@@ -1683,165 +1681,883 @@ const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 // is Sunday, so all seven stay distinct at one character. Anywhere with room
 // for `DAY_NAMES` should use that instead; this is for pickers that have none.
 const DAY_LETTERS = ['M', 'T', 'W', 'R', 'F', 'S', 'U'];
+// Monday-first, matching DAY_NAMES' indices — recurrence.py's BYDAY tokens.
+const RRULE_DAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
 
-let editingGroup = null;
+// Which section is open; null is the index. The sheet has its own state below.
+const settingsView = { section: null };
+
+// What the index rows report. Each section's renderer sets its own key as it
+// paints, so a summary can never claim a count its list doesn't show.
+const beCounts = {};
+
+function plural(n, word) {
+  n = n || 0;
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+// The index IS this table: row, one-line description and current-state
+// summary in one place, so a new section can't ship with a row but no heading.
+const SETTINGS_SECTIONS = [
+  { key: 'blocks', name: 'Blocks', group: 'Your week',
+    desc: 'Recurring windows the day is built around.',
+    summary: () => `${beCounts.blocks || 0} set` },
+  { key: 'times', name: 'Times', group: 'Your week',
+    desc: 'Named windows a context tag can be gated by.',
+    summary: () => plural(beCounts.times, 'preset') },
+  { key: 'recurring', name: 'Recurring', group: 'Your week',
+    desc: 'Tasks that come back on a schedule.',
+    summary: () => plural(beCounts.recurring, 'task') },
+  { key: 'areas', name: 'Areas', group: 'Where and what',
+    desc: 'The areas of your life, and the domains that group them.',
+    summary: () => String(beCounts.areas || 0) },
+  { key: 'locations', name: 'Locations', group: 'Where and what',
+    desc: 'Places a gate or a context tag can be pinned to.',
+    summary: () => String(beCounts.locations || 0) },
+  { key: 'qr', name: 'Gates', group: 'Where and what',
+    desc: 'Scan points that gate the day.',
+    summary: () => plural(beCounts.qr, 'gate') },
+  { key: 'calendars', name: 'Calendars', group: 'App',
+    desc: 'iCal feeds drawn on the timeline.',
+    summary: () => `${beCounts.calendars || 0} connected` },
+  { key: 'display', name: 'Display', group: 'App',
+    desc: 'Theme, timezone, and the NOW panel.',
+    summary: () => `${document.documentElement.classList.contains('theme-light') ? 'Light' : 'Dark'}`
+      + ` · ${(state.settings.timezone || '').split('/').pop().replace(/_/g, ' ') || 'local'}` },
+];
+
+function renderSettingsIndex() {
+  const el = document.getElementById('be-index');
+  if (!el) return;
+  let group = null;
+  el.innerHTML = SETTINGS_SECTIONS.map(s => {
+    const head = s.group === group ? '' : `<div class="be-idx-group">${escHtml(s.group)}</div>`;
+    group = s.group;
+    return `${head}<button class="be-nav-row" data-section="${s.key}">
+      <span class="be-nav-name">${escHtml(s.name)}</span>
+      <span class="be-nav-value">${escHtml(s.summary())}</span>
+      <span class="be-chev">›</span>
+    </button>`;
+  }).join('');
+  el.querySelectorAll('[data-section]').forEach(btn => {
+    btn.addEventListener('click', () => openSettingsSection(btn.dataset.section));
+  });
+}
+
+function openSettingsSection(key) {
+  settingsView.section = key;
+  paintSettingsNav();
+  if (key === 'times') renderTimePresets();
+}
+
+function backToSettingsIndex() {
+  closeSeSheet();
+  settingsView.section = null;
+  renderSettingsIndex();
+  paintSettingsNav();
+}
+
+function paintSettingsNav() {
+  const inSection = settingsView.section != null;
+  const sec = SETTINGS_SECTIONS.find(s => s.key === settingsView.section);
+  document.getElementById('be-index').classList.toggle('hidden', inSection);
+  document.getElementById('be-panes').classList.toggle('hidden', !inSection);
+  document.getElementById('be-back').classList.toggle('hidden', !inSection);
+  document.getElementById('be-title').classList.toggle('hidden', inSection);
+  document.getElementById('be-sec-title').textContent = sec ? sec.name : '';
+  document.getElementById('be-sec-desc').textContent = sec ? sec.desc : '';
+  document.querySelectorAll('#be-panes .be-section').forEach(s =>
+    s.classList.toggle('active', s.dataset.betabPanel === settingsView.section));
+  document.getElementById('be-panes').scrollTop = 0;
+}
+
+// ── The sheet ────────────────────────────────────────────────
+//
+// One object for every settings datatype. A SETTINGS_SHEETS entry declares
+// what the fields are (`fields`), what an existing row loads into them
+// (`load`), what an empty one starts from (`blank`), what Save does (`submit`,
+// which returns an error string or null) and, where the API allows it, what
+// Delete does (`remove`). Values are held here rather than read off the DOM at
+// submit time, so a field that only exists for some other field's value
+// (Recurring's day keys, a gate's per-day windows) can re-render freely.
+
+const seSheet = { kind: null, item: null, values: null, error: '' };
+
+function openSeSheet(kind, item) {
+  const spec = SETTINGS_SHEETS[kind];
+  seSheet.kind = kind;
+  seSheet.item = item || null;
+  seSheet.values = item ? spec.load(item) : spec.blank();
+  seSheet.error = '';
+  document.getElementById('se-sheet').classList.remove('hidden');
+  document.getElementById('se-sheet-backdrop').classList.remove('hidden');
+  document.getElementById('block-editor-modal').classList.add('be-sheet-open');
+  renderSeSheet();
+  const first = document.querySelector('#se-sheet .se-input');
+  if (first && !seSheet.item) first.focus();
+}
+
+function closeSeSheet() {
+  seSheet.kind = null;
+  seSheet.item = null;
+  seSheet.values = null;
+  document.getElementById('se-sheet').classList.add('hidden');
+  document.getElementById('se-sheet-backdrop').classList.add('hidden');
+  document.getElementById('block-editor-modal').classList.remove('be-sheet-open');
+}
+
+function seFieldHtml(f, v) {
+  const label = `<span class="se-flabel">${escHtml(f.label)}</span>`;
+  const val = v[f.key];
+  let control = '';
+  if (f.kind === 'static') {
+    control = `<div class="se-static">${escHtml(f.text)}</div>`;
+  } else if (f.kind === 'action') {
+    // A state the sheet can only clear, not edit — a gate's today-only window.
+    control = `<div class="se-static">${escHtml(f.text)}</div>`
+      + `<button type="button" class="se-inline-act" data-f="${f.key}">${escHtml(f.action)}</button>`;
+  } else if (f.kind === 'select') {
+    control = `<select class="se-input se-select" data-f="${f.key}">${f.options(v).map(o =>
+      `<option value="${escHtml(String(o.value))}"${String(o.value) === String(val) ? ' selected' : ''}>${escHtml(o.name)}</option>`
+    ).join('')}</select>`;
+  } else if (f.kind === 'swatches') {
+    control = `<div class="se-swatches" data-f="${f.key}">${BLOCK_COLORS.map(c =>
+      `<button type="button" class="se-swatch${c === val ? ' se-on' : ''}" data-color="${c}" style="background:${c}" title="${c}"></button>`
+    ).join('')}</div>`;
+  } else if (f.kind === 'days') {
+    control = `<div class="se-days" data-f="${f.key}">${DAY_LETTERS.map((d, i) =>
+      `<button type="button" class="se-day${val.includes(i) ? ' se-on' : ''}" data-day="${i}" title="${DAY_NAMES[i]}">${d}</button>`
+    ).join('')}</div>`;
+  } else if (f.kind === 'check') {
+    control = `<button type="button" class="se-check${val ? ' se-on' : ''}" data-f="${f.key}">${
+      escHtml(val ? f.on : f.off)}</button>`;
+  } else if (f.kind === 'weekly') {
+    // A gate's per-day windows: only the days the gate runs on get a row, and
+    // a day that matches the defaults above is not stored at all.
+    control = `<div class="se-weekly" data-f="${f.key}">${v.days.slice().sort().map(i => {
+      const w = val[i] || { start: v.start, end: v.end, offset: v.offset };
+      return `<div class="se-wk-row" data-dow="${i}">
+        <span class="se-wk-day">${DAY_NAMES[i]}</span>
+        <input type="time" class="se-input se-wk-start" value="${escHtml(w.start || '')}">
+        <span class="se-wk-sep">–</span>
+        <input type="time" class="se-input se-wk-end" value="${escHtml(w.end || '')}">
+        <button type="button" class="se-wk-off${w.offset ? ' se-on' : ''}">+1d</button>
+      </div>`;
+    }).join('')}</div>`;
+  } else {
+    control = `<input class="se-input${f.kind === 'time' || f.kind === 'number' ? ' se-mono' : ''}"`
+      + ` type="${f.kind}" data-f="${f.key}" value="${escHtml(String(val == null ? '' : val))}"`
+      + `${f.placeholder ? ` placeholder="${escHtml(f.placeholder)}"` : ''}`
+      + `${f.min != null ? ` min="${f.min}"` : ''}${f.step ? ` step="${f.step}"` : ''} autocomplete="off">`;
+  }
+  const hint = f.hint ? `<span class="se-fhint">${escHtml(f.hint)}</span>` : '';
+  const suffix = f.suffix ? `<span class="se-fsuffix">${escHtml(f.suffix)}</span>` : '';
+  return `<div class="se-field${f.half ? ' se-half' : ''}">${label}
+    <div class="se-frow">${control}${suffix}</div>${hint}</div>`;
+}
+
+function renderSeSheet() {
+  const spec = SETTINGS_SHEETS[seSheet.kind];
+  const v = seSheet.values;
+  const fields = spec.fields(v, seSheet.item);
+  // Two consecutive half fields share a line (From/To, Area/Location).
+  let body = '';
+  for (let i = 0; i < fields.length; i++) {
+    if (fields[i].half && fields[i + 1] && fields[i + 1].half) {
+      body += `<div class="se-pair">${seFieldHtml(fields[i], v)}${seFieldHtml(fields[i + 1], v)}</div>`;
+      i++;
+    } else {
+      body += seFieldHtml(fields[i], v);
+    }
+  }
+  const el = document.getElementById('se-sheet');
+  el.innerHTML = `
+    <div class="se-grab"><span></span></div>
+    <div class="se-head">
+      <span class="se-title">${escHtml(spec.title(seSheet.item))}</span>
+      <button class="se-cancel">Cancel</button>
+    </div>
+    <div class="se-body">${body}</div>
+    <div class="se-foot">
+      ${seSheet.error ? `<div class="se-error">${escHtml(seSheet.error)}</div>` : ''}
+      <button class="se-save">${escHtml(spec.save(seSheet.item))}</button>
+      ${spec.remove && seSheet.item && (!spec.canRemove || spec.canRemove(seSheet.item))
+        ? `<button class="se-del">${escHtml(spec.removeLabel || 'Delete')}</button>` : ''}
+    </div>`;
+  wireSeSheet(fields);
+}
+
+function wireSeSheet(fields) {
+  const el = document.getElementById('se-sheet');
+  const v = seSheet.values;
+  el.querySelector('.se-cancel').addEventListener('click', closeSeSheet);
+  el.querySelector('.se-save').addEventListener('click', submitSeSheet);
+  const del = el.querySelector('.se-del');
+  if (del) del.addEventListener('click', removeSeItem);
+
+  fields.forEach(f => {
+    const wrap = el.querySelector(`[data-f="${f.key}"]`);
+    if (!wrap) return;
+    if (f.kind === 'action') {
+      wrap.addEventListener('click', async () => {
+        await f.run(seSheet.item);
+        closeSeSheet();
+        renderSettingsIndex();
+      });
+    } else if (f.kind === 'select') {
+      wrap.addEventListener('change', () => {
+        v[f.key] = wrap.value;
+        if (f.onChange) f.onChange(v);
+        if (f.rerender) renderSeSheet();
+      });
+    } else if (f.kind === 'swatches') {
+      wrap.addEventListener('click', e => {
+        const btn = e.target.closest('.se-swatch');
+        if (!btn) return;
+        v[f.key] = btn.dataset.color;
+        wrap.querySelectorAll('.se-swatch').forEach(b => b.classList.toggle('se-on', b === btn));
+      });
+    } else if (f.kind === 'days') {
+      wrap.addEventListener('click', e => {
+        const btn = e.target.closest('.se-day');
+        if (!btn) return;
+        const n = parseInt(btn.dataset.day);
+        const at = v[f.key].indexOf(n);
+        if (at === -1) v[f.key].push(n); else v[f.key].splice(at, 1);
+        if (f.onChange) f.onChange(v);
+        // A re-render is what makes the dependent fields (a gate's per-day
+        // windows) follow the day keys; without one, repaint just this key.
+        if (f.rerender) renderSeSheet();
+        else btn.classList.toggle('se-on', at === -1);
+      });
+    } else if (f.kind === 'check') {
+      wrap.addEventListener('click', () => {
+        v[f.key] = !v[f.key];
+        wrap.classList.toggle('se-on', v[f.key]);
+        wrap.textContent = v[f.key] ? f.on : f.off;
+        if (f.rerender) renderSeSheet();
+      });
+    } else if (f.kind === 'weekly') {
+      wrap.querySelectorAll('.se-wk-row').forEach(row => {
+        const dow = row.dataset.dow;
+        const read = () => ({
+          start: row.querySelector('.se-wk-start').value,
+          end: row.querySelector('.se-wk-end').value,
+          offset: row.querySelector('.se-wk-off').classList.contains('se-on') ? 1 : 0,
+        });
+        row.querySelectorAll('input').forEach(inp =>
+          inp.addEventListener('change', () => { v[f.key][dow] = read(); }));
+        row.querySelector('.se-wk-off').addEventListener('click', e => {
+          e.currentTarget.classList.toggle('se-on');
+          v[f.key][dow] = read();
+        });
+      });
+    } else if (f.kind !== 'static') {
+      wrap.addEventListener('input', () => {
+        v[f.key] = wrap.value;
+        if (f.onInput) f.onInput(v);
+      });
+    }
+  });
+}
+
+async function submitSeSheet() {
+  const spec = SETTINGS_SHEETS[seSheet.kind];
+  const btn = document.querySelector('#se-sheet .se-save');
+  btn.disabled = true;
+  const error = await spec.submit(seSheet.values, seSheet.item);
+  if (error) {
+    seSheet.error = error;
+    renderSeSheet();
+    return;
+  }
+  closeSeSheet();
+  renderSettingsIndex();
+}
+
+async function removeSeItem() {
+  const spec = SETTINGS_SHEETS[seSheet.kind];
+  if (spec.confirm && !confirm(spec.confirm(seSheet.item))) return;
+  await spec.remove(seSheet.item);
+  closeSeSheet();
+  renderSettingsIndex();
+}
+
+// Option lists the sheets share. `— none —` stays first so a select's empty
+// value is a real choice rather than a blank row.
+function seAreaOptions() {
+  return [{ value: '', name: '— none —' }].concat(
+    (state.areas || []).filter(p => p.active).map(p => ({ value: p.id, name: p.name })));
+}
+
+function seLocationOptions(firstName) {
+  return [{ value: '', name: firstName || '— none —' }].concat(
+    (state.locations || []).map(l => ({ value: l.id, name: l.name })));
+}
+
+function seDomainOptions() {
+  return (state.domains || []).map(d => ({ value: d.id, name: d.name }));
+}
+
+// ── Per-datatype sheets ──────────────────────────────────────
+
+const SETTINGS_SHEETS = {
+
+  // A block row is a GROUP of one-per-day rows (groupBlocks), so saving an
+  // edit deletes the group and re-posts it — the API has no group identity.
+  block: {
+    title: it => it ? 'Edit block' : 'Add block',
+    save: () => 'Save block',
+    removeLabel: 'Delete block',
+    blank: () => ({ label: '', color: BLOCK_COLORS[0], days: [], start: '', end: '', area: '', location: '' }),
+    load: g => ({
+      label: g.label, color: g.color, days: g.days.slice(),
+      start: g.start_time, end: g.end_time,
+      area: g.area_id || '', location: g.location_id || '',
+    }),
+    fields: () => [
+      { key: 'label', label: 'Label', kind: 'text', placeholder: 'e.g. Deep work' },
+      { key: 'color', label: 'Colour', kind: 'swatches' },
+      { key: 'days', label: 'Days', kind: 'days' },
+      { key: 'start', label: 'From', kind: 'time', half: true },
+      { key: 'end', label: 'To', kind: 'time', half: true },
+      { key: 'area', label: 'Area', kind: 'select', half: true, options: seAreaOptions },
+      { key: 'location', label: 'Location', kind: 'select', half: true, options: () => seLocationOptions() },
+    ],
+    submit: async (v, g) => {
+      if (!v.label.trim() || !v.color || !v.start || !v.end) return 'Label, colour, from and to are required.';
+      if (!v.days.length) return 'Select at least one day.';
+      if (g) await Promise.all(g.rows.map(r => fetch(`/api/blocks/${r.id}`, { method: 'DELETE' })));
+      const res = await fetch('/api/blocks', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label: v.label.trim(), color: v.color, days: v.days,
+          start_time: v.start, end_time: v.end,
+          area_id: v.area || null, location_id: v.location || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) return data.error || 'Error saving block.';
+      await refreshBlockEditor();
+      return null;
+    },
+    remove: async g => {
+      await Promise.all(g.rows.map(r => fetch(`/api/blocks/${r.id}`, { method: 'DELETE' })));
+      await refreshBlockEditor();
+    },
+  },
+
+  // Adding takes the whole schedule; editing takes what the API accepts
+  // (project and paused), with the schedule stated read-only so the sheet
+  // can't offer a change the server would drop.
+  recurring: {
+    title: it => it ? 'Recurring task' : 'Add recurring task',
+    save: it => it ? 'Save task' : 'Add task',
+    removeLabel: 'Delete task',
+    confirm: () => 'Delete this recurring task? Occurrences already filed stay.',
+    blank: () => ({
+      name: '', area: '', kind: 'weekly', days: [], interval: 1,
+      nth: 1, weekday: 0, anchor: formatDateYMD(new Date()),
+    }),
+    load: t => ({ project: t.project_id || '', active: !!t.active }),
+    fields: (v, it) => {
+      if (it) return [
+        { key: 'name', label: 'Task', kind: 'static', text: it.name },
+        { key: 'sched', label: 'Repeats', kind: 'static', text: recurringScheduleLabel(it) },
+        // Filing occurrences under a project makes them adopt that project's
+        // area server-side, so the area is stated on the option rather than
+        // asked for twice.
+        { key: 'project', label: 'File under', kind: 'select',
+          options: () => [{ value: '', name: '— no project —' }].concat(
+            (state.projects || []).map(p => ({
+              value: p.id, name: p.area_name ? `${p.content} · ${p.area_name}` : p.content,
+            }))) },
+        { key: 'active', label: 'State', kind: 'check', on: 'Running', off: 'Paused' },
+      ];
+      const unit = v.kind === 'every_n_days' ? 'day(s)' : v.kind === 'weekly' ? 'week(s)' : 'month(s)';
+      return [
+        { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Water the plants' },
+        { key: 'area', label: 'Area', kind: 'select',
+          options: () => (state.areas || []).filter(p => p.active && p.type === 'standard')
+            .map(p => ({ value: p.id, name: p.name })) },
+        { key: 'kind', label: 'Repeats', kind: 'select', rerender: true, options: () => [
+          { value: 'weekly', name: 'Days of the week' },
+          { value: 'monthly_nth', name: 'Nth weekday of the month' },
+          { value: 'monthly_date', name: 'Day of the month' },
+          { value: 'every_n_days', name: 'Every N days' },
+        ] },
+        ...(v.kind === 'weekly' ? [{ key: 'days', label: 'Days', kind: 'days' }] : []),
+        ...(v.kind === 'monthly_nth' ? [
+          { key: 'nth', label: 'On the', kind: 'select', half: true,
+            options: () => [1, 2, 3, 4, 5].map(n => ({ value: n, name: ordinalNth(n) })) },
+          { key: 'weekday', label: 'Weekday', kind: 'select', half: true,
+            options: () => DAY_NAMES.map((d, i) => ({ value: i, name: d })) },
+        ] : []),
+        { key: 'interval', label: 'Every', kind: 'number', min: 1, suffix: unit, half: true },
+        { key: 'anchor', label: 'Starting', kind: 'date', half: true },
+      ];
+    },
+    submit: async (v, it) => {
+      if (it) {
+        const res = await fetch(`/api/recurring/${it.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_id: v.project ? parseInt(v.project) : null,
+            active: v.active ? 1 : 0,
+          }),
+        });
+        if (!res.ok) return 'Error saving.';
+        await refreshRecurringList();
+        return null;
+      }
+      if (!v.name.trim() || !v.area || !v.anchor) return 'Name, area and start date are required.';
+      const body = {
+        name: v.name.trim(), area_id: parseInt(v.area), kind: v.kind,
+        anchor_date: v.anchor, interval: parseInt(v.interval) || 1,
+      };
+      if (v.kind === 'weekly') {
+        if (!v.days.length) return 'Select at least one day.';
+        body.days_of_week = v.days.slice().sort().join('');
+      } else if (v.kind === 'monthly_nth') {
+        body.nth = parseInt(v.nth);
+        body.weekday = parseInt(v.weekday);
+      }
+      const res = await fetch('/api/recurring', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) return 'Error saving.';
+      await refreshRecurringList();
+      return null;
+    },
+    remove: async it => {
+      await fetch(`/api/recurring/${it.id}`, { method: 'DELETE' });
+      await refreshRecurringList();
+    },
+  },
+
+  // /api/areas PATCH takes ONE field per request (its handler is an if/elif
+  // chain), so an edit sends one call per field that actually changed.
+  area: {
+    title: it => it ? 'Area' : 'Add area',
+    save: it => it ? 'Save area' : 'Add area',
+    removeLabel: 'Delete area',
+    confirm: it => `Delete area "${it.name}"?`,
+    blank: () => ({ name: '', type: 'standard', domain: (state.domains[0] || {}).id || '' }),
+    load: a => ({
+      type: a.type, domain: a.domain_id || '', qr: a.qr_node_id || '', active: !!a.active,
+    }),
+    fields: (v, it) => {
+      const types = [
+        { value: 'standard', name: 'Standard' }, { value: 'review', name: 'Review' },
+        { value: 'sleep', name: 'Sleep' }, { value: 'routine', name: 'Routine' },
+      ];
+      if (!it) return [
+        { key: 'name', label: 'Name', kind: 'text', placeholder: 'Area name' },
+        { key: 'type', label: 'Type', kind: 'select', half: true, options: () => types },
+        { key: 'domain', label: 'Domain', kind: 'select', half: true, options: seDomainOptions },
+      ];
+      return [
+        { key: 'name', label: 'Name', kind: 'static', text: it.name },
+        { key: 'type', label: 'Type', kind: 'select', half: true, rerender: true, options: () => types },
+        { key: 'domain', label: 'Domain', kind: 'select', half: true, options: seDomainOptions },
+        // A routine area can hang off a gate: the routine then nests under
+        // that gate's hairline on Engage even with no block on the calendar.
+        ...(v.type === 'routine' ? [{ key: 'qr', label: 'Gate anchor', kind: 'select',
+          options: () => [{ value: '', name: 'no gate anchor' }].concat(
+            (state.accountabilityNodes || []).filter(n => n.active)
+              .map(n => ({ value: n.id, name: n.label }))) }] : []),
+        { key: 'active', label: 'State', kind: 'check', on: 'Active', off: 'Archived' },
+      ];
+    },
+    submit: async (v, a) => {
+      if (!a) {
+        if (!v.name.trim()) return 'Name is required.';
+        await fetch('/api/areas', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: v.name.trim(), type: v.type, domain_id: parseInt(v.domain) || null }),
+        });
+        await refreshBlockEditor();
+        return null;
+      }
+      const patch = async body => fetch(`/api/areas/${a.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (v.type !== a.type) await patch({ type: v.type });
+      if (String(v.domain) !== String(a.domain_id || '')) await patch({ domain_id: parseInt(v.domain) });
+      if (v.type === 'routine' && String(v.qr) !== String(a.qr_node_id || '')) {
+        await patch({ qr_node_id: v.qr ? parseInt(v.qr) : null });
+      }
+      if (v.active !== !!a.active) await patch({ active: v.active ? 1 : 0 });
+      await refreshBlockEditor();
+      return null;
+    },
+    remove: async a => {
+      await fetch(`/api/areas/${a.id}`, { method: 'DELETE' });
+      await refreshBlockEditor();
+    },
+  },
+
+  // The default domain has no Delete — it is where a deleted domain's areas
+  // land, so it can't be removed.
+  domain: {
+    title: it => it ? 'Domain' : 'Add domain',
+    save: () => 'Save domain',
+    removeLabel: 'Delete domain',
+    confirm: it => `Delete domain "${it.name}"? Its areas move to the default domain.`,
+    blank: () => ({ name: '' }),
+    load: d => ({ name: d.name }),
+    fields: () => [{ key: 'name', label: 'Name', kind: 'text', placeholder: 'Domain name' }],
+    submit: async (v, d) => {
+      const name = v.name.trim();
+      if (!name) return 'Name is required.';
+      if (d) {
+        await fetch(`/api/domains/${d.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+      } else {
+        await fetch('/api/domains', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+      }
+      await refreshBlockEditor();
+      return null;
+    },
+    remove: async d => {
+      await fetch(`/api/domains/${d.id}`, { method: 'DELETE' });
+      await refreshBlockEditor();
+    },
+  },
+
+  // /api/locations has no PATCH: a location's coordinates are what gates and
+  // context tags were pinned against, so the sheet states them and offers the
+  // only decision the API supports.
+  location: {
+    title: it => it ? 'Location' : 'Add location',
+    save: it => it ? 'Done' : 'Save location',
+    removeLabel: 'Delete location',
+    confirm: it => `Delete "${it.name}"? Gates and tags pinned to it lose their anchor.`,
+    blank: () => ({ name: '', lat: '', lng: '', radius: '' }),
+    load: l => ({ name: l.name, lat: l.lat, lng: l.lng, radius: l.radius_m }),
+    fields: (v, it) => it ? [
+      { key: 'name', label: 'Name', kind: 'static', text: it.name },
+      { key: 'coords', label: 'Coordinates', kind: 'static', text: `${it.lat}, ${it.lng}` },
+      { key: 'radius', label: 'Radius', kind: 'static', text: `${it.radius_m}m` },
+    ] : [
+      { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Mox' },
+      { key: 'lat', label: 'Latitude', kind: 'number', step: 'any', half: true },
+      { key: 'lng', label: 'Longitude', kind: 'number', step: 'any', half: true },
+      { key: 'radius', label: 'Radius', kind: 'number', suffix: 'm', hint: 'blank = 150m' },
+    ],
+    submit: async (v, it) => {
+      if (it) return null;
+      const lat = parseFloat(v.lat);
+      const lng = parseFloat(v.lng);
+      if (!v.name.trim() || isNaN(lat) || isNaN(lng)) return 'Name, latitude and longitude are required.';
+      const radius = parseInt(v.radius);
+      await fetch('/api/locations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: v.name.trim(), lat, lng, radius_m: isNaN(radius) ? null : radius }),
+      });
+      await renderQrManager();
+      return null;
+    },
+    remove: async l => {
+      await fetch(`/api/locations/${l.id}`, { method: 'DELETE' });
+      await renderQrManager();
+    },
+  },
+
+  // A gate loosened (wider window, larger radius) only takes effect in 24h —
+  // the server answers with what it deferred, and the sheet says so.
+  gate: {
+    title: it => it ? it.label : 'Add gate',
+    save: it => it ? 'Save gate' : 'Create gate',
+    removeLabel: 'Delete gate',
+    // Deleting is only offered once the gate is already off, which is what
+    // keeps a live gate from being deleted to dodge it — deactivation is the
+    // 24h step, and delete is the cleanup afterwards.
+    canRemove: n => !n.active,
+    confirm: () => 'Delete this gate permanently? Its scan link stops working.',
+    blank: () => ({
+      label: '', start: '', end: '', offset: false, days: [0, 1, 2, 3, 4, 5, 6],
+      location: '', radius: '', weekly: {}, stake: '',
+    }),
+    load: n => {
+      let weekly = {};
+      if (n.weekly_windows) { try { weekly = JSON.parse(n.weekly_windows) || {}; } catch (e) { /* stored blank */ } }
+      const perDay = {};
+      Object.keys(weekly).forEach(d => {
+        perDay[d] = { start: weekly[d].window_start, end: weekly[d].window_end,
+          offset: weekly[d].window_end_offset_days ? 1 : 0 };
+      });
+      // A gate with a pending deactivation reads as Inactive here, so turning
+      // it back on is what cancels that — `active0` remembers which way the
+      // toggle started, since `n.active` is still 1 while the disable waits.
+      const off = (n.pending_changes || []).some(p => p.field === 'active' && String(p.new_value) === '0');
+      const active = !!n.active && !off;
+      return {
+        start: n.window_start, end: n.window_end, offset: !!n.window_end_offset_days,
+        days: (n.days_of_week || '0123456').split('').map(Number),
+        location: '', radius: n.geofence_radius_m || '', weekly: perDay,
+        active, active0: active,
+        // Dollars in the field, cents in the column. Blank means "use the
+        // default", which is a different thing from zero.
+        stake: n.charge_cents == null ? '' : (n.charge_cents / 100).toFixed(2),
+      };
+    },
+    fields: (v, it) => {
+      const pending = it ? (it.pending_changes || []).filter(p => p.field !== 'active') : [];
+      return [
+        ...(it ? [] : [{ key: 'label', label: 'Label', kind: 'text', placeholder: 'e.g. Desk' }]),
+        { key: 'start', label: 'From', kind: 'time', half: true },
+        { key: 'end', label: 'To', kind: 'time', half: true },
+        { key: 'offset', label: 'Crosses midnight', kind: 'check', on: 'Ends next day', off: 'Same day' },
+        { key: 'days', label: 'Days', kind: 'days', rerender: !!it },
+        ...(it ? [{ key: 'weekly', label: 'Per-day times', kind: 'weekly',
+          hint: 'Days matching the window above follow it; an edited day keeps its own.' }] : []),
+        { key: 'location', label: 'Location', kind: 'select', half: true,
+          options: () => seLocationOptions(it ? '— keep current —' : '— none —') },
+        { key: 'radius', label: 'Radius', kind: 'number', half: true, suffix: 'm' },
+        ...(it ? [{ key: 'stake', label: 'Stake', kind: 'number', step: '0.25', min: 0,
+          half: true, placeholder: 'default',
+          hint: 'What failing this gate costs. Blank uses the default in Billing below.'
+            + ' Raising it applies now; lowering waits 24h, like any other easing.' }] : []),
+        ...(it ? [{ key: 'active', label: 'State', kind: 'check', on: 'Active', off: 'Inactive',
+          hint: 'Deactivating takes effect in 24h.' }] : []),
+        // A today-only window and a deferred loosening are states this sheet
+        // can report and clear but not edit — they were tooltips on the old
+        // table, which is unreachable on a phone.
+        ...(it && it.today_override ? [{ key: 'override', label: 'Today only', kind: 'action',
+          text: `${it.today_override.window_start}–${it.today_override.window_end}`
+            + `${it.today_override.window_end_offset_days ? ' +1d' : ''}`,
+          action: 'Remove',
+          run: n => removeOverride(n.id, n.today_override.date) }] : []),
+        ...(pending.length ? [{ key: 'pending', label: 'Pending', kind: 'static',
+          text: pending.map(p => `${p.field} → ${p.new_value} (applies ${new Date(p.apply_at).toLocaleString()})`).join('; ') }] : []),
+      ];
+    },
+    submit: async (v, n) => {
+      const days = v.days.slice().sort().join('');
+      if (!days) return 'Select at least one day.';
+      if (!n) {
+        if (!v.label.trim() || !v.start || !v.end) return 'Label, from and to are required.';
+        const loc = (state.locations || []).find(l => String(l.id) === String(v.location));
+        const radius = parseInt(v.radius);
+        const resp = await fetch('/api/accountability/nodes', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            label: v.label.trim(), window_start: v.start, window_end: v.end,
+            window_end_offset_days: v.offset ? 1 : 0,
+            geofence_lat: loc ? loc.lat : null,
+            geofence_lng: loc ? loc.lng : null,
+            geofence_radius_m: loc ? (isNaN(radius) ? loc.radius_m : radius) : null,
+            days_of_week: days,
+          }),
+        });
+        if (!resp.ok) return `Create failed (${resp.status}).`;
+        const node = await resp.json();
+        const workerUrl = state.settings.qr_worker_url || '';
+        alert(`Gate created. Its scan URL:\n${workerUrl}/scan/${node.token}`);
+        await renderQrManager();
+        return null;
+      }
+      const body = {
+        window_start: v.start, window_end: v.end,
+        window_end_offset_days: v.offset ? 1 : 0,
+        geofence_radius_m: parseInt(v.radius) || n.geofence_radius_m,
+        days_of_week: days,
+      };
+      const stake = String(v.stake).trim() === '' ? null : Math.round(parseFloat(v.stake) * 100);
+      if (stake !== (n.charge_cents == null ? null : n.charge_cents)) body.charge_cents = stake;
+      // Store only the days that differ from the new defaults; the rest inherit.
+      const weeklyMap = {};
+      Object.keys(v.weekly).forEach(dow => {
+        if (!days.includes(dow)) return;
+        const w = v.weekly[dow];
+        if (w.start !== body.window_start || w.end !== body.window_end
+          || (w.offset ? 1 : 0) !== body.window_end_offset_days) {
+          weeklyMap[dow] = { window_start: w.start, window_end: w.end,
+            window_end_offset_days: w.offset ? 1 : 0 };
+        }
+      });
+      const weeklyJson = JSON.stringify(weeklyMap);
+      if (weeklyJson !== (n.weekly_windows || '{}')) body.weekly_windows = weeklyJson;
+      if (v.location) {
+        const loc = state.locations.find(l => String(l.id) === String(v.location));
+        body.geofence_lat = loc.lat;
+        body.geofence_lng = loc.lng;
+      }
+      const res = await fetch(`/api/accountability/nodes/${n.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) return `Edit failed (${res.status}).`;
+      const result = await res.json();
+      if (v.active !== v.active0) {
+        const route = v.active ? 'activate' : 'disable';
+        const r = await fetch(`/api/accountability/nodes/${n.id}/${route}`, { method: 'PATCH' });
+        if (!r.ok) return `${v.active ? 'Activate' : 'Deactivate'} failed (${r.status}).`;
+      }
+      if (result.pending && result.pending.length) {
+        alert(`Saved. Loosening changes apply ${new Date(result.apply_at).toLocaleString()}:\n`
+          + result.pending.map(p => `${p.field} → ${p.newVal}`).join('\n'));
+      }
+      await renderQrManager();
+      return null;
+    },
+    remove: async n => {
+      const res = await fetch(`/api/accountability/nodes/${n.id}`, { method: 'DELETE' });
+      if (!res.ok) alert(`Delete failed (${res.status}): ${await res.text()}`);
+      await renderQrManager();
+    },
+  },
+
+  calendar: {
+    title: it => it ? 'Calendar' : 'Add calendar',
+    save: it => it ? 'Save calendar' : 'Fetch calendar',
+    removeLabel: 'Remove calendar',
+    confirm: it => `Remove "${it.name}"? Its events leave the timeline.`,
+    blank: () => ({ url: '', color: BLOCK_COLORS[0] }),
+    load: c => ({ name: c.name, color: c.color, active: !!c.active }),
+    fields: (v, it) => it ? [
+      { key: 'name', label: 'Name', kind: 'text' },
+      { key: 'color', label: 'Colour', kind: 'swatches' },
+      { key: 'active', label: 'On the timeline', kind: 'check', on: 'Shown', off: 'Hidden' },
+    ] : [
+      { key: 'url', label: 'iCal URL', kind: 'url', placeholder: 'https://…/basic.ics' },
+      { key: 'color', label: 'Colour', kind: 'swatches' },
+    ],
+    submit: async (v, c) => {
+      if (c) {
+        await patchCalendar(c.id, { name: v.name.trim() || c.name, color: v.color, active: v.active ? 1 : 0 });
+        await refreshCalendars();
+        return null;
+      }
+      if (!v.url.trim()) return 'Paste an iCal URL.';
+      const res = await fetch('/api/calendars', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: v.url.trim(), color: v.color }),
+      });
+      const data = await res.json();
+      if (!res.ok) return data.error || 'Could not add calendar.';
+      await refreshCalendars();
+      document.getElementById('be-ics-status').textContent =
+        `Added — ${data.count} event${data.count === 1 ? '' : 's'} found.`;
+      return null;
+    },
+    remove: async c => {
+      await fetch(`/api/calendars/${c.id}`, { method: 'DELETE' });
+      await refreshCalendars();
+    },
+  },
+
+  // The day keys write a plain BYDAY rule, which covers the common case
+  // without a recurrence builder; the raw field is there for everything else,
+  // and the server's own describe() reads it back on the row so a typo is
+  // visible before it silently matches nothing.
+  timepreset: {
+    title: it => it ? 'Time preset' : 'Add time preset',
+    save: () => 'Save preset',
+    removeLabel: 'Delete preset',
+    confirm: () => 'Delete this preset? Tags bound to it lose their time gate.',
+    blank: () => ({ name: '', days: [], rrule: '', start: '', end: '' }),
+    load: p => ({
+      name: p.name,
+      days: (/BYDAY=([A-Z,]+)/.exec(p.rrule || '') || ['', ''])[1]
+        .split(',').filter(Boolean).map(d => RRULE_DAYS.indexOf(d)).filter(i => i >= 0),
+      rrule: p.rrule || '', start: p.start_time || '', end: p.end_time || '',
+    }),
+    fields: () => [
+      { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Weekday mornings' },
+      { key: 'days', label: 'Days', kind: 'days', hint: 'none selected = every day',
+        onChange: v => {
+          v.rrule = v.days.length
+            ? 'FREQ=WEEKLY;BYDAY=' + v.days.slice().sort().map(n => RRULE_DAYS[n]).join(',')
+            : '';
+          const raw = document.querySelector('#se-sheet [data-f="rrule"]');
+          if (raw) raw.value = v.rrule;
+        } },
+      { key: 'rrule', label: 'RRULE', kind: 'text', placeholder: 'blank = every day' },
+      { key: 'start', label: 'From', kind: 'time', half: true },
+      { key: 'end', label: 'To', kind: 'time', half: true },
+    ],
+    submit: async (v, p) => {
+      if (!v.name.trim()) return 'Name is required.';
+      const body = {
+        name: v.name.trim(), rrule: v.rrule.trim() || null,
+        start_time: v.start || null, end_time: v.end || null,
+      };
+      const res = p
+        ? await fetch(`/api/time-presets/${p.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        : await fetch('/api/time-presets', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      if (!res.ok) return 'Error saving preset.';
+      await renderTimePresets();
+      renderEngage();
+      return null;
+    },
+    remove: async p => {
+      await fetch(`/api/time-presets/${p.id}`, { method: 'DELETE' });
+      // The binding went with it server-side; re-read so the pool agrees.
+      state.tagTimes = await fetch('/api/tag-times').then(r => r.json()).catch(() => []);
+      await renderTimePresets();
+      renderEngage();
+    },
+  },
+};
+
+// ── Rows ─────────────────────────────────────────────────────
+//
+// One shape for every list in here: an optional swatch, the name, a mono meta
+// line under it, and the › that opens the sheet. Nothing else is tappable.
+
+function beRow(opts) {
+  return `<button class="be-list-row${opts.dim ? ' be-dim' : ''}" data-row="${opts.id}">
+    ${opts.color ? `<span class="be-swatch" style="background:${escHtml(opts.color)}"></span>` : ''}
+    <span class="be-row-text">
+      <span class="be-row-name">${escHtml(opts.name)}</span>
+      ${opts.meta ? `<span class="be-row-meta">${escHtml(opts.meta)}</span>` : ''}
+      ${opts.sub ? `<span class="be-row-sub">${escHtml(opts.sub)}</span>` : ''}
+    </span>
+    ${opts.badge ? `<span class="be-row-badge">${escHtml(opts.badge)}</span>` : ''}
+    <span class="be-chev">›</span>
+  </button>`;
+}
+
+function beAddRow(label) {
+  return `<button class="be-add-row" data-add="1">+ ${escHtml(label)}</button>`;
+}
+
+// Wires a list's rows and its one add affordance to the sheet.
+function wireBeList(el, kind, items) {
+  el.querySelectorAll('[data-row]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const item = items.find(i => String(i.id != null ? i.id : i.key) === btn.dataset.row);
+      if (item) openSeSheet(kind, item);
+    });
+  });
+  const add = el.querySelector('[data-add]');
+  if (add) add.addEventListener('click', () => openSeSheet(kind, null));
+}
+
+// ── Wiring, open, close ──────────────────────────────────────
 
 function initBlockEditor() {
-  const colorPicker = document.getElementById('be-color-picker');
-  colorPicker.innerHTML = BLOCK_COLORS.map((c, i) =>
-    `<button type="button" class="be-color-option${i === 0 ? ' selected' : ''}" data-color="${c}" style="background:${c}" title="${c}"></button>`
-  ).join('');
-  colorPicker.addEventListener('click', e => {
-    const btn = e.target.closest('.be-color-option');
-    if (!btn) return;
-    colorPicker.querySelectorAll('.be-color-option').forEach(b => b.classList.remove('selected'));
-    btn.classList.add('selected');
-  });
-
-  initCalendarSection();
-
-  document.getElementById('be-days-picker').innerHTML = DAY_NAMES.map((d, i) =>
-    `<label class="be-day-label"><input type="checkbox" class="be-day-cb" value="${i}"><span>${d}</span></label>`
-  ).join('');
-
-  document.getElementById('be-rec-days-picker').innerHTML = DAY_NAMES.map((d, i) =>
-    `<label class="be-day-label"><input type="checkbox" class="be-rec-day-cb" value="${i}"><span>${d}</span></label>`
-  ).join('');
-  document.getElementById('be-rec-weekday').innerHTML = DAY_NAMES.map((d, i) =>
-    `<option value="${i}">${d}</option>`
-  ).join('');
-
-  const REC_KIND_ROWS = {
-    weekly: ['weekly'],
-    monthly_nth: ['nth', 'months'],
-    monthly_date: ['months'],
-    every_n_days: ['ndays'],
-  };
-  document.getElementById('be-rec-kind').addEventListener('change', e => {
-    ['weekly', 'nth', 'months', 'ndays'].forEach(k => {
-      document.querySelectorAll(`.be-rec-row-${k}`).forEach(row =>
-        row.classList.toggle('hidden', !REC_KIND_ROWS[e.target.value].includes(k)));
-    });
-  });
-
-  document.getElementById('be-recurring-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const errorEl = document.getElementById('be-recurring-error');
-    errorEl.textContent = '';
-    const name = document.getElementById('be-rec-name').value.trim();
-    const area_id = parseInt(document.getElementById('be-rec-area').value) || null;
-    const kind = document.getElementById('be-rec-kind').value;
-    const anchor_date = document.getElementById('be-rec-anchor').value;
-    if (!name || !area_id || !anchor_date) {
-      errorEl.textContent = 'Name, project, and start date are required.';
-      return;
-    }
-    const body = { name, area_id, kind, anchor_date };
-    if (kind === 'weekly') {
-      const days = [...document.querySelectorAll('.be-rec-day-cb:checked')].map(cb => cb.value).join('');
-      if (!days) { errorEl.textContent = 'Select at least one day.'; return; }
-      body.days_of_week = days;
-      body.interval = parseInt(document.getElementById('be-rec-interval-weeks').value) || 1;
-    } else if (kind === 'monthly_nth') {
-      body.nth = parseInt(document.getElementById('be-rec-nth').value);
-      body.weekday = parseInt(document.getElementById('be-rec-weekday').value);
-      body.interval = parseInt(document.getElementById('be-rec-interval-months').value) || 1;
-    } else if (kind === 'monthly_date') {
-      body.interval = parseInt(document.getElementById('be-rec-interval-months').value) || 1;
-    } else {
-      body.interval = parseInt(document.getElementById('be-rec-interval-days').value) || 1;
-    }
-    const res = await fetch('/api/recurring', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) { errorEl.textContent = 'Error saving.'; return; }
-    document.getElementById('be-rec-name').value = '';
-    refreshRecurringList();
-  });
-
-  document.querySelectorAll('#block-editor-modal .be-tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('#block-editor-modal .be-tab-btn').forEach(b =>
-        b.classList.toggle('active', b === btn));
-      document.querySelectorAll('#block-editor-modal .be-section').forEach(s =>
-        s.classList.toggle('active', s.dataset.betabPanel === btn.dataset.betab));
-      if (btn.dataset.betab === 'times') renderTimePresets();
-    });
-  });
   document.getElementById('modal-close').addEventListener('click', closeBlockEditor);
+  document.getElementById('be-back').addEventListener('click', backToSettingsIndex);
   document.getElementById('modal-overlay').addEventListener('click', e => {
     if (e.target.id === 'modal-overlay') closeBlockEditor();
   });
-
-  document.getElementById('be-add-area-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const name = document.getElementById('be-area-name').value.trim();
-    const type = document.getElementById('be-area-type').value;
-    const domain_id = parseInt(document.getElementById('be-area-domain').value) || null;
-    if (!name) return;
-    await fetch('/api/areas', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, type, domain_id }),
-    });
-    document.getElementById('be-area-name').value = '';
-    refreshBlockEditor(false);
-  });
-
-  document.getElementById('be-add-domain-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const input = document.getElementById('be-domain-name');
-    const name = input.value.trim();
-    if (!name) return;
-    await fetch('/api/domains', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-    input.value = '';
-    refreshBlockEditor(false);
-  });
-
-  document.getElementById('be-block-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const label = document.getElementById('be-block-label-input').value.trim();
-    const color = document.querySelector('#be-color-picker .be-color-option.selected')?.dataset.color;
-    const start_time = document.getElementById('be-block-start').value;
-    const end_time = document.getElementById('be-block-end').value;
-    const area_id = document.getElementById('be-block-area-select').value || null;
-    const location_id = document.getElementById('be-block-location-select').value || null;
-    const errorEl = document.getElementById('be-block-error');
-    errorEl.textContent = '';
-
-    if (!label || !color || !start_time || !end_time) {
-      errorEl.textContent = 'Label, color, start, and end are required.';
-      return;
-    }
-
-    const days = [...document.querySelectorAll('.be-day-cb:checked')].map(cb => parseInt(cb.value));
-    if (!days.length) { errorEl.textContent = 'Select at least one day.'; return; }
-    if (editingGroup !== null) {
-      await Promise.all(editingGroup.rows.map(row =>
-        fetch(`/api/blocks/${row.id}`, { method: 'DELETE' })
-      ));
-    }
-    const res = await fetch('/api/blocks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label, color, days, start_time, end_time, area_id, location_id }),
-    });
-    const data = await res.json();
-    if (!res.ok) { errorEl.textContent = data.error || 'Error saving block.'; return; }
-
-    refreshBlockEditor(true);
-  });
-
-  document.getElementById('be-block-cancel').addEventListener('click', () => {
-    editingGroup = null;
-    resetBlockForm();
-  });
+  document.getElementById('se-sheet-backdrop').addEventListener('click', closeSeSheet);
 
   document.getElementById('be-download-ics-btn').addEventListener('click', async () => {
     const btn = document.getElementById('be-download-ics-btn');
@@ -1867,24 +2583,20 @@ async function openBlockEditor() {
   state.domains = domains;
   renderBeAreas(projects);
   renderBeDomains();
-  populateDomainDropdown();
-  renderBeBlocks(blocks, projects);
-  populateAreaDropdown(projects);
-  populateLocationDropdown(locations);
-  resetBlockForm();
-  renderQrManager();
+  renderBeBlocks(blocks);
+  await renderQrManager();
   renderBeRecurring(await fetch('/api/recurring').then(r => r.json()).catch(() => []), projects);
-  document.getElementById('be-rec-area').innerHTML = projects
-    .filter(p => p.active && p.type === 'standard')
-    .map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join('');
-  const recAnchor = document.getElementById('be-rec-anchor');
-  if (!recAnchor.value) recAnchor.value = formatDateYMD(new Date());
   renderBeCalendars(await fetch('/api/calendars').then(r => r.json()).catch(() => []));
-  document.querySelector('#block-editor-modal .be-tab-btn[data-betab="blocks"]').click();
+  await renderTimePresets();
+  settingsView.section = null;
+  closeSeSheet();
+  renderSettingsIndex();
+  paintSettingsNav();
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
 
 async function closeBlockEditor() {
+  closeSeSheet();
   document.getElementById('modal-overlay').classList.add('hidden');
   const [projects, domains, blocks, gcal, calendars] = await Promise.all([
     fetch('/api/areas').then(r => r.json()),
@@ -1908,101 +2620,7 @@ async function closeBlockEditor() {
   renderTimeline();
 }
 
-function initCalendarSection() {
-  const picker = document.getElementById('be-calendar-color-picker');
-  picker.innerHTML = BLOCK_COLORS.map((c, i) =>
-    `<button type="button" class="be-color-option${i === 0 ? ' selected' : ''}" data-color="${c}" style="background:${c}" title="${c}"></button>`
-  ).join('');
-  picker.addEventListener('click', e => {
-    const btn = e.target.closest('.be-color-option');
-    if (!btn) return;
-    picker.querySelectorAll('.be-color-option').forEach(b => b.classList.remove('selected'));
-    btn.classList.add('selected');
-  });
-
-  document.getElementById('be-add-calendar-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const urlInput = document.getElementById('be-calendar-url');
-    const url = urlInput.value.trim();
-    const color = document.querySelector('#be-calendar-color-picker .be-color-option.selected')?.dataset.color || BLOCK_COLORS[0];
-    const errorEl = document.getElementById('be-calendar-error');
-    const statusEl = document.getElementById('be-calendar-status');
-    errorEl.textContent = '';
-    if (!url) { errorEl.textContent = 'Paste an iCal URL.'; return; }
-    statusEl.textContent = 'Fetching…';
-    const res = await fetch('/api/calendars', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, color }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      statusEl.textContent = '';
-      errorEl.textContent = data.error || 'Could not add calendar.';
-      return;
-    }
-    statusEl.textContent = `Added — ${data.count} event${data.count === 1 ? '' : 's'} found.`;
-    urlInput.value = '';
-    renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
-  });
-}
-
-async function patchCalendar(id, body) {
-  await fetch(`/api/calendars/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-function renderBeCalendars(calendars) {
-  const list = document.getElementById('be-calendars-list');
-  if (!list) return;
-  if (!calendars.length) {
-    list.innerHTML = '<div class="be-empty">No calendars yet.</div>';
-    return;
-  }
-  list.innerHTML = calendars.map(c => `
-    <div class="be-calendar-row${c.active ? '' : ' be-inactive'}">
-      <input class="be-cal-name" data-id="${c.id}" value="${escHtml(c.name)}" autocomplete="off">
-      <div class="be-cal-colors" data-id="${c.id}">
-        ${BLOCK_COLORS.map(col =>
-          `<button type="button" class="be-cal-swatch${col === c.color ? ' selected' : ''}" data-id="${c.id}" data-color="${col}" style="background:${col}" title="${col}"></button>`
-        ).join('')}
-      </div>
-      <label class="be-cal-visible-label"><input type="checkbox" class="be-cal-visible" data-id="${c.id}" ${c.active ? 'checked' : ''}> Show</label>
-      <button class="be-cal-delete" data-id="${c.id}" title="Remove calendar">×</button>
-    </div>
-  `).join('');
-
-  list.querySelectorAll('.be-cal-name').forEach(inp => {
-    inp.addEventListener('change', async () => {
-      const name = inp.value.trim();
-      if (!name) return;
-      await patchCalendar(inp.dataset.id, { name });
-    });
-  });
-  list.querySelectorAll('.be-cal-swatch').forEach(sw => {
-    sw.addEventListener('click', async () => {
-      await patchCalendar(sw.dataset.id, { color: sw.dataset.color });
-      renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
-    });
-  });
-  list.querySelectorAll('.be-cal-visible').forEach(cb => {
-    cb.addEventListener('change', async () => {
-      await patchCalendar(cb.dataset.id, { active: cb.checked ? 1 : 0 });
-      renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
-    });
-  });
-  list.querySelectorAll('.be-cal-delete').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await fetch(`/api/calendars/${btn.dataset.id}`, { method: 'DELETE' });
-      renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
-    });
-  });
-}
-
-async function refreshBlockEditor(resetForm) {
+async function refreshBlockEditor() {
   const [projects, domains, blocks] = await Promise.all([
     fetch('/api/areas').then(r => r.json()),
     fetch('/api/domains').then(r => r.json()).catch(() => []),
@@ -2012,133 +2630,62 @@ async function refreshBlockEditor(resetForm) {
   state.domains = domains;
   renderBeAreas(projects);
   renderBeDomains();
-  populateDomainDropdown();
-  renderBeBlocks(blocks, projects);
-  populateAreaDropdown(projects);
+  renderBeBlocks(blocks);
   renderInbox();
-  if (resetForm) {
-    editingBlockId = null;
-    resetBlockForm();
-  }
+}
+
+async function refreshCalendars() {
+  renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
+}
+
+async function patchCalendar(id, body) {
+  await fetch(`/api/calendars/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+// ── Section lists ────────────────────────────────────────────
+
+function renderBeCalendars(calendars) {
+  const list = document.getElementById('be-calendars-list');
+  if (!list) return;
+  beCounts.calendars = calendars.filter(c => c.active).length;
+  list.innerHTML = calendars.map(c => beRow({
+    id: c.id, color: c.color, name: c.name, dim: !c.active,
+    meta: c.active ? 'On the timeline' : 'Hidden',
+  })).join('') + beAddRow('Add calendar');
+  wireBeList(list, 'calendar', calendars);
 }
 
 function renderBeAreas(projects) {
   const list = document.getElementById('be-areas-list');
-  if (!projects.length) {
-    list.innerHTML = '<div class="be-empty">No projects yet.</div>';
-    return;
-  }
-  const domainOptions = areaDomainId => state.domains.map(d =>
-    `<option value="${d.id}"${d.id === areaDomainId ? ' selected' : ''}>${escHtml(d.name)}</option>`
-  ).join('');
-  // Routine areas can anchor to a gate: the routine then nests directly
-  // under that gate's hairline on Engage even with no block on the calendar.
-  const qrOptions = selected => '<option value="">no gate anchor</option>' +
-    (state.accountabilityNodes || []).filter(n => n.active).map(n =>
-      `<option value="${n.id}"${String(n.id) === String(selected || '') ? ' selected' : ''}>${escHtml(n.label)}</option>`
-    ).join('');
-  list.innerHTML = projects.map(p => `
-    <div class="be-area-row">
-      <span class="be-area-name">${escHtml(p.name)}</span>
-      <span class="be-type-badge be-type-${p.type}">${p.type}</span>
-      ${p.type === 'routine' ? `<select class="be-area-qr-select" data-id="${p.id}" title="Anchor to a gate">${qrOptions(p.qr_node_id)}</select>` : ''}
-      <select class="be-area-domain-select" data-id="${p.id}" title="Domain">${domainOptions(p.domain_id)}</select>
-      <button class="be-archive-btn" data-id="${p.id}" data-active="${p.active ? 1 : 0}">
-        ${p.active ? 'Archive' : 'Restore'}
-      </button>
-      <button class="be-delete-area-btn" data-id="${p.id}" title="Delete project">×</button>
-    </div>
-  `).join('');
-  list.querySelectorAll('.be-area-qr-select').forEach(sel => {
-    sel.addEventListener('change', async () => {
-      await fetch(`/api/areas/${sel.dataset.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qr_node_id: sel.value ? parseInt(sel.value) : null }),
-      });
-      refreshBlockEditor(false);
-    });
-  });
-  list.querySelectorAll('.be-area-domain-select').forEach(sel => {
-    sel.addEventListener('change', async () => {
-      await fetch(`/api/areas/${sel.dataset.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain_id: parseInt(sel.value) }),
-      });
-      refreshBlockEditor(false);
-    });
-  });
-  list.querySelectorAll('.be-archive-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const newActive = btn.dataset.active === '1' ? 0 : 1;
-      await fetch(`/api/areas/${btn.dataset.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ active: newActive }),
-      });
-      refreshBlockEditor(false);
-    });
-  });
-  list.querySelectorAll('.be-delete-area-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await fetch(`/api/areas/${btn.dataset.id}`, { method: 'DELETE' });
-      refreshBlockEditor(false);
-    });
-  });
+  if (!list) return;
+  beCounts.areas = projects.filter(p => p.active).length;
+  const domainName = id => (state.domains.find(d => d.id === id) || {}).name || 'no domain';
+  list.innerHTML = projects.map(p => beRow({
+    id: p.id, name: p.name, dim: !p.active,
+    meta: `${p.type} · ${domainName(p.domain_id)}`,
+    badge: p.active ? '' : 'archived',
+  })).join('') + beAddRow('Add area');
+  wireBeList(list, 'area', projects);
 }
 
 // Domains are permanent structure, so they live here with the areas rather than
-// on the timeline. The default domain has no × — it is where a deleted domain's
-// areas land, so it can't be removed.
+// on the timeline.
 function renderBeDomains() {
   const list = document.getElementById('be-domains-list');
   if (!list) return;
   const counts = {};
   state.areas.forEach(a => {
-    const d = a.domain_id;
-    if (d) counts[d] = (counts[d] || 0) + 1;
+    if (a.domain_id) counts[a.domain_id] = (counts[a.domain_id] || 0) + 1;
   });
-  list.innerHTML = state.domains.map(d => `
-    <div class="be-area-row">
-      <input type="text" class="be-domain-name" data-id="${d.id}" value="${escHtml(d.name)}">
-      <span class="be-domain-count">${counts[d.id] || 0} area${(counts[d.id] || 0) === 1 ? '' : 's'}</span>
-      ${d.is_default ? '<span class="be-type-badge be-type-standard">default</span>'
-        : `<button class="be-delete-domain-btn" data-id="${d.id}" title="Delete domain (its areas move to the default)">×</button>`}
-    </div>
-  `).join('');
-  list.querySelectorAll('.be-domain-name').forEach(input => {
-    const id = parseInt(input.dataset.id);
-    input.addEventListener('blur', async () => {
-      const name = input.value.trim();
-      const current = state.domains.find(d => d.id === id);
-      if (!name || !current || name === current.name) return;
-      await fetch(`/api/domains/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      refreshBlockEditor(false);
-    });
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
-  });
-  list.querySelectorAll('.be-delete-domain-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const d = state.domains.find(x => x.id === parseInt(btn.dataset.id));
-      if (!confirm(`Delete domain "${d ? d.name : ''}"? Its areas move to the default domain.`)) return;
-      await fetch(`/api/domains/${btn.dataset.id}`, { method: 'DELETE' });
-      refreshBlockEditor(false);
-    });
-  });
-}
-
-function populateDomainDropdown() {
-  const sel = document.getElementById('be-area-domain');
-  if (!sel) return;
-  const keep = sel.value;
-  sel.innerHTML = state.domains.map(d =>
-    `<option value="${d.id}">${escHtml(d.name)}</option>`).join('');
-  if (keep && state.domains.some(d => String(d.id) === keep)) sel.value = keep;
+  list.innerHTML = state.domains.map(d => beRow({
+    id: d.id, name: d.name,
+    meta: plural(counts[d.id], 'area'),
+    badge: d.is_default ? 'default' : '',
+  })).join('') + beAddRow('Add domain');
+  wireBeList(list, 'domain', state.domains);
 }
 
 function groupBlocks(blocks) {
@@ -2169,58 +2716,18 @@ function formatDays(days) {
   return sorted.map(d => DAY_NAMES[d]).join(', ');
 }
 
-function renderBeBlocks(blocks, projects) {
+function renderBeBlocks(blocks) {
   const list = document.getElementById('be-blocks-list');
-  if (!blocks.length) {
-    list.innerHTML = '<div class="be-empty">No blocks yet.</div>';
-    return;
-  }
-
-  const groups = groupBlocks(blocks);
-
-  list.innerHTML = groups.map((g, i) => {
-    const ids = g.rows.map(r => r.id).join(',');
-    return `<div class="be-block-row">
-      <span class="be-swatch" style="background:${escHtml(g.color)}"></span>
-      <span class="be-block-label">${escHtml(g.label)}</span>
-      <span class="be-block-day">${escHtml(formatDays(g.days))}</span>
-      <span class="be-block-time">${g.start_time}–${g.end_time}</span>
-      <span class="be-block-area">${g.project_name ? escHtml(g.project_name) : '—'}</span>
-      <span class="be-block-location">${g.location_name ? escHtml(g.location_name) : '—'}</span>
-      <button class="be-edit-block-btn" data-idx="${i}">Edit</button>
-      <button class="be-delete-block-btn" data-ids="${ids}" title="Delete block">×</button>
-    </div>`;
-  }).join('');
-
-  list.querySelectorAll('.be-delete-block-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await Promise.all(btn.dataset.ids.split(',').map(id =>
-        fetch(`/api/blocks/${id}`, { method: 'DELETE' })
-      ));
-      refreshBlockEditor(true);
-    });
-  });
-
-  list.querySelectorAll('.be-edit-block-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const group = groups[parseInt(btn.dataset.idx)];
-      editingGroup = group;
-      document.getElementById('be-block-form-title').textContent = 'Edit Block';
-      document.getElementById('be-block-label-input').value = group.label;
-      document.getElementById('be-block-error').textContent = '';
-      document.querySelectorAll('#be-color-picker .be-color-option').forEach(el => {
-        el.classList.toggle('selected', el.dataset.color === group.color);
-      });
-      document.querySelectorAll('.be-day-cb').forEach(cb => {
-        cb.checked = group.days.includes(parseInt(cb.value));
-      });
-      document.getElementById('be-block-start').value = group.start_time;
-      document.getElementById('be-block-end').value = group.end_time;
-      document.getElementById('be-block-area-select').value = group.area_id || '';
-      document.getElementById('be-block-location-select').value = group.location_id || '';
-      document.getElementById('be-block-cancel').classList.remove('hidden');
-    });
-  });
+  if (!list) return;
+  // A block row's identity is its GROUP, which has no server id — index it.
+  const groups = groupBlocks(blocks).map((g, i) => ({ ...g, id: `g${i}` }));
+  beCounts.blocks = groups.length;
+  list.innerHTML = groups.map(g => beRow({
+    id: g.id, color: g.color, name: g.label,
+    meta: `${formatDays(g.days)} · ${g.start_time}–${g.end_time}`,
+    sub: [g.project_name, g.location_name].filter(Boolean).join(' · '),
+  })).join('') + beAddRow('Add block');
+  wireBeList(list, 'block', groups);
 }
 
 function ordinalNth(n) {
@@ -2249,84 +2756,18 @@ async function refreshRecurringList() {
 
 function renderBeRecurring(tasks, areas) {
   const list = document.getElementById('be-recurring-list');
+  if (!list) return;
+  beCounts.recurring = tasks.filter(t => t.active).length;
   const byId = Object.fromEntries(areas.map(p => [p.id, p]));
-  if (!tasks.length) {
-    list.innerHTML = '<div class="be-empty">No recurring tasks yet.</div>';
-  } else {
-    list.innerHTML = tasks.map(t => `
-      <div class="be-recurring-row${t.active ? '' : ' be-rec-inactive'}">
-        <span class="be-rec-name">${escHtml(t.name)}</span>
-        <span class="be-rec-schedule">${escHtml(recurringScheduleLabel(t))}</span>
-        <span class="be-block-area">${byId[t.area_id] ? escHtml(byId[t.area_id].name) : '—'}</span>
-        <select class="be-rec-project-select" data-id="${t.id}" title="File occurrences under a project">
-          ${projectOptions(t.project_id)}
-        </select>
-        <button class="be-archive-btn be-rec-toggle-btn" data-id="${t.id}" data-active="${t.active ? 1 : 0}">${t.active ? 'Pause' : 'Resume'}</button>
-        <button class="be-delete-area-btn be-rec-delete-btn" data-id="${t.id}" title="Delete">×</button>
-      </div>`).join('');
-  }
-  list.querySelectorAll('.be-rec-project-select').forEach(sel => {
-    sel.addEventListener('change', async () => {
-      await fetch(`/api/recurring/${sel.dataset.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: sel.value ? parseInt(sel.value) : null }),
-      });
-      refreshRecurringList();
-    });
-  });
-  list.querySelectorAll('.be-rec-toggle-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await fetch(`/api/recurring/${btn.dataset.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ active: btn.dataset.active === '1' ? 0 : 1 }),
-      });
-      refreshRecurringList();
-    });
-  });
-  list.querySelectorAll('.be-rec-delete-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await fetch(`/api/recurring/${btn.dataset.id}`, { method: 'DELETE' });
-      refreshRecurringList();
-    });
-  });
-}
-
-function populateAreaDropdown(projects) {
-  const sel = document.getElementById('be-block-area-select');
-  const current = sel.value;
-  sel.innerHTML = '<option value="">— none —</option>' +
-    projects.filter(p => p.active).map(p =>
-      `<option value="${p.id}">${escHtml(p.name)}</option>`
-    ).join('');
-  if (current) sel.value = current;
-}
-
-function populateLocationDropdown(locations) {
-  const sel = document.getElementById('be-block-location-select');
-  const current = sel.value;
-  sel.innerHTML = '<option value="">— none —</option>' +
-    locations.map(l =>
-      `<option value="${l.id}">${escHtml(l.name)}</option>`
-    ).join('');
-  if (current) sel.value = current;
-}
-
-function resetBlockForm() {
-  editingGroup = null;
-  document.getElementById('be-block-form-title').textContent = 'Add Block';
-  document.getElementById('be-block-label-input').value = '';
-  document.getElementById('be-block-error').textContent = '';
-  document.querySelectorAll('#be-color-picker .be-color-option').forEach((el, i) => {
-    el.classList.toggle('selected', i === 0);
-  });
-  document.querySelectorAll('.be-day-cb').forEach(cb => { cb.checked = false; });
-  document.getElementById('be-block-start').value = '';
-  document.getElementById('be-block-end').value = '';
-  document.getElementById('be-block-area-select').value = '';
-  document.getElementById('be-block-location-select').value = '';
-  document.getElementById('be-block-cancel').classList.add('hidden');
+  const projectName = id => ((state.projects || []).find(p => p.id === id) || {}).content;
+  list.innerHTML = tasks.map(t => beRow({
+    id: t.id, name: t.name, dim: !t.active,
+    meta: recurringScheduleLabel(t),
+    sub: [byId[t.area_id] ? byId[t.area_id].name : null, projectName(t.project_id)]
+      .filter(Boolean).join(' · '),
+    badge: t.active ? '' : 'paused',
+  })).join('') + beAddRow('Add recurring task');
+  wireBeList(list, 'recurring', tasks);
 }
 
 async function checkActiveBlock() {
@@ -2635,6 +3076,9 @@ function initHub() {
     if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
     // (MAP has no transient layer of its own to peel any more — its rows open
     // the clarify sheet, and the bail above lets the sheet peel first.)
+    // Settings peels the way it navigates (11a): sheet, then section, then the
+    // panel itself — so Esc is Back, not Close, until there is nothing left.
+    if (seSheet.kind) { closeSeSheet(); return; }
     // Legacy modal overlays first (they sit above the m-overlays), innermost
     // wins; the person-detail/bucket/add trio stack over People.
     for (const id of ['person-add-overlay', 'bucket-mgr-overlay', 'person-detail-overlay',
@@ -2642,6 +3086,7 @@ function initHub() {
       const el = document.getElementById(id);
       if (el && !el.classList.contains('hidden')) {
         if (id === 'logs-overlay') closeLogsView();
+        else if (id === 'modal-overlay' && settingsView.section) backToSettingsIndex();
         else el.classList.add('hidden');
         return;
       }
@@ -4859,11 +5304,18 @@ function minutesToHHMM(minutes) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+// ── Settings → Gates and Locations ───────────────────────────
+//
+// Two sections in the 11a grammar: a row states what the gate currently is
+// (window, days, geofence) plus a badge for anything non-default (inactive,
+// per-day windows, a pending loosening, a today-only override), and its › is
+// the only control — every decision is taken in the gate sheet.
+
 async function renderQrManager() {
   const panel = document.getElementById('be-qr-section');
   const locPanel = document.getElementById('be-loc-section');
   if (!panel || !locPanel) return;
-  panel.innerHTML = '<p class="ac-loading">Loading…</p>';
+  panel.innerHTML = '<div class="be-empty">Loading…</div>';
 
   let nodes = null;
   let locations = null;
@@ -4880,35 +5332,41 @@ async function renderQrManager() {
   // non-array there breaks every later nodes.map/find — renderTimeline's
   // included, which took the whole to-do side of the app down with it.
   if (!Array.isArray(nodes)) {
-    panel.innerHTML = '<p class="ac-error">Failed to load accountability nodes.</p>';
+    panel.innerHTML = '<div class="be-empty se-error">Failed to load gates.</div>';
     locPanel.innerHTML = '';
     return;
   }
   state.accountabilityNodes = nodes;
   state.locations = Array.isArray(locations) ? locations : [];
+  beCounts.qr = nodes.filter(n => n.active).length;
+  beCounts.locations = state.locations.length;
 
-  const nodeOptions = (selectedId) => `<option value="">— none —</option>` +
-    state.accountabilityNodes.filter(n => n.active).map(n =>
+  const nodeOptions = selectedId => '<option value="">— none —</option>'
+    + nodes.filter(n => n.active).map(n =>
       `<option value="${n.id}"${String(n.id) === String(selectedId) ? ' selected' : ''}>${escHtml(n.label)}</option>`
     ).join('');
 
   panel.innerHTML = `
-    <table class="ac-table">
-      <thead>
-        <tr><th>Label</th><th>Window</th><th>Location</th><th>Status</th><th></th></tr>
-      </thead>
-      <tbody>${state.accountabilityNodes.map(n => renderNodeRow(n)).join('')}</tbody>
-    </table>
-    <div class="ac-card" id="ac-view-window-card">
-      <div class="ac-view-title">Timeline view window</div>
-      <div class="ac-form-row"><label>Wake gate</label><select id="ac-wake-node">${nodeOptions(state.settings.qr_wake_node_id)}</select></div>
-      <div class="ac-form-row"><label>Sleep gate</label><select id="ac-sleep-node">${nodeOptions(state.settings.qr_sleep_node_id)}</select></div>
-      <div class="ac-view-hint">The calendar clips to wake → sleep. Leave either unset for the full 24h.</div>
+    <div class="be-list" id="be-gate-list">
+      ${nodes.map(n => beRow(gateRowOpts(n))).join('')}${beAddRow('Add gate')}
     </div>
-    <div class="ac-card" id="ac-add-node-card">
-      <button class="ac-add-node-btn" id="ac-add-node-toggle">+ Add node</button>
-      <div id="ac-add-node-form" class="ac-inline-form"></div>
-    </div>`;
+    <div class="be-sub-head">Timeline view window</div>
+    <div class="be-list">
+      <div class="be-set-row">
+        <span class="be-set-name">Wake gate</span>
+        <select id="ac-wake-node" class="be-set-ctl">${nodeOptions(state.settings.qr_wake_node_id)}</select>
+      </div>
+      <div class="be-set-row">
+        <span class="be-set-name">Sleep gate</span>
+        <select id="ac-sleep-node" class="be-set-ctl">${nodeOptions(state.settings.qr_sleep_node_id)}</select>
+      </div>
+    </div>
+    <div class="be-hint">The calendar clips to wake → sleep. Leave either unset for the full 24h.</div>
+    <div class="be-sub-head">Billing</div>
+    <div id="be-gates-billing"></div>`;
+
+  wireBeList(document.getElementById('be-gate-list'), 'gate', nodes);
+  renderGatesBilling(false);
 
   [['ac-wake-node', 'qr_wake_node_id'], ['ac-sleep-node', 'qr_sleep_node_id']].forEach(([selId, key]) => {
     document.getElementById(selId).addEventListener('change', async e => {
@@ -4922,316 +5380,151 @@ async function renderQrManager() {
   });
 
   locPanel.innerHTML = `
-    <table class="ac-table">
-      <thead>
-        <tr><th>Name</th><th>Lat</th><th>Lng</th><th>Radius</th><th></th></tr>
-      </thead>
-      <tbody>${state.locations.map(l => `
-        <tr>
-          <td class="ac-td-label">${l.name}</td>
-          <td class="ac-td-win">${l.lat}</td>
-          <td class="ac-td-win">${l.lng}</td>
-          <td>${l.radius_m}m</td>
-          <td class="ac-td-actions"><button class="ac-loc-delete-btn" data-id="${l.id}" title="Delete location">✕</button></td>
-        </tr>`).join('')}</tbody>
-    </table>
-    <div class="ac-loc-form">
-      <input type="text" id="ac-loc-name" placeholder="Name">
-      <input type="number" step="any" id="ac-loc-lat" placeholder="Latitude">
-      <input type="number" step="any" id="ac-loc-lng" placeholder="Longitude">
-      <input type="number" id="ac-loc-radius" placeholder="Radius m (150)">
-      <button id="ac-loc-add">Add location</button>
+    <div class="be-list" id="be-location-list">
+      ${state.locations.map(l => beRow({
+        id: l.id, name: l.name,
+        meta: `${l.lat}, ${l.lng} · ${l.radius_m}m`,
+      })).join('')}${beAddRow('Add location')}
     </div>`;
-
-  document.getElementById('ac-loc-add').addEventListener('click', async () => {
-    const name = document.getElementById('ac-loc-name').value.trim();
-    const lat = parseFloat(document.getElementById('ac-loc-lat').value);
-    const lng = parseFloat(document.getElementById('ac-loc-lng').value);
-    const radius = parseInt(document.getElementById('ac-loc-radius').value);
-    if (!name || isNaN(lat) || isNaN(lng)) return;
-    await fetch('/api/locations', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, lat, lng, radius_m: isNaN(radius) ? null : radius }),
-    });
-    renderQrManager();
-  });
-
-  locPanel.querySelectorAll('.ac-loc-delete-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await fetch(`/api/locations/${btn.dataset.id}`, { method: 'DELETE' });
-      renderQrManager();
-    });
-  });
-
-  document.getElementById('ac-add-node-toggle').addEventListener('click', () => {
-    const form = document.getElementById('ac-add-node-form');
-    if (form.innerHTML) { form.innerHTML = ''; return; }
-    form.innerHTML = `
-      <div class="ac-form-row"><label>Label</label><input type="text" id="ac-new-label"></div>
-      <div class="ac-form-row"><label>Window start</label><input type="time" id="ac-new-ws"></div>
-      <div class="ac-form-row"><label>Window end</label><input type="time" id="ac-new-we"></div>
-      <div class="ac-form-row"><label>Cross-midnight (+1d)</label><input type="checkbox" id="ac-new-offset"></div>
-      <div class="ac-form-row"><label>Days</label><div class="be-days-picker" id="ac-new-days">
-        ${DAY_NAMES.map((d, i) => `<label class="be-day-label"><input type="checkbox" class="ac-day-cb" value="${i}" checked><span>${d}</span></label>`).join('')}
-      </div></div>
-      <div class="ac-form-row"><label>Location</label><select id="ac-new-loc">
-        <option value="">— none —</option>
-        ${state.locations.map(l => `<option value="${l.id}">${l.name}</option>`).join('')}
-      </select></div>
-      <div class="ac-form-row"><label>Geofence radius (m)</label><input type="number" id="ac-new-radius" placeholder="from location"></div>
-      <div class="ac-form-actions">
-        <button id="ac-new-save">Create</button>
-        <button id="ac-new-cancel">Cancel</button>
-      </div>
-      <div id="ac-new-result" style="font-size:12px;margin-top:6px;color:var(--accent)"></div>`;
-
-    document.getElementById('ac-new-cancel').addEventListener('click', () => { form.innerHTML = ''; });
-    document.getElementById('ac-new-save').addEventListener('click', async () => {
-      const loc = state.locations.find(l => l.id === Number(document.getElementById('ac-new-loc').value));
-      const radius = parseInt(document.getElementById('ac-new-radius').value);
-      const days = [...document.querySelectorAll('#ac-new-days .ac-day-cb:checked')].map(cb => cb.value).join('');
-      if (!days) {
-        document.getElementById('ac-new-result').textContent = 'Select at least one day.';
-        return;
-      }
-      const body = {
-        label: document.getElementById('ac-new-label').value,
-        window_start: document.getElementById('ac-new-ws').value,
-        window_end: document.getElementById('ac-new-we').value,
-        window_end_offset_days: document.getElementById('ac-new-offset').checked ? 1 : 0,
-        geofence_lat: loc ? loc.lat : null,
-        geofence_lng: loc ? loc.lng : null,
-        geofence_radius_m: loc ? (isNaN(radius) ? loc.radius_m : radius) : null,
-        days_of_week: days,
-      };
-      const resp = await fetch('/api/accountability/nodes', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      });
-      const node = await resp.json();
-      const workerUrl = state.settings.qr_worker_url || '';
-      document.getElementById('ac-new-result').innerHTML =
-        `Created! Gate URL: <a href="${workerUrl}/scan/${node.token}" target="_blank">${workerUrl}/scan/${node.token}</a>`;
-      state.accountabilityNodes = await fetch('/api/accountability/nodes').then(r => r.json()).catch(() => state.accountabilityNodes);
-    });
-  });
-
-  panel.querySelectorAll('.ac-edit-default-btn').forEach(btn => {
-    btn.addEventListener('click', () => showEditDefaultForm(Number(btn.dataset.id)));
-  });
-  panel.querySelectorAll('.ac-deactivate-btn').forEach(btn => {
-    btn.addEventListener('click', () => deactivateNode(Number(btn.dataset.id), btn));
-  });
-  panel.querySelectorAll('.ac-activate-btn').forEach(btn => {
-    btn.addEventListener('click', () => activateNode(Number(btn.dataset.id), btn));
-  });
-  panel.querySelectorAll('.ac-node-delete-btn').forEach(btn => {
-    btn.addEventListener('click', () => deleteNode(Number(btn.dataset.id), btn));
-  });
-  panel.querySelectorAll('.ac-remove-override-btn').forEach(btn => {
-    btn.addEventListener('click', () => removeOverride(Number(btn.dataset.id), btn.dataset.date));
-  });
+  wireBeList(document.getElementById('be-location-list'), 'location', state.locations);
 }
 
-function renderNodeRow(n) {
+// The money state of the gate system, in the panel where the gates are
+// configured. It can change the three SETTINGS but never the token: that lives
+// in config.json on the box, so no request can read or write it (see
+// qr_judge's charging header). Verification stands in for it — "does it work,
+// and who does it bill" — which is the useful half and leaks nothing.
+//
+// A money surface has one duty before any other: never look armed when it is
+// not, and never look safe when it is. Hence the state line first, and the
+// reason spelled out whenever nothing would fire.
+async function renderGatesBilling(verify) {
+  const el = document.getElementById('be-gates-billing');
+  if (!el) return;
+  el.innerHTML = '<div class="be-empty">Loading…</div>';
+  const b = await fetch('/api/gates/billing' + (verify ? '?verify=1' : ''))
+    .then(r => r.json()).catch(() => null);
+  if (!b) { el.innerHTML = '<div class="be-empty se-error">Billing unavailable.</div>'; return; }
+  const money = c => '$' + (Number(c || 0) / 100).toFixed(2);
+  const pct = b.cap_cents ? Math.min(100, Math.round(b.spent_cents / b.cap_cents * 100)) : 0;
+  const armed = b.live && !b.dryrun && b.has_token && b.has_user;
+  const blockers = [
+    !b.has_token && 'no token in config.json',
+    !b.has_user && 'no beeminder_user in config.json',
+    !b.live && 'charging is off',
+    b.dryrun && 'dry run',
+  ].filter(Boolean);
+
+  el.innerHTML = `
+    <div class="gb-head">
+      <span class="gb-state ${armed ? 'gb-live' : 'gb-off'}">${armed
+        ? '● LIVE — money moves' : '○ no money moves'}</span>
+      ${blockers.length ? `<span class="gb-why">${escHtml(blockers.join(' · '))}</span>` : ''}
+    </div>
+    <div class="be-list">
+      <div class="be-set-row">
+        <span class="be-set-name">Beeminder token</span>
+        <span class="gb-token">${b.token
+          ? (b.token.valid
+            ? `✓ valid — bills ${escHtml(b.token.username || '')}`
+            : `✗ ${escHtml(b.token.reason || 'invalid')}`)
+          : (b.has_token ? 'set — not checked' : 'not set')}</span>
+        <button id="gb-verify" class="be-set-ctl">Check</button>
+      </div>
+      <div class="be-set-row">
+        <span class="be-set-name">Charging</span>
+        <button id="gb-live" class="be-set-ctl${b.live ? ' gb-on' : ''}">${b.live ? 'live' : 'off'}</button>
+        <button id="gb-dry" class="be-set-ctl${b.dryrun ? ' gb-on' : ''}">${b.dryrun ? 'dry run' : 'real'}</button>
+      </div>
+      <div class="be-set-row">
+        <span class="be-set-name">Default stake</span>
+        <input id="gb-default" class="be-set-ctl se-mono" type="number" min="0" step="0.25"
+          value="${(b.default_cents / 100).toFixed(2)}">
+      </div>
+      <div class="be-set-row">
+        <span class="be-set-name">Weekly cap</span>
+        <input id="gb-cap" class="be-set-ctl se-mono" type="number" min="0" step="1"
+          value="${(b.cap_cents / 100).toFixed(2)}">
+      </div>
+      <div class="be-set-row">
+        <span class="be-set-name">This week</span>
+        <span class="gb-spent">${money(b.spent_cents)} of ${money(b.cap_cents)}</span>
+        <span class="gb-bar"><i style="width:${pct}%"></i></span>
+      </div>
+    </div>
+    <div class="be-hint">A charge that would breach the cap is skipped whole, not trimmed.
+      To rotate the token, edit <code>config.json</code> on the server — the field is
+      <code id="gb-cmd">beeminder_auth_token</code>.</div>
+    <div class="be-sub-head">Judged failures, last 7 days</div>
+    ${b.recent.length ? `<div class="be-list">${b.recent.map(r => `
+      <div class="be-set-row">
+        <span class="be-set-name">${escHtml(r.date)} · ${escHtml((state.accountabilityNodes
+          .find(n => n.id === r.node_id) || {}).label || ('#' + r.node_id))}</span>
+        <span class="gb-why">${escHtml(r.failure_reason || '')}</span>
+        <span class="gb-st gb-st-${escHtml(r.charge_status || '')}">${escHtml(r.charge_status || '')}</span>
+        <span class="gb-amt">${r.amount_cents != null ? money(r.amount_cents) : '—'}</span>
+      </div>`).join('')}</div>`
+      : '<div class="be-hint">No failures judged this week.</div>'}`;
+
+  const patch = async body => {
+    await fetch('/api/gates/billing', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    await renderGatesBilling(false);
+  };
+  el.querySelector('#gb-verify').addEventListener('click', () => renderGatesBilling(true));
+  // Arming is the one control here that can cost money, so it asks first.
+  // Disarming never does, so it does not.
+  el.querySelector('#gb-live').addEventListener('click', () => {
+    if (!b.live && !confirm('Arm charging? Gates that fail will be billed to Beeminder '
+      + (b.dryrun ? '(still a DRY RUN until you switch that off).' : 'FOR REAL.'))) return;
+    patch({ gate_charging_live: !b.live });
+  });
+  el.querySelector('#gb-dry').addEventListener('click', () => {
+    if (b.dryrun && !confirm('Leave dry run? Real charges fire from the next failure.')) return;
+    patch({ gate_charge_dryrun: !b.dryrun });
+  });
+  el.querySelector('#gb-default').addEventListener('change', e =>
+    patch({ gate_charge_cents: Math.round(parseFloat(e.target.value) * 100) || 0 }));
+  el.querySelector('#gb-cap').addEventListener('change', e =>
+    patch({ gate_weekly_cap_cents: Math.round(parseFloat(e.target.value) * 100) || 0 }));
+}
+
+// A gate's row: the window and days it runs, the place it is pinned to, and a
+// badge only for a state that isn't the default one.
+function gateRowOpts(n) {
   const nodeDays = (n.days_of_week || '0123456').split('').map(Number);
-  const daysLabel = nodeDays.length === 7 ? '' : ` <span class="ac-days-label">${formatDays(nodeDays)}</span>`;
-  let weekly = {};
-  if (n.weekly_windows) { try { weekly = JSON.parse(n.weekly_windows) || {}; } catch (e) {} }
-  const weeklyDows = Object.keys(weekly);
-  const weeklyBadge = weeklyDows.length
-    ? ` <span class="ac-badge ac-badge-weekly" title="${weeklyDows.map(d =>
-        `${DAY_NAMES[Number(d)]} ${weekly[d].window_start}–${weekly[d].window_end}${weekly[d].window_end_offset_days ? ' +1d' : ''}`
-      ).join('; ')}">per-day</span>`
-    : '';
-  const winLabel = `${n.window_start}–${n.window_end}${n.window_end_offset_days ? ' +1d' : ''}${daysLabel}${weeklyBadge}`;
+  const win = `${n.window_start}–${n.window_end}${n.window_end_offset_days ? ' +1d' : ''}`;
   const loc = (state.locations || []).find(l => l.lat === n.geofence_lat && l.lng === n.geofence_lng);
-  const geoLabel = n.geofence_lat != null
+  const geo = n.geofence_lat != null
     ? `${loc ? loc.name : `${n.geofence_lat.toFixed(4)}, ${n.geofence_lng.toFixed(4)}`} (${n.geofence_radius_m}m)`
-    : 'none';
+    : 'no geofence';
 
-  let ovBadge = '';
-  if (n.today_override) {
-    const ov = n.today_override;
-    ovBadge = `
-      <span class="ac-badge ac-badge-override" title="Today override">${ov.window_start}–${ov.window_end}${ov.window_end_offset_days ? ' +1d' : ''} today</span>
-      <button class="ac-remove-override-btn" data-id="${n.id}" data-date="${ov.date}" title="Remove today override">✕</button>`;
-  }
-
+  let weekly = {};
+  if (n.weekly_windows) { try { weekly = JSON.parse(n.weekly_windows) || {}; } catch (e) { /* stored blank */ } }
   const pendingDisable = (n.pending_changes || []).find(p => p.field === 'active' && String(p.new_value) === '0');
   const otherPending = (n.pending_changes || []).filter(p => p.field !== 'active');
 
-  let pendingBadge = '';
-  if (otherPending.length) {
-    const detail = otherPending.map(p =>
-      `${p.field} → ${p.new_value} (applies ${new Date(p.apply_at).toLocaleString()})`
-    ).join('; ');
-    pendingBadge = ` <span class="ac-badge ac-badge-pending" title="${detail}">pending</span>`;
-  }
+  let badge = '';
+  if (!n.active) badge = 'inactive';
+  else if (pendingDisable) badge = 'deactivating';
+  else if (n.today_override) badge = 'today';
+  else if (otherPending.length) badge = 'pending';
+  else if (Object.keys(weekly).length) badge = 'per-day';
 
-  let statusHtml;
-  if (!n.active) {
-    statusHtml = `<span class="ac-status-dot ac-inactive">inactive</span>`;
-  } else if (pendingDisable) {
-    statusHtml = `<span class="ac-status-dot ac-deactivating" title="inactive at ${new Date(pendingDisable.apply_at).toLocaleString()}">deactivating</span>`;
-  } else {
-    statusHtml = `<span class="ac-status-dot ac-active">active</span>`;
-  }
-
-  let actionsHtml = '';
-  if (n.active) {
-    actionsHtml += `<button class="ac-edit-default-btn" data-id="${n.id}">Edit</button> `;
-    actionsHtml += pendingDisable
-      ? `<button class="ac-activate-btn" data-id="${n.id}" title="Cancel the pending deactivation">Activate</button>`
-      : `<button class="ac-deactivate-btn" data-id="${n.id}">Deactivate (24h)</button>`;
-  } else {
-    actionsHtml = `<button class="ac-node-delete-btn" data-id="${n.id}" title="Delete node permanently">✕</button>`;
-  }
-
-  return `
-    <tr data-node-id="${n.id}">
-      <td class="ac-td-label">${n.label}</td>
-      <td class="ac-td-win">${winLabel}${ovBadge}${pendingBadge}</td>
-      <td>${geoLabel}</td>
-      <td>${statusHtml}</td>
-      <td class="ac-td-actions">${actionsHtml}</td>
-    </tr>
-    <tr class="ac-form-tr"><td colspan="6"><div class="ac-inline-form" id="ac-form-${n.id}"></div></td></tr>`;
-}
-
-function showEditDefaultForm(nodeId) {
-  const n = state.accountabilityNodes.find(x => x.id === nodeId);
-  if (!n) return;
-  const form = document.getElementById(`ac-form-${nodeId}`);
-  const weeklyRows = DAY_NAMES.map((d, i) => {
-    if (!(n.days_of_week || '0123456').includes(String(i))) return '';
-    const eff = nodeWindowForDow(n, i);
-    return `
-      <div class="ac-weekly-row" data-dow="${i}">
-        <span class="ac-weekly-day">${d}</span>
-        <input type="time" class="ac-wk-ws" value="${eff.window_start}">
-        <span>–</span>
-        <input type="time" class="ac-wk-we" value="${eff.window_end}">
-        <label class="ac-weekly-offset"><input type="checkbox" class="ac-wk-offset" ${eff.window_end_offset_days ? 'checked' : ''}>+1d</label>
-      </div>`;
-  }).join('');
-  form.innerHTML = `
-    <div class="ac-form-row">
-      <label>Window start</label>
-      <input type="time" id="ac-ws-${nodeId}" value="${n.window_start}">
-    </div>
-    <div class="ac-form-row">
-      <label>Window end</label>
-      <input type="time" id="ac-we-${nodeId}" value="${n.window_end}">
-    </div>
-    <div class="ac-form-row">
-      <label>Cross-midnight (+1d)</label>
-      <input type="checkbox" id="ac-offset-${nodeId}" ${n.window_end_offset_days ? 'checked' : ''}>
-    </div>
-    <div class="ac-form-row">
-      <label>Days</label>
-      <div class="be-days-picker" id="ac-days-${nodeId}">
-        ${DAY_NAMES.map((d, i) => `<label class="be-day-label"><input type="checkbox" class="ac-day-cb" value="${i}" ${(n.days_of_week || '0123456').includes(String(i)) ? 'checked' : ''}><span>${d}</span></label>`).join('')}
-      </div>
-    </div>
-    <div class="ac-form-row">
-      <label>Per-day times</label>
-      <div class="ac-weekly" id="ac-weekly-${nodeId}">${weeklyRows}
-        <div class="ac-weekly-hint">Days matching the defaults above follow them; edited days keep their own window.</div>
-      </div>
-    </div>
-    <div class="ac-form-row">
-      <label>Location</label>
-      <select id="ac-loc-sel-${nodeId}">
-        <option value="">— keep current —</option>
-        ${(state.locations || []).map(l => `<option value="${l.id}">${l.name}</option>`).join('')}
-      </select>
-    </div>
-    <div class="ac-form-row">
-      <label>Geofence radius (m)</label>
-      <input type="number" id="ac-geo-${nodeId}" value="${n.geofence_radius_m || ''}">
-    </div>
-    <div class="ac-form-actions">
-      <button id="ac-save-default-${nodeId}">Save</button>
-      <button id="ac-cancel-form-${nodeId}">Cancel</button>
-    </div>
-    <div class="ac-form-note">Loosening changes (wider window, larger radius) take effect in 24h.</div>`;
-
-  document.getElementById(`ac-cancel-form-${nodeId}`).addEventListener('click', () => { form.innerHTML = ''; });
-  document.getElementById(`ac-save-default-${nodeId}`).addEventListener('click', async () => {
-    const days = [...document.querySelectorAll(`#ac-days-${nodeId} .ac-day-cb:checked`)].map(cb => cb.value).join('');
-    if (!days) { alert('Select at least one day.'); return; }
-    const body = {
-      window_start: document.getElementById(`ac-ws-${nodeId}`).value,
-      window_end: document.getElementById(`ac-we-${nodeId}`).value,
-      window_end_offset_days: document.getElementById(`ac-offset-${nodeId}`).checked ? 1 : 0,
-      geofence_radius_m: parseInt(document.getElementById(`ac-geo-${nodeId}`).value) || n.geofence_radius_m,
-      days_of_week: days,
-    };
-    // Store only days that differ from the new defaults; the rest inherit
-    const weeklyMap = {};
-    document.querySelectorAll(`#ac-weekly-${nodeId} .ac-weekly-row`).forEach(row => {
-      if (!days.includes(row.dataset.dow)) return;
-      const entry = {
-        window_start: row.querySelector('.ac-wk-ws').value,
-        window_end: row.querySelector('.ac-wk-we').value,
-        window_end_offset_days: row.querySelector('.ac-wk-offset').checked ? 1 : 0,
-      };
-      if (entry.window_start !== body.window_start || entry.window_end !== body.window_end
-        || entry.window_end_offset_days !== body.window_end_offset_days) {
-        weeklyMap[row.dataset.dow] = entry;
-      }
-    });
-    const weeklyJson = JSON.stringify(weeklyMap);
-    if (weeklyJson !== (n.weekly_windows || '{}')) body.weekly_windows = weeklyJson;
-    const locId = document.getElementById(`ac-loc-sel-${nodeId}`).value;
-    if (locId) {
-      const loc = state.locations.find(l => l.id === Number(locId));
-      body.geofence_lat = loc.lat;
-      body.geofence_lng = loc.lng;
-    }
-    const res = await fetch(`/api/accountability/nodes/${nodeId}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      alert(`Edit failed (${res.status}): ${await res.text()}`);
-    } else {
-      const result = await res.json();
-      if (result.pending.length) {
-        alert(`Saved. Loosening changes apply ${new Date(result.apply_at).toLocaleString()}:\n` +
-          result.pending.map(p => `${p.field} → ${p.newVal}`).join('\n'));
-      }
-    }
-    renderQrManager();
-  });
-}
-
-async function deactivateNode(nodeId, btn) {
-  btn.disabled = true;
-  btn.textContent = 'Scheduling…';
-  const res = await fetch(`/api/accountability/nodes/${nodeId}/disable`, { method: 'PATCH' });
-  if (!res.ok) alert(`Deactivate failed (${res.status}): ${await res.text()}`);
-  renderQrManager();
-}
-
-async function activateNode(nodeId, btn) {
-  btn.disabled = true;
-  const res = await fetch(`/api/accountability/nodes/${nodeId}/activate`, { method: 'PATCH' });
-  if (!res.ok) alert(`Activate failed (${res.status}): ${await res.text()}`);
-  renderQrManager();
-}
-
-async function deleteNode(nodeId, btn) {
-  if (!confirm('Delete this node permanently? Its gate link stops working.')) return;
-  btn.disabled = true;
-  const res = await fetch(`/api/accountability/nodes/${nodeId}`, { method: 'DELETE' });
-  if (!res.ok) alert(`Delete failed (${res.status}): ${await res.text()}`);
-  renderQrManager();
+  return {
+    id: n.id, name: n.label, dim: !n.active,
+    meta: `${win} · ${formatDays(nodeDays)}`,
+    sub: geo,
+    badge,
+  };
 }
 
 async function removeOverride(nodeId, date) {
   const res = await fetch(`/api/accountability/nodes/${nodeId}/overrides/${date}`, { method: 'DELETE' });
   if (!res.ok) alert(`Remove override failed (${res.status}): ${await res.text()}`);
-  renderQrManager();
+  await renderQrManager();
 }
 
 // ── People (CRM) ──────────────────────────────────────────────
@@ -6312,99 +6605,30 @@ function renderGtd() {
 // time-of-day window inside those days. Bound to a context tag in the ctx
 // sheet, where it gates the pool.
 //
-// The day chips write plain BYDAY rules, which covers the common case without
-// a recurrence builder; the raw field is there for everything else, and
-// `label` (server-rendered by recurrence.describe) reads it back so a typo is
-// visible before it silently matches nothing.
-const TIME_SHAPES = [
-  { name: 'Every day', rrule: '' },
-  { name: 'Weekdays', rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR' },
-  { name: 'Weekends', rrule: 'FREQ=WEEKLY;BYDAY=SA,SU' },
-];
+// The row states the rule as the server describes it (recurrence.describe), so
+// a typo in a hand-written RRULE is visible before it silently matches
+// nothing, plus which tags are bound to the preset and whether it runs today.
+// Everything else happens in the sheet.
 
 async function renderTimePresets() {
   const el = document.getElementById('be-times-section');
   if (!el) return;
   state.timePresets = await fetch(`/api/time-presets?date=${egDateStr()}`)
     .then(r => r.json()).catch(() => state.timePresets || []);
+  const presets = state.timePresets || [];
   const bound = {};
   (state.tagTimes || []).forEach(b => { bound[b.preset_id] = (bound[b.preset_id] || []).concat(b.tag); });
+  beCounts.times = presets.length;
 
-  el.innerHTML = `
-    <table class="ac-table">
-      <thead><tr><th>Name</th><th>When</th><th>Tags</th><th></th></tr></thead>
-      <tbody>${(state.timePresets || []).map(p => `
-        <tr>
-          <td class="ac-td-label">${escHtml(p.name)}</td>
-          <td class="ac-td-win ${p.due ? 'ctx-live' : 'ctx-dead'}"
-            title="${p.due ? 'runs today' : 'not today'}">${escHtml(p.label || '')}</td>
-          <td class="ac-td-win">${(bound[p.id] || []).map(escHtml).join(', ') || '—'}</td>
-          <td class="ac-td-actions">
-            <button class="ac-time-del" data-id="${p.id}" title="Delete preset (and its bindings)">✕</button>
-          </td>
-        </tr>`).join('') || '<tr><td colspan="4" class="be-empty">No time presets yet.</td></tr>'}
-      </tbody>
-    </table>
-    <div class="ac-loc-form">
-      <input type="text" id="tp-name" placeholder="Name (e.g. Weekday mornings)">
-      <input type="time" id="tp-start" title="Window start">
-      <input type="time" id="tp-end" title="Window end">
-    </div>
-    <div class="cl-chips">
-      ${TIME_SHAPES.map((sh, i) => `<button class="cl-chip" data-shape="${i}">${sh.name}</button>`).join('')}
-      ${DAY_LETTERS.map((d, n) => `<button class="cl-chip" data-day="${n}" title="${DAY_NAMES[n]}">${d}</button>`).join('')}
-    </div>
-    <div class="ac-loc-form">
-      <input type="text" id="tp-rrule" placeholder="RRULE (blank = every day)">
-      <button id="tp-add">Add preset</button>
-    </div>
-    <div class="be-hint" id="tp-preview"></div>`;
-
-  const rruleEl = el.querySelector('#tp-rrule');
-  const preview = el.querySelector('#tp-preview');
-  const days = new Set();
-  const paint = () => {
-    if (days.size) {
-      rruleEl.value = 'FREQ=WEEKLY;BYDAY='
-        + [...days].sort().map(n => ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'][n]).join(',');
-    }
-    preview.textContent = rruleEl.value ? '' : 'every day';
-    el.querySelectorAll('[data-day]').forEach(b =>
-      b.classList.toggle('cl-chip-on', days.has(parseInt(b.dataset.day))));
-  };
-  el.querySelectorAll('[data-shape]').forEach(b => b.addEventListener('click', () => {
-    days.clear();
-    rruleEl.value = TIME_SHAPES[parseInt(b.dataset.shape)].rrule;
-    paint();
-  }));
-  el.querySelectorAll('[data-day]').forEach(b => b.addEventListener('click', () => {
-    const n = parseInt(b.dataset.day);
-    if (days.has(n)) days.delete(n); else days.add(n);
-    if (!days.size) rruleEl.value = '';
-    paint();
-  }));
-
-  el.querySelector('#tp-add').addEventListener('click', async () => {
-    const name = el.querySelector('#tp-name').value.trim();
-    if (!name) return;
-    await fetch('/api/time-presets', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name, rrule: rruleEl.value.trim() || null,
-        start_time: el.querySelector('#tp-start').value || null,
-        end_time: el.querySelector('#tp-end').value || null,
-      }),
-    });
-    await renderTimePresets();
-    renderEngage();
-  });
-  el.querySelectorAll('.ac-time-del').forEach(b => b.addEventListener('click', async () => {
-    await fetch(`/api/time-presets/${b.dataset.id}`, { method: 'DELETE' });
-    // The binding went with it server-side; re-read so the pool agrees.
-    state.tagTimes = await fetch('/api/tag-times').then(r => r.json()).catch(() => []);
-    await renderTimePresets();
-    renderEngage();
-  }));
+  el.innerHTML = `<div class="be-list" id="be-times-list">
+    ${presets.map(p => beRow({
+      id: p.id, name: p.name,
+      meta: [p.label || 'every day',
+        p.start_time && p.end_time ? `${p.start_time}–${p.end_time}` : null].filter(Boolean).join(' · '),
+      sub: (bound[p.id] || []).map(t => `#${t}`).join(' '),
+      badge: p.due ? 'today' : '',
+    })).join('')}${beAddRow('Add time preset')}</div>`;
+  wireBeList(document.getElementById('be-times-list'), 'timepreset', presets);
 }
 
 // ── Context tag configuration ────────────────────────────────

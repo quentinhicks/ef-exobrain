@@ -1600,6 +1600,47 @@ def _node_payload(node, today):
                 pending_changes=storage.qr_get_pending_changes(node['id']))
 
 
+@app.route('/api/gates/billing')
+def get_gates_billing():
+    # Everything the Gates panel needs to show the money state, and nothing it
+    # could use to LEAK it: the token is never returned, only whether it works
+    # and who it bills. Reading this performs one Beeminder call, so it is a
+    # deliberate fetch rather than part of loadAll.
+    storage.qr_ensure_charge_columns()
+    s = qr_judge.charge_settings()
+    today = date_cls.today().isoformat()
+    week_from = (date_cls.today() - timedelta(days=6)).isoformat()
+    return jsonify({
+        'live': s['live'],
+        'dryrun': s['dryrun'],
+        'cap_cents': s['cap_cents'],
+        'default_cents': s['default_cents'],
+        'spent_cents': storage.qr_weekly_spent_cents(today),
+        'token': qr_judge.verify_token() if request.args.get('verify') else None,
+        'has_token': bool(s['token']),
+        'has_user': bool(s['user']),
+        'recent': storage.qr_charge_rows_between(week_from, today),
+    })
+
+
+@app.route('/api/gates/billing', methods=['PATCH'])
+def patch_gates_billing():
+    # The three settings the panel may change. The TOKEN is not among them by
+    # design: it lives in config.json so that no request can read or write it
+    # (see qr_judge's charging header).
+    data = request.get_json() or {}
+    allowed = {
+        'gate_charging_live': lambda v: '1' if v else '0',
+        'gate_charge_dryrun': lambda v: '1' if v else '0',
+        'gate_weekly_cap_cents': lambda v: str(max(0, int(v))),
+        'gate_charge_cents': lambda v: str(max(0, int(v))),
+    }
+    for key, clean in allowed.items():
+        if key in data:
+            storage.set_setting(key, clean(data[key]))
+    return jsonify(qr_judge.charge_settings() | {'token': None})
+
+
 @app.route('/api/accountability/nodes', methods=['GET', 'POST'])
 def accountability_nodes():
     today = date_cls.today().isoformat()
