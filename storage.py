@@ -869,6 +869,7 @@ def init_db():
             created_at       TEXT NOT NULL DEFAULT (datetime('now'))
         )''')
     _migrate_time_presets(conn)
+    _repair_time_preset_conversion(conn)
     _seed_social_axes(conn)
     conn.commit()
     conn.close()
@@ -889,7 +890,11 @@ def _migrate_time_presets(conn):
         uid = _new_uid('rule')
         mapping[p['id']] = uid
         start_time = p['start_time'] or '00:00'
-        anchor = p['dtstart'] or date_cls.today().isoformat()
+        # A preset with no dtstart was answered against RRULE_EPOCH, so it was
+        # due on ANY date. Anchoring the converted rule to today instead would
+        # silently empty every PAST date — which the pool's time gate reads
+        # whenever you look at a day that isn't today.
+        anchor = p['dtstart'] or RRULE_EPOCH.isoformat()
         rules = schedule.rules_from_rrule(p['rrule'])
         conn.execute(
             'INSERT INTO schedule_source (uid, kind, title, start, duration,'
@@ -915,13 +920,65 @@ def _migrate_time_presets(conn):
     conn.commit()
 
 
+# The first version of the migration above shipped (swept into 50a217a and
+# pushed before it was finished) with two defaults that narrowed what a preset
+# meant, and it is ONE-SHOT — the guard is tag_time no longer having preset_id,
+# so fixing the derivation does not re-derive anything already converted. This
+# repairs those rows instead:
+#
+#   1. A preset with no dtstart was due on ANY date (it was answered against
+#      RRULE_EPOCH). Anchoring the rule to the deploy date emptied every past
+#      date, which the pool's time gate reads whenever you look at another day.
+#   2. A preset with no end_time meant "until midnight", and one with no window
+#      at all meant "all of those days". A null duration means a MOMENT, so a
+#      tag bound to such a preset was gated to a single instant.
+#
+# Safe to run every start-up: it rewrites a row only when the row still holds
+# exactly what the buggy derivation produced from the preset it came from, so a
+# source that has since been edited in the picker is left alone, and a correct
+# row is already equal to its target and is skipped.
+def _repair_time_preset_conversion(conn):
+    try:
+        presets = conn.execute('SELECT * FROM time_preset').fetchall()
+    except sqlite3.OperationalError:
+        return                       # no legacy table, nothing to repair
+    for p in presets:
+        want_rules = json.dumps(schedule.rules_from_rrule(p['rrule']))
+        rows = conn.execute(
+            'SELECT * FROM schedule_source WHERE kind = ? AND title IS ?'
+            ' AND recurrence_rules = ?', ('rule', p['name'], want_rules)).fetchall()
+        if len(rows) != 1:
+            continue                 # ambiguous or already reshaped — leave it
+        row = rows[0]
+        anchor = p['dtstart'] or RRULE_EPOCH.isoformat()
+        want_start = f"{anchor[:10]}T{p['start_time'] or '00:00'}:00"
+        want_duration = _window_duration(p['start_time'], p['end_time'])
+        # Untouched means the TIME OF DAY is still the preset's, and the date is
+        # either already right or is the deploy date the bug stamped on it (only
+        # possible when the preset had no dtstart of its own). Anything else is
+        # somebody's edit, and their value wins.
+        same_time = row['start'][11:16] == (p['start_time'] or '00:00')
+        date_ok = row['start'][:10] == want_start[:10] or not p['dtstart']
+        if not (same_time and date_ok):
+            continue
+        if row['start'] == want_start and row['duration'] == want_duration:
+            continue                 # already correct
+        conn.execute('UPDATE schedule_source SET start = ?, duration = ? WHERE uid = ?',
+                     (want_start, want_duration, row['uid']))
+    conn.commit()
+
+
 def _window_duration(start_time, end_time):
-    """A start/end window becomes a DURATION — the model never stores an end
-    time, because a duration is what survives a start moving."""
-    if not end_time:
-        return None
+    """A preset's start/end window becomes a DURATION — the model never stores
+    an end time, because a duration is what survives a start moving.
+
+    The defaults have to match what the old time gate did, or the conversion
+    silently narrows a period: a MISSING end meant midnight (`to = 1440`), and
+    a preset with no window at all meant "all of those days" — not a moment at
+    00:00, which is what a null duration would now mean.
+    """
     s = _hhmm(start_time or '00:00')
-    e = _hhmm(end_time)
+    e = _hhmm(end_time) if end_time else 24 * 60
     minutes = (e - s) if e > s else (e + 24 * 60 - s)   # a window over midnight
     return schedule.format_duration(timedelta(minutes=minutes))
 

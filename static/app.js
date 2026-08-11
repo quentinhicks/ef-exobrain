@@ -135,12 +135,14 @@ const state = {
   // Location-bound tags (tag_location) + the last geolocation fix. FAIL-OPEN:
   // geo.ok false (denied, no hardware, plain-http pywebview) hides nothing.
   tagLocations: [],
-  // The other two binding axes (see the ctx sheet). timePresets carry a
-  // server-computed `due` for the viewed date — recurrence.py stays the only
-  // RRULE implementation, and the client only asks the wall-clock half.
+  // The other two binding axes (see the ctx sheet). `schedules` are the named
+  // sources from /api/schedules; each carries the wall-clock INTERVALS it
+  // covers the viewed date, computed by schedule.py, so the client is only ever
+  // asked "is now inside one of these" — the half a phone can answer.
   tagDevices: [],
   tagTimes: [],
-  timePresets: [],
+  schedules: [],
+  allSources: [],
   geo: { ok: false },
   settings: {},
   view: { start: 0, end: 1440 },
@@ -1710,8 +1712,8 @@ const SETTINGS_SECTIONS = [
     desc: 'Recurring windows the day is built around.',
     summary: () => `${beCounts.blocks || 0} set` },
   { key: 'times', name: 'Times', group: 'Your week',
-    desc: 'Named windows a context tag can be gated by.',
-    summary: () => plural(beCounts.times, 'preset') },
+    desc: 'Rules are single patterns. Schedules gather rules, or follow something else.',
+    summary: () => plural(beCounts.times, 'schedule') },
   { key: 'recurring', name: 'Recurring', group: 'Your week',
     desc: 'Tasks that come back on a schedule.',
     summary: () => plural(beCounts.recurring, 'task') },
@@ -1754,7 +1756,7 @@ function renderSettingsIndex() {
 function openSettingsSection(key) {
   settingsView.section = key;
   paintSettingsNav();
-  if (key === 'times') renderTimePresets();
+  if (key === 'times') renderSchedules();
 }
 
 function backToSettingsIndex() {
@@ -2557,64 +2559,6 @@ const SETTINGS_SHEETS = {
     },
   },
 
-  // The day keys write a plain BYDAY rule, which covers the common case
-  // without a recurrence builder; the raw field is there for everything else,
-  // and the server's own describe() reads it back on the row so a typo is
-  // visible before it silently matches nothing.
-  timepreset: {
-    title: it => it ? 'Time preset' : 'Add time preset',
-    save: () => 'Save preset',
-    removeLabel: 'Delete preset',
-    confirm: () => 'Delete this preset? Tags bound to it lose their time gate.',
-    blank: () => ({ name: '', days: [], rrule: '', start: '', end: '' }),
-    load: p => ({
-      name: p.name,
-      days: (/BYDAY=([A-Z,]+)/.exec(p.rrule || '') || ['', ''])[1]
-        .split(',').filter(Boolean).map(d => RRULE_DAYS.indexOf(d)).filter(i => i >= 0),
-      rrule: p.rrule || '', start: p.start_time || '', end: p.end_time || '',
-    }),
-    fields: () => [
-      { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Weekday mornings' },
-      { key: 'days', label: 'Days', kind: 'days', hint: 'none selected = every day',
-        onChange: v => {
-          v.rrule = v.days.length
-            ? 'FREQ=WEEKLY;BYDAY=' + v.days.slice().sort().map(n => RRULE_DAYS[n]).join(',')
-            : '';
-          const raw = document.querySelector('#se-sheet [data-f="rrule"]');
-          if (raw) raw.value = v.rrule;
-        } },
-      { key: 'rrule', label: 'RRULE', kind: 'text', placeholder: 'blank = every day' },
-      { key: 'start', label: 'From', kind: 'time', half: true },
-      { key: 'end', label: 'To', kind: 'time', half: true },
-    ],
-    submit: async (v, p) => {
-      if (!v.name.trim()) return 'Name is required.';
-      const body = {
-        name: v.name.trim(), rrule: v.rrule.trim() || null,
-        start_time: v.start || null, end_time: v.end || null,
-      };
-      const res = p
-        ? await fetch(`/api/time-presets/${p.id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })
-        : await fetch('/api/time-presets', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-      if (!res.ok) return 'Error saving preset.';
-      await renderTimePresets();
-      renderEngage();
-      return null;
-    },
-    remove: async p => {
-      await fetch(`/api/time-presets/${p.id}`, { method: 'DELETE' });
-      // The binding went with it server-side; re-read so the pool agrees.
-      state.tagTimes = await fetch('/api/tag-times').then(r => r.json()).catch(() => []);
-      await renderTimePresets();
-      renderEngage();
-    },
-  },
 };
 
 // ── Rows ─────────────────────────────────────────────────────
@@ -2689,7 +2633,7 @@ async function openBlockEditor() {
   await renderQrManager();
   renderBeRecurring(await fetch('/api/recurring').then(r => r.json()).catch(() => []), projects);
   renderBeCalendars(await fetch('/api/calendars').then(r => r.json()).catch(() => []));
-  await renderTimePresets();
+  await renderSchedules();
   settingsView.section = null;
   closeSeSheet();
   renderSettingsIndex();
@@ -6956,8 +6900,11 @@ async function renderSchedules() {
 function scheduleReachLine(s) {
   const bits = [];
   if (s.kind === 'derived') {
+    // After un-sharing, a derived source follows an UNNAMED copy of the hours
+    // it used to share. Say that, rather than "something": nothing is missing,
+    // the name is.
     const target = (state.schedules || []).find(x => x.uid === (s.follows || {}).source);
-    bits.push(`Follows ${target ? target.title || 'an unnamed schedule' : 'something'}`);
+    bits.push(`Follows ${(target || {}).title || 'its own unnamed hours'}`);
   } else if (s.kind === 'schedule') {
     bits.push(plural((s.entries || []).length, 'rule'));
   } else {
@@ -7202,6 +7149,11 @@ function renderPicker() {
   // the top whatever the draft currently is.
   body += `<div class="sp-row"><span class="sp-label">Follows</span>${
     spSelect('follows', followOptions(), (d.follows || {}).source || '')}</div>`;
+  if (pickerView.wantName || d.rules.length > 1) {
+    body += `<div class="sp-row"><span class="sp-label">Name</span>
+      <input class="sp-input" data-sp="title" value="${escHtml(d.title)}"
+        placeholder="e.g. Weekday mornings" autocomplete="off"></div>`;
+  }
   body += '<div class="sp-rule"></div>';
 
   if (kind === 'derived') {
@@ -7219,11 +7171,6 @@ function renderPicker() {
       <span>When ${escHtml((target || {}).title || 'it')} ends. Skipped days are skipped
       here too.</span></div>`;
   } else {
-    if (pickerView.wantName || d.rules.length > 1) {
-      body += `<div class="sp-row"><span class="sp-label">Name</span>
-        <input class="sp-input" data-sp="title" value="${escHtml(d.title)}"
-          placeholder="e.g. Weekday mornings" autocomplete="off"></div>`;
-    }
     if (d.rules.length === 1) {
       body += patternRows(d.rules[0], 0, false);
       body += `<button type="button" class="sp-add" data-sp="variation">+ Add a variation</button>`;
@@ -7452,17 +7399,19 @@ function wirePicker() {
   });
 
   at('[data-sp="variation"]', b => b.addEventListener('click', () => {
-    // A variation inherits the first rule's shape and takes one day off it —
-    // "Wed was removed from rule 1" is the whole point of the second rule.
+    // A variation inherits the first rule's shape and MOVES a day onto it,
+    // because "Wednesday is shorter" is the whole reason a set of rules exists.
+    // Taking the day off rule 1 is what keeps the two disjoint — but only when
+    // rule 1 has a day to spare. A single-day rule gets a free weekday instead,
+    // and then nothing was removed from anything, so nothing claims it was.
     const base = d.rules[0];
     const taken = new Set(d.rules.flatMap(r => r.days));
-    const free = base.days.find(day => d.rules.length === 1 || !taken.has(day));
-    const day = free || SP_DAYS.find(x => !taken.has(x)) || 'we';
-    if (d.rules.length === 1 && base.days.length > 1) {
-      base.days = base.days.filter(x => x !== day);
-    }
+    const moved = base.days.length > 1 ? base.days[base.days.length - 1] : null;
+    const day = moved || SP_DAYS.find(x => !taken.has(x)) || 'we';
+    if (moved) base.days = base.days.filter(x => x !== moved);
     d.rules.push({ ...blankRule(), ...base, uid: null, days: [day],
-      note: `${SP_DAY_NAMES[day]} was removed from rule ${d.rules.length}.` });
+      movedDay: moved,
+      note: moved ? `${SP_DAY_NAMES[day]} was removed from rule 1.` : null });
     pickerView.wantName = true;
     rerender();
   }));
@@ -7471,7 +7420,12 @@ function wirePicker() {
     const idx = Number(b.dataset.idx);
     const [gone] = d.rules.splice(idx, 1);
     if (gone && gone.uid) d.removed.push(gone.uid);
-    // Removing the second rule returns a schedule to a rule.
+    // Removing the second rule returns a schedule to a rule — and gives back
+    // the day the variation took off rule 1, or changing your mind would cost
+    // you a Friday you never chose to drop.
+    if (gone && gone.movedDay && d.rules[0] && !d.rules[0].days.includes(gone.movedDay)) {
+      d.rules[0].days.push(gone.movedDay);
+    }
     if (d.rules.length === 1) d.rules[0].note = null;
     rerender();
   }));
@@ -7557,8 +7511,10 @@ async function savePicker() {
     renderPicker();
     return;
   }
-  if ((kind === 'schedule' || pickerView.wantName) && !d.title.trim() && kind !== 'rule') {
-    pickerView.error = 'A schedule needs a name.';
+  const named = pickerView.wantName || d.rules.length > 1;
+  if (named && !d.title.trim()) {
+    pickerView.error = kind === 'derived'
+      ? 'Give this a name so it can be reused.' : 'A schedule needs a name.';
     renderPicker();
     return;
   }
@@ -7648,14 +7604,14 @@ function closeCtxSheet() {
 }
 
 async function ctxSheetRefresh() {
-  const [devs, times, presets] = await Promise.all([
+  const [devs, times, sources] = await Promise.all([
     fetch('/api/tag-devices').then(r => r.json()).catch(() => state.tagDevices),
     fetch('/api/tag-times').then(r => r.json()).catch(() => state.tagTimes),
-    fetch(`/api/time-presets?date=${egDateStr()}`).then(r => r.json()).catch(() => state.timePresets),
+    fetch(`/api/schedules?date=${egDateStr()}&unnamed=1`).then(r => r.json()).catch(() => state.schedules),
   ]);
   state.tagDevices = devs;
   state.tagTimes = times;
-  state.timePresets = presets;
+  state.schedules = sources;
   renderCtxSheet();
   renderEngage();
 }
@@ -7707,15 +7663,17 @@ function renderCtxSheet() {
 
     <div class="cl-sec"><span class="cl-label">◷ Time</span></div>
     <div class="cl-chips">
-      ${(state.timePresets || []).map(p => `<button class="cl-chip${
-        boundTime && boundTime.preset_id === p.id ? ' cl-chip-on' : ''}"
-        data-time="${p.id}" title="${escHtml(p.label || '')}">${escHtml(p.name)}${
-        p.due === false ? '' : ''}</button>`).join('')
-        || '<span class="cl-hint">no presets — add one in Settings → Times</span>'}
+      ${(state.schedules || [])
+        .filter(p => p.title || (boundTime && boundTime.source_uid === p.uid))
+        .map(p => `<button class="cl-chip${
+        boundTime && boundTime.source_uid === p.uid ? ' cl-chip-on' : ''}"
+        data-time="${p.uid}" title="${escHtml(p.label || '')}">${
+        escHtml(p.title || 'its own hours')}</button>`).join('')
+        || '<span class="cl-hint">no schedules — add one in Settings → Times</span>'}
       ${boundTime ? '<button class="cl-chip" data-time="none">✕ any time</button>' : ''}
     </div>
     ${boundTime ? (() => {
-      const p = (state.timePresets || []).find(x => x.id === boundTime.preset_id);
+      const p = (state.schedules || []).find(x => x.uid === boundTime.source_uid);
       if (!p) return '';
       return `<div class="cl-row"><span class="cl-hint ${p.due ? 'ctx-live' : 'ctx-dead'}">${
         escHtml(p.label || '')} — ${p.due ? 'runs today' : 'not today'}</span></div>`;
@@ -7758,7 +7716,7 @@ function renderCtxSheet() {
     } else {
       await fetch('/api/tag-times', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tag, preset_id: parseInt(b.dataset.time) }),
+        body: JSON.stringify({ tag, source_uid: b.dataset.time }),
       });
     }
     await ctxSheetRefresh();
@@ -7862,7 +7820,7 @@ async function refreshEngage() {
   // and a network drop must not blank the day that is already rendered. See the
   // note on loadAll.
   const [placements, futurePlaced, pool, all, overrides, routineItems, flows,
-         timePresets, deferred] = await Promise.all([
+         schedules, deferred] = await Promise.all([
     fetch(`/api/engage/placements?date=${dateStr}`).then(r => r.json()).catch(() => engageView.placements),
     // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
     // shows what still NEEDS a day, and these have one).
@@ -7877,7 +7835,7 @@ async function refreshEngage() {
     // — the link is what makes the gate pass or fail, and it was only visible
     // inside the step editor.
     fetch(`/api/flows?date=${dateStr}`).then(r => r.json()).catch(() => engageView.flows),
-    fetch(`/api/time-presets?date=${dateStr}`).then(r => r.json()).catch(() => state.timePresets),
+    fetch(`/api/schedules?date=${dateStr}&unnamed=1`).then(r => r.json()).catch(() => state.schedules),
     // Everything parked on a future date, unfiltered — walking the calendar
     // then costs no round trip, same as the pool.
     fetch('/api/inbox/deferred').then(r => r.json()).catch(() => engageView.deferred),
@@ -7889,7 +7847,7 @@ async function refreshEngage() {
   engageView.overrides = overrides;
   engageView.routineItems = routineItems;
   engageView.flows = Array.isArray(flows) ? flows : [];
-  state.timePresets = Array.isArray(timePresets) ? timePresets : [];
+  state.schedules = Array.isArray(schedules) ? schedules : [];
   engageView.deferred = Array.isArray(deferred) ? deferred : [];
   renderEngage();
 }
@@ -8074,27 +8032,29 @@ function renderEngage() {
   };
   const otherDevice = device === 'pc' ? 'phone' : 'pc';
 
-  // TIME gate: a tag bound to a time preset only counts while you are inside
-  // that recurring period. `due` is the server's answer for the viewed date
-  // (recurrence.py); the minute window is checked here because the wall clock
-  // is the half only the client knows.
+  // TIME gate: a tag bound to a SCHEDULE SOURCE only counts while you are
+  // inside one of that source's occurrences. The server sends the intervals it
+  // covers the viewed date (schedule.py — the one occurrence source); the
+  // minute comparison is here because the wall clock is the half only the
+  // client knows.
+  //
+  // The intervals are already clipped to the day at both edges, so a window
+  // that runs past midnight arrives as a tail on one day and a head on the
+  // next — which is why this no longer has wrap-around arithmetic of its own.
   //
   // FAIL-OPEN off today, like the geo gate is fail-open with no fix: "in that
   // window right now" is a statement about now, and applying it to a day you
   // are only planning would hide work for no reason you could see.
   const tagTime = {};
   (state.tagTimes || []).forEach(b => {
-    const p = (state.timePresets || []).find(x => x.id === b.preset_id);
+    const p = (state.schedules || []).find(x => x.uid === b.source_uid);
     if (p) tagTime[b.tag] = p;
   });
-  const inPeriod = p => {
-    if (!p.due) return false;
-    const from = p.start_time ? timeToMinutes(p.start_time) : 0;
-    const to = p.end_time ? timeToMinutes(p.end_time) : 1440;
-    // An end before the start wraps past midnight (22:00–02:00).
-    return to >= from ? (nowMin >= from && nowMin < to)
-                      : (nowMin >= from || nowMin < to);
-  };
+  const inPeriod = p => (p.intervals || []).some(iv => {
+    const from = timeToMinutes(iv.start);
+    const to = iv.end === '24:00' ? 1440 : timeToMinutes(iv.end);
+    return nowMin >= from && nowMin < to;
+  });
   const gateOn = timeGateOn();
   const timeOk = i => !isToday || !gateOn || itemTags(i).every(t => {
     const p = tagTime[t];

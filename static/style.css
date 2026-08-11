@@ -692,6 +692,208 @@ select option {
 
 .se-error { font-size: 12px; color: var(--danger); }
 
+/* ── The Schedule Picker ─────────────────────────────────────
+   Ported from Claude Design (project 82343144-9c74-405a-8a03-5d1a2c5b82c7,
+   file `Schedule Picker.dc.html`). It stays the size of a MENU, not a form:
+   every input is a dropdown or a number, one label column, and the sentence at
+   the foot is the only feedback. Rows APPEAR rather than grey out — week start
+   above interval 1, the short-months fallback only for a date some months lack
+   — so anything visible can be answered. */
+
+.sp-body {
+  padding: 12px 14px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  overflow-y: auto;
+}
+
+.sp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* One label column, held at a fixed width so the controls line up down the
+   whole dialog — the grammar the old floating-label form didn't have. */
+.sp-label {
+  width: 82px;
+  flex: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.sp-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font: 13px var(--font-ui);
+  padding: 7px 9px;
+  outline: none;
+}
+
+.sp-input:focus { border-color: var(--accent); }
+
+.sp-num { flex: none; width: 52px; font-family: var(--font-mono); }
+.sp-time { flex: none; width: 92px; font-family: var(--font-mono); }
+.sp-date { flex: 1; font-family: var(--font-mono); }
+
+/* A field the draft cannot save from is marked on the field itself, and Done
+   waits — nothing is announced elsewhere. */
+.sp-bad { border-color: var(--danger); }
+
+.sp-drop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sp-drop > span:first-child { flex: 1; }
+.sp-caret { font-size: 10px; color: var(--text-secondary); }
+
+.sp-rule { height: 1px; background: var(--border-soft); margin: 2px 0; }
+
+.sp-aside { font: 11px var(--font-mono); color: var(--text-secondary); flex: none; }
+
+/* The days menu. A dropdown like every other control rather than a key grid:
+   the seven-key row belongs to the settings sheet's own grammar, and this
+   dialog asks one question at a time. */
+.sp-menu {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.sp-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-primary);
+}
+
+.sp-menu-row > span:first-child { flex: 1; }
+.sp-menu-row:hover { background: var(--tint); }
+.sp-menu-row.sp-on { color: var(--accent); }
+.sp-menu-rule { height: 1px; background: var(--border-soft); }
+
+/* A variation makes the rows group into numbered rules, each owning its own
+   time and duration — the whole reason a set of rules exists. */
+.sp-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-card .sp-label { width: 42px; }
+
+.sp-card-head { display: flex; align-items: center; }
+
+.sp-card-title {
+  flex: 1;
+  font: 10px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.sp-x { font-size: 12px; color: var(--text-secondary); padding: 0 2px; }
+.sp-x:hover { color: var(--danger); }
+
+.sp-note { font-size: 12px; color: var(--text-secondary); }
+
+.sp-add {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--accent);
+  padding: 2px 0 2px 90px;
+}
+
+.sp-card ~ .sp-add { padding-left: 0; }
+
+.sp-ends { display: flex; flex-direction: column; gap: 8px; }
+
+.sp-ends-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-primary);
+}
+
+.sp-ends-word { width: 38px; flex: none; color: var(--text-secondary); }
+
+.sp-radio {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 50%;
+  flex: none;
+  box-sizing: border-box;
+}
+
+.sp-radio.sp-on { border: 4px solid var(--accent); }
+
+/* An inherited value is STATED, not asked — a derived source has no ending of
+   its own, so there is nothing to choose. */
+.sp-stated {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.sp-foot {
+  padding: 10px 14px 16px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* The sentence is the only feedback the dialog gives, so it says the whole
+   rule — days, time, duration, variations and the ending. */
+.sp-sentence { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+
+/* Editing something shared names the other holders BEFORE saving. That is the
+   same choice deletion makes, taken earlier. */
+.sp-shared { font-size: 12px; line-height: 1.5; color: var(--gold); }
+
+.sp-actions { display: flex; align-items: center; gap: 8px; }
+.sp-grow { flex: 1; }
+
+.sp-cancel,
+.sp-cancel2 { font-size: 13px; color: var(--text-secondary); padding: 6px 8px; }
+
+.sp-del { font-size: 13px; color: var(--danger); padding: 6px 8px; }
+
+.sp-done {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: 6px;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sp-done:disabled { opacity: 0.6; }
+
 /* ── Shared button + form shapes (used outside settings too) ── */
 
 .be-inline-form {
@@ -4835,7 +5037,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #clarify-backdrop,
 #fr-sheet-backdrop,
 #ctx-sheet-backdrop,
-#se-sheet-backdrop {
+#se-sheet-backdrop,
+#sp-sheet-backdrop {
   position: fixed;
   inset: 0;
   z-index: 199;
@@ -4848,7 +5051,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #clarify-sheet,
 #fr-sheet,
 #ctx-sheet,
-#se-sheet {
+#se-sheet,
+#sp-sheet {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -5192,7 +5396,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #ctx-sheet-backdrop,
 #ctx-sheet,
 #se-sheet-backdrop,
-#se-sheet {
+#se-sheet,
+#sp-sheet-backdrop,
+#sp-sheet {
   bottom: var(--gbar-h);
 }
 

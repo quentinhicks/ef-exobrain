@@ -276,6 +276,16 @@ eq('day_intervals: a span across midnight is clipped at both edges of the day',
    S.day_intervals(STORE['derived-prev-day'], resolve, D(2026, 8, 11)),
    [{'start': '00:00', 'end': '00:30', 'from_previous': True, 'into_next': False},
     {'start': '22:30', 'end': '24:00', 'from_previous': False, 'into_next': True}])
+# A whole-day source ending exactly at midnight must not leave a zero-length
+# window at 00:00 on the next day — the old time presets convert to P1D spans,
+# so this is the shape a migrated "all of those days" preset takes.
+STORE['rule-allday'] = rule('rule-allday', '2026-08-08T00:00:00', 'P1D', days=['sa'])
+eq('day_intervals: a whole Saturday is the whole day',
+   S.day_intervals(STORE['rule-allday'], resolve, D(2026, 8, 8)),
+   [{'start': '00:00', 'end': '24:00', 'from_previous': False, 'into_next': True}])
+eq('day_intervals: and Sunday gets nothing from it',
+   S.day_intervals(STORE['rule-allday'], resolve, D(2026, 8, 9)), [])
+
 eq('occurs_on: the predicate', S.occurs_on(STORE['rule-mtwf'], resolve, D(2026, 8, 12)), False)
 
 # ── the sentence at the foot of the picker ───────────────────

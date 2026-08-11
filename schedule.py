@@ -445,6 +445,10 @@ def day_intervals(src, resolve, day):
     for s, e in occurrences(src, resolve, day - timedelta(days=1), day):
         if s.date() > day or e.date() < day:
             continue
+        # An occurrence that ended the instant this day began is yesterday's,
+        # not a zero-length window at 00:00 today.
+        if s.date() < day and e.date() == day and e.time() == time_cls(0, 0):
+            continue
         out.append({
             'start': s.strftime('%H:%M') if s.date() == day else '00:00',
             'end': e.strftime('%H:%M') if e.date() == day else '24:00',

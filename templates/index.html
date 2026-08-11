@@ -385,6 +385,17 @@
   <div id="se-sheet-backdrop" class="hidden"></div>
   <div id="se-sheet" class="hidden"></div>
 
+  <!-- The SCHEDULE PICKER: one dialog, three sources. It opens as a single rule
+       and the type is a consequence of what gets answered — the Follows row at
+       the top and Add a variation at the bottom are the only two controls that
+       change what is stored, and nobody is asked to choose between a rule, a
+       schedule and a derived source. Ported from Claude Design (project
+       82343144-9c74-405a-8a03-5d1a2c5b82c7, file Schedule Picker.dc.html).
+       Same geometry as #clarify-sheet, one layer above the settings sheet:
+       Settings → Times is the only surface it opens from today. -->
+  <div id="sp-sheet-backdrop" class="hidden"></div>
+  <div id="sp-sheet" class="hidden"></div>
+
   <!-- THE global bar: one context-sensitive bottom bar for the whole app.
        Every overlay opens ABOVE it (bottom: var(--gbar-h)), so capture, undo,
        Clarify and the ≡ hub are one tap from anywhere — no floating chips.
