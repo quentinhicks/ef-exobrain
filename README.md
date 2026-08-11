@@ -1,9 +1,9 @@
 # Executive function prosthesis
 
-Software that provides freedom through giving you control of the future. NOTE: Built for personal use, but open source for inspiration.
+Software that provides freedom through giving you control of the future. NOTE: Intended for personal use, but open source for inspiration.
 
-<img width="213" height="417" alt="image" src="https://github.com/user-attachments/assets/331e76dd-fb8f-4aa6-9f1e-8ad9b5071815" />
 <img width="213" height="417" alt="image" src="https://github.com/user-attachments/assets/d3840d74-7ab2-4685-a100-d78ecc5469b1" />
+<img width="213" height="417" alt="image" src="https://github.com/user-attachments/assets/331e76dd-fb8f-4aa6-9f1e-8ad9b5071815" />
 
 
 ## What's the problem?
