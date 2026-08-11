@@ -16,7 +16,7 @@
   --border-soft: #262626;
   --grid-line: #232323;      /* timeline hour lines */
   --on-accent: #0d0d0d;      /* text ON an accent-filled button */
-  --success: #4caf7d;        /* QR requirement met */
+  --success: #4caf7d;        /* Gates requirement met */
   --overlay: rgba(0, 0, 0, 0.92);
   --block-label: #8a8a8a;
   --block-mix: #3a3a3a;      /* color-mix partner that mutes block bars */
@@ -2484,7 +2484,7 @@ body.calendar-minimized #review-modal {
   }
   }
 
-/* ── QR drag line (timeline body) ──────────────────────────────── */
+/* ── Gates drag line (timeline body) ──────────────────────────────── */
 
 #tl-qr-layer {
   position: absolute;
@@ -2558,7 +2558,7 @@ body.calendar-minimized #review-modal {
 
 .tl-qr-x:hover { color: #000000; }
 
-/* ── QR manager (block editor modal) ─────────────────────────── */
+/* ── Gates manager (block editor modal) ─────────────────────────── */
 
 #be-qr-section {
   display: flex;
@@ -4041,7 +4041,7 @@ body.np-body {
 .map-add-btn:hover { color: var(--accent); opacity: 1; }
 
 /* ── Engage — the day panel (GTD Panel Layouts 6c) ──────────── */
-/* One column: QR bookends as hairline rules, blocks/events at their times,
+/* One column: Gate bookends as hairline rules, blocks/events at their times,
    placed actions between them, the unpicked pool at the bottom. Every color
    is a theme var, so dark and light both come for free. */
 
@@ -4136,12 +4136,12 @@ body.np-body {
 .eg-past .eg-text { color: var(--text-secondary); }
 .eg-cancelled .eg-text { color: var(--text-secondary); text-decoration: line-through; }
 
-/* QR eyebrows are NEUTRAL until judged: green only on success, red on fail. */
+/* gate eyebrows are NEUTRAL until judged: green only on success, red on fail. */
 .eg-qr { display: flex; align-items: center; gap: 9px; padding: 7px 14px 3px; }
 .eg-qr .eg-time { width: auto; color: var(--text-secondary); }
 .eg-qr-label { font: 10px var(--font-mono); letter-spacing: 0.09em; color: var(--text-secondary); }
-/* The routine a QR is waiting on — its OWN row under the hairline, not a chip
-   on it. Accent = still to do (it is what makes the QR judge ✓), success =
+/* The routine a gate is waiting on — its OWN row under the hairline, not a chip
+   on it. Accent = still to do (it is what makes the gate judge ✓), success =
    the run completed today. */
 .eg-flow-row .eg-text { color: var(--text-primary); }
 .eg-flow-done .eg-text { color: var(--text-secondary); }
@@ -5548,7 +5548,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 :root.theme-light .gtd-chip-on,
 :root.theme-light .now-chip-on { background: rgba(47, 111, 181, 0.10); }
 
-/* The QR pill is a tan chip with dark text — it reads on either theme; only
+/* The gate pill is a tan chip with dark text — it reads on either theme; only
    the dismissed (grayed-out) state needs to stop being near-black. */
 :root.theme-light .tl-qr-line.tl-qr-dismissed .tl-qr-label { background: #c4c9cf; }
 

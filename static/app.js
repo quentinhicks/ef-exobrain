@@ -295,7 +295,7 @@ function onLongPress(el, fn) {
   }, true);
 }
 
-// Right-click a block / event / QR to drop it from the day's view. No backend
+// Right-click a block / event / gate to drop it from the day's view. No backend
 // or config change — it returns next day (blocks/qr) or on restart. Ctrl+Z undoes.
 function hideTimelineItem(type, key, label) {
   if (state.tlHidden[type][key]) return;
@@ -320,7 +320,7 @@ function hideTimelineItem(type, key, label) {
 }
 
 // View window in semantic minutes (0..2880: past-midnight sleep = end + 1440).
-// Hard-clips the timeline to wake→sleep when both QRs are chosen in settings.
+// Hard-clips the timeline to wake→sleep when both gates are chosen in settings.
 function computeViewWindow() {
   const nodes = state.accountabilityNodes || [];
   const wake = nodes.find(n => String(n.id) === String(state.settings.qr_wake_node_id));
@@ -480,7 +480,7 @@ function renderBlocksLayer(bodyH = 600) {
   initBlockBarDrag(layer, dateStr);
 }
 
-// The color bar is the manipulation surface (mirrors QR pills): top/bottom
+// The color bar is the manipulation surface (mirrors gate pills): top/bottom
 // edges resize, the middle moves the whole block — each writes a one-day
 // override on drop. Block defaults stay in the Block Editor.
 function initBlockBarDrag(layer, dateStr) {
@@ -1900,7 +1900,7 @@ async function closeBlockEditor() {
   state.calendars = calendars;
   // Domains and area assignments can have changed in here, so section 2's
   // obligation may now be a different one. This goes before renderTimeline so a
-  // timeline failure (a dead QR fetch, say) can't take section 2 down with it.
+  // timeline failure (a dead gate fetch, say) can't take section 2 down with it.
   state.activeDomainId = state.activeAreaId ? domainIdForArea(state.activeAreaId) : null;
   state.section2OverrideDomainId = null;
   state.section2OverrideItems = null;
@@ -2031,9 +2031,9 @@ function renderBeAreas(projects) {
   const domainOptions = areaDomainId => state.domains.map(d =>
     `<option value="${d.id}"${d.id === areaDomainId ? ' selected' : ''}>${escHtml(d.name)}</option>`
   ).join('');
-  // Routine areas can anchor to a QR node: the routine then nests directly
-  // under that QR's hairline on Engage even with no block on the calendar.
-  const qrOptions = selected => '<option value="">no QR anchor</option>' +
+  // Routine areas can anchor to a gate: the routine then nests directly
+  // under that gate's hairline on Engage even with no block on the calendar.
+  const qrOptions = selected => '<option value="">no gate anchor</option>' +
     (state.accountabilityNodes || []).filter(n => n.active).map(n =>
       `<option value="${n.id}"${String(n.id) === String(selected || '') ? ' selected' : ''}>${escHtml(n.label)}</option>`
     ).join('');
@@ -2041,7 +2041,7 @@ function renderBeAreas(projects) {
     <div class="be-area-row">
       <span class="be-area-name">${escHtml(p.name)}</span>
       <span class="be-type-badge be-type-${p.type}">${p.type}</span>
-      ${p.type === 'routine' ? `<select class="be-area-qr-select" data-id="${p.id}" title="Anchor to a QR">${qrOptions(p.qr_node_id)}</select>` : ''}
+      ${p.type === 'routine' ? `<select class="be-area-qr-select" data-id="${p.id}" title="Anchor to a gate">${qrOptions(p.qr_node_id)}</select>` : ''}
       <select class="be-area-domain-select" data-id="${p.id}" title="Domain">${domainOptions(p.domain_id)}</select>
       <button class="be-archive-btn" data-id="${p.id}" data-active="${p.active ? 1 : 0}">
         ${p.active ? 'Archive' : 'Restore'}
@@ -2544,7 +2544,7 @@ function renderGtdReview() {
     ${html}
     <div class="gr-footer">
       <label class="gr-field"><span>This week's habit</span>
-        <input type="text" id="gr-habit" value="${escHtml(habit)}" placeholder="optional — rated nightly on the sleep QR"></label>
+        <input type="text" id="gr-habit" value="${escHtml(habit)}" placeholder="optional — rated nightly on the sleep gate"></label>
       <label class="gr-field"><span>Note</span>
         <input type="text" id="gr-note" value="${escHtml(gtdReview.note || '')}" placeholder="optional"></label>
       ${gtdReview.completed_at
@@ -2788,9 +2788,9 @@ async function refreshRef() {
   renderRef();
 }
 
-// A flow's deadline in display minutes, resolved from its linked QR the same
+// A flow's deadline in display minutes, resolved from its linked gate the same
 // way Engage resolves hairlines (today_override > weekly window > defaults),
-// plus the ±offset — or the "before QR Y" anchor's deadline.
+// plus the ±offset — or the "before gate Y" anchor's deadline.
 function flowDueMin(f) {
   const nodeId = f.before_node_id || f.qr_node_id;
   if (!nodeId) return null;
@@ -3031,7 +3031,7 @@ function renderRef() {
 }
 
 // The step editor for one routine: reorder (↑↓), kind picker, soft/hard
-// toggle, rename, delete — plus the QR link (deadline anchor + judgment gate).
+// toggle, rename, delete — plus the gate link (deadline anchor + judgment gate).
 const FLOW_KINDS = { text: 'text', social_spec: 'social spec',
                      journal_night: 'nightly journal', crm_fill: 'CRM fill' };
 
@@ -3043,14 +3043,14 @@ function renderFlowEditor(body, title, f) {
   body.innerHTML = `
     <button id="ref-back" class="log-back-btn">‹ All lists</button>
     <div class="fr-link">
-      <span class="cl-label">QR</span>
+      <span class="cl-label">Gate</span>
       <select id="fr-qr" class="map-area">${nodeOpts(f.qr_node_id)}</select>
       <input type="number" id="fr-offset" class="fr-offset" placeholder="±min"
-        title="Minutes relative to the QR deadline (negative = before)" value="${f.offset_min ?? ''}">
+        title="Minutes relative to the gate deadline (negative = before)" value="${f.offset_min ?? ''}">
       <span class="cl-label">or before</span>
       <select id="fr-before" class="map-area">${nodeOpts(f.before_node_id)}</select>
     </div>
-    <div class="fr-link-hint">Linked QRs judge ✗ unless this routine completes for the day.</div>
+    <div class="fr-link-hint">Linked gates judge ✗ unless this routine completes for the day.</div>
     <div class="ref-list">${f.steps.map((s, i) => `
       <div class="ref-row${stepDueToday(s) ? '' : ' fr-step-off'}" data-step="${s.id}">
         <span class="cl-chain-n">${i + 1}</span>
@@ -3331,7 +3331,7 @@ function refRenameEl(span, save) {
 //
 // Pages credit into flowRunView.steps ({step_id: 'done'|'soft'}); every
 // credit saves the partial run so a half-finished routine resumes, and the
-// last credit completes the run — the server then notifies the linked QR's
+// last credit completes the run — the server then notifies the linked gate's
 // Worker gate. Feature pages are the real forms: the nightly journal PATCHes
 // journal_day, CRM fill posts the same 'entries' satisfy the People flow
 // sends, the social page reads the day's spec status.
@@ -3350,7 +3350,7 @@ async function openFlowRun(flowId) {
   // THE RUN IS TODAY'S STEPS. `due` is the server's answer (storage.step_due_on
   // — one weekday convention for the whole app), and narrowing the flow here
   // rather than at each use means resume, progress and above all COMPLETION
-  // are all about today: a Sunday-only step must not hold a Tuesday's QR open.
+  // are all about today: a Sunday-only step must not hold a Tuesday's gate open.
   const steps = flow.steps.filter(s => s.due);
   if (!steps.length) {
     toast(flow.steps.length ? 'Nothing in this routine today' : 'No steps in this routine');
@@ -4901,8 +4901,8 @@ async function renderQrManager() {
     </table>
     <div class="ac-card" id="ac-view-window-card">
       <div class="ac-view-title">Timeline view window</div>
-      <div class="ac-form-row"><label>Wake QR</label><select id="ac-wake-node">${nodeOptions(state.settings.qr_wake_node_id)}</select></div>
-      <div class="ac-form-row"><label>Sleep QR</label><select id="ac-sleep-node">${nodeOptions(state.settings.qr_sleep_node_id)}</select></div>
+      <div class="ac-form-row"><label>Wake gate</label><select id="ac-wake-node">${nodeOptions(state.settings.qr_wake_node_id)}</select></div>
+      <div class="ac-form-row"><label>Sleep gate</label><select id="ac-sleep-node">${nodeOptions(state.settings.qr_sleep_node_id)}</select></div>
       <div class="ac-view-hint">The calendar clips to wake → sleep. Leave either unset for the full 24h.</div>
     </div>
     <div class="ac-card" id="ac-add-node-card">
@@ -5010,7 +5010,7 @@ async function renderQrManager() {
       const node = await resp.json();
       const workerUrl = state.settings.qr_worker_url || '';
       document.getElementById('ac-new-result').innerHTML =
-        `Created! QR URL: <a href="${workerUrl}/scan/${node.token}" target="_blank">${workerUrl}/scan/${node.token}</a>`;
+        `Created! Gate URL: <a href="${workerUrl}/scan/${node.token}" target="_blank">${workerUrl}/scan/${node.token}</a>`;
       state.accountabilityNodes = await fetch('/api/accountability/nodes').then(r => r.json()).catch(() => state.accountabilityNodes);
     });
   });
@@ -5221,7 +5221,7 @@ async function activateNode(nodeId, btn) {
 }
 
 async function deleteNode(nodeId, btn) {
-  if (!confirm('Delete this node permanently? Its QR link stops working.')) return;
+  if (!confirm('Delete this node permanently? Its gate link stops working.')) return;
   btn.disabled = true;
   const res = await fetch(`/api/accountability/nodes/${nodeId}`, { method: 'DELETE' });
   if (!res.ok) alert(`Delete failed (${res.status}): ${await res.text()}`);
@@ -5281,7 +5281,7 @@ async function renderPeople() {
 }
 window.renderPeople = renderPeople;
 
-// ── Journal (dashboard mirror of the sleep-QR nightly fill) ────
+// ── Journal (dashboard mirror of the sleep-gate nightly fill) ────
 const journalView = { table: null, ready: false, pending: null, habit: null };
 const RATING_OPTS = { '': '—', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7' };
 const HABIT_MARK_OPTS = { '': '—', ehh: 'Ehh', good: 'Good', great: 'Great' };
@@ -5323,7 +5323,7 @@ function renderJournalCards(days) {
       <label class="jn-lab">Active experiment</label>
       <textarea class="jn-ta" data-field="active_experiment" rows="2">${escHtml(d.active_experiment || '')}</textarea>
     </div>`).join('')
-    || '<div class="gtd-empty">No journal entries yet — they arrive from the sleep-QR nightly fill</div>';
+    || '<div class="gtd-empty">No journal entries yet — they arrive from the sleep-gate nightly fill</div>';
 
   const save = async (card, field, value) => {
     const date = card.dataset.date;
@@ -5446,7 +5446,7 @@ function renderSessionBar() {
     bar.querySelector('#psb-start').addEventListener('click', startPeopleSession);
   } else {
     bar.className = 'psb psb-closed';
-    bar.textContent = 'Read-only — editing opens when you scan your sleep QR (10-min session)';
+    bar.textContent = 'Read-only — editing opens when you scan your sleep gate (10-min session)';
   }
 }
 
@@ -6551,7 +6551,7 @@ function renderCtxSheet() {
 
 
 // ── Engage — the day panel (GTD Panel Layouts 6c) ─────────────
-// The day as GTD's hard landscape in one column: QR bookends as hairline
+// The day as GTD's hard landscape in one column: Gate bookends as hairline
 // rules, blocks and gcal events at their times, and next actions DRAGGED
 // between those fixed points. A placement is a sort key in engage_placement,
 // never a property of the item — the item stays an ordinary next action, and
@@ -6657,8 +6657,8 @@ async function refreshEngage() {
     fetch('/api/map').then(r => r.json()).catch(() => engageView.allItems),
     fetch(`/api/overrides?date=${dateStr}`).then(r => r.json()).catch(() => []),
     fetch('/api/routine-items').then(r => r.json()).catch(() => []),
-    // The day's routines, so a QR hairline can name the routine that gates it
-    // — the link is what makes the QR pass or fail, and it was only visible
+    // The day's routines, so a gate hairline can name the routine that gates it
+    // — the link is what makes the gate pass or fail, and it was only visible
     // inside the step editor.
     fetch(`/api/flows?date=${dateStr}`).then(r => r.json()).catch(() => engageView.flows),
     fetch(`/api/time-presets?date=${dateStr}`).then(r => r.json()).catch(() => state.timePresets),
@@ -6714,7 +6714,7 @@ function renderEngage() {
       qrMinutes[n.id] = minute;
       // The routines that GATE this node (qr_node_id = anchored to its
       // deadline, before_node_id = must be done before it). The link decides
-      // whether the QR judges ✓ or ✗, so the hairline says which routine it is
+      // whether the gate judges ✓ or ✗, so the hairline says which routine it is
       // waiting on rather than leaving that buried in the step editor.
       // ONLY the routines ATTACHED to this node (qr_node_id) — not the ones
       // that merely reference it as a deadline (before_node_id). The
@@ -6726,8 +6726,8 @@ function renderEngage() {
       rows.push({ kind: 'qr', minute, label: n.label, outcome });
       // Each gating routine is its OWN row directly under the hairline, not a
       // chip crowded onto it — "Morning routine" is a thing you do, and it
-      // reads as one when it has a line of its own. SAME minute as the QR:
-      // the sort is stable and QRs are pushed first, so the pair stays
+      // reads as one when it has a line of its own. SAME minute as the gate:
+      // the sort is stable and gates are pushed first, so the pair stays
       // adjacent whatever else lands at that minute.
       flows.forEach(fl => rows.push({
         kind: 'flow', minute, flowId: fl.id, label: fl.name,
@@ -6771,11 +6771,11 @@ function renderEngage() {
     });
   });
 
-  // A QR-anchored routine with no block today nests directly under its QR's
-  // hairline (Morning routine under Wake QR, per the design). Blocks win as
-  // the anchor when both exist. SAME minute as the QR, not +1: a placement's
+  // A gate-anchored routine with no block today nests directly under its gate's
+  // hairline (Morning routine under Wake gate, per the design). Blocks win as
+  // the anchor when both exist. SAME minute as the gate, not +1: a placement's
   // fractional midpoint used to slip between the hairline and its riding
-  // label. The sort is stable (QRs are pushed first) and actions tie-break
+  // label. The sort is stable (gates are pushed first) and actions tie-break
   // last, so the pair stays adjacent whatever lands at that minute.
   state.areas
     .filter(a => a.type === 'routine' && a.active && a.qr_node_id
@@ -6941,15 +6941,15 @@ function renderEngage() {
       </div>`;
     }
     if (r.kind === 'flow') {
-      // The routine that GATES the QR above, on its own line: name on the
+      // The routine that GATES the gate above, on its own line: name on the
       // left like any other row, ▶ to run it, ✓ once today's run completed.
-      // The link is what decides whether that QR judges ✓ or ✗, so it belongs
+      // The link is what decides whether that gate judges ✓ or ✗, so it belongs
       // on the day rather than only inside the step editor.
       return `<div class="eg-row eg-flow-row${r.done ? ' eg-flow-done' : ''}">
         <span class="eg-time"></span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-qr-flow${r.done ? ' eg-qr-flow-done' : ''}" data-flow="${r.flowId}"
-          title="${r.done ? 'Completed today' : 'Run this routine'} — the QR above judges ✗ unless this completes">${
+          title="${r.done ? 'Completed today' : 'Run this routine'} — the gate above judges ✗ unless this completes">${
           r.done ? '✓ done' : '▶ run'}</button>
       </div>`;
     }
@@ -6967,7 +6967,7 @@ function renderEngage() {
       // button always shows — an empty checklist is where you'd START one.
       const open = engageView.routineItems.filter(
         i => i.area_id === r.areaId && i.done_date !== dateStr).length;
-      // A QR-anchored routine has no span of its own: it rides under the
+      // A gate-anchored routine has no span of its own: it rides under the
       // hairline as a bare label, exactly like the design's routine rows.
       return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}">
         <span class="eg-time">${hhmm(r.minute)}</span>
@@ -6991,7 +6991,7 @@ function renderEngage() {
     // No time on an action: r.minute is the PLACEMENT SORT KEY (the midpoint of
     // its drop gap), not a commitment. Printing it read as an appointment the
     // day never promised. The empty column keeps actions indented under their
-    // block; blocks/events/QRs above still show their real times.
+    // block; blocks/events/gates above still show their real times.
     return `<div class="eg-row eg-action${r.started ? ' eg-inprog' : ''}" draggable="true" data-id="${r.id}">
       <span class="eg-time"></span>
       <span class="eg-check${r.started ? ' eg-check-started' : ''}" data-id="${r.id}"
@@ -7016,7 +7016,7 @@ function renderEngage() {
     rows.forEach((r, i) => {
       parts.push(rowHtml(r));
       const next = rows[i + 1];
-      // A QR-anchored routine used to suppress the drop slot after the QR
+      // A gate-anchored routine used to suppress the drop slot after the gate
       // hairline, because it rode underneath as a bare label and the two read
       // as one unit. It is an ordinary row now (2026-08-08), so it takes an
       // ordinary gap.
@@ -7355,7 +7355,7 @@ function renderEngage() {
       renderEngage();
     });
   });
-  // A gating routine on a QR hairline runs straight from the day. The runner
+  // A gating routine on a gate hairline runs straight from the day. The runner
   // needs refView.flows populated (it reads its own fetch, but the editor
   // behind it doesn't exist here) — openFlowRun refetches, so this is safe
   // from Engage with Lists never opened.
