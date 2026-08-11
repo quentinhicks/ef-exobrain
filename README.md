@@ -2,12 +2,13 @@
 
 Software that provides freedom through giving you control of the future. NOTE: Built for personal use, but open source for inspiration.
 
-<img width="427" height="833" alt="image" src="https://github.com/user-attachments/assets/331e76dd-fb8f-4aa6-9f1e-8ad9b5071815" />
+<img width="213" height="417" alt="image" src="https://github.com/user-attachments/assets/331e76dd-fb8f-4aa6-9f1e-8ad9b5071815" />
+<img width="213" height="389" alt="image" src="https://github.com/user-attachments/assets/38f40663-aefb-4b28-ad9b-0edc2afd495d" />
+
 
 ## What's the problem?
 
 > Lacking self-control robs you of free will
->
 > — Russell Barkley, expert on Adult ADHD
 
 ADHD is commonly understood as a deficit of executive function, which is one's ability to plan, focus, and self-regulate. From 1997 to 2016, the prevalence of ADHD (Attention-Deficit Hyperactivity Disorder) has increased from 6.1% to 10.2% according to [national population surveys](https://pmc.ncbi.nlm.nih.gov/articles/PMC9616454/). The reasons for this increase is unclear, but the fact is that increasing numbers of people have trouble self-regulating: a fact which almost certainly is related to the amount of time tech companies spend optimizing addicting social media algorithms. **We need to develop systems that allow us to be able to regain control over systems that take our attention away from us.**
