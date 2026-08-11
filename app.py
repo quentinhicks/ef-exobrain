@@ -1317,6 +1317,64 @@ def refresh_gcal():
     return jsonify(storage.get_gcal_events())
 
 
+# Calendar WRITES (2026-08-11). Config-gated: gcal_write_calendar_id names the
+# Google calendar (shared with the service account), gcal_write_source_id the
+# local calendar_source whose feed mirrors it (where the optimistic insert
+# lands), gcal_credentials_path the service-account JSON. Creates only —
+# gcal stays a read-only mirror for everything fetched; the one thing the app
+# may delete on Google is an event it created itself, and only as the undo.
+def _gcal_write_conf():
+    return (config.get('gcal_write_calendar_id'),
+            config.get('gcal_credentials_path', 'credentials.json'),
+            config.get('gcal_write_source_id'))
+
+
+@app.route('/api/gcal/events', methods=['POST'])
+def post_gcal_event():
+    cal_id, creds, src = _gcal_write_conf()
+    if not cal_id or not os.path.exists(creds):
+        return jsonify({'error': 'Calendar writes not configured: set '
+                        'gcal_write_calendar_id in config.json and put the '
+                        f'service-account JSON at {creds}'}), 400
+    data = request.get_json()
+    summary = (data.get('summary') or '').strip()
+    day, start, end = data.get('date'), data.get('start'), data.get('end')
+    if not summary or not day or not start:
+        return jsonify({'error': 'summary, date and start are required'}), 400
+    start_dt = datetime.strptime(f'{day}T{start}', '%Y-%m-%dT%H:%M')
+    end_dt = (datetime.strptime(f'{day}T{end}', '%Y-%m-%dT%H:%M')
+              if end else start_dt + timedelta(minutes=60))
+    # An end at/before the start reads as past midnight, same rule as sleep
+    # deadlines.
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+    try:
+        created = aggregator.create_gcal_event(creds, cal_id, summary,
+                                               start_dt, end_dt)
+    except Exception as e:
+        return jsonify({'error': f'Google refused the write: {e}'}), 502
+    if src:
+        storage.insert_gcal_event(src, created['uid'], summary,
+                                  start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                                  end_dt.strftime('%Y-%m-%dT%H:%M:%S'))
+    return jsonify(created)
+
+
+@app.route('/api/gcal/events/<event_id>', methods=['DELETE'])
+def delete_gcal_event_route(event_id):
+    cal_id, creds, src = _gcal_write_conf()
+    if not cal_id or not os.path.exists(creds):
+        return jsonify({'error': 'Calendar writes not configured'}), 400
+    try:
+        aggregator.delete_gcal_event(creds, cal_id, event_id)
+    except Exception as e:
+        return jsonify({'error': f'Google refused the delete: {e}'}), 502
+    uid = request.args.get('uid', '')
+    if src and uid:
+        storage.delete_gcal_event_by_uid(src, uid)
+    return jsonify({'ok': True})
+
+
 @app.route('/api/dismissals')
 def get_dismissals():
     return jsonify(storage.get_timeline_dismissals())
