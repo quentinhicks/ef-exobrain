@@ -20,6 +20,7 @@ except ImportError:
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 import storage
+import schedule
 import aggregator
 import qr_judge
 from aggregator import fetch_gcal, fetch_sheets
@@ -1648,6 +1649,7 @@ def get_gates_billing():
         'cap_cents': s['cap_cents'],
         'default_cents': s['default_cents'],
         'spent_cents': storage.qr_weekly_spent_cents(today),
+        'judge_last_run': (storage.get_settings() or {}).get('gate_judge_last_run'),
         'token': qr_judge.verify_token() if request.args.get('verify') else None,
         'has_token': bool(s['token']),
         # The USERNAME is not a secret and the panel has to show who would be

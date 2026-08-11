@@ -198,6 +198,10 @@ def outcomes(from_date, to_date, now=None):
 
 if __name__ == '__main__':
     found = judge(verbose=True)
+    # Stamped so the panel can answer "is this actually running?" — the first
+    # question about a judge on a timer, and one nothing else could answer: a
+    # quiet week and a dead service produce the same empty log.
+    storage.set_setting('gate_judge_last_run', datetime.now().isoformat(timespec='seconds'))
     print('qr-judge: %d failure(s) recorded %s' % (len(found), datetime.now().isoformat()))
     sys.exit(0)
 

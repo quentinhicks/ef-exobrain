@@ -5398,3 +5398,54 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .gb-st-succeeded { color: var(--danger); }
 .gb-st-unknown { color: var(--gold); }
 .gb-st-capped, .gb-st-would_fire, .gb-st-dryrun { color: var(--text-secondary); }
+
+/* ── Gates, panel 22b ────────────────────────────────────────
+   Two tabs: authoring on one, diagnosis on the other. */
+.gb-tabs { display: flex; gap: 22px; padding: 0 20px; border-bottom: 1px solid var(--border-soft); margin-bottom: 14px; }
+.gb-tab {
+  background: none; border: none; cursor: pointer; padding: 0 0 9px;
+  font: 13px var(--font-sans); color: var(--text-secondary);
+  display: flex; align-items: center; gap: 6px; border-bottom: 2px solid transparent;
+}
+.gb-tab-on { color: var(--text-primary); font-weight: 600; border-bottom-color: var(--text-primary); }
+.gb-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-secondary); }
+.gb-dot.gb-good { background: var(--success); }
+.gb-dot.gb-bad { background: var(--danger); }
+.gb-dot.gb-live { background: var(--danger); }
+/* A requirement a gate is JUDGED on, so it reads as a rule and not as trivia. */
+.be-row-req { color: var(--accent) !important; }
+.gb-boundary {
+  display: flex; align-items: center; gap: 10px; padding: 12px 20px;
+  font: 12px/1.5 var(--font-sans); color: var(--text-secondary);
+}
+.gb-boundary b { color: var(--text-primary); }
+.gb-boundary button { background: none; border: none; color: var(--accent); cursor: pointer; font: 12px var(--font-sans); }
+.gb-verdict { padding: 4px 20px 14px; }
+.gb-vline { display: flex; align-items: center; gap: 9px; }
+.gb-vtext { font: 600 15px var(--font-sans); color: var(--text-primary); }
+.gb-vsub { font: 12px/1.5 var(--font-sans); color: var(--text-secondary); margin: 3px 0 0 15px; }
+.gb-mark { width: 14px; font: 11px var(--font-mono); }
+.gb-mark.gb-good { color: var(--success); }
+.gb-mark.gb-bad { color: var(--danger); }
+.gb-mark.gb-idle { color: var(--text-secondary); }
+.gb-val { font: 11px var(--font-mono); color: var(--text-secondary); }
+.gb-rowbtn { width: 100%; background: none; border: none; cursor: pointer; text-align: left; font: inherit; }
+.gb-seg { display: flex; border: 1px solid var(--border-soft); border-radius: 6px; overflow: hidden; }
+.gb-seg button {
+  background: none; border: none; cursor: pointer;
+  font: 11px var(--font-mono); padding: 4px 9px; color: var(--text-secondary);
+}
+.gb-seg .gb-seg-on { background: var(--accent); color: var(--on-accent); }
+/* Real charges are the one state drawn in the alarm colour. */
+.gb-seg .gb-seg-live { background: var(--danger); }
+.gb-bar { flex: 0 0 64px; height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.gb-bar i { display: block; height: 100%; background: var(--accent); }
+.gb-log-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 16px 20px 6px; font: 10px var(--font-mono); letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.gb-date { font: 11px var(--font-mono); color: var(--text-secondary); min-width: 40px; }
+.gb-amt { font: 10px var(--font-mono); color: var(--danger); min-width: 40px; text-align: right; }
+.gb-more { display: block; width: 100%; background: none; border: none; cursor: pointer;
+  padding: 11px 20px; text-align: left; font: 12px var(--font-sans); color: var(--accent); }

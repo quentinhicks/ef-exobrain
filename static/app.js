@@ -2478,6 +2478,46 @@ const SETTINGS_SHEETS = {
     },
   },
 
+  // The money settings, reached from the System tab's rows. A sheet rather than
+  // inline fields for the usual reason — these are decisions — and because the
+  // token needs a password field, which has no business sitting open on a panel
+  // you scroll past every time you check a gate.
+  billing: {
+    title: () => 'Billing',
+    save: () => 'Save and check',
+    blank: () => ({ token: '', user: '', stake: '', cap: '' }),
+    load: b => ({
+      token: '', user: b.user || '',
+      stake: (b.default_cents / 100).toFixed(2), cap: (b.cap_cents / 100).toFixed(2),
+    }),
+    fields: (v, b) => [
+      { key: 'token', label: 'Beeminder token', kind: 'password',
+        placeholder: b && b.has_token ? 'set — type to replace' : 'paste your token',
+        hint: 'Stored on the server in config.json, never in the database, and never readable'
+          + ' back — leave it blank to keep the one already there.' },
+      { key: 'user', label: 'Bills', kind: 'text', placeholder: 'beeminder username' },
+      { key: 'stake', label: 'Default stake', kind: 'number', step: '0.25', min: 0, half: true },
+      { key: 'cap', label: 'Weekly cap', kind: 'number', step: '1', min: 0, half: true,
+        hint: 'A charge that would breach the cap is skipped whole, not trimmed.' },
+    ],
+    submit: async v => {
+      const body = {
+        gate_charge_cents: Math.round(parseFloat(v.stake) * 100) || 0,
+        gate_weekly_cap_cents: Math.round(parseFloat(v.cap) * 100) || 0,
+      };
+      // Empty means "leave it alone", so saving the cap can't wipe the token.
+      if (String(v.token).trim()) body.beeminder_auth_token = String(v.token).trim();
+      if (String(v.user).trim()) body.beeminder_user = String(v.user).trim();
+      const res = await fetch('/api/gates/billing', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) return `Save failed (${res.status}).`;
+      await renderGatesBilling(true);
+      return null;
+    },
+  },
+
   calendar: {
     title: it => it ? 'Calendar' : 'Add calendar',
     save: it => it ? 'Save calendar' : 'Fetch calendar',
@@ -2588,7 +2628,7 @@ function beRow(opts) {
     <span class="be-row-text">
       <span class="be-row-name">${escHtml(opts.name)}</span>
       ${opts.meta ? `<span class="be-row-meta">${escHtml(opts.meta)}</span>` : ''}
-      ${opts.sub ? `<span class="be-row-sub">${escHtml(opts.sub)}</span>` : ''}
+      ${opts.sub ? `<span class="be-row-sub${opts.subClass ? ' ' + opts.subClass : ''}">${escHtml(opts.sub)}</span>` : ''}
     </span>
     ${opts.badge ? `<span class="be-row-badge">${escHtml(opts.badge)}</span>` : ''}
     <span class="be-chev">›</span>
@@ -5409,39 +5449,44 @@ async function renderQrManager() {
       `<option value="${n.id}"${String(n.id) === String(selectedId) ? ' selected' : ''}>${escHtml(n.label)}</option>`
     ).join('');
 
-  panel.innerHTML = `
+  panel.innerHTML = gatesTabBar(state.gatesBilling) + (gatesView.tab === 'gates' ? `
     <div class="be-list" id="be-gate-list">
       ${nodes.map(n => beRow(gateRowOpts(n))).join('')}${beAddRow('Add gate')}
     </div>
-    <div class="be-sub-head">Where the day starts and ends</div>
-    <div class="be-list">
-      <div class="be-set-row">
-        <span class="be-set-name">Day starts at</span>
-        <select id="ac-wake-node" class="be-set-ctl">${nodeOptions(state.settings.qr_wake_node_id)}</select>
-      </div>
-      <div class="be-set-row">
-        <span class="be-set-name">Day ends at</span>
-        <select id="ac-sleep-node" class="be-set-ctl">${nodeOptions(state.settings.qr_sleep_node_id)}</select>
-      </div>
-    </div>
-    <div class="be-hint">The calendar is clipped to these two gates' deadlines, so it shows your
-      waking day rather than a full 24h. Leave either unset for all 24.</div>
-    <div class="be-sub-head">Billing</div>
-    <div id="be-gates-billing"></div>`;
+    ${gatesBoundary(nodes)}`
+    : '<div id="be-gates-billing"></div>');
 
-  wireBeList(document.getElementById('be-gate-list'), 'gate', nodes);
-  renderGatesBilling(false);
+  panel.querySelectorAll('[data-gtab]').forEach(btn => btn.addEventListener('click', () => {
+    gatesView.tab = btn.dataset.gtab;
+    renderQrManager();
+  }));
 
-  [['ac-wake-node', 'qr_wake_node_id'], ['ac-sleep-node', 'qr_sleep_node_id']].forEach(([selId, key]) => {
-    document.getElementById(selId).addEventListener('change', async e => {
-      const value = e.target.value || null;
-      state.settings = await fetch('/api/settings', {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [key]: value }),
-      }).then(r => r.json());
-      renderTimeline();
+  if (gatesView.tab === 'system') {
+    renderGatesBilling(false);
+  } else {
+    wireBeList(document.getElementById('be-gate-list'), 'gate', nodes);
+    const edit = document.getElementById('gb-boundary-edit');
+    if (edit) edit.addEventListener('click', () => { gatesView.boundary = true; renderQrManager(); });
+    [['ac-wake-node', 'qr_wake_node_id'], ['ac-sleep-node', 'qr_sleep_node_id']].forEach(([selId, key]) => {
+      const sel = document.getElementById(selId);
+      if (!sel) return;
+      sel.addEventListener('change', async e => {
+        const value = e.target.value || null;
+        state.settings = await fetch('/api/settings', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [key]: value }),
+        }).then(r => r.json());
+        renderTimeline();
+      });
     });
-  });
+    // The System tab's dot is a claim about the whole panel, so it is fetched
+    // even when that tab is closed — a red dot you only see after opening the
+    // thing it warns about is not a warning.
+    if (!state.gatesBilling) {
+      fetch('/api/gates/billing').then(r => r.json())
+        .then(b => { state.gatesBilling = b; paintGatesTabs(); }).catch(() => {});
+    }
+  }
 
   locPanel.innerHTML = `
     <div class="be-list" id="be-location-list">
@@ -5482,136 +5527,248 @@ const GATE_STATUSES = {
 const gateReason = r => GATE_REASONS[r] || (r || 'failed').replace(/_/g, ' ');
 const gateStatus = st => GATE_STATUSES[st] || (st || '').replace(/_/g, ' ');
 
-// The money state of the gate system, in the panel where the gates are
-// configured. It can change the three SETTINGS but never the token: that lives
-// in config.json on the box, so no request can read or write it (see
-// qr_judge's charging header). Verification stands in for it — "does it work,
-// and who does it bill" — which is the useful half and leaks nothing.
+// ── Settings → Gates, panel 22b ───────────────────────────────
 //
-// A money surface has one duty before any other: never look armed when it is
-// not, and never look safe when it is. Hence the state line first, and the
-// reason spelled out whenever nothing would fire.
+// TWO TABS, because the two jobs are different: editing gates is authoring,
+// checking the pipe is diagnosis. The panel used to give a gate, a boundary
+// dropdown, a billing field and a log row the same weight on one scroll — so
+// the question you actually open it with ("is this running, and is it going to
+// charge me?") had to be reassembled from six places.
+//
+// Gates tab   = the gates, plus one sentence for the day's boundary.
+// System tab  = every check that can fail, IN THE ORDER IT FAILS IN, then the
+//               failure log as the evidence.
+const gatesView = { tab: 'gates', boundary: false, allFailures: false };
+
+// Green only when the whole chain is sound. A money system that shows a green
+// light while it is misconfigured is worse than one that shows nothing.
+function gatesHealth(b) {
+  if (!b) return { cls: '', ok: false };
+  if (judgeStale(b.judge_last_run)) return { cls: 'gb-bad', ok: false };
+  if (b.live && (!b.has_token || !b.has_user)) return { cls: 'gb-bad', ok: false };
+  return { cls: 'gb-good', ok: true };
+}
+
+// The judge runs on a timer, so "recently" is the whole test. 30 minutes is
+// well over the 5-minute cadence and well under a window's worth of drift.
+const JUDGE_STALE_MIN = 30;
+function judgeStale(iso) {
+  if (!iso) return true;
+  return (Date.now() - new Date(iso).getTime()) / 60000 > JUDGE_STALE_MIN;
+}
+
+function agoLabel(iso) {
+  if (!iso) return 'never';
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+}
+
+function gatesTabBar(b) {
+  const h = gatesHealth(b);
+  return `<div class="gb-tabs">
+    <button class="gb-tab${gatesView.tab === 'gates' ? ' gb-tab-on' : ''}" data-gtab="gates">Gates</button>
+    <button class="gb-tab${gatesView.tab === 'system' ? ' gb-tab-on' : ''}" data-gtab="system">System
+      <span class="gb-dot ${h.cls}"></span></button>
+  </div>`;
+}
+
+// The day's boundary is ONE SENTENCE, not two dropdowns: it is a fact about the
+// day you read, and only rarely a decision you take. The selects appear when
+// you say so.
+function gatesBoundary(nodes) {
+  const name = id => (nodes.find(n => String(n.id) === String(id)) || {}).label;
+  const wake = name(state.settings.qr_wake_node_id);
+  const sleep = name(state.settings.qr_sleep_node_id);
+  const opts = sel => '<option value="">— none —</option>' + nodes.filter(n => n.active).map(n =>
+    `<option value="${n.id}"${String(n.id) === String(sel) ? ' selected' : ''}>${escHtml(n.label)}</option>`).join('');
+  if (gatesView.boundary) {
+    return `<div class="be-list">
+      <div class="be-set-row">
+        <span class="be-set-name">Day starts at</span>
+        <select id="ac-wake-node" class="be-set-ctl">${opts(state.settings.qr_wake_node_id)}</select>
+      </div>
+      <div class="be-set-row">
+        <span class="be-set-name">Day ends at</span>
+        <select id="ac-sleep-node" class="be-set-ctl">${opts(state.settings.qr_sleep_node_id)}</select>
+      </div>
+    </div>
+    <div class="be-hint">The calendar is clipped to these two gates' deadlines, so it shows your
+      waking day rather than a full 24h. Leave either unset for all 24.</div>`;
+  }
+  return `<div class="gb-boundary">
+    <span>${wake && sleep
+      ? `The day runs from <b>${escHtml(wake)}</b> to <b>${escHtml(sleep)}</b>. The calendar is clipped to those deadlines.`
+      : 'The calendar shows all 24 hours. Pick a gate for each end to clip it to your waking day.'}</span>
+    <button id="gb-boundary-edit">Change</button>
+  </div>`;
+}
+
+// The System tab. Rows are the charge pipeline in failure order, so reading
+// top-down is the diagnosis: nothing below a ✗ can work.
 async function renderGatesBilling(verify) {
   const el = document.getElementById('be-gates-billing');
   if (!el) return;
-  el.innerHTML = '<div class="be-empty">Loading…</div>';
+  if (!el.innerHTML) el.innerHTML = '<div class="be-empty">Loading…</div>';
   const b = await fetch('/api/gates/billing' + (verify ? '?verify=1' : ''))
     .then(r => r.json()).catch(() => null);
   if (!b) { el.innerHTML = '<div class="be-empty se-error">Billing unavailable.</div>'; return; }
+  state.gatesBilling = b;
+  paintGatesTabs();
   const money = c => '$' + (Number(c || 0) / 100).toFixed(2);
   const pct = b.cap_cents ? Math.min(100, Math.round(b.spent_cents / b.cap_cents * 100)) : 0;
-  const armed = b.live && !b.dryrun && b.has_token && b.has_user;
-  const blockers = [
-    !b.has_token && 'no token in config.json',
-    !b.has_user && 'no beeminder_user in config.json',
-    !b.live && 'charging is off',
-    b.dryrun && 'dry run',
-  ].filter(Boolean);
+  const mark = ok => `<span class="gb-mark ${ok ? 'gb-good' : 'gb-bad'}">${ok ? '✓' : '✗'}</span>`;
+  const idle = '<span class="gb-mark gb-idle">○</span>';
+
+  // The verdict, in one sentence, and never ambiguous about money. Order
+  // matters: a dead judge outranks every money question, because nothing is
+  // being decided at all.
+  let verdict, sub, cls;
+  if (judgeStale(b.judge_last_run)) {
+    cls = 'gb-bad';
+    verdict = 'Judgment isn\'t running.';
+    sub = `Nothing has been judged since ${agoLabel(b.judge_last_run)} — gates are not being decided.`;
+  } else if (!b.live) {
+    cls = 'gb-good';
+    verdict = 'Scanning works. No money moves.';
+    sub = 'Failures are judged and logged, but charging is off.';
+  } else if (!b.has_token || !b.has_user) {
+    cls = 'gb-bad';
+    verdict = 'Charging is armed but cannot work.';
+    sub = `Missing ${!b.has_token ? 'the token' : 'the username'}, so every charge fails instead of billing you.`;
+  } else if (b.dryrun) {
+    cls = 'gb-good';
+    verdict = 'Live, in dry run. No money moves.';
+    sub = 'Every failure calls Beeminder with dryrun set — the whole pipeline, minus the money.';
+  } else {
+    cls = 'gb-live';
+    verdict = 'LIVE. Money moves.';
+    sub = `A failed gate bills ${escHtml(b.user || '')} up to ${money(b.cap_cents)} a week.`;
+  }
+
+  // Failures grouped BY DAY: three gates missed on one day is one fact about
+  // that day, not three rows. The dominant reason carries the count.
+  const byDate = {};
+  (b.recent || []).forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
+  const dates = Object.keys(byDate).sort().reverse();
+  const shown = gatesView.allFailures ? dates : dates.slice(0, 3);
+  const label = id => (state.accountabilityNodes.find(n => n.id === id) || {}).label || `#${id}`;
+  const charged = (b.recent || []).reduce((t, r) =>
+    t + (['succeeded', 'unknown'].includes(r.charge_status) ? (r.amount_cents || 0) : 0), 0);
 
   el.innerHTML = `
-    <div class="gb-head">
-      <span class="gb-state ${armed ? 'gb-live' : 'gb-off'}">${armed
-        ? '● LIVE — money moves' : '○ no money moves'}</span>
-      ${blockers.length ? `<span class="gb-why">${escHtml(blockers.join(' · '))}</span>` : ''}
+    <div class="gb-verdict">
+      <div class="gb-vline"><span class="gb-dot ${cls}"></span><span class="gb-vtext">${escHtml(verdict)}</span></div>
+      <div class="gb-vsub">${sub}</div>
     </div>
+
+    <div class="be-sub-head">Charge pipeline</div>
     <div class="be-list">
       <div class="be-set-row">
+        ${mark(!judgeStale(b.judge_last_run))}
+        <span class="be-set-name">Gates judged on the server</span>
+        <span class="gb-val">${escHtml(agoLabel(b.judge_last_run))}</span>
+      </div>
+      <button class="be-set-row gb-rowbtn" data-gbsheet="1">
+        ${mark(b.token ? b.token.valid : b.has_token)}
         <span class="be-set-name">Beeminder token</span>
-        <span class="gb-token">${b.token
-          ? (b.token.valid
-            ? `✓ valid — bills ${escHtml(b.token.username || '')}`
-            : `✗ ${escHtml(b.token.reason || 'invalid')}`)
+        <span class="gb-val">${b.token
+          ? (b.token.valid ? 'valid' : escHtml(b.token.reason || 'invalid'))
           : (b.has_token ? 'set — not checked' : 'not set')}</span>
+        <span class="be-chev">›</span>
+      </button>
+      <div class="be-set-row">
+        ${mark(b.has_user)}
+        <span class="be-set-name">Bills</span>
+        <span class="gb-val">${b.has_user ? escHtml(b.user) : 'unset'}</span>
         <button id="gb-verify" class="be-set-ctl">Check</button>
       </div>
       <div class="be-set-row">
+        ${b.live ? mark(true) : idle}
         <span class="be-set-name">Charging</span>
-        <button id="gb-live" class="be-set-ctl${b.live ? ' gb-on' : ''}">${b.live ? 'live' : 'off'}</button>
-        <button id="gb-dry" class="be-set-ctl${b.dryrun ? ' gb-on' : ''}">${b.dryrun ? 'dry run' : 'real'}</button>
+        <div class="gb-seg" id="gb-seg">
+          <button data-gmode="off" class="${!b.live ? 'gb-seg-on' : ''}">off</button>
+          <button data-gmode="dry" class="${b.live && b.dryrun ? 'gb-seg-on' : ''}">dry run</button>
+          <button data-gmode="live" class="${b.live && !b.dryrun ? 'gb-seg-on gb-seg-live' : ''}">live</button>
+        </div>
       </div>
+      <button class="be-set-row gb-rowbtn" data-gbsheet="1">
+        <span class="gb-mark"></span>
+        <span class="be-set-name">Stake / weekly cap</span>
+        <span class="gb-val">${(b.default_cents / 100).toFixed(2)} / ${(b.cap_cents / 100).toFixed(2)}</span>
+        <span class="be-chev">›</span>
+      </button>
       <div class="be-set-row">
-        <span class="be-set-name">Default stake</span>
-        <input id="gb-default" class="be-set-ctl se-mono" type="number" min="0" step="0.25"
-          value="${(b.default_cents / 100).toFixed(2)}">
-      </div>
-      <div class="be-set-row">
-        <span class="be-set-name">Weekly cap</span>
-        <input id="gb-cap" class="be-set-ctl se-mono" type="number" min="0" step="1"
-          value="${(b.cap_cents / 100).toFixed(2)}">
-      </div>
-      <div class="be-set-row">
+        <span class="gb-mark"></span>
         <span class="be-set-name">This week</span>
-        <span class="gb-spent">${money(b.spent_cents)} of ${money(b.cap_cents)}</span>
+        <span class="gb-val">${money(b.spent_cents)}</span>
         <span class="gb-bar"><i style="width:${pct}%"></i></span>
       </div>
     </div>
-    <div class="be-sub-head">Beeminder credentials</div>
-    <div class="be-list">
-      <div class="be-set-row">
-        <span class="be-set-name">Token</span>
-        <input id="gb-token-in" class="be-set-ctl" type="password" autocomplete="off"
-          placeholder="${b.has_token ? 'set — type to replace' : 'paste your token'}">
-      </div>
-      <div class="be-set-row">
-        <span class="be-set-name">Username</span>
-        <input id="gb-user-in" class="be-set-ctl" autocomplete="off"
-          value="${escHtml(b.user || '')}" placeholder="beeminder username">
-      </div>
-      <div class="be-set-row">
-        <span class="be-set-name"></span>
-        <button id="gb-cred-save" class="be-set-ctl">Save and check</button>
-      </div>
-    </div>
-    <div class="be-hint">The token is stored on the SERVER, in config.json rather than the
-      database — a credential that can move money has no business in a backup set. Nothing
-      can read it back out, including this panel, so a blank field leaves the stored one
-      alone. A charge that would breach the weekly cap is skipped whole, not trimmed.</div>
-    <div class="be-sub-head">Judged failures, last 7 days</div>
-    ${b.recent.length ? `<div class="be-list">${b.recent.map(r => `
-      <div class="be-set-row">
-        <span class="be-set-name">${escHtml(r.date)} · ${escHtml((state.accountabilityNodes
-          .find(n => n.id === r.node_id) || {}).label || ('#' + r.node_id))}</span>
-        <span class="gb-why">${escHtml(gateReason(r.failure_reason))}</span>
-        <span class="gb-st gb-st-${escHtml(r.charge_status || '')}">${escHtml(gateStatus(r.charge_status))}</span>
-        <span class="gb-amt">${r.amount_cents != null ? money(r.amount_cents) : '—'}</span>
-      </div>`).join('')}</div>`
-      : '<div class="be-hint">No failures judged this week.</div>'}`;
+    <div class="be-hint">The token lives in config.json on the server, never in the database —
+      a credential that can move money has no business in a backup set. Nothing reads it back
+      out, this panel included.</div>
 
-  const patch = async body => {
-    await fetch('/api/gates/billing', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    await renderGatesBilling(false);
-  };
+    <div class="gb-log-head">
+      <span>Judged failures · 7 days</span>
+      <span class="gb-val">${(b.recent || []).length} · ${money(charged)} charged</span>
+    </div>
+    ${dates.length ? `<div class="be-list">${shown.map(d => {
+      const rows = byDate[d];
+      const reasons = {};
+      rows.forEach(r => { reasons[gateReason(r.failure_reason)] = (reasons[gateReason(r.failure_reason)] || 0) + 1; });
+      const top = Object.entries(reasons).sort((x, y) => y[1] - x[1])[0];
+      const paid = rows.reduce((t, r) => t + (['succeeded', 'unknown'].includes(r.charge_status) ? (r.amount_cents || 0) : 0), 0);
+      return `<div class="be-set-row">
+        <span class="gb-date">${escHtml(d.slice(5))}</span>
+        <span class="be-set-name">${escHtml(rows.map(r => label(r.node_id)).join(' · '))}</span>
+        <span class="gb-val">${escHtml(top[0])}${top[1] > 1 ? ` ×${top[1]}` : ''}</span>
+        <span class="gb-amt">${paid ? money(paid) : ''}</span>
+      </div>`;
+    }).join('')}</div>`
+      : '<div class="be-hint">No failures judged this week.</div>'}
+    ${dates.length > 3 ? `<button class="gb-more" id="gb-more">${gatesView.allFailures
+      ? 'Show fewer' : `Show all ${dates.length} days`}</button>` : ''}`;
+
   el.querySelector('#gb-verify').addEventListener('click', () => renderGatesBilling(true));
-  // Saving a credential verifies it in the same gesture: a token you typed and
-  // did not check is a token you believe is working.
-  el.querySelector('#gb-cred-save').addEventListener('click', async () => {
-    const token = el.querySelector('#gb-token-in').value.trim();
-    const user = el.querySelector('#gb-user-in').value.trim();
-    if (!token && !user) { toast('Nothing to save'); return; }
-    await fetch('/api/gates/billing', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ beeminder_auth_token: token, beeminder_user: user }),
+  const more = el.querySelector('#gb-more');
+  if (more) more.addEventListener('click', () => {
+    gatesView.allFailures = !gatesView.allFailures;
+    renderGatesBilling(false);
+  });
+  el.querySelectorAll('[data-gbsheet]').forEach(btn =>
+    btn.addEventListener('click', () => openSeSheet('billing', b)));
+
+  // One control for the money state, three states, mutually exclusive — the
+  // two independent toggles let you sit in "off but not dry", which reads as
+  // safe and is one switch away from real charges.
+  el.querySelectorAll('#gb-seg button').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const mode = btn.dataset.gmode;
+      if (mode === 'live' && !confirm('Charge for real? A failed gate will bill '
+        + `${b.user || 'your Beeminder account'} immediately, up to `
+        + `$${(b.cap_cents / 100).toFixed(2)} a week.`)) return;
+      await fetch('/api/gates/billing', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gate_charging_live: mode !== 'off',
+          gate_charge_dryrun: mode !== 'live',
+        }),
+      });
+      await renderGatesBilling(false);
     });
-    await renderGatesBilling(true);
   });
-  // Arming is the one control here that can cost money, so it asks first.
-  // Disarming never does, so it does not.
-  el.querySelector('#gb-live').addEventListener('click', () => {
-    if (!b.live && !confirm('Arm charging? Gates that fail will be billed to Beeminder '
-      + (b.dryrun ? '(still a DRY RUN until you switch that off).' : 'FOR REAL.'))) return;
-    patch({ gate_charging_live: !b.live });
-  });
-  el.querySelector('#gb-dry').addEventListener('click', () => {
-    if (b.dryrun && !confirm('Leave dry run? Real charges fire from the next failure.')) return;
-    patch({ gate_charge_dryrun: !b.dryrun });
-  });
-  el.querySelector('#gb-default').addEventListener('change', e =>
-    patch({ gate_charge_cents: Math.round(parseFloat(e.target.value) * 100) || 0 }));
-  el.querySelector('#gb-cap').addEventListener('change', e =>
-    patch({ gate_weekly_cap_cents: Math.round(parseFloat(e.target.value) * 100) || 0 }));
+}
+
+// The tab strip's dot has to follow the health it reports, and the billing
+// fetch is what learns it — so the strip is repainted from there, not rebuilt.
+function paintGatesTabs() {
+  const bar = document.querySelector('#be-qr-section .gb-tabs');
+  if (!bar) return;
+  const dot = bar.querySelector('[data-gtab="system"] .gb-dot');
+  if (dot) dot.className = `gb-dot ${gatesHealth(state.gatesBilling).cls}`;
 }
 
 // A gate's row: the window and days it runs, the place it is pinned to, and a
@@ -5636,9 +5793,8 @@ function gateRowOpts(n) {
   else if (otherPending.length) badge = 'pending';
   else if (Object.keys(weekly).length) badge = 'per-day';
 
-  // The sub-line is today's ANSWER where there is one — scanned, or judged and
-  // why — falling back to the geofence when the day has not spoken yet. A row
-  // that only ever restates its own settings can't tell you the gate is broken.
+  // Today's ANSWER where there is one — scanned, or judged and why. A row that
+  // only restates its own settings can't tell you the gate is broken.
   const st = n.today_state || {};
   let today = '';
   if (st.judged) {
@@ -5648,16 +5804,23 @@ function gateRowOpts(n) {
       + (st.scan.geofence_pass === 0 ? ' — outside the geofence' : '');
   }
 
-  // Only a NON-default stake earns a badge on the row: a default is not
-  // information, but a gate that costs four times its neighbours is.
+  // Only a NON-default stake is stated: a default is not information, but a
+  // gate that costs four times its neighbours is.
   const stake = n.charge_cents != null ? ` · $${(n.charge_cents / 100).toFixed(2)}` : '';
-  const needs = n.routine ? ` · needs ${n.routine}` : '';
+
+  // The ROUTINE gets its own line, always, and first on it. It is half of what
+  // decides ✓/✗ — it cannot be the part that falls off the end of a meta
+  // string, and a gate demanding a routine you'd forgotten is the whole reason
+  // to look at this list.
+  const sub = [n.routine ? `needs ${n.routine}` : null, today]
+    .filter(Boolean).join(' · ');
 
   return {
     id: n.id, name: n.label, dim: !n.active,
-    meta: `${win} · ${formatDays(nodeDays)}${stake}${needs}`,
-    sub: today || geo,
+    meta: `${win} · ${formatDays(nodeDays)} · ${geo}${stake}`,
+    sub: sub || null,
     badge,
+    subClass: n.routine ? 'be-row-req' : '',
   };
 }
 
@@ -6738,37 +6901,726 @@ function renderGtd() {
     renderGtd();
   }));
 }
-// ── Settings → Times: named recurring periods ────────────────
+// ── Settings → Times, and the Schedule Picker ────────────────
 //
-// The time-axis counterpart of the location presets: a name, the DAYS as an
-// RRULE (recurrence.py — the app's one recurrence grammar), and an optional
-// time-of-day window inside those days. Bound to a context tag in the ctx
-// sheet, where it gates the pool.
+// Ported from Claude Design (project 82343144-9c74-405a-8a03-5d1a2c5b82c7,
+// files `Times Setting.dc.html` and `Schedule Picker.dc.html`; the model they
+// store is `Schedule Model.dc.html`, implemented in schedule.py).
 //
-// The row states the rule as the server describes it (recurrence.describe), so
-// a typo in a hand-written RRULE is visible before it silently matches
-// nothing, plus which tags are bound to the preset and whether it runs today.
-// Everything else happens in the sheet.
+// Times is TWO LISTS and no editor: schedules first, because they are what
+// people name and reuse, then the rules those schedules are built from. A
+// derived schedule is not a third group — it is a schedule marked with what it
+// follows. Every row opens the PICKER, so there is no second editor to keep
+// consistent with the first.
+//
+// The picker's own rule: the type is a consequence, never a question. It opens
+// as a single rule; the Follows row at the top and Add a variation at the
+// bottom are the only two controls that change what gets stored, and nobody is
+// ever asked to choose between a rule, a schedule and a derived source.
 
-async function renderTimePresets() {
+async function renderSchedules() {
   const el = document.getElementById('be-times-section');
   if (!el) return;
-  state.timePresets = await fetch(`/api/time-presets?date=${egDateStr()}`)
-    .then(r => r.json()).catch(() => state.timePresets || []);
-  const presets = state.timePresets || [];
-  const bound = {};
-  (state.tagTimes || []).forEach(b => { bound[b.preset_id] = (bound[b.preset_id] || []).concat(b.tag); });
-  beCounts.times = presets.length;
+  state.schedules = await fetch(`/api/schedules?date=${egDateStr()}`)
+    .then(r => r.json()).catch(() => state.schedules || []);
+  const all = state.schedules || [];
+  const schedules = all.filter(s => s.kind !== 'rule');
+  const rules = all.filter(s => s.kind === 'rule');
+  beCounts.times = all.length;
 
-  el.innerHTML = `<div class="be-list" id="be-times-list">
-    ${presets.map(p => beRow({
-      id: p.id, name: p.name,
-      meta: [p.label || 'every day',
-        p.start_time && p.end_time ? `${p.start_time}–${p.end_time}` : null].filter(Boolean).join(' · '),
-      sub: (bound[p.id] || []).map(t => `#${t}`).join(' '),
-      badge: p.due ? 'today' : '',
-    })).join('')}${beAddRow('Add time preset')}</div>`;
-  wireBeList(document.getElementById('be-times-list'), 'timepreset', presets);
+  el.innerHTML = `
+    <div class="be-sub-head">Schedules</div>
+    <div class="be-list" id="be-sched-list">
+      ${schedules.map(s => beRow({
+        id: s.uid, name: s.title,
+        meta: scheduleReachLine(s),
+        badge: s.due ? 'today' : '',
+      })).join('')}${beAddRow('New schedule')}
+    </div>
+    <div class="be-sub-head">Rules</div>
+    <div class="be-list" id="be-rule-list">
+      ${rules.map(s => beRow({
+        id: s.uid, name: s.title,
+        meta: scheduleReachLine(s),
+        badge: s.due ? 'today' : '',
+      })).join('')}${beAddRow('New rule')}
+    </div>`;
+
+  wireScheduleList(document.getElementById('be-sched-list'), all, 'schedule');
+  wireScheduleList(document.getElementById('be-rule-list'), all, 'rule');
+}
+
+// Each row states its REACH — every holder counted, including the gates that
+// follow it. An unused entry says so plainly rather than hiding, which is how
+// the list stays cleanable.
+function scheduleReachLine(s) {
+  const bits = [];
+  if (s.kind === 'derived') {
+    const target = (state.schedules || []).find(x => x.uid === (s.follows || {}).source);
+    bits.push(`Follows ${target ? target.title || 'an unnamed schedule' : 'something'}`);
+  } else if (s.kind === 'schedule') {
+    bits.push(plural((s.entries || []).length, 'rule'));
+  } else {
+    bits.push(s.label || '');
+  }
+  const reach = s.reach || { total: 0, in_schedules: [], followed_by: [], holders: [] };
+  const held = [];
+  if (s.kind === 'rule' && reach.in_schedules.length) {
+    held.push('In ' + reach.in_schedules.map(x => x.title).join(', '));
+  }
+  if (reach.followed_by.length) {
+    held.push(`${plural(reach.followed_by.length, 'schedule')} follow${
+      reach.followed_by.length === 1 ? 's' : ''} it`);
+  }
+  reach.holders.forEach(h => held.push(`#${h.name}`));
+  bits.push(held.length ? held.join(' · ') : 'unused');
+  return bits.filter(Boolean).join(' · ');
+}
+
+function wireScheduleList(el, all, kind) {
+  if (!el) return;
+  el.querySelectorAll('[data-row]').forEach(btn => {
+    const src = all.find(s => s.uid === btn.dataset.row);
+    if (src) btn.addEventListener('click', () => openPicker({ source: src }));
+  });
+  const add = el.querySelector('[data-add]');
+  if (add) add.addEventListener('click', () => openPicker({ wantSchedule: kind === 'schedule' }));
+}
+
+// ── The picker ───────────────────────────────────────────────
+//
+// One draft holds all three shapes at once, which is what makes both branches
+// reversible: choosing a target leaves the pattern rows' values alone, and
+// removing the second variation returns the draft to a single rule.
+
+const DURATIONS = [
+  ['PT15M', '15 min'], ['PT30M', '30 min'], ['PT45M', '45 min'],
+  ['PT1H', '1 hr'], ['PT1H30M', '1 hr 30'], ['PT2H', '2 hr'], ['PT2H30M', '2 hr 30'],
+  ['PT3H', '3 hr'], ['PT3H30M', '3 hr 30'], ['PT4H', '4 hr'], ['PT6H', '6 hr'],
+  ['PT8H', '8 hr'], ['P1D', 'all day'], ['', 'no duration'],
+];
+const FREQS = [['daily', 'day'], ['weekly', 'week'], ['monthly', 'month'], ['yearly', 'year']];
+const MONTH_MODES = [['date', 'a day of the month'], ['nth', 'an nth weekday']];
+const NTHS = [[1, '1st'], [2, '2nd'], [3, '3rd'], [4, '4th'], [-1, 'last']];
+// relativeTo + offset as ONE control, the way the design states it.
+const OPENS = [
+  ['-PT2H|start', '2 hr before it starts'], ['-PT1H|start', '1 hr before it starts'],
+  ['-PT30M|start', '30 min before it starts'], ['PT0S|start', 'when it starts'],
+  ['PT0S|end', 'when it ends'], ['PT30M|end', '30 min after it ends'],
+  ['PT1H|end', '1 hr after it ends'],
+];
+const EXTENTS = [
+  ['until-source-start', 'until it starts'], ['until-source-end', 'until it ends'],
+  ['same-as-source', 'as long as it runs'], ['PT15M', 'for 15 min'],
+  ['PT30M', 'for 30 min'], ['PT1H', 'for 1 hr'], ['PT2H', 'for 2 hr'],
+];
+const ONLY_ON = [
+  ['', 'every day it runs'], ['mo,tu,we,th,fr', 'weekdays only'], ['sa,su', 'weekends only'],
+];
+const SP_DAYS = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'];
+const SP_DAY_NAMES = { mo: 'Mon', tu: 'Tue', we: 'Wed', th: 'Thu', fr: 'Fri', sa: 'Sat', su: 'Sun' };
+const DAY_PRESETS = [
+  ['mo,tu,we,th,fr', 'Mon – Fri'], ['sa,su', 'Weekends'],
+  ['mo,tu,we,th,fr,sa,su', 'Every day'],
+];
+
+const pickerView = { open: false, uid: null, draft: null, error: null, dayMenu: null };
+
+function blankRule() {
+  return {
+    uid: null, frequency: 'weekly', interval: 1,
+    days: [SP_DAYS[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1]],
+    monthMode: 'date', monthDay: new Date().getDate(), nth: 1, nthDay: 'mo',
+    skip: 'omit', firstDayOfWeek: 'mo',
+    at: '09:00', duration: 'PT1H',
+    anchor: formatDateYMD(new Date()),
+  };
+}
+
+// An existing source read back into the draft. A schedule's members are read
+// too, because the picker edits the whole set on one surface.
+function draftFromSource(src) {
+  const byUid = uid => (state.schedules || []).find(s => s.uid === uid)
+    || (state.allSources || []).find(s => s.uid === uid);
+  const readRule = s => {
+    const r = (s.recurrenceRules || [])[0] || {};
+    const at = (s.start || '').slice(11, 16) || '09:00';
+    const days = (r.byDay || []).filter(d => !d.nthOfPeriod).map(d => d.day);
+    const nthEntry = (r.byDay || []).find(d => d.nthOfPeriod);
+    return {
+      uid: s.uid,
+      frequency: r.frequency || 'weekly',
+      interval: r.interval || 1,
+      days: days.length ? days : [SP_DAYS[0]],
+      monthMode: nthEntry ? 'nth' : 'date',
+      monthDay: (r.byMonthDay || [])[0] || 1,
+      nth: nthEntry ? nthEntry.nthOfPeriod : 1,
+      nthDay: nthEntry ? nthEntry.day : 'mo',
+      skip: r.skip || 'omit',
+      firstDayOfWeek: r.firstDayOfWeek || 'mo',
+      at,
+      duration: s.duration || '',
+      anchor: (s.start || '').slice(0, 10) || formatDateYMD(new Date()),
+    };
+  };
+  const members = src.kind === 'schedule'
+    ? (src.entries || []).map(byUid).filter(Boolean).map(readRule)
+    : [];
+  return {
+    title: src.title || '',
+    follows: src.kind === 'derived' ? { ...(src.follows || {}) } : null,
+    lastFollows: null,
+    rules: src.kind === 'schedule'
+      ? (members.length ? members : [blankRule()])
+      : [readRule(src)],
+    removed: [],
+    ends: src.ends || null,
+    reach: src.reach || null,
+  };
+}
+
+async function openPicker(opts) {
+  // The picker's own menus need every source, unnamed ones included: a
+  // schedule's members are unnamed once they were created by a variation.
+  state.allSources = await fetch('/api/schedules?unnamed=1')
+    .then(r => r.json()).catch(() => []);
+  const src = opts.source;
+  pickerView.open = true;
+  pickerView.uid = src ? src.uid : null;
+  pickerView.error = null;
+  pickerView.dayMenu = null;
+  pickerView.draft = src ? draftFromSource(src) : {
+    title: '', follows: null, lastFollows: null,
+    rules: [blankRule()], removed: [], ends: null, reach: null,
+  };
+  // "+ New schedule" opens with the name field already showing, because the
+  // thing being made is the named set rather than one pattern.
+  pickerView.wantName = !!opts.wantSchedule || !!(src && src.kind !== 'rule');
+  document.getElementById('sp-sheet').classList.remove('hidden');
+  document.getElementById('sp-sheet-backdrop').classList.remove('hidden');
+  renderPicker();
+}
+
+function closePicker() {
+  pickerView.open = false;
+  pickerView.draft = null;
+  document.getElementById('sp-sheet').classList.add('hidden');
+  document.getElementById('sp-sheet-backdrop').classList.add('hidden');
+}
+
+function pickerKind() {
+  const d = pickerView.draft;
+  if (d.follows) return 'derived';
+  return d.rules.length > 1 ? 'schedule' : 'rule';
+}
+
+function spSelect(key, options, value, extra) {
+  return `<select class="sp-input" data-sp="${key}"${extra || ''}>${options.map(([v, label]) =>
+    `<option value="${escHtml(String(v))}"${String(v) === String(value) ? ' selected' : ''}>${
+      escHtml(label)}</option>`).join('')}</select>`;
+}
+
+function dayLabel(days) {
+  const preset = DAY_PRESETS.find(([v]) => v === days.slice().sort(
+    (a, b) => SP_DAYS.indexOf(a) - SP_DAYS.indexOf(b)).join(','));
+  if (preset) return preset[1];
+  if (!days.length) return 'no days chosen';
+  return days.slice().sort((a, b) => SP_DAYS.indexOf(a) - SP_DAYS.indexOf(b))
+    .map(d => SP_DAY_NAMES[d]).join(', ');
+}
+
+// The days control is a dropdown like every other input here, not a key grid:
+// one question at a time, and the sentence at the foot is the feedback.
+function dayControl(idx, days) {
+  const open = pickerView.dayMenu === idx;
+  return `<button type="button" class="sp-input sp-drop${days.length ? '' : ' sp-bad'}"
+      data-sp="daymenu" data-idx="${idx}">
+      <span>${escHtml(dayLabel(days))}</span><span class="sp-caret">▾</span></button>
+    ${open ? `<div class="sp-menu" data-idx="${idx}">
+      ${DAY_PRESETS.map(([v, label]) =>
+        `<button type="button" class="sp-menu-row" data-preset="${v}">${escHtml(label)}</button>`).join('')}
+      <div class="sp-menu-rule"></div>
+      ${SP_DAYS.map(d => `<button type="button" class="sp-menu-row${
+        days.includes(d) ? ' sp-on' : ''}" data-day="${d}">
+        <span>${SP_DAY_NAMES[d]}</span>${days.includes(d) ? '<span>✓</span>' : ''}</button>`).join('')}
+    </div>` : ''}`;
+}
+
+function patternRows(rule, idx, compact) {
+  const rows = [];
+  const label = text => `<span class="sp-label">${text}</span>`;
+  if (!compact) {
+    rows.push(`<div class="sp-row">${label('Every')}
+      <input class="sp-input sp-num" type="number" min="1" data-sp="interval" data-idx="${idx}"
+        value="${rule.interval}">
+      ${spSelect('frequency', FREQS, rule.frequency, ` data-idx="${idx}"`)}</div>`);
+  }
+  if (rule.frequency === 'weekly' || rule.frequency === 'daily' && false) {
+    rows.push(`<div class="sp-row">${label('On')}${dayControl(idx, rule.days)}</div>`);
+  }
+  if (rule.frequency === 'monthly' || rule.frequency === 'yearly') {
+    rows.push(`<div class="sp-row">${label('On')}${
+      spSelect('monthMode', MONTH_MODES, rule.monthMode, ` data-idx="${idx}"`)}</div>`);
+    if (rule.monthMode === 'date') {
+      rows.push(`<div class="sp-row">${label('Day')}
+        <input class="sp-input sp-num" type="number" min="1" max="31" data-sp="monthDay"
+          data-idx="${idx}" value="${rule.monthDay}"></div>`);
+      // Shown only for a date some months lack — a row that cannot apply is
+      // absent, never greyed out.
+      if (Number(rule.monthDay) > 28) {
+        rows.push(`<div class="sp-row">${label('Short months')}${spSelect('skip', [
+          ['backward', 'use the last day'], ['omit', 'skip the month'],
+        ], rule.skip, ` data-idx="${idx}"`)}</div>`);
+      }
+    } else {
+      rows.push(`<div class="sp-row">${label('The')}
+        ${spSelect('nth', NTHS, rule.nth, ` data-idx="${idx}"`)}
+        ${spSelect('nthDay', SP_DAYS.map(d => [d, SP_DAY_NAMES[d]]), rule.nthDay, ` data-idx="${idx}"`)}
+      </div>`);
+    }
+  }
+  // Week start only matters above interval 1, which is the only time it shows.
+  if (!compact && rule.frequency === 'weekly' && Number(rule.interval) > 1) {
+    rows.push(`<div class="sp-row">${label('Week starts')}${
+      spSelect('firstDayOfWeek', SP_DAYS.map(d => [d, SP_DAY_NAMES[d]]),
+        rule.firstDayOfWeek, ` data-idx="${idx}"`)}</div>`);
+  }
+  rows.push(`<div class="sp-row">${label('At')}
+    <input class="sp-input sp-time" type="time" data-sp="at" data-idx="${idx}" value="${rule.at}">
+    ${spSelect('duration', DURATIONS.map(([v, l]) => [v, v ? `for ${l}` : l]),
+      rule.duration, ` data-idx="${idx}"`)}</div>`);
+  return rows.join('');
+}
+
+function renderPicker() {
+  const d = pickerView.draft;
+  const kind = pickerKind();
+  const el = document.getElementById('sp-sheet');
+  let body = '';
+
+  // The Follows row is the first of the two branch controls, and it stays at
+  // the top whatever the draft currently is.
+  body += `<div class="sp-row"><span class="sp-label">Follows</span>${
+    spSelect('follows', followOptions(), (d.follows || {}).source || '')}</div>`;
+  body += '<div class="sp-rule"></div>';
+
+  if (kind === 'derived') {
+    const f = d.follows;
+    const target = (state.allSources || []).find(s => s.uid === f.source);
+    body += `<div class="sp-row"><span class="sp-label">Opens</span>${
+      spSelect('opens', OPENS, `${f.offset || 'PT0S'}|${f.relativeTo || 'start'}`)}</div>`;
+    body += `<div class="sp-row"><span class="sp-label">Stays open</span>${
+      spSelect('extent', EXTENTS, f.extent || 'until-source-start')}</div>`;
+    body += `<div class="sp-row"><span class="sp-label">Only on</span>${
+      spSelect('only', ONLY_ON, ((f.only || {}).byDay || []).join(','))}</div>`;
+    body += '<div class="sp-rule"></div>';
+    // Ends is inherited, so it is STATED rather than asked.
+    body += `<div class="sp-stated"><span class="sp-label">Ends</span>
+      <span>When ${escHtml((target || {}).title || 'it')} ends. Skipped days are skipped
+      here too.</span></div>`;
+  } else {
+    if (pickerView.wantName || d.rules.length > 1) {
+      body += `<div class="sp-row"><span class="sp-label">Name</span>
+        <input class="sp-input" data-sp="title" value="${escHtml(d.title)}"
+          placeholder="e.g. Weekday mornings" autocomplete="off"></div>`;
+    }
+    if (d.rules.length === 1) {
+      body += patternRows(d.rules[0], 0, false);
+      body += `<button type="button" class="sp-add" data-sp="variation">+ Add a variation</button>`;
+      body += '<div class="sp-rule"></div>';
+      body += endsRadios(d.ends);
+    } else {
+      // The rows group into numbered rules, each owning its time and duration —
+      // which is the whole reason a set of rules exists.
+      d.rules.forEach((rule, i) => {
+        body += `<div class="sp-card">
+          <div class="sp-card-head"><span class="sp-card-title">Rule ${i + 1}</span>
+            <button type="button" class="sp-x" data-sp="drop" data-idx="${i}">✕</button></div>
+          ${patternRows(rule, i, true)}
+          ${rule.note ? `<span class="sp-note">${escHtml(rule.note)}</span>` : ''}
+        </div>`;
+      });
+      body += `<button type="button" class="sp-add" data-sp="variation">+ Add a variation</button>`;
+      body += '<div class="sp-rule"></div>';
+      body += `<div class="sp-row"><span class="sp-label">Ends</span>${spSelect('endsKind', [
+        ['never', 'never'], ['date', 'on a date'], ['count', 'after N times'],
+      ], d.ends ? (d.ends.date ? 'date' : 'count') : 'never')}
+        <span class="sp-aside">whole set</span></div>`;
+      body += endsDetail(d.ends);
+    }
+  }
+
+  const shared = d.reach && d.reach.total
+    ? `<div class="sp-shared">${escHtml(sharedLine(d.reach))}</div>` : '';
+
+  el.innerHTML = `
+    <div class="se-grab"><span></span></div>
+    <div class="se-head"><span class="se-title">Repeats</span>
+      <button class="sp-cancel">Cancel</button></div>
+    <div class="sp-body">${body}</div>
+    <div class="sp-foot">
+      <div class="sp-sentence">${escHtml(describeDraft())}</div>
+      ${shared}
+      ${pickerView.error ? `<div class="se-error">${escHtml(pickerView.error)}</div>` : ''}
+      <div class="sp-actions">
+        ${pickerView.uid ? `<button class="sp-del">Delete</button>` : '<span class="sp-grow"></span>'}
+        <span class="sp-grow"></span>
+        <button class="sp-cancel2">Cancel</button>
+        <button class="sp-done">Done</button>
+      </div>
+    </div>`;
+  wirePicker();
+}
+
+function sharedLine(reach) {
+  const names = []
+    .concat(reach.in_schedules.map(s => `${s.title} (schedule)`))
+    .concat(reach.followed_by.map(s => `${s.title} (follows it)`))
+    .concat(reach.holders.map(h => `#${h.name} (${h.kind})`));
+  if (!names.length) return '';
+  return `${plural(names.length, 'thing')} use${names.length === 1 ? 's' : ''} this: `
+    + names.join(', ') + '. Saving changes it for all of them.';
+}
+
+function endsRadios(ends) {
+  const which = !ends ? 'never' : (ends.date ? 'date' : 'count');
+  const radio = on => `<span class="sp-radio${on ? ' sp-on' : ''}"></span>`;
+  return `<div class="sp-ends"><span class="sp-label">Ends</span>
+    <button type="button" class="sp-ends-row" data-sp="ends" data-value="never">
+      ${radio(which === 'never')}<span>Never</span></button>
+    <button type="button" class="sp-ends-row" data-sp="ends" data-value="date">
+      ${radio(which === 'date')}<span class="sp-ends-word">On</span>
+      <input class="sp-input sp-date" type="date" data-sp="endsDate"
+        value="${escHtml((ends || {}).date || '')}"></button>
+    <button type="button" class="sp-ends-row" data-sp="ends" data-value="count">
+      ${radio(which === 'count')}<span class="sp-ends-word">After</span>
+      <input class="sp-input sp-num" type="number" min="1" data-sp="endsCount"
+        value="${escHtml(String((ends || {}).count || ''))}" placeholder="13">
+      <span class="sp-aside">times</span></button>
+  </div>`;
+}
+
+function endsDetail(ends) {
+  if (!ends) return '';
+  if (ends.date !== undefined && ends.date !== null) {
+    return `<div class="sp-row"><span class="sp-label">On</span>
+      <input class="sp-input sp-date" type="date" data-sp="endsDate"
+        value="${escHtml(ends.date || '')}"></div>`;
+  }
+  return `<div class="sp-row"><span class="sp-label">After</span>
+    <input class="sp-input sp-num" type="number" min="1" data-sp="endsCount"
+      value="${escHtml(String(ends.count || ''))}"><span class="sp-aside">times</span></div>`;
+}
+
+// Follows lists anything with occurrences. Blocks and gates join it when they
+// hold a source rather than their own fields — see CLAUDE.md's migration list.
+function followOptions() {
+  const opts = [['', 'nothing — set a pattern']];
+  const named = (state.allSources || []).filter(s => s.title && s.uid !== pickerView.uid);
+  const groups = [['schedule', 'Schedules'], ['derived', 'Schedules'], ['rule', 'Rules']];
+  const seen = new Set();
+  groups.forEach(([kind]) => {
+    named.filter(s => s.kind === kind).forEach(s => {
+      if (seen.has(s.uid)) return;
+      seen.add(s.uid);
+      opts.push([s.uid, s.title]);
+    });
+  });
+  return opts;
+}
+
+// The sentence at the foot. Deliberately a CLIENT mirror of schedule.describe:
+// it has to answer on every keystroke, and a round trip per change is worse
+// than two implementations of one sentence. The stored label always comes from
+// the server, so the row in Times cannot disagree with what was saved.
+function describeDraft() {
+  const d = pickerView.draft;
+  if (d.follows) {
+    const target = (state.allSources || []).find(s => s.uid === d.follows.source);
+    const name = (target || {}).title || 'it';
+    const opens = (OPENS.find(([v]) =>
+      v === `${d.follows.offset || 'PT0S'}|${d.follows.relativeTo || 'start'}`) || [])[1] || '';
+    const extent = (EXTENTS.find(([v]) => v === d.follows.extent) || [])[1] || '';
+    return `${name}: ${opens}, ${extent}.`;
+  }
+  const one = r => {
+    const bits = [];
+    if (Number(r.interval) > 1) bits.push(`every ${r.interval} ${
+      (FREQS.find(([v]) => v === r.frequency) || [])[1]}s`);
+    if (r.frequency === 'weekly') bits.push(dayLabel(r.days));
+    else if (r.frequency === 'daily' && Number(r.interval) <= 1) bits.push('Every day');
+    else if (r.frequency === 'monthly' || r.frequency === 'yearly') {
+      bits.push(r.monthMode === 'date' ? `the ${r.monthDay}th`
+        : `the ${(NTHS.find(([v]) => String(v) === String(r.nth)) || [])[1]} ${SP_DAY_NAMES[r.nthDay]}`);
+    }
+    const dur = (DURATIONS.find(([v]) => v === r.duration) || [])[1];
+    bits.push(`at ${r.at}` + (r.duration ? ` for ${dur}` : ''));
+    return bits.join(' ');
+  };
+  let text = one(d.rules[0]);
+  if (d.rules.length > 1) text += ', except ' + d.rules.slice(1).map(one).join(', ');
+  if (d.ends && d.ends.date) text += `, until ${d.ends.date}`;
+  if (d.ends && d.ends.count) text += `, ${d.ends.count} times`;
+  return text + '.';
+}
+
+function wirePicker() {
+  const el = document.getElementById('sp-sheet');
+  const d = pickerView.draft;
+  const rerender = () => renderPicker();
+
+  el.querySelectorAll('.sp-cancel, .sp-cancel2').forEach(b =>
+    b.addEventListener('click', closePicker));
+  el.querySelector('.sp-done').addEventListener('click', savePicker);
+  const del = el.querySelector('.sp-del');
+  if (del) del.addEventListener('click', deleteFromPicker);
+
+  const at = (sel, fn) => el.querySelectorAll(sel).forEach(fn);
+
+  at('[data-sp="follows"]', s => s.addEventListener('change', () => {
+    if (s.value) {
+      // Keep the pattern rows' values so setting Follows back to nothing
+      // restores them — both branches are reversible.
+      d.follows = d.lastFollows && d.lastFollows.source === s.value
+        ? d.lastFollows
+        : { source: s.value, relativeTo: 'start', offset: '-PT1H',
+            extent: 'until-source-start' };
+    } else {
+      d.lastFollows = d.follows;
+      d.follows = null;
+    }
+    rerender();
+  }));
+
+  at('[data-sp="opens"]', s => s.addEventListener('change', () => {
+    const [offset, relativeTo] = s.value.split('|');
+    d.follows.offset = offset;
+    d.follows.relativeTo = relativeTo;
+    rerender();
+  }));
+  at('[data-sp="extent"]', s => s.addEventListener('change', () => {
+    d.follows.extent = s.value;
+    rerender();
+  }));
+  at('[data-sp="only"]', s => s.addEventListener('change', () => {
+    d.follows.only = s.value ? { byDay: s.value.split(',') } : null;
+    rerender();
+  }));
+
+  at('[data-sp="title"]', i => i.addEventListener('input', () => { d.title = i.value; }));
+
+  // Pattern fields, per rule index.
+  ['interval', 'frequency', 'monthMode', 'monthDay', 'nth', 'nthDay', 'skip',
+   'firstDayOfWeek', 'at', 'duration'].forEach(key => {
+    at(`[data-sp="${key}"]`, input => {
+      const evt = input.tagName === 'SELECT' ? 'change' : 'input';
+      input.addEventListener(evt, () => {
+        const rule = d.rules[Number(input.dataset.idx) || 0];
+        rule[key] = input.value;
+        // A field that changes which OTHER rows apply has to repaint; one that
+        // only changes the sentence must not, or it would steal focus mid-type.
+        if (['frequency', 'monthMode', 'nth', 'nthDay', 'skip', 'duration'].includes(key)
+            || (key === 'interval' && rule.frequency === 'weekly')
+            || (key === 'monthDay' && (Number(input.value) > 28 || Number(input.value) === 28))) {
+          rerender();
+        } else {
+          paintSentence();
+        }
+      });
+    });
+  });
+
+  at('[data-sp="daymenu"]', b => b.addEventListener('click', () => {
+    const idx = Number(b.dataset.idx);
+    pickerView.dayMenu = pickerView.dayMenu === idx ? null : idx;
+    rerender();
+  }));
+  at('.sp-menu', menu => {
+    const idx = Number(menu.dataset.idx);
+    menu.querySelectorAll('[data-day]').forEach(b => b.addEventListener('click', () => {
+      const days = d.rules[idx].days;
+      const day = b.dataset.day;
+      const at2 = days.indexOf(day);
+      if (at2 === -1) days.push(day); else days.splice(at2, 1);
+      rerender();
+    }));
+    menu.querySelectorAll('[data-preset]').forEach(b => b.addEventListener('click', () => {
+      d.rules[idx].days = b.dataset.preset.split(',');
+      pickerView.dayMenu = null;
+      rerender();
+    }));
+  });
+
+  at('[data-sp="variation"]', b => b.addEventListener('click', () => {
+    // A variation inherits the first rule's shape and takes one day off it —
+    // "Wed was removed from rule 1" is the whole point of the second rule.
+    const base = d.rules[0];
+    const taken = new Set(d.rules.flatMap(r => r.days));
+    const free = base.days.find(day => d.rules.length === 1 || !taken.has(day));
+    const day = free || SP_DAYS.find(x => !taken.has(x)) || 'we';
+    if (d.rules.length === 1 && base.days.length > 1) {
+      base.days = base.days.filter(x => x !== day);
+    }
+    d.rules.push({ ...blankRule(), ...base, uid: null, days: [day],
+      note: `${SP_DAY_NAMES[day]} was removed from rule ${d.rules.length}.` });
+    pickerView.wantName = true;
+    rerender();
+  }));
+
+  at('[data-sp="drop"]', b => b.addEventListener('click', () => {
+    const idx = Number(b.dataset.idx);
+    const [gone] = d.rules.splice(idx, 1);
+    if (gone && gone.uid) d.removed.push(gone.uid);
+    // Removing the second rule returns a schedule to a rule.
+    if (d.rules.length === 1) d.rules[0].note = null;
+    rerender();
+  }));
+
+  at('[data-sp="ends"]', b => b.addEventListener('click', e => {
+    if (e.target.matches('input')) return;      // typing in the row, not choosing it
+    const value = b.dataset.value;
+    d.ends = value === 'never' ? null
+      : value === 'date' ? { date: (d.ends || {}).date || '' }
+      : { count: (d.ends || {}).count || 13 };
+    rerender();
+  }));
+  at('[data-sp="endsKind"]', s => s.addEventListener('change', () => {
+    d.ends = s.value === 'never' ? null
+      : s.value === 'date' ? { date: (d.ends || {}).date || '' } : { count: 13 };
+    rerender();
+  }));
+  at('[data-sp="endsDate"]', i => i.addEventListener('change', () => {
+    d.ends = { date: i.value };
+    paintSentence();
+  }));
+  at('[data-sp="endsCount"]', i => i.addEventListener('input', () => {
+    d.ends = { count: Number(i.value) || 1 };
+    paintSentence();
+  }));
+}
+
+function paintSentence() {
+  const el = document.querySelector('#sp-sheet .sp-sentence');
+  if (el) el.textContent = describeDraft();
+}
+
+// ── Saving ───────────────────────────────────────────────────
+//
+// The draft decides the KIND, and the request is whatever that kind needs. A
+// rule that gained a variation is PATCHed into a schedule on the same uid, so
+// everything already pointing at it keeps pointing at it.
+
+function ruleBody(r) {
+  const rule = { '@type': 'RecurrenceRule', frequency: r.frequency };
+  if (Number(r.interval) > 1) rule.interval = Number(r.interval);
+  if (r.frequency === 'weekly') {
+    rule.byDay = r.days.map(day => ({ '@type': 'NDay', day }));
+    if (Number(r.interval) > 1) rule.firstDayOfWeek = r.firstDayOfWeek;
+  } else if (r.frequency === 'monthly' || r.frequency === 'yearly') {
+    if (r.monthMode === 'date') {
+      rule.byMonthDay = [Number(r.monthDay)];
+      if (Number(r.monthDay) > 28) rule.skip = r.skip;
+    } else {
+      rule.byDay = [{ '@type': 'NDay', day: r.nthDay, nthOfPeriod: Number(r.nth) }];
+    }
+  }
+  return {
+    start: `${r.anchor}T${r.at}:00`,
+    duration: r.duration || null,
+    recurrenceRules: [rule],
+  };
+}
+
+async function saveSource(uid, body) {
+  const res = uid
+    ? await fetch(`/api/schedules/${uid}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    : await fetch('/api/schedules', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Could not save.');
+  return data;
+}
+
+async function savePicker() {
+  const d = pickerView.draft;
+  const kind = pickerKind();
+  pickerView.error = null;
+  // Errors sit on the field and Done waits; nothing is announced elsewhere.
+  const bad = d.rules.find(r => r.frequency === 'weekly' && !r.days.length);
+  if (!d.follows && bad) {
+    pickerView.error = 'Choose at least one day.';
+    renderPicker();
+    return;
+  }
+  if ((kind === 'schedule' || pickerView.wantName) && !d.title.trim() && kind !== 'rule') {
+    pickerView.error = 'A schedule needs a name.';
+    renderPicker();
+    return;
+  }
+  const btn = document.querySelector('#sp-sheet .sp-done');
+  if (btn) btn.disabled = true;
+
+  try {
+    if (kind === 'derived') {
+      await saveSource(pickerView.uid, {
+        kind: 'derived', title: d.title || null, follows: d.follows,
+        entries: null, recurrenceRules: null, start: null, duration: null,
+        ends: null,
+      });
+    } else if (kind === 'rule') {
+      await saveSource(pickerView.uid, {
+        kind: 'rule', title: d.title || null, ...ruleBody(d.rules[0]),
+        entries: null, follows: null, ends: d.ends,
+      });
+    } else {
+      // Members first: each keeps its own duration, and an existing member is
+      // updated in place so anything pointing at it survives the edit.
+      const entries = [];
+      for (const r of d.rules) {
+        const body = { kind: 'rule', ...ruleBody(r) };
+        const saved = await saveSource(r.uid, r.uid ? body : { ...body, title: null });
+        entries.push(saved.uid);
+      }
+      await saveSource(pickerView.uid, {
+        kind: 'schedule', title: d.title.trim(), entries, ends: d.ends,
+        recurrenceRules: null, start: null, duration: null, follows: null,
+      });
+    }
+    // A member dropped from the set is unnamed and now unreferenced, so it goes
+    // with the edit rather than lingering in the Rules list.
+    for (const uid of d.removed) {
+      const src = (state.allSources || []).find(s => s.uid === uid);
+      if (src && !src.title) await fetch(`/api/schedules/${uid}`, { method: 'DELETE' });
+    }
+  } catch (e) {
+    pickerView.error = e.message;
+    renderPicker();
+    return;
+  }
+  closePicker();
+  await renderSchedules();
+  renderSettingsIndex();
+}
+
+async function deleteFromPicker() {
+  const d = pickerView.draft;
+  const reach = d.reach || { total: 0 };
+  // Deleting is ALWAYS allowed: nothing loses its hours, because each holder
+  // keeps an unnamed copy of what it had. Deleting a name is only un-sharing.
+  const detail = reach.total
+    ? `\n\n${sharedLine(reach)}\nEach keeps these hours as its own, unnamed — they simply`
+      + ' stop changing together.'
+    : '';
+  if (!confirm(`Delete "${d.title || 'this schedule'}"?${detail}`)) return;
+  await fetch(`/api/schedules/${pickerView.uid}`, { method: 'DELETE' });
+  closePicker();
+  await renderSchedules();
+  renderSettingsIndex();
 }
 
 // ── Context tag configuration ────────────────────────────────
