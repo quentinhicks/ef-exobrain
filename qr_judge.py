@@ -364,7 +364,20 @@ def beeminder_charge(settings, amount_cents, note, sender=None):
         return 'unknown', None
     if not ok:
         return 'failed', None
-    return ('dryrun' if settings['dryrun'] else 'succeeded'), (data or {}).get('id')
+    return ('dryrun' if settings['dryrun'] else 'succeeded'), _charge_id(data)
+
+
+def _charge_id(data):
+    # Beeminder returns Mongo extended JSON: id is {"$oid": "6a7b64..."}, not a
+    # string. Storing the dict raised sqlite3.ProgrammingError inside
+    # qr_settle_charge — AFTER the money had moved, so the charge succeeded and
+    # the row stayed 'charging' forever. Anything unrecognised is stringified
+    # rather than dropped: a charge reference is evidence, and evidence is worth
+    # keeping in whatever shape it arrives.
+    cid = (data or {}).get('id')
+    if isinstance(cid, dict):
+        cid = cid.get('$oid') or json.dumps(cid)
+    return None if cid is None else str(cid)
 
 
 def _http_post(url, body):
