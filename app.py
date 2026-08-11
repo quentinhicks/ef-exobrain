@@ -1593,10 +1593,17 @@ _YMD_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 # app.js reads days_of_week, weekly_windows, today_override and
 # pending_changes off each node, and the QR manager is built around them.
 
-def _node_payload(node, today):
+def _node_payload(node, today, routines=None):
     ov = storage.qr_get_override(node['id'], today)
+    # `routine` is what makes this gate PASS beyond presence, and it is set in
+    # the routine editor rather than here — so the gate has to say it, or the
+    # rule that judges it is invisible from the surface that configures it.
+    routine = next((f['name'] for f in (routines or [])
+                    if f.get('qr_node_id') == node['id']), None)
     return dict(node,
                 today_override=ov,
+                today_state=storage.qr_node_day_state(node['id'], today),
+                routine=routine,
                 pending_changes=storage.qr_get_pending_changes(node['id']))
 
 
@@ -1657,7 +1664,8 @@ def accountability_nodes():
             d.get('days_of_week') or '0123456', d.get('weekly_windows'))
         node = [n for n in storage.qr_get_nodes() if n['id'] == node_id][0]
         return jsonify(_node_payload(node, today)), 201
-    return jsonify([_node_payload(n, today) for n in storage.qr_get_nodes()])
+    routines = storage.get_flows()
+    return jsonify([_node_payload(n, today, routines) for n in storage.qr_get_nodes()])
 
 
 @app.route('/api/accountability/outcomes', methods=['GET'])

@@ -4057,6 +4057,28 @@ def qr_recent_scans(limit=100):
     return [dict(r) for r in rows]
 
 
+def qr_node_day_state(node_id, date):
+    # What actually HAPPENED at this gate on a date: the last scan, and the
+    # judgment if the window has closed. The list showed configuration only,
+    # which is the one thing you don't need to check — a gate you can't see
+    # working is a gate you don't trust.
+    conn = get_conn()
+    scan = conn.execute(
+        '''SELECT scanned_at, geofence_pass FROM qr_scan
+           WHERE node_id = ? AND substr(scanned_at, 1, 10) = ?
+           ORDER BY scanned_at DESC LIMIT 1''', (node_id, date)).fetchone()
+    judged = None
+    try:
+        judged = conn.execute(
+            '''SELECT failure_reason, charge_status, amount_cents FROM qr_charge_log
+               WHERE node_id = ? AND date = ?''', (node_id, date)).fetchone()
+    except sqlite3.OperationalError:
+        pass                              # pre-charge-columns db
+    conn.close()
+    return {'scan': dict(scan) if scan else None,
+            'judged': dict(judged) if judged else None}
+
+
 def qr_get_override(node_id, date):
     conn = get_conn()
     row = conn.execute('SELECT * FROM qr_override WHERE node_id = ? AND date = ?',

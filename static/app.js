@@ -2328,6 +2328,29 @@ const SETTINGS_SHEETS = {
             + ' Raising it applies now; lowering waits 24h, like any other easing.' }] : []),
         ...(it ? [{ key: 'active', label: 'State', kind: 'check', on: 'Active', off: 'Inactive',
           hint: 'Deactivating takes effect in 24h.' }] : []),
+        // What this gate is actually judged ON. The routine half is configured
+        // in the routine editor, so without this line the rule that decides
+        // ✓/✗ appears nowhere on the gate it decides about.
+        ...(it ? [{ key: 'judged', label: 'Passes when', kind: 'static',
+          text: ['you scan it inside the window',
+            it.geofence_lat != null ? `within ${it.geofence_radius_m}m of the pinned place` : null,
+            it.routine ? `“${it.routine}” is done first` : null,
+          ].filter(Boolean).join(', and ') }] : []),
+        ...(it && it.today_state && it.today_state.judged ? [{ key: 'todayres', label: 'Today',
+          kind: 'static',
+          text: `✗ ${gateReason(it.today_state.judged.failure_reason)} · `
+            + gateStatus(it.today_state.judged.charge_status) }]
+          : it && it.today_state && it.today_state.scan ? [{ key: 'todayres', label: 'Today',
+            kind: 'static', text: `✓ scanned ${it.today_state.scan.scanned_at.slice(11, 16)}` }] : []),
+        ...(it ? [{ key: 'link', label: 'Scan link', kind: 'action',
+          text: `${state.settings.qr_worker_url || ''}/scan/${it.token}`,
+          action: 'Copy',
+          hint: 'The QR code to print. Anyone with this URL can satisfy the gate.',
+          run: n => {
+            navigator.clipboard?.writeText(`${state.settings.qr_worker_url || ''}/scan/${n.token}`);
+            toast('Scan link copied');
+          } }] : []),
+
         // A today-only window and a deferred loosening are states this sheet
         // can report and clear but not edit — they were tooltips on the old
         // table, which is unreachable on a phone.
@@ -2337,7 +2360,11 @@ const SETTINGS_SHEETS = {
           action: 'Remove',
           run: n => removeOverride(n.id, n.today_override.date) }] : []),
         ...(pending.length ? [{ key: 'pending', label: 'Pending', kind: 'static',
-          text: pending.map(p => `${p.field} → ${p.new_value} (applies ${new Date(p.apply_at).toLocaleString()})`).join('; ') }] : []),
+          hint: 'Anything that makes a gate easier waits 24h, so it can\'t be loosened '
+            + 'in the moment you want to dodge it.',
+          text: pending.map(p => `${GATE_FIELDS[p.field] || p.field} → `
+            + `${p.field === 'charge_cents' ? '$' + ((p.new_value || 0) / 100).toFixed(2) : p.new_value}`
+            + ` (applies ${new Date(p.apply_at).toLocaleString()})`).join('; ') }] : []),
       ];
     },
     submit: async (v, n) => {
@@ -5350,18 +5377,19 @@ async function renderQrManager() {
     <div class="be-list" id="be-gate-list">
       ${nodes.map(n => beRow(gateRowOpts(n))).join('')}${beAddRow('Add gate')}
     </div>
-    <div class="be-sub-head">Timeline view window</div>
+    <div class="be-sub-head">Where the day starts and ends</div>
     <div class="be-list">
       <div class="be-set-row">
-        <span class="be-set-name">Wake gate</span>
+        <span class="be-set-name">Day starts at</span>
         <select id="ac-wake-node" class="be-set-ctl">${nodeOptions(state.settings.qr_wake_node_id)}</select>
       </div>
       <div class="be-set-row">
-        <span class="be-set-name">Sleep gate</span>
+        <span class="be-set-name">Day ends at</span>
         <select id="ac-sleep-node" class="be-set-ctl">${nodeOptions(state.settings.qr_sleep_node_id)}</select>
       </div>
     </div>
-    <div class="be-hint">The calendar clips to wake → sleep. Leave either unset for the full 24h.</div>
+    <div class="be-hint">The calendar is clipped to these two gates' deadlines, so it shows your
+      waking day rather than a full 24h. Leave either unset for all 24.</div>
     <div class="be-sub-head">Billing</div>
     <div id="be-gates-billing"></div>`;
 
@@ -5388,6 +5416,35 @@ async function renderQrManager() {
     </div>`;
   wireBeList(document.getElementById('be-location-list'), 'location', state.locations);
 }
+
+// The judge's vocabulary, said in words. `absent`/`would_fire` are what the
+// database stores and what the Worker logged before it; a settings panel is
+// not the place to learn them.
+const GATE_FIELDS = {
+  charge_cents: 'stake', window_start: 'from', window_end: 'to',
+  window_end_offset_days: 'crosses midnight', days_of_week: 'days',
+  geofence_radius_m: 'radius', weekly_windows: 'per-day times', active: 'state',
+};
+
+const GATE_REASONS = {
+  absent: 'no scan',
+  no_scan: 'no scan',
+  geofence: 'scanned somewhere else',
+  geofence_fail: 'scanned somewhere else',
+  routine_incomplete: 'routine not done',
+  social_floor: 'social floor not met',
+};
+const GATE_STATUSES = {
+  succeeded: 'charged',
+  charging: 'charging…',
+  failed: 'not charged (rejected)',
+  unknown: 'unknown — may have charged',
+  capped: 'skipped — weekly cap',
+  dryrun: 'dry run — no money moved',
+  would_fire: 'would have charged',
+};
+const gateReason = r => GATE_REASONS[r] || (r || 'failed').replace(/_/g, ' ');
+const gateStatus = st => GATE_STATUSES[st] || (st || '').replace(/_/g, ' ');
 
 // The money state of the gate system, in the panel where the gates are
 // configured. It can change the three SETTINGS but never the token: that lives
@@ -5460,8 +5517,8 @@ async function renderGatesBilling(verify) {
       <div class="be-set-row">
         <span class="be-set-name">${escHtml(r.date)} · ${escHtml((state.accountabilityNodes
           .find(n => n.id === r.node_id) || {}).label || ('#' + r.node_id))}</span>
-        <span class="gb-why">${escHtml(r.failure_reason || '')}</span>
-        <span class="gb-st gb-st-${escHtml(r.charge_status || '')}">${escHtml(r.charge_status || '')}</span>
+        <span class="gb-why">${escHtml(gateReason(r.failure_reason))}</span>
+        <span class="gb-st gb-st-${escHtml(r.charge_status || '')}">${escHtml(gateStatus(r.charge_status))}</span>
         <span class="gb-amt">${r.amount_cents != null ? money(r.amount_cents) : '—'}</span>
       </div>`).join('')}</div>`
       : '<div class="be-hint">No failures judged this week.</div>'}`;
@@ -5513,10 +5570,22 @@ function gateRowOpts(n) {
   else if (otherPending.length) badge = 'pending';
   else if (Object.keys(weekly).length) badge = 'per-day';
 
+  // The sub-line is today's ANSWER where there is one — scanned, or judged and
+  // why — falling back to the geofence when the day has not spoken yet. A row
+  // that only ever restates its own settings can't tell you the gate is broken.
+  const st = n.today_state || {};
+  let today = '';
+  if (st.judged) {
+    today = `✗ ${gateReason(st.judged.failure_reason)} · ${gateStatus(st.judged.charge_status)}`;
+  } else if (st.scan) {
+    today = `✓ scanned ${st.scan.scanned_at.slice(11, 16)}`
+      + (st.scan.geofence_pass === 0 ? ' — outside the geofence' : '');
+  }
+
   return {
     id: n.id, name: n.label, dim: !n.active,
     meta: `${win} · ${formatDays(nodeDays)}`,
-    sub: geo,
+    sub: today || geo,
     badge,
   };
 }

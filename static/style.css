@@ -5374,7 +5374,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    A money surface has one job before anything else: never look armed when it
    is not, and never look safe when it is. Hence the state line first. */
 .gb-title { margin-top: 22px; }
-.gb-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 10px; }
+/* The one billing element that isn't a settings row, so it needs the row
+   grammar's side padding of its own or it bleeds to the panel edge. */
+.gb-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 6px 0 10px; padding: 0 20px;
+}
 .gb-state { font: 600 11px var(--font-mono); letter-spacing: 0.06em; }
 .gb-live { color: var(--danger); }
 .gb-off { color: var(--text-secondary); }
@@ -5382,7 +5387,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .gb-token { font: 11px var(--font-mono); color: var(--text-primary); flex: 1; }
 .gb-hint { font: 10px var(--font-mono); color: var(--text-secondary); margin: 2px 0 10px; }
 .be-hint code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
-.gb-on { color: var(--on-accent); background: var(--accent); border-radius: 10px; }
+.gb-on { color: var(--on-accent); background: var(--accent); border-radius: 10px; padding: 3px 10px; }
 .gb-spent { font: 11px var(--font-mono); color: var(--text-primary); }
 .gb-bar { flex: 1; height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .gb-bar i { display: block; height: 100%; background: var(--accent); }
