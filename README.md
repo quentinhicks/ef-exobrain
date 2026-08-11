@@ -2,6 +2,8 @@
 
 Software that provides freedom through giving you control of the future. NOTE: Built for personal use, but open source for inspiration.
 
+<img width="427" height="833" alt="image" src="https://github.com/user-attachments/assets/331e76dd-fb8f-4aa6-9f1e-8ad9b5071815" />
+
 ## What's the problem?
 
 > Lacking self-control robs you of free will
