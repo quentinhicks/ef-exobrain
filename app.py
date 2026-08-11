@@ -1362,6 +1362,8 @@ def patch_habit_experiment(id):
     out = storage.evaluate_habit_experiment(id, outcome)
     if out is None:
         return jsonify({'error': 'only a resolved experiment can be evaluated'}), 404
+    if out.get('error') == 'promoted':
+        return jsonify({'error': 'one promotion per week — this week\'s is already taken'}), 409
     return jsonify(out)
 
 

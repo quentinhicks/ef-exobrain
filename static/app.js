@@ -2950,21 +2950,26 @@ function habitHealthDot(t) {
 function habitReviewHtml(hb) {
   if (!hb) return '';
   const ex = hb.experiments || {};
+  // Experiments are STARTED and RESOLVED in the journal — that is where the
+  // day gets written down. The review only EVALUATES what is already resolved,
+  // and promotion is rationed: ONE experiment becomes a habit per review week,
+  // so the rest wait (which is simply not acting on them).
+  const spent = (ex.promoted_this_week || []).length > 0;
   const exBlock = `
-    <div class="gr-ht-head">Experiment</div>
+    <div class="gr-ht-head">Resolved experiments</div>
     ${ex.running ? `<div class="gr-ht-line">${escHtml(ex.running.content)}
-        <span class="gr-ht-counts">running since ${escHtml(ex.running.started_on)}</span>
-        <button class="cl-pill" data-exresolve="${ex.running.id}">resolve</button></div>`
-      : `<div class="gr-ht-line"><input type="text" id="gr-exp-new" class="gr-ht-input"
-          placeholder="start one — change a single cue, response cost, or reward">
-        <button class="cl-pill" id="gr-exp-start">start</button></div>`}
-    ${(ex.awaiting || []).map(e => `<div class="gr-ht-line" data-exid="${e.id}">
+        <span class="gr-ht-counts">still running — resolve it in the journal</span></div>` : ''}
+    ${spent ? `<div class="gr-ht-counts">promoted this week: ${
+      escHtml(ex.promoted_this_week[0].content)} — the rest wait for next review</div>` : ''}
+    ${(ex.awaiting || []).length ? ex.awaiting.map(e => `<div class="gr-ht-line" data-exid="${e.id}">
       ${escHtml(e.content)} <span class="gr-ht-counts">resolved: ${escHtml(e.resolution || '—')}</span>
       <span class="gr-ht-verbs">
-        <button class="cl-pill" data-exverb="extend" title="it worked — adopt it in another context too">extend</button>
-        <button class="cl-pill" data-exverb="habit" title="start forming it as a tracked habit">habit</button>
+        ${spent ? '' : '<button class="cl-pill" data-exverb="habit" title="promote it: start forming it as a tracked habit. One per week.">make a habit</button>'}
+        <button class="cl-pill" data-exverb="extend" title="carry it further yourself, off the tracker — no habit is created">extend</button>
+        <button class="cl-pill" data-exverb="wait" title="leave it resolved; it will be here next review">wait</button>
         <button class="cl-pill" data-exverb="drop">drop</button>
-      </span></div>`).join('')}`;
+      </span></div>`).join('')
+      : '<div class="gr-ht-counts">nothing resolved to judge — experiments start in the journal</div>'}`;
   const hbBlock = (hb.forming || []).length ? `
     <div class="gr-ht-head">Habits forming</div>
     ${hb.forming.map(h => {
@@ -3007,10 +3012,16 @@ async function habitVerb(id, verb, name) {
 }
 
 async function experimentVerb(id, verb, name) {
+  // WAIT is the honest no-op: the experiment is already resolved-and-awaiting,
+  // so choosing to leave it writes nothing. It exists as a button because
+  // "I considered it and left it" and "I never looked" should not be the same
+  // gesture.
+  if (verb === 'wait') { toast(`left for next review: ${name}`); return; }
   const res = await fetch(`/api/habit-experiments/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ outcome: verb }),
-  }).then(r => r.json());
+  });
+  if (!res.ok) { toast((await res.json()).error || 'could not evaluate'); return; }
   // Undoing an evaluation also unmints the habit it may have created — half
   // an undo would strand a habit nothing decided on.
   pushUndo(`${verb === 'habit' ? 'promoted' : verb + 'ed'} experiment "${name}"`, async () => {
@@ -3161,28 +3172,6 @@ function renderGtdReview() {
     const e = gtdReview.habits.experiments.awaiting.find(x => x.id === parseInt(row.dataset.exid));
     experimentVerb(e.id, b.dataset.exverb, e.content);
   }));
-  const exResolve = panel.querySelector('[data-exresolve]');
-  if (exResolve) exResolve.addEventListener('click', async () => {
-    const note = prompt('How did it resolve? One line — this is the evidence the verbs judge.');
-    if (note == null) return;
-    await fetch(`/api/habit-experiments/${exResolve.dataset.exresolve}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resolution: note }),
-    });
-    await openGtdReview();
-  });
-  const exStart = panel.querySelector('#gr-exp-start');
-  if (exStart) exStart.addEventListener('click', async () => {
-    const content = panel.querySelector('#gr-exp-new').value.trim();
-    if (!content) return;
-    const res = await fetch('/api/habit-experiments', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    });
-    if (!res.ok) { toast((await res.json()).error || 'could not start'); return; }
-    await openGtdReview();
-  });
-
   panel.querySelectorAll('.gr-cb').forEach(cb => {
     cb.addEventListener('change', async () => {
       gtdReview = await fetch('/api/gtd-review/step', {
@@ -6326,11 +6315,21 @@ function renderJournalHabit(hb) {
   const el = document.getElementById('journal-habit');
   if (!el) return;
   if (!hb) { el.innerHTML = '<span class="jh-empty">Habits unavailable.</span>'; return; }
+  journalView.habits = hb;
   const ex = hb.experiments || {};
   const rows = [];
+  // START and RESOLVE live here (2026-08-11): an experiment is a thing you
+  // notice while writing the day, not a decision you take once a week. The
+  // review only judges what is already resolved.
   if (ex.running) {
     rows.push(`<div class="jh-row"><span class="jh-label">experiment</span>
-      ${escHtml(ex.running.content)} <span class="jh-since">since ${escHtml(ex.running.started_on)}</span></div>`);
+      ${escHtml(ex.running.content)} <span class="jh-since">since ${escHtml(ex.running.started_on)}</span>
+      <button class="cl-pill" id="jh-resolve" data-id="${ex.running.id}">resolve</button></div>`);
+  } else {
+    rows.push(`<div class="jh-row"><span class="jh-label">experiment</span>
+      <input type="text" id="jh-exp-new" class="gr-ht-input"
+        placeholder="start one — change a single cue, response cost, or reward">
+      <button class="cl-pill" id="jh-exp-start">start</button></div>`);
   }
   (ex.awaiting || []).forEach(e => rows.push(
     `<div class="jh-row"><span class="jh-label">resolved</span>
@@ -6345,8 +6344,31 @@ function renderJournalHabit(hb) {
   (hb.legacy || []).forEach(w => rows.push(
     `<div class="jh-row jh-legacy">${escHtml(w.habit)}
       <span class="jh-since">week of ${escHtml(w.week_start_date)} (pre-ledger)</span></div>`));
-  el.innerHTML = rows.length ? rows.join('')
-    : '<span class="jh-empty">No habits or experiments yet — start one at the weekly review.</span>';
+  el.innerHTML = rows.join('');
+
+  const start = el.querySelector('#jh-exp-start');
+  if (start) start.addEventListener('click', async () => {
+    const content = el.querySelector('#jh-exp-new').value.trim();
+    if (!content) return;
+    const res = await fetch('/api/habit-experiments', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!res.ok) { toast((await res.json()).error || 'could not start'); return; }
+    renderJournalHabit(await fetch('/api/habits').then(r => r.json()));
+  });
+  const resolve = el.querySelector('#jh-resolve');
+  if (resolve) resolve.addEventListener('click', async () => {
+    // The resolution is the EVIDENCE the review's verbs judge, so it is asked
+    // for here rather than reconstructed from memory a week later.
+    const note = prompt('How did it resolve? One line.');
+    if (note == null) return;
+    await fetch(`/api/habit-experiments/${resolve.dataset.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resolution: note }),
+    });
+    renderJournalHabit(await fetch('/api/habits').then(r => r.json()));
+  });
 }
 
 // --- nightly-fill window + 10-min hard-capped session ---

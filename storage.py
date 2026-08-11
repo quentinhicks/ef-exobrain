@@ -3234,8 +3234,12 @@ def resolve_habit_experiment(id, resolution, today=None):
 
 def evaluate_habit_experiment(id, outcome, today=None):
     # The verb is passed at the WEEKLY REVIEW, never before: a resolved
-    # experiment stays awaiting-evaluation however long ago it resolved.
-    # 'habit' is the one outcome with a side effect — the habit starts here.
+    # experiment stays awaiting-evaluation however long ago it resolved, and
+    # 'wait' is simply not acting. 'habit' is the one outcome with a side
+    # effect — the habit starts here — and only ONE promotion per review week
+    # (Quentin, 2026-08-11): a week's attention goes to one new habit, and the
+    # rest keep waiting. Refused here as well as hidden in the UI, so the rule
+    # survives a second surface later.
     today = today or date_cls.today().isoformat()
     conn = get_conn()
     row = conn.execute(
@@ -3243,6 +3247,14 @@ def evaluate_habit_experiment(id, outcome, today=None):
     if not row:
         conn.close()
         return None
+    if outcome == 'habit':
+        week = _week_start(date_cls.fromisoformat(today))
+        taken = conn.execute(
+            """SELECT id FROM habit_experiment
+               WHERE outcome = 'habit' AND evaluated_on >= ?""", (week,)).fetchone()
+        if taken:
+            conn.close()
+            return {'error': 'promoted'}
     conn.execute(
         """UPDATE habit_experiment SET status = 'evaluated', outcome = ?, evaluated_on = ?
            WHERE id = ?""", (outcome, today, id))
@@ -3274,9 +3286,14 @@ def get_habit_experiments_overview(today):
     evaluated = [dict(r) for r in conn.execute(
         "SELECT * FROM habit_experiment WHERE status = 'evaluated' AND evaluated_on >= ? ORDER BY evaluated_on DESC",
         (d30,)).fetchall()]
+    week = _week_start(date_cls.fromisoformat(today))
+    promoted = [dict(r) for r in conn.execute(
+        """SELECT * FROM habit_experiment
+           WHERE outcome = 'habit' AND evaluated_on >= ?""", (week,)).fetchall()]
     conn.close()
     return {'running': dict(running) if running else None,
-            'awaiting': awaiting, 'evaluated': evaluated}
+            'awaiting': awaiting, 'evaluated': evaluated,
+            'promoted_this_week': promoted}
 
 
 # --- Monthly Reviews ---
