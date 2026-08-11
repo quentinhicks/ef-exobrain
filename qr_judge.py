@@ -205,16 +205,6 @@ def outcomes(from_date, to_date, now=None):
     return out
 
 
-if __name__ == '__main__':
-    found = judge(verbose=True)
-    # Stamped so the panel can answer "is this actually running?" — the first
-    # question about a judge on a timer, and one nothing else could answer: a
-    # quiet week and a dead service produce the same empty log.
-    storage.set_setting('gate_judge_last_run', datetime.now().isoformat(timespec='seconds'))
-    print('qr-judge: %d failure(s) recorded %s' % (len(found), datetime.now().isoformat()))
-    sys.exit(0)
-
-
 # ── The 24h gates ─────────────────────────────────────────────────────────
 #
 # The whole accountability system rests on not being able to weaken a
@@ -439,3 +429,20 @@ def charge_for_failure(node, ymd, reason, sender=None):
     storage.qr_settle_charge(node['id'], ymd, final, charge_id,
                              None if final == 'failed' else amount)
     return final
+
+
+# The entry point stays at the BOTTOM of the file, and that is load-bearing:
+# `if __name__ == '__main__'` runs the moment the interpreter reaches it, so
+# every function judge() calls has to be defined ABOVE it. It sat mid-file and
+# the charging half was ported below it, which meant the timer's judge raised
+# NameError: charge_for_failure — but only on a day that actually had an
+# unjudged failure to charge for. Importing the module (every test does) defines
+# everything first, so the whole suite passed while production crashed.
+if __name__ == '__main__':
+    found = judge(verbose=True)
+    # Stamped so the panel can answer "is this actually running?" — the first
+    # question about a judge on a timer, and one nothing else could answer: a
+    # quiet week and a dead service produce the same empty log.
+    storage.set_setting('gate_judge_last_run', datetime.now().isoformat(timespec='seconds'))
+    print('qr-judge: %d failure(s) recorded %s' % (len(found), datetime.now().isoformat()))
+    sys.exit(0)
