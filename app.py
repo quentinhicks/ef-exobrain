@@ -91,9 +91,13 @@ def _update_config(values):
     return current
 
 
-_QR_WORKER_URL = config.get('qr_worker_url', '')
-_QR_ADMIN_SECRET = config.get('qr_admin_secret', '')
-_QR_INTERNAL_SECRET = config.get('qr_internal_secret', '')
+# Where a gate's SCAN URL points. The judge and the scan server both live on
+# this box now, and qr_scan_server writes the qr_scan rows qr_judge reads — so a
+# link built from the old Worker host would log a scan into a database nothing
+# judges. `qr_worker_url` stays as the fallback so an unmigrated config.json
+# keeps rendering a link at all.
+_GATE_SCAN_URL = (config.get('gate_scan_url')
+                  or config.get('qr_worker_url', ''))
 # qr_todo_node_ids is retired: QR judgment is presence-only since the daily
 # to-do list was removed (2026-08). Left unread so old config.json files with
 # the key still load.
@@ -119,201 +123,6 @@ if not os.environ.get('PT_SERVER'):
     _seed_calendars()
 
 
-def _qr_internal(method, path, body=None):
-    if not _QR_INTERNAL_SECRET:
-        return None, 0
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(_QR_WORKER_URL + path, data=data, method=method)
-    req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-    req.add_header('User-Agent', 'productivity-tracker/1.0')
-    if data:
-        req.add_header('Content-Type', 'application/json')
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body_txt = resp.read()
-            return (json.loads(body_txt) if body_txt else None), resp.status
-    except Exception:
-        return None, 0
-
-
-def _push_people_snapshot():
-    if not _QR_INTERNAL_SECRET:
-        return
-    payload = {
-        'content': json.dumps(storage.get_people(include_archived=True)),
-        'updated_at': datetime.now(timezone.utc).isoformat(),
-    }
-    _qr_internal('POST', '/internal/people-snapshot', payload)
-
-
-def _push_crm_outcome(date):
-    _qr_internal('POST', '/internal/crm-outcome', {'date': date, 'satisfied': 1})
-
-
-def _pull_people_capture():
-    if not _QR_INTERNAL_SECRET:
-        return
-    data, status = _qr_internal('GET', '/internal/people-capture')
-    if status != 200 or not data or not data.get('content'):
-        return
-    try:
-        ops = json.loads(data['content'])
-    except Exception:
-        ops = []
-    if not ops:
-        return
-    storage.apply_people_capture(ops)
-    # clear the capture blob so phone entries aren't re-applied
-    _qr_internal('POST', '/internal/people-capture',
-                 {'content': '[]', 'updated_at': datetime.now(timezone.utc).isoformat()})
-
-
-def _sync_people():
-    _pull_people_capture()
-    _push_people_snapshot()
-
-
-# --- Social gamification sync (rides the same content-endpoint family as todo/
-# inbox, NOT the CRM/people path). App pushes the catalog+floor+total; the phone
-# /social page appends taps to a capture blob that the app pulls and clears. ---
-
-def _push_social_config():
-    if not _QR_INTERNAL_SECRET:
-        return
-    settings = storage.get_settings()
-    floor = settings.get('social_floor')
-    actions = [{'id': a['id'], 'label': a['label'], 'points': a['points'],
-                'category': a['category'], 'initiation': a['initiation'],
-                'once_per_day': a['once_per_day']}
-               for a in storage.get_social_actions()]
-    _qr_internal('POST', '/internal/social-config', {
-        'node_id': settings.get('qr_sleep_node_id'),
-        'floor': int(floor) if floor is not None else None,
-        'actions': actions,
-    })
-
-
-def _push_social_total(date):
-    if not _QR_INTERNAL_SECRET:
-        return
-    _qr_internal('POST', '/internal/social-total',
-                 {'date': date, 'total': storage.social_points_for_date(date)})
-
-
-def _pull_social_capture():
-    if not _QR_INTERNAL_SECRET:
-        return
-    data, status = _qr_internal('GET', '/internal/social-capture')
-    if status != 200 or not data or not data.get('content'):
-        return
-    try:
-        ops = json.loads(data['content'])
-    except Exception:
-        ops = []
-    dates = set()
-    for op in ops:
-        if op.get('action_id') and op.get('date'):
-            storage.log_social_interaction(
-                {'action_id': op['action_id'], 'date': op['date'], 'source': 'phone'})
-            dates.add(op['date'])
-    # clear the capture blob so phone taps aren't re-applied
-    _qr_internal('POST', '/internal/social-capture',
-                 {'content': '[]', 'updated_at': datetime.now(timezone.utc).isoformat()})
-    for d in dates:
-        _push_social_total(d)
-
-
-def _sync_social():
-    _pull_social_capture()
-    _push_social_config()
-    _push_social_total(date_cls.today().isoformat())
-
-
-# --- Journal sync (nightly fill lives on the sleep-QR phone form) ---
-
-# Tell the Worker which node opens the journal form and what this week's habit
-# is, so the /journal page can label the daily habit mark and the scan page can
-# redirect after the sleep scan.
-def _push_journal_config():
-    if not _QR_INTERNAL_SECRET:
-        return
-    today = date_cls.today().isoformat()
-    hw = storage.get_habit_week_for(today)
-    settings = storage.get_settings()
-    _qr_internal('POST', '/internal/journal-config', {
-        'node_id': settings.get('qr_sleep_node_id'),
-        'habit': hw['habit'] if hw else '',
-        'habit_week_start': hw['week_start_date'] if hw else '',
-    })
-
-
-# Pull phone-written entries and merge into the local mirror (last-write-wins).
-def _pull_journal_entries():
-    if not _QR_INTERNAL_SECRET:
-        return
-    data, status = _qr_internal('GET', '/internal/journal-entries')
-    if status != 200 or not data or not isinstance(data.get('entries'), list):
-        return
-    storage.merge_journal_entries(data['entries'])
-
-
-# Push one locally-edited row back to the Worker so the cloud mirror matches.
-def _push_journal_entry(row):
-    if not _QR_INTERNAL_SECRET or not row:
-        return
-    _qr_internal('POST', '/internal/journal-entries', {
-        'date': row['date'],
-        'bottleneck': row.get('bottleneck') or '',
-        'active_experiment': row.get('active_experiment') or '',
-        'rating': row.get('rating'),
-        'habit_mark': row.get('habit_mark'),
-        'updated_at': row.get('updated_at'),
-    })
-
-
-def _sync_journal():
-    _pull_journal_entries()
-    _push_journal_config()
-
-
-def _qr_admin(method, path, body=None):
-    url = _QR_WORKER_URL + path
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header('Authorization', f'Bearer {_QR_ADMIN_SECRET}')
-    req.add_header('User-Agent', 'productivity-tracker/1.0')
-    if data:
-        req.add_header('Content-Type', 'application/json')
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read()), resp.status
-    except urllib.error.HTTPError as e:
-        body = e.read()
-        try:
-            return json.loads(body), e.code
-        except Exception:
-            return {'error': body.decode(errors='replace')}, e.code
-
-
-def _flush_todo_pushes():
-    if not _QR_INTERNAL_SECRET:
-        return
-    for row in storage.pending_todo_pushes():
-        body = json.dumps({'node_id': row['node_id'], 'date': row['date']}).encode()
-        req = urllib.request.Request(
-            _QR_WORKER_URL + '/internal/todo-submitted', data=body, method='POST'
-        )
-        req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-        req.add_header('Content-Type', 'application/json')
-        req.add_header('User-Agent', 'productivity-tracker/1.0')
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status == 200:
-                    storage.clear_todo_push(row['node_id'], row['date'])
-        except Exception:
-            pass
-
-
 def _parse_ts(ts):
     dt = datetime.fromisoformat(ts.replace('Z', '+00:00').replace(' ', 'T'))
     if dt.tzinfo is None:
@@ -321,144 +130,8 @@ def _parse_ts(ts):
     return dt
 
 
-def _sync_todo_content():
-    if not _QR_INTERNAL_SECRET:
-        return 0
-    for todo in storage.get_unsynced_todos():
-        payload = {
-            'date': todo['date'],
-            'content': todo['content'],
-            'updated_at': _parse_ts(todo['updated_at'] or todo['created_at']).isoformat(),
-        }
-        for _ in range(2):
-            req = urllib.request.Request(
-                _QR_WORKER_URL + '/internal/todo-content',
-                data=json.dumps(payload).encode(), method='POST'
-            )
-            req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-            req.add_header('Content-Type', 'application/json')
-            req.add_header('User-Agent', 'productivity-tracker/1.0')
-            try:
-                urllib.request.urlopen(req, timeout=10)
-                storage.clear_todo_synced(todo['date'])
-            except urllib.error.HTTPError as e:
-                if e.code == 409:
-                    remote = json.loads(e.read())
-                    if todo['content'] and not remote.get('content'):
-                        payload['updated_at'] = datetime.now(timezone.utc).isoformat()
-                        continue
-                    storage.apply_remote_todo(remote['date'], remote['content'], remote['updated_at'])
-            except Exception:
-                pass
-            break
-    return len(storage.get_unsynced_todos())
-
-
-def _pull_todo_content():
-    if not _QR_INTERNAL_SECRET:
-        return
-    req = urllib.request.Request(_QR_WORKER_URL + '/internal/todo-content')
-    req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-    req.add_header('User-Agent', 'productivity-tracker/1.0')
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            remote = json.loads(resp.read())
-    except Exception:
-        return
-    if not remote.get('date'):
-        return
-    local = storage.get_todo(remote['date'])
-    local_ts = local and (local['updated_at'] or local['created_at'])
-    if local_ts and _parse_ts(local_ts) >= _parse_ts(remote['updated_at']):
-        return
-    if local and local['content'] and not remote.get('content'):
-        return
-    storage.apply_remote_todo(remote['date'], remote['content'], remote['updated_at'])
-
-
-def _sync_inbox_content():
-    if not _QR_INTERNAL_SECRET:
-        return
-    sync = storage.get_inbox_sync_state()
-    if not sync['unsynced']:
-        return
-    payload = {
-        'content': storage.inbox_content_blob(),
-        'updated_at': sync['updated_at'] or datetime.now(timezone.utc).isoformat(),
-    }
-    for _ in range(2):
-        req = urllib.request.Request(
-            _QR_WORKER_URL + '/internal/inbox-content',
-            data=json.dumps(payload).encode(), method='POST'
-        )
-        req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-        req.add_header('Content-Type', 'application/json')
-        req.add_header('User-Agent', 'productivity-tracker/1.0')
-        try:
-            urllib.request.urlopen(req, timeout=10)
-            storage.clear_inbox_synced()
-        except urllib.error.HTTPError as e:
-            if e.code == 409:
-                remote = json.loads(e.read())
-                if payload['content'] and not remote.get('content'):
-                    payload['updated_at'] = datetime.now(timezone.utc).isoformat()
-                    continue
-                storage.apply_remote_inbox(remote.get('content', ''), remote['updated_at'])
-        except Exception:
-            pass
-        break
-
-
-def _pull_inbox_content():
-    if not _QR_INTERNAL_SECRET:
-        return
-    req = urllib.request.Request(_QR_WORKER_URL + '/internal/inbox-content')
-    req.add_header('Authorization', f'Bearer {_QR_INTERNAL_SECRET}')
-    req.add_header('User-Agent', 'productivity-tracker/1.0')
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            remote = json.loads(resp.read())
-    except Exception:
-        return
-    if not remote.get('updated_at'):
-        return
-    local_ts = storage.get_inbox_sync_state()['updated_at']
-    if local_ts and _parse_ts(local_ts) >= _parse_ts(remote['updated_at']):
-        return
-    if storage.inbox_content_blob() and not remote.get('content'):
-        return
-    storage.apply_remote_inbox(remote.get('content', ''), remote['updated_at'])
-
-
 def _touch_and_sync_inbox():
     storage.touch_inbox()
-    threading.Thread(target=_sync_inbox_content, daemon=True).start()
-
-
-def _startup_todo_sync():
-    _pull_todo_content()
-    today = date_cls.today().isoformat()
-    todo = storage.get_todo(today)
-    if todo and todo['content']:
-        storage.mark_todo_unsynced(today)
-    _sync_todo_content()
-    _pull_inbox_content()
-    if storage.inbox_content_blob():
-        storage.mark_inbox_unsynced()
-    _sync_inbox_content()
-    _flush_todo_pushes()
-
-
-# Worker-sync threads belong wherever the DATABASE lives: the local/headless
-# process, never a PT_SERVER client (which has no db and must not create one).
-if not os.environ.get('PT_SERVER'):
-    threading.Thread(target=_startup_todo_sync, daemon=True).start()
-    threading.Thread(target=_sync_people, daemon=True).start()
-    # Pushes the sleep node id + current habit so the scan page can hand off to
-    # /journal, and pulls any phone-written entries into the local mirror.
-    threading.Thread(target=_sync_journal, daemon=True).start()
-    # Pushes the social catalog/floor/total and pulls any phone-logged interactions.
-    threading.Thread(target=_sync_social, daemon=True).start()
 
 
 @app.route('/')
@@ -956,46 +629,49 @@ def get_social_day_route():
     return jsonify(storage.get_social_day(date))
 
 
-# The day's spec'd conversation is also a NEXT ACTION: setting a spec mints a
-# pool item ("Social plan: …", tag 5m — the message is already drafted — due
-# today), so the plan shows up where the day is worked, not only in the Social
-# tab. One per date: re-speccing replaces it; deleting the spec removes it.
+# Each spec'd interaction is also a NEXT ACTION: it mints a pool item
+# ("Social plan: …", tag 5m — the message is already drafted — due today), so
+# the plan shows up where the day is worked, not only in the Social tab. One
+# item PER SPEC (a day's plan may hold several interactions since 2026-08-11);
+# the whole set is rebuilt from the day's specs on every spec write, so
+# add/remove can't drift from what is planned.
 _SOCIAL_ITEM_PREFIX = 'Social plan: '
 
-def _social_spec_item(date, spec):
+def _social_spec_items(date):
     for it in storage.get_inbox_items_like(_SOCIAL_ITEM_PREFIX + '%', date):
         storage.delete_inbox_item(it['id'])
-    if spec is None:
-        return
-    who = spec.get('person') or ''
-    opener = (spec.get('opener') or '').strip()
-    label = _SOCIAL_ITEM_PREFIX + (', '.join(x for x in [who, opener] if x) or 'run the spec')
     # The pool JOINs area, so an area-less row would never show: default area.
     default = next((a for a in storage.get_areas()
                     if a.get('is_default') and a.get('active')), None)
-    item = storage.create_inbox_item(label[:120], 'active',
-                                     default['id'] if default else None, None, '5m')
-    storage.update_inbox_item(item['id'], deadline=date)
+    for spec in storage.get_social_day(date)['specs']:
+        who = spec.get('person') or ''
+        opener = (spec.get('opener') or '').strip()
+        label = _SOCIAL_ITEM_PREFIX + (', '.join(x for x in [who, opener] if x) or 'run the spec')
+        item = storage.create_inbox_item(label[:120], 'active',
+                                         default['id'] if default else None, None, '5m')
+        storage.update_inbox_item(item['id'], deadline=date)
 
 
-@app.route('/api/social/spec', methods=['PUT'])
-def put_social_spec():
+@app.route('/api/social/specs', methods=['POST'])
+def post_social_spec():
     data = request.get_json()
     date = data.get('date') or date_cls.today().isoformat()
-    spec = storage.upsert_social_spec(date, data.get('family', 'directed'),
-                                      data.get('levels') or {},
-                                      data.get('person'), data.get('opener'))
+    # id+price present only when an undo replays a removed spec verbatim.
+    spec = storage.add_social_spec(date, data.get('family', 'directed'),
+                                   data.get('levels') or {},
+                                   data.get('person'), data.get('opener'),
+                                   id=data.get('id'), price=data.get('price'))
     if spec is None:
         return jsonify({'error': 'unpriceable — calibrate the chosen levels first'}), 400
-    _social_spec_item(date, dict(spec) if not isinstance(spec, dict) else spec)
-    return jsonify(spec)
+    _social_spec_items(date)
+    return jsonify(spec), 201
 
 
-@app.route('/api/social/spec', methods=['DELETE'])
-def delete_social_spec_route():
-    date = request.args.get('date') or date_cls.today().isoformat()
-    storage.delete_social_spec(date)
-    _social_spec_item(date, None)
+@app.route('/api/social/specs/<int:id>', methods=['DELETE'])
+def delete_social_spec_route(id):
+    date = storage.delete_social_spec(id)
+    if date:
+        _social_spec_items(date)
     return '', 204
 
 
@@ -1140,21 +816,15 @@ def get_todo_today():
 def patch_todo_today():
     data = request.get_json()
     today = date_cls.today().isoformat()
-    todo = storage.update_todo(today, **data)
-    if 'content' in data:
-        storage.mark_todo_unsynced(today)
-        threading.Thread(target=_sync_todo_content, daemon=True).start()
-    return jsonify(todo)
+    return jsonify(storage.update_todo(today, **data))
 
 
 @app.route('/api/todo/sync', methods=['POST'])
 def sync_todo():
-    _pull_todo_content()
-    _pull_inbox_content()
-    _sync_inbox_content()
-    _flush_todo_pushes()
+    # Dormant with the rest of /api/todo/*. Nothing syncs to a Worker any more;
+    # it keeps the daily backup it always triggered.
     threading.Thread(target=_daily_backup, daemon=True).start()
-    return jsonify({'pending': _sync_todo_content()})
+    return jsonify({'pending': 0})
 
 
 @app.route('/api/todo/yesterday')
@@ -1207,7 +877,7 @@ def get_settings():
     # needs it to build scan URLs. Serving it here keeps ONE source of truth —
     # it used to be hardcoded separately in app.js, so changing the Worker
     # meant changing two files and finding out later if you missed one.
-    return jsonify(dict(storage.get_settings(), qr_worker_url=_QR_WORKER_URL))
+    return jsonify(dict(storage.get_settings(), gate_scan_url=_GATE_SCAN_URL))
 
 
 VALID_TIMEZONES = [
@@ -1251,7 +921,7 @@ def patch_settings():
         threading.Thread(target=_refresh_all_calendars, daemon=True).start()
     # Same shape as GET — a client that assigns this response over its settings
     # state would otherwise lose qr_worker_url until the next full load.
-    return jsonify(dict(storage.get_settings(), qr_worker_url=_QR_WORKER_URL))
+    return jsonify(dict(storage.get_settings(), gate_scan_url=_GATE_SCAN_URL))
 
 
 @app.route('/api/timezones')
@@ -1315,6 +985,64 @@ def _refresh_all_calendars():
 def refresh_gcal():
     _refresh_all_calendars()
     return jsonify(storage.get_gcal_events())
+
+
+# Calendar WRITES (2026-08-11). Config-gated: gcal_write_calendar_id names the
+# Google calendar (shared with the service account), gcal_write_source_id the
+# local calendar_source whose feed mirrors it (where the optimistic insert
+# lands), gcal_credentials_path the service-account JSON. Creates only —
+# gcal stays a read-only mirror for everything fetched; the one thing the app
+# may delete on Google is an event it created itself, and only as the undo.
+def _gcal_write_conf():
+    return (config.get('gcal_write_calendar_id'),
+            config.get('gcal_credentials_path', 'credentials.json'),
+            config.get('gcal_write_source_id'))
+
+
+@app.route('/api/gcal/events', methods=['POST'])
+def post_gcal_event():
+    cal_id, creds, src = _gcal_write_conf()
+    if not cal_id or not os.path.exists(creds):
+        return jsonify({'error': 'Calendar writes not configured: set '
+                        'gcal_write_calendar_id in config.json and put the '
+                        f'service-account JSON at {creds}'}), 400
+    data = request.get_json()
+    summary = (data.get('summary') or '').strip()
+    day, start, end = data.get('date'), data.get('start'), data.get('end')
+    if not summary or not day or not start:
+        return jsonify({'error': 'summary, date and start are required'}), 400
+    start_dt = datetime.strptime(f'{day}T{start}', '%Y-%m-%dT%H:%M')
+    end_dt = (datetime.strptime(f'{day}T{end}', '%Y-%m-%dT%H:%M')
+              if end else start_dt + timedelta(minutes=60))
+    # An end at/before the start reads as past midnight, same rule as sleep
+    # deadlines.
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+    try:
+        created = aggregator.create_gcal_event(creds, cal_id, summary,
+                                               start_dt, end_dt)
+    except Exception as e:
+        return jsonify({'error': f'Google refused the write: {e}'}), 502
+    if src:
+        storage.insert_gcal_event(src, created['uid'], summary,
+                                  start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                                  end_dt.strftime('%Y-%m-%dT%H:%M:%S'))
+    return jsonify(created)
+
+
+@app.route('/api/gcal/events/<event_id>', methods=['DELETE'])
+def delete_gcal_event_route(event_id):
+    cal_id, creds, src = _gcal_write_conf()
+    if not cal_id or not os.path.exists(creds):
+        return jsonify({'error': 'Calendar writes not configured'}), 400
+    try:
+        aggregator.delete_gcal_event(creds, cal_id, event_id)
+    except Exception as e:
+        return jsonify({'error': f'Google refused the delete: {e}'}), 502
+    uid = request.args.get('uid', '')
+    if src and uid:
+        storage.delete_gcal_event_by_uid(src, uid)
+    return jsonify({'ok': True})
 
 
 @app.route('/api/dismissals')
@@ -1511,10 +1239,10 @@ def get_journal():
     })
 
 
-# Pull phone entries from the Worker, merge, and return the fresh local view.
+# Kept as the client's refresh hook; there is no phone mirror to pull any more,
+# so it just returns the local view (the nightly journal is a flow step in-app).
 @app.route('/api/journal/sync', methods=['POST'])
 def sync_journal_route():
-    _sync_journal()
     today = date_cls.today().isoformat()
     return jsonify({
         'days': storage.get_journal_days(),
@@ -1552,7 +1280,6 @@ def patch_journal(date):
         else:
             return jsonify({'error': 'habit_mark must be ehh, good, or great'}), 400
     row = storage.upsert_journal_day(date, fields)
-    threading.Thread(target=_push_journal_entry, args=(row,), daemon=True).start()
     return jsonify(row)
 
 
@@ -1587,7 +1314,6 @@ def post_gtd_review_finish():
     if habit:
         storage.set_habit_week(week, habit)
         result['habit'] = habit
-        threading.Thread(target=_push_journal_config, daemon=True).start()
     return jsonify(result)
 
 
@@ -1810,15 +1536,10 @@ def locations():
 
 
 # --- Interactive routines (flows) ---
-
-def _push_routine_config(node_id, required):
-    _qr_internal('POST', '/internal/routine-config',
-                 {'node_id': node_id, 'required': 1 if required else 0})
-
-
-def _push_routine_done(node_id, date):
-    _qr_internal('POST', '/internal/routine-done', {'node_id': node_id, 'date': date})
-
+#
+# There is no routine push any more (2026-08-11). The gate is enforced where the
+# database is, by storage.routine_gate_for_node in qr_judge — so linking a
+# routine is a local write and nothing has to be told about it.
 
 @app.route('/api/flows')
 def get_flows_route():
@@ -1842,34 +1563,19 @@ def patch_flow(id):
     kwargs = {}
     if 'name' in data:
         kwargs['name'] = data['name']
-    old = None
     if 'qr_node_id' in data:
-        old = next((f for f in storage.get_flows() if f['id'] == id), None)
         kwargs['qr_node_id'] = data['qr_node_id']
     if 'offset_min' in data:
         kwargs['offset_min'] = data['offset_min']
     if 'before_node_id' in data:
         kwargs['before_node_id'] = data['before_node_id']
     flow = storage.update_flow(id, **kwargs)
-    # Keep the Worker's gating flag in step with the link. (If two flows ever
-    # gate one node, unlinking either unflags it — acceptable; relink fixes.)
-    if old is not None:
-        if old.get('qr_node_id') and old['qr_node_id'] != data['qr_node_id']:
-            threading.Thread(target=_push_routine_config,
-                             args=(old['qr_node_id'], False), daemon=True).start()
-        if data['qr_node_id']:
-            threading.Thread(target=_push_routine_config,
-                             args=(data['qr_node_id'], True), daemon=True).start()
     return jsonify(flow)
 
 
 @app.route('/api/flows/<int:id>', methods=['DELETE'])
 def delete_flow_route(id):
-    old = next((f for f in storage.get_flows() if f['id'] == id), None)
     storage.delete_flow(id)
-    if old and old.get('qr_node_id'):
-        threading.Thread(target=_push_routine_config,
-                         args=(old['qr_node_id'], False), daemon=True).start()
     return '', 204
 
 
@@ -1922,11 +1628,6 @@ def put_flow_run(id):
     date = data.get('date') or date_cls.today().isoformat()
     run = storage.upsert_flow_run(id, date, json.dumps(data.get('steps') or {}),
                                   bool(data.get('completed')))
-    if data.get('completed'):
-        flow = next((f for f in storage.get_flows() if f['id'] == id), None)
-        if flow and flow.get('qr_node_id'):
-            threading.Thread(target=_push_routine_done,
-                             args=(flow['qr_node_id'], date), daemon=True).start()
     return jsonify(run)
 
 
@@ -2118,7 +1819,6 @@ def patch_person(id):
 @app.route('/api/people/<int:id>', methods=['DELETE'])
 def delete_person(id):
     storage.delete_person(id)
-    threading.Thread(target=_push_people_snapshot, daemon=True).start()
     return '', 204
 
 
@@ -2142,7 +1842,6 @@ def post_people_night():
         return jsonify({'error': 'date and kind required'}), 400
     result = storage.record_crm_night(data['date'], data['kind'])
     threading.Thread(target=_push_crm_outcome, args=(data['date'],), daemon=True).start()
-    threading.Thread(target=_push_people_snapshot, daemon=True).start()
     return jsonify(result)
 
 
@@ -2158,7 +1857,7 @@ def _people_window():
         if left > 0:
             return {'open': True, 'seconds_left': int(left), 'opened_at': None}
     node_id = settings.get('qr_sleep_node_id')
-    if not node_id or not _QR_ADMIN_SECRET:
+    if not node_id:
         return {'open': False, 'seconds_left': 0, 'opened_at': None}
     data = storage.qr_recent_scans(200)
     scans = [s for s in data if str(s.get('node_id')) == str(node_id) and s.get('scanned_at')]
@@ -2225,11 +1924,10 @@ def get_social_today():
     return jsonify(_social_today_payload(date))
 
 
-# Pull phone-logged interactions from the Worker, push catalog/floor/total, and
-# return the fresh local view (the QR tab calls this in the background on open).
+# The dormant points system's refresh hook. Nothing to pull since the Worker's
+# /social page went with the rest of the phone pages.
 @app.route('/api/social/sync', methods=['POST'])
 def sync_social_route():
-    _sync_social()
     return jsonify(_social_today_payload(date_cls.today().isoformat()))
 
 
@@ -2242,7 +1940,6 @@ def post_social_log():
     row = storage.log_social_interaction(data)
     if row is None:
         return jsonify({'error': 'unknown action_id'}), 400
-    threading.Thread(target=_push_social_total, args=(data['date'],), daemon=True).start()
     return jsonify({'entry': row, 'total': storage.social_points_for_date(data['date'])}), 201
 
 

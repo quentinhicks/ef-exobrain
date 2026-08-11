@@ -4060,10 +4060,9 @@ body.np-body {
   border-radius: 4px;
 }
 /* At rest a gap is 3px — it is whitespace, and whitespace between every pair
-   of rows is what made the day loose. It only has to be a TARGET while
-   something is armed or DRAGGING, so .eg-gap-armed (below, with the touch
-   styles) opens every gap in both cases — a 3px dragover target would be
-   unhittable. */
+   of rows is what made the day loose. It only has to be a TARGET while a DRAG
+   is in flight, so .eg-gap-armed (below) opens every gap then — a 3px dragover
+   target would be unhittable. */
 .eg-gap-over {
   height: 26px;
   background: var(--tint);
@@ -4327,9 +4326,9 @@ body.np-body {
 /* The picker button is a button now, not a <select>. */
 button.eg-domain { cursor: pointer; }
 
-/* Tap-to-place: the armed action + the lit gaps (touch fallback). */
-.eg-armed { background: var(--tint); border-radius: 6px; }
-.eg-armed .eg-text { color: var(--accent); }
+/* Every gap opens while a drag is in flight. Tap-to-arm-then-tap-a-gap went
+   2026-08-11: a two-step gesture whose second target was invisible until the
+   first step, on a surface where Show-on date+time already places an action. */
 .eg-gap-armed {
   height: 22px;
   background: var(--tint-faint);
@@ -5069,7 +5068,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #fr-sheet-backdrop,
 #ctx-sheet-backdrop,
 #se-sheet-backdrop,
-#sp-sheet-backdrop {
+#sp-sheet-backdrop,
+#ev-sheet-backdrop {
   position: fixed;
   inset: 0;
   z-index: 199;
@@ -5083,7 +5083,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #fr-sheet,
 #ctx-sheet,
 #se-sheet,
-#sp-sheet {
+#sp-sheet,
+#ev-sheet {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -5220,6 +5221,17 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* Clears the Show-on time; only rendered while a time is set. */
 .cl-x { font-size: 12px; padding: 6px 4px; background: transparent; color: var(--text-secondary); }
 .cl-x:hover { color: var(--text-primary); }
+
+/* The event sheet's When row, compact: native date/time inputs default wide
+   enough to wrap the 430px column, and three of them plus a dash must read
+   as ONE line — a time span, not a form. Sized by width, not font: 12px mono
+   stays legible, the browser chrome (spinners, calendar glyph) is what gets
+   squeezed out. */
+.ev-when { gap: 5px; flex-wrap: nowrap; }
+.ev-when .cl-date { padding: 4px 5px; }
+#ev-date { width: 124px; }
+#ev-start, #ev-end { width: 82px; }
+.ev-dash { color: var(--text-secondary); font-size: 12px; }
 
 .cl-donow { padding: 2px 14px 12px; font-size: 13px; color: var(--text-secondary); }
 .cl-or { padding-bottom: 12px; }
@@ -5429,7 +5441,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #se-sheet-backdrop,
 #se-sheet,
 #sp-sheet-backdrop,
-#sp-sheet {
+#sp-sheet,
+#ev-sheet-backdrop,
+#ev-sheet {
   bottom: var(--gbar-h);
 }
 

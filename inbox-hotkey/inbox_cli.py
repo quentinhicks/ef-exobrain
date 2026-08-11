@@ -39,9 +39,19 @@ def cfg():
         return {}
 
 
-def worker():
+def server():
+    # The SERVER the app runs on, for when the local app is closed. This used to
+    # be the Cloudflare Worker's inbox blob — a store-and-forward hop that
+    # existed because "the app might not be running" once meant "there is
+    # nowhere to POST". Since the VM became always-on, the real inbox is
+    # reachable directly, so capture appends to the ONE inventory instead of to
+    # a blob the app has to reconcile later.
+    #
+    # PT_SERVER is what the client windows already use, so the hotkeys read the
+    # same value; `pt_server` in config.json is the fallback for a machine that
+    # launches them without it (Hammerspoon and AHK inherit no environment).
     c = cfg()
-    return c.get('qr_worker_url', ''), c.get('qr_internal_secret', '')
+    return (os.environ.get('PT_SERVER') or c.get('pt_server', '')).rstrip('/')
 
 
 def _req(url, data=None, method='GET', headers=None, timeout=10):
@@ -59,39 +69,22 @@ def local_add(text):
          {'Content-Type': 'application/json'}, timeout=2)
 
 
-def cloud_get():
-    url, secret = worker()
-    if not url or not secret:
-        raise RuntimeError('no worker/secret in config.json')
-    b = _req(url + '/internal/inbox-content', None, 'GET',
-             {'Authorization': 'Bearer ' + secret}, timeout=10)
-    row = json.loads(b or b'{}')
-    return row.get('content') or ''
+def remote_get():
+    url = server()
+    if not url:
+        raise RuntimeError('no PT_SERVER or pt_server in config.json')
+    b = _req(url + '/api/inbox', None, 'GET', timeout=10)
+    return [i.get('content', '') for i in json.loads(b or b'[]')]
 
 
-def cloud_post(content):
-    url, secret = worker()
-    payload = json.dumps({
-        'content': content,
-        'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }).encode()
-    _req(url + '/internal/inbox-content', payload, 'POST',
-         {'Authorization': 'Bearer ' + secret,
-          'Content-Type': 'application/json'}, timeout=10)
-
-
-def cloud_add(text):
-    for _ in range(2):
-        cur = cloud_get()
-        newc = (cur + '\n' + text) if cur else text
-        try:
-            cloud_post(newc)
-            return
-        except urllib.error.HTTPError as e:
-            if e.code == 409:
-                continue
-            raise
-    raise RuntimeError('cloud conflict, try again')
+def remote_add(text):
+    url = server()
+    if not url:
+        raise RuntimeError('no PT_SERVER or pt_server in config.json')
+    # A plain create on the real inventory — append-only, so there is no
+    # read-modify-write and none of the 409-retry the blob needed.
+    _req(url + '/api/inbox', json.dumps({'content': text}).encode(), 'POST',
+         {'Content-Type': 'application/json'}, timeout=10)
 
 
 def write_result(msg):
@@ -118,8 +111,8 @@ def do_add():
     except Exception:
         pass
     try:
-        cloud_add(text)
-        write_result('Added to inbox (cloud)')
+        remote_add(text)
+        write_result('Added to inbox (server)')
         return 0
     except Exception as e:
         write_result('FAILED: ' + str(e))
@@ -134,8 +127,7 @@ def get_items():
     except Exception:
         pass
     try:
-        lines = [l for l in cloud_get().split('\n') if l.strip()]
-        return lines, 'cloud'
+        return [l for l in remote_get() if l.strip()], 'server'
     except Exception as e:
         return None, str(e)
 

@@ -4,8 +4,8 @@
 #
 # JUDGMENT IS PRESENCE-ONLY: a window is judged the moment it closes, and the
 # test is a satisfying scan (geofence-passing where a geofence is set). The
-# retired to-do gate and the routine gate are both gone — a QR URL is location
-# proof again, and the routine surfaces live in-app as flows.
+# retired to-do gate is gone — a QR URL is location proof plus, where a routine
+# is LINKED to the gate, that routine having been done (see routine_gate_for_node).
 #
 # CHARGING IS NOT PORTED. The Worker's money path was disabled at five layers
 # and re-enabling it is a deliberate, staged protocol (QR-accountability/
@@ -227,7 +227,16 @@ def judge(now=None, verbose=False):
                 node.get('geofence_lat') is None or s.get('geofence_pass') == 1
                 for s in scans)
 
-            reason = None if satisfied else 'absent'
+            # A LINKED routine is the second half of the test. Order matters:
+            # no scan at all is the more basic failure, so it wins the reason —
+            # "routine not done" on a day you were never there would send you
+            # to fix the wrong thing.
+            routine_done = storage.routine_gate_for_node(node['id'], ymd)
+            reason = None
+            if not satisfied:
+                reason = 'absent'
+            elif routine_done is False:
+                reason = 'routine_incomplete'
             tag = '' if ymd == today else ' (%s)' % ymd
             if reason is None:
                 # NO ROW ON SUCCESS — qr_charge_log is a FAILURE log, and
@@ -291,16 +300,6 @@ def outcomes(from_date, to_date, now=None):
                                 'outcome': 'success' if ok else 'failed'})
             ymd = _date_plus(ymd, 1)
     return out
-
-
-if __name__ == '__main__':
-    found = judge(verbose=True)
-    # Stamped so the panel can answer "is this actually running?" — the first
-    # question about a judge on a timer, and one nothing else could answer: a
-    # quiet week and a dead service produce the same empty log.
-    storage.set_setting('gate_judge_last_run', datetime.now().isoformat(timespec='seconds'))
-    print('qr-judge: %d failure(s) recorded %s' % (len(found), datetime.now().isoformat()))
-    sys.exit(0)
 
 
 # ── The 24h gates ─────────────────────────────────────────────────────────
@@ -475,7 +474,20 @@ def beeminder_charge(settings, amount_cents, note, sender=None):
         return 'unknown', None
     if not ok:
         return 'failed', None
-    return ('dryrun' if settings['dryrun'] else 'succeeded'), (data or {}).get('id')
+    return ('dryrun' if settings['dryrun'] else 'succeeded'), _charge_id(data)
+
+
+def _charge_id(data):
+    # Beeminder returns Mongo extended JSON: id is {"$oid": "6a7b64..."}, not a
+    # string. Storing the dict raised sqlite3.ProgrammingError inside
+    # qr_settle_charge — AFTER the money had moved, so the charge succeeded and
+    # the row stayed 'charging' forever. Anything unrecognised is stringified
+    # rather than dropped: a charge reference is evidence, and evidence is worth
+    # keeping in whatever shape it arrives.
+    cid = (data or {}).get('id')
+    if isinstance(cid, dict):
+        cid = cid.get('$oid') or json.dumps(cid)
+    return None if cid is None else str(cid)
 
 
 def _http_post(url, body):
@@ -540,3 +552,20 @@ def charge_for_failure(node, ymd, reason, sender=None):
     storage.qr_settle_charge(node['id'], ymd, final, charge_id,
                              None if final == 'failed' else amount)
     return final
+
+
+# The entry point stays at the BOTTOM of the file, and that is load-bearing:
+# `if __name__ == '__main__'` runs the moment the interpreter reaches it, so
+# every function judge() calls has to be defined ABOVE it. It sat mid-file and
+# the charging half was ported below it, which meant the timer's judge raised
+# NameError: charge_for_failure — but only on a day that actually had an
+# unjudged failure to charge for. Importing the module (every test does) defines
+# everything first, so the whole suite passed while production crashed.
+if __name__ == '__main__':
+    found = judge(verbose=True)
+    # Stamped so the panel can answer "is this actually running?" — the first
+    # question about a judge on a timer, and one nothing else could answer: a
+    # quiet week and a dead service produce the same empty log.
+    storage.set_setting('gate_judge_last_run', datetime.now().isoformat(timespec='seconds'))
+    print('qr-judge: %d failure(s) recorded %s' % (len(found), datetime.now().isoformat()))
+    sys.exit(0)
