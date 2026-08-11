@@ -1,4 +1,4 @@
-# Executive function exobrain
+# Executive function prosthesis
 
 Software that provides freedom through giving you control of the future. NOTE: Built for personal use, but open source for inspiration.
 
