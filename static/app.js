@@ -6365,6 +6365,8 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      // are all conjunctive: every selected tag is required.
                      // Formula: domain ∧ ¬other ∧ ¬other ∧ tag ∧ tag.
                      ctxDomain: null, ctxTags: new Set(), ctxOpen: false,
+                     // Is the domain chip expanded into the full list?
+                     ctxDomainPick: false,
                      // Which routine's details card is open (area id). Session
                      // state; survives the re-render a checkoff triggers.
                      routinePop: null };
@@ -6816,12 +6818,20 @@ function renderEngage() {
   const domainChip = d => {
     const inForce = String(d.id) === String(ctxDomainId);
     const isBase = inForce && engageView.ctxDomain == null;
-    const title = isBase ? "the block calendar's domain — the resting scope"
-      : 'the domain in force — click to return to the resting scope';
+    const title = isBase ? "the block calendar's domain — tap to choose another"
+      : 'the domain in force — tap to choose another';
     return `<button class="ctx-chip ${isBase ? 'ctx-base' : 'ctx-req'}"
       data-ctx="domain:${d.id}" title="${title}"
-      >${escHtml(d.name)}</button>`;
+      >${escHtml(d.name)}${engageView.ctxDomainPick ? '' : ' ▾'}</button>`;
   };
+  // Expanded: every domain, plus the way back to letting the calendar decide.
+  const domainPicker = () => `${state.domains.map(d => {
+      const inForce = String(d.id) === String(ctxDomainId);
+      return `<button class="ctx-chip ${inForce ? 'ctx-req' : 'ctx-off'}"
+        data-pickdomain="${d.id}">${escHtml(d.name)}</button>`;
+    }).join('')}${engageView.ctxDomain != null
+      ? '<button class="ctx-chip" data-pickdomain="base" title="Follow the block calendar again">⟳ follow the day</button>'
+      : ''}`;
   const tagChip = t => {
     const on = engageView.ctxTags.has(t);
     // Markers STACK — a tag can be gated on all three axes at once, and the
@@ -6868,9 +6878,10 @@ function renderEngage() {
     <span class="eg-spacer"></span>
     <button class="eg-domain" id="eg-ctx-btn" title="Contexts — the domain in force, and every selected tag required">${escHtml(ctxLabel)} ▾</button>
     ${engageView.ctxOpen ? `<div id="eg-ctx-menu">
-      <div class="ctx-group">Domain — in force</div>
-      <div class="ctx-chips">${state.domains
-        .filter(d => String(d.id) === String(ctxDomainId)).map(domainChip).join('')}</div>
+      <div class="ctx-group">Domain${engageView.ctxDomainPick ? ' — pick one' : ' — in force'}</div>
+      <div class="ctx-chips">${engageView.ctxDomainPick ? domainPicker()
+        : state.domains.filter(d => String(d.id) === String(ctxDomainId))
+            .map(domainChip).join('')}</div>
       ${poolTags.length ? `<div class="ctx-group">Tags — every selected one required</div>
       <div class="ctx-chips">${poolTags.map(tagChip).join('')}</div>` : ''}
       <div class="ctx-foot">
@@ -6997,6 +7008,7 @@ function renderEngage() {
   });
   header.querySelector('#eg-ctx-btn').addEventListener('click', () => {
     engageView.ctxOpen = !engageView.ctxOpen;
+    engageView.ctxDomainPick = false;
     renderEngage();
   });
   // Right-click / long-press a TAG chip binds it to a location preset — the
@@ -7020,9 +7032,7 @@ function renderEngage() {
       const k = b.dataset.ctx;
       if (!k) return;   // the binding popover's chips carry data-bindloc instead
       if (k.startsWith('domain:')) {
-        const id = k.slice(7);
-        engageView.ctxDomain =
-          String(engageView.ctxDomain) === id ? null : id;
+        engageView.ctxDomainPick = true;
       } else {
         const t = k.slice(4);
         if (engageView.ctxTags.has(t)) engageView.ctxTags.delete(t);
@@ -7031,6 +7041,13 @@ function renderEngage() {
       renderEngage();
     });
   });
+  header.querySelectorAll('[data-pickdomain]').forEach(b => b.addEventListener('click', () => {
+    const v = b.dataset.pickdomain;
+    engageView.ctxDomain = v === 'base' ? null : v;
+    engageView.ctxDomainPick = false;
+    renderEngage();
+  }));
+
   const ctxClear = header.querySelector('#eg-ctx-clear');
   if (ctxClear) ctxClear.addEventListener('click', () => {
     engageView.ctxDomain = null;
@@ -7619,27 +7636,39 @@ function clarifyResetItem() {
 // [n] is the position along the walk from the head. Unchained actions get no
 // number. Returns {id: n} for every chained action in the set.
 function chainNumbers(actions) {
+  // A position is DEPTH from the head, not a step along a single path.
+  //
+  // This used to walk predecessor -> successor through a `nextOf` map, which
+  // held ONE successor per predecessor — so with a fan-out ([1] with three
+  // actions all waiting on it) the last writer won and the other two silently
+  // got no number at all. Depth handles fan-out for free: everything directly
+  // behind [1] is [2], whether that is one action or five.
+  //
+  // Storage always allowed this — after_id lives on the DEPENDENT, so any
+  // number of items may point at the same predecessor, and each unblocks on
+  // its own when that row goes. Only the numbering couldn't say so.
   const byId = {};
   actions.forEach(a => { byId[a.id] = a; });
-  const pointedAt = new Set(actions.filter(a => a.after_id && byId[a.after_id])
-    .map(a => a.after_id));
-  const nextOf = {};
-  actions.forEach(a => { if (a.after_id && byId[a.after_id]) nextOf[a.after_id] = a.id; });
+  const linked = a => a && a.after_id && byId[a.after_id];
+  // Number only what is actually IN a chain: it waits on something, or
+  // something waits on it. An unchained action has no position to state.
+  const pointedAt = new Set(actions.filter(linked).map(a => a.after_id));
+  const memo = {};
+  const depth = (a, seen) => {
+    if (!linked(a)) return 1;
+    if (memo[a.id]) return memo[a.id];
+    if (seen.has(a.id)) return 1;          // cycle guard; links can't make one
+    seen.add(a.id);
+    const d = 1 + depth(byId[a.after_id], seen);
+    memo[a.id] = d;
+    return d;
+  };
   const nums = {};
   actions.forEach(a => {
-    const isHead = pointedAt.has(a.id) && !(a.after_id && byId[a.after_id]);
-    if (!isHead) return;
-    let n = 1, cur = a.id;
-    const seen = new Set();
-    while (cur != null && !seen.has(cur)) {
-      seen.add(cur);
-      nums[cur] = n++;
-      cur = nextOf[cur];
-    }
+    if (linked(a) || pointedAt.has(a.id)) nums[a.id] = depth(a, new Set());
   });
   return nums;
 }
-
 function closeClarify() {
   flushOpenNotes();
   // Notes typed here must survive ANY exit, filed or not — Escape (and the
