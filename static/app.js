@@ -8153,7 +8153,14 @@ function wireScheduleList(el, all, kind) {
     if (src) btn.addEventListener('click', () => openPicker({ source: src }));
   });
   const add = el.querySelector('[data-add]');
-  if (add) add.addEventListener('click', () => openPicker({ wantSchedule: kind === 'schedule' }));
+  // wantName, for BOTH lists. Settings → Times shows NAMED sources only — the
+  // unnamed ones are the private windows gates and routines hold, and listing
+  // those would fill this screen with a row per gate. So a rule saved from here
+  // without a title was created and then invisible, which read as "I can't add
+  // times". It cannot be blank now, and it cannot dead-end either: savePicker
+  // fills an empty name in from the sentence.
+  if (add) add.addEventListener('click', () => openPicker({
+    wantSchedule: kind === 'schedule', wantName: true }));
 }
 
 // ── The picker ───────────────────────────────────────────────
@@ -8299,7 +8306,8 @@ async function openPicker(opts) {
   // "+ New schedule" opens with the name field already showing, because the
   // thing being made is the named set rather than one pattern.
   pickerView.wantName = !opts.onSaved
-    && (!!opts.wantSchedule || !!(src && src.kind !== 'rule'));
+    && (!!opts.wantName || !!opts.wantSchedule
+        || !!(src && (src.kind !== 'rule' || src.title)));
   document.getElementById('sp-sheet').classList.remove('hidden');
   document.getElementById('sp-sheet-backdrop').classList.remove('hidden');
   renderPicker();
