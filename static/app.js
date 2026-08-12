@@ -255,7 +255,10 @@ function updateReviewNavDot() {
   });
   const prog = document.getElementById('gtd-review-prog');
   if (prog && gtdReview) {
-    prog.textContent = `${GTD_STEPS.filter(s => gtdReview.steps[s.key]).length}/${GTD_STEPS.length}`;
+    const ticks = reviewTicks();
+    const steps = reviewSteps();
+    prog.textContent = steps.length
+      ? `${steps.filter(s => ticks[s.id]).length}/${steps.length}` : '';
   }
 }
 
@@ -2870,41 +2873,96 @@ const COLLECT_INBOXES = [
   { key: 'paper_mail', label: 'Physical mail' },
 ];
 
-const GTD_STEPS = [
-  { phase: 'Get Clear', key: 'collect', label: 'Collect loose papers and materials',
-    collect: true, hint: 'Every inbox you own, swept into "in".' },
-  { phase: 'Get Clear', key: 'in_zero', label: 'Get "in" to empty', count: 'inbox',
-    act: 'clarify', hint: 'Every item through the clarify tree. Be ruthless; purge what isn\'t needed.' },
-  { phase: 'Get Clear', key: 'mind_sweep', label: 'Empty your head',
-    act: 'sweep', hint: 'Five minutes, no stopping. Anything still in your head that isn\'t written down.' },
+// THE WEEKLY REVIEW IS A ROUTINE (2026-08-12). Its steps are flow_step rows on
+// a period-'week' flow and its ticks live in that flow's flow_run, so the
+// fold-out below and the routine runner are two views of ONE run: tick a step
+// here, it is credited there. What was GTD_STEPS is now this registry — the
+// step→SURFACE binding, joined to the step by its KIND (`content` is the
+// wording, and the user's to rewrite; the kind is the identity).
+//
+// A kind may bind three things: `phase` (which of Allen's three it belongs
+// under), a live COUNT or list the step is judged against, and an `act` — the
+// button that does the step from where you read it. Only two of the eleven have
+// a runner page so far (see renderFlowRun); the rest state themselves and take
+// the tick.
+const REVIEW_KINDS = {
+  review_collect: { phase: 'Get Clear', collect: true,
+    hint: 'Every inbox you own, swept into "in".' },
+  review_in_zero: { phase: 'Get Clear', count: 'inbox', act: 'clarify',
+    hint: 'Every item through the clarify tree. Be ruthless; purge what isn\'t needed.' },
+  review_sweep: { phase: 'Get Clear', act: 'sweep',
+    hint: 'Five minutes, no stopping. Anything still in your head that isn\'t written down.' },
 
-  { phase: 'Get Current', key: 'next_actions', label: 'Review next-action lists',
-    pushed: true, hint: 'Mark off completed; add follow-on steps.' },
-  { phase: 'Get Current', key: 'cal_back', label: 'Review previous calendar, 2–3 weeks back',
-    act: 'pass_back', hint: 'Uncaptured follow-ups. Archive the past with nothing left in it.' },
-  { phase: 'Get Current', key: 'cal_fwd', label: 'Review upcoming calendar',
-    act: 'pass_fwd', hint: 'Anything needing preparation that starts now.' },
-  { phase: 'Get Current', key: 'waiting', label: 'Review waiting-for and deferred',
-    waiting: true, hint: 'What\'s owed to you? What needs chasing?' },
-  { phase: 'Get Current', key: 'projects', label: 'Every active project has a next action',
-    stalled: true, hint: 'Anything with none is stalled or dead — decide which.' },
-  { phase: 'Get Current', key: 'checklists', label: 'Review any relevant checklists' },
+  review_next_actions: { phase: 'Get Current', pushed: true,
+    hint: 'Mark off completed; add follow-on steps.' },
+  review_cal_back: { phase: 'Get Current', act: 'pass_back',
+    hint: 'Uncaptured follow-ups. Archive the past with nothing left in it.' },
+  review_cal_fwd: { phase: 'Get Current', act: 'pass_fwd',
+    hint: 'Anything needing preparation that starts now.' },
+  review_waiting: { phase: 'Get Current', waiting: true,
+    hint: 'What\'s owed to you? What needs chasing?' },
+  review_projects: { phase: 'Get Current', stalled: true,
+    hint: 'Anything with none is stalled or dead — decide which.' },
+  review_checklists: { phase: 'Get Current' },
 
-  { phase: 'Get Creative', key: 'someday', label: 'Review someday/maybe', count: 'someday',
+  review_someday: { phase: 'Get Creative', count: 'someday',
     hint: 'Activate what\'s ripe, delete what\'s outlived your interest, add new.' },
-  { phase: 'Get Creative', key: 'creative', label: 'Be creative and courageous',
+  review_creative: { phase: 'Get Creative',
     hint: 'Anything new worth capturing into the system.' },
-];
+};
+
+// A step added to the review flow by hand is not in the registry and has no
+// surface to bind — it still renders, under its own heading, and still ticks.
+function reviewKind(step) {
+  return REVIEW_KINDS[step.kind] || { phase: 'Yours' };
+}
 
 let gtdReview = null;
+
+// The steps of the review, as the flow says them. Empty until the fold-out has
+// been opened once (it is what fetches the flow).
+function reviewSteps() {
+  return (gtdReview && gtdReview.flow && gtdReview.flow.steps) || [];
+}
+
+// The ticks of THIS week's run. One store, shared with the runner: keys are
+// step ids, plus '<step_id>:<sub>' for the collect sweep's per-inbox rows.
+function reviewTicks() {
+  if (!gtdReview || !gtdReview.flow || !gtdReview.flow.run) return {};
+  try { return JSON.parse(gtdReview.flow.run.steps || '{}'); } catch (e) { return {}; }
+}
 
 // The weekly review lives INSIDE the GTD overlay now: a fold-out section at
 // the top, toggled by #gtd-review-head. No modal.
 async function openGtdReview() {
-  gtdReview = await fetch('/api/gtd-review').then(r => r.json());
-  gtdReview.habits = await fetch('/api/habits').then(r => r.json()).catch(() => null);
+  const today = formatDateYMD(new Date());
+  const [review, habits, flows] = await Promise.all([
+    fetch('/api/gtd-review').then(r => r.json()),
+    fetch('/api/habits').then(r => r.json()).catch(() => null),
+    fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => []),
+  ]);
+  gtdReview = review;
+  gtdReview.habits = habits;
+  gtdReview.flow = (Array.isArray(flows) ? flows : []).find(f => f.id === review.flow_id) || null;
   renderGtdReview();
   document.getElementById('review-panel').classList.remove('hidden');
+  updateReviewNavDot();
+}
+
+// Write one tick into the run. The runner's own completion rule (every step of
+// today's run credited) applies here too, so finishing the review from the
+// checklist completes the routine — the two surfaces cannot disagree.
+async function setReviewTick(key, done) {
+  if (!gtdReview || !gtdReview.flow) return;
+  const ticks = reviewTicks();
+  if (done) ticks[key] = 'done'; else delete ticks[key];
+  const complete = reviewSteps().every(s => ticks[s.id]);
+  const run = await fetch(`/api/flows/${gtdReview.flow.id}/run`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: formatDateYMD(new Date()), steps: ticks, completed: complete }),
+  }).then(r => r.json()).catch(() => null);
+  if (run) gtdReview.flow.run = run;
+  renderGtdReview();
   updateReviewNavDot();
 }
 
@@ -2913,6 +2971,18 @@ function initGtdReviewFold() {
     const panel = document.getElementById('review-panel');
     if (panel.classList.contains('hidden')) openGtdReview();
     else panel.classList.add('hidden');
+  });
+  // RUN IT AS A ROUTINE: the same steps, one per page, in the runner every
+  // other routine uses. A span, not a button — it sits inside the fold-out's
+  // own button, and it must not toggle it.
+  const run = document.getElementById('gtd-review-run');
+  if (run) run.addEventListener('click', async e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = (gtdReview && gtdReview.flow_id)
+      || await fetch('/api/gtd-review').then(r => r.json()).then(r => r.flow_id).catch(() => null);
+    if (id) openFlowRun(id);
+    else toast('The review routine is missing');
   });
 }
 
@@ -3023,8 +3093,10 @@ async function experimentVerb(id, verb, name) {
 function renderGtdReview() {
   const panel = document.getElementById('review-panel');
   if (!panel || !gtdReview) return;
-  const { steps, counts } = gtdReview;
-  const done = GTD_STEPS.filter(s => steps[s.key]).length;
+  const counts = gtdReview.counts;
+  const steps = reviewSteps();
+  const ticks = reviewTicks();
+  const done = steps.filter(s => ticks[s.id]).length;
 
   const badge = s => {
     if (s.stalled) {
@@ -3047,18 +3119,22 @@ function renderGtdReview() {
   };
 
   // Sub-steps keep the same shape as steps: a key in the blob, ticked with a
-  // timestamp. Their own row so a half-done sweep is visible next week.
-  const collectDone = COLLECT_INBOXES.filter(b => steps['collect:' + b.key]).length;
-  const collectList = `<div class="gr-sub">
-    <div class="gr-sub-head">${collectDone}/${COLLECT_INBOXES.length} swept</div>
-    ${COLLECT_INBOXES.map(b => `
-      <label class="gr-sub-item${steps['collect:' + b.key] ? ' gr-sub-done' : ''}">
-        <input type="checkbox" class="gr-cb" data-step="collect:${b.key}"${
-          steps['collect:' + b.key] ? ' checked' : ''}>
-        <span><span class="gr-sub-label">${escHtml(b.label)}</span>${
-          b.hint ? `<span class="gr-step-hint">${escHtml(b.hint)}</span>` : ''}</span>
-      </label>`).join('')}
-  </div>`;
+  // timestamp. Their own row so a half-done sweep is visible next week. The key
+  // is '<step_id>:<inbox>' now the run belongs to the routine.
+  const subKey = (s, b) => `${s.id}:${b.key}`;
+  const collectList = s => {
+    const swept = COLLECT_INBOXES.filter(b => ticks[subKey(s, b)]).length;
+    return `<div class="gr-sub">
+      <div class="gr-sub-head">${swept}/${COLLECT_INBOXES.length} swept</div>
+      ${COLLECT_INBOXES.map(b => `
+        <label class="gr-sub-item${ticks[subKey(s, b)] ? ' gr-sub-done' : ''}">
+          <input type="checkbox" class="gr-cb" data-step="${subKey(s, b)}"${
+            ticks[subKey(s, b)] ? ' checked' : ''}>
+          <span><span class="gr-sub-label">${escHtml(b.label)}</span>${
+            b.hint ? `<span class="gr-step-hint">${escHtml(b.hint)}</span>` : ''}</span>
+        </label>`).join('')}
+    </div>`;
+  };
 
   const stalledList = counts.stalled.length
     ? `<ul class="gr-stalled">${counts.stalled.map(p =>
@@ -3080,20 +3156,21 @@ function renderGtdReview() {
 
   let html = '';
   let phase = null;
-  GTD_STEPS.forEach(s => {
+  steps.forEach(step => {
+    const s = reviewKind(step);
     if (s.phase !== phase) {
       if (phase) html += '</div>';
       phase = s.phase;
       html += `<div class="gr-phase"><div class="gr-phase-name">${escHtml(phase)}</div>`;
     }
-    const isDone = !!steps[s.key];
+    const isDone = !!ticks[step.id];
     html += `
       <label class="gr-step${isDone ? ' gr-step-done' : ''}">
-        <input type="checkbox" class="gr-cb" data-step="${s.key}"${isDone ? ' checked' : ''}>
+        <input type="checkbox" class="gr-cb" data-step="${step.id}"${isDone ? ' checked' : ''}>
         <span class="gr-step-body">
-          <span class="gr-step-label">${escHtml(s.label)}${badge(s)}</span>
+          <span class="gr-step-label">${escHtml(step.content)}${badge(s)}</span>
           ${s.hint ? `<span class="gr-step-hint">${escHtml(s.hint)}</span>` : ''}
-          ${s.collect ? collectList : ''}
+          ${s.collect ? collectList(step) : ''}
           ${s.act === 'clarify' ? `<button class="gr-act" data-act="clarify">Clarify ${
             counts.inbox} →</button>` : ''}
           ${s.act === 'sweep' ? `<button class="gr-act" data-act="sweep">▶ 5-minute sweep</button>` : ''}
@@ -3105,17 +3182,18 @@ function renderGtdReview() {
         </span>
       </label>`;
   });
-  html += '</div>';
+  if (phase) html += '</div>';
+  if (!steps.length) {
+    html = `<div class="gtd-empty">The review routine is missing — it should be
+      in ≡ Lists → routines as “Weekly review”.</div>`;
+  }
 
   const weekLabel = new Date(gtdReview.week_start_date + 'T00:00:00')
     .toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  const habit = gtdReview.habit && gtdReview.habit.habit ? gtdReview.habit.habit : '';
-  const habits = gtdReview.habits;
-
   panel.innerHTML = `
     <div class="gr-head">
       <span class="gr-week">Week of ${escHtml(weekLabel)}</span>
-      <span class="gr-progress">${done} / ${GTD_STEPS.length}</span>
+      <span class="gr-progress">${done} / ${steps.length}</span>
     </div>
     <div class="gr-criterion">Done when you can say: “I know right now everything I'm not doing but could be doing if I decided to.”</div>
     ${html}
@@ -3158,16 +3236,7 @@ function renderGtdReview() {
     experimentVerb(e.id, b.dataset.exverb, e.content);
   }));
   panel.querySelectorAll('.gr-cb').forEach(cb => {
-    cb.addEventListener('change', async () => {
-      gtdReview = await fetch('/api/gtd-review/step', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ week: gtdReview.week_start_date, step: cb.dataset.step, done: cb.checked }),
-      }).then(r => r.json());
-      gtdReview.counts = counts;
-      gtdReview.habits = habits;
-      renderGtdReview();
-    });
+    cb.addEventListener('change', () => setReviewTick(cb.dataset.step, cb.checked));
   });
 
   const finish = document.getElementById('gr-finish');
@@ -3191,6 +3260,16 @@ function renderGtdReview() {
           note: document.getElementById('gr-note').value,
         }),
       });
+      // FILING THE REVIEW IS FINISHING THE ROUTINE. Deciding you are done is
+      // the same act whichever surface you say it on, so the run is completed
+      // here too — otherwise the runner would still show the week as open.
+      if (gtdReview.flow) {
+        await fetch(`/api/flows/${gtdReview.flow.id}/run`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: formatDateYMD(new Date()),
+                                 steps: reviewTicks(), completed: true }),
+        });
+      }
       state.review.due = false;
       updateReviewNavDot();
       await openGtdReview();
@@ -3367,6 +3446,11 @@ const refView = { lists: [], open: null,
 // 0=Mon..6=Sun, matching storage.step_due_on and every other days_of_week in
 // the app. Empty = every day.
 function stepDueToday(s, d) {
+  // The server already answered this for the date it was asked about — the
+  // weekday rule, the routine's PERIOD (a weekly one is not asked which weekday
+  // its steps fall on) and pawning, all in storage.get_flows. Trust it where it
+  // is there; the weekday fallback is for a step not fetched with a date.
+  if (!d && s.due !== undefined) return !!s.due;
   const dow = jsDateToDayOfWeek(d || new Date());
   return !s.days_of_week || String(s.days_of_week).includes(String(dow));
 }
@@ -3734,6 +3818,20 @@ const FLOW_KINDS = { text: 'text', checklist: 'checklist',
                      social_dose: 'social dose (done)',
                      journal_night: 'nightly journal', crm_fill: 'CRM fill' };
 
+// FLOW_KINDS is the PICKABLE set — what the Type chips offer. A review step's
+// kind is not pickable (it is the binding to a review surface, minted with the
+// routine), so it needs a label without joining the chip row.
+function stepKindLabel(s) {
+  return FLOW_KINDS[s.kind] || (REVIEW_KINDS[s.kind] ? 'review step' : s.kind);
+}
+
+// A step reads as its own WORDING where it has wording to read: a text step and
+// a review step both do (both are renamable). The ⚙ kind label is for the
+// feature pages that carry no text of their own.
+function stepShowsText(s) {
+  return s.kind === 'text' || !!REVIEW_KINDS[s.kind];
+}
+
 // How long until a pending easing lands, in whole hours (ceil — "1h" until
 // it is genuinely under an hour away).
 function pendingHours(p) {
@@ -3765,9 +3863,9 @@ function renderFlowEditor(body, title, f) {
     <div class="ref-list">${f.steps.map((s, i) => `
       <div class="ref-row${stepDueToday(s) ? '' : ' fr-step-off'}" data-step="${s.id}">
         <span class="cl-chain-n">${i + 1}</span>
-        <span class="ref-text${s.kind !== 'text' ? ' fr-feature' : ''}"
-          title="${s.kind === 'text' ? 'Double-click to rewrite' : FLOW_KINDS[s.kind]}">${
-          s.kind === 'text' ? escHtml(s.content) : '⚙ ' + FLOW_KINDS[s.kind]}</span>
+        <span class="ref-text${stepShowsText(s) ? '' : ' fr-feature'}"
+          title="${stepShowsText(s) ? 'Double-click to rewrite' : stepKindLabel(s)}">${
+          stepShowsText(s) ? escHtml(s.content) : '⚙ ' + stepKindLabel(s)}</span>
         ${stepBadges(s)}
         <button class="fr-up" data-step="${s.id}" title="Move up">↑</button>
         <button class="fr-down" data-step="${s.id}" title="Move down">↓</button>
@@ -3942,16 +4040,21 @@ function renderStepSheet() {
       <button class="modal-close-btn" id="fr-sheet-close">✕</button>
     </div>
     <div class="cl-action-wrap">
-      ${s.kind === 'text'
+      ${stepShowsText(s)
         ? `<input type="text" class="cl-action" id="fr-sheet-text" value="${escHtml(s.content)}"
              placeholder="What is the step?">`
-        : `<span class="cl-title fr-feature">⚙ ${FLOW_KINDS[s.kind]}</span>`}
+        : `<span class="cl-title fr-feature">⚙ ${stepKindLabel(s)}</span>`}
     </div>
 
+    ${REVIEW_KINDS[s.kind] ? `
+    <div class="cl-sec"><span class="cl-label">Type</span></div>
+    <div class="cl-row"><span class="cl-hint">a step of the weekly review — its type
+      is the surface it opens, and is not yours to change. The wording is.</span></div>`
+    : `
     <div class="cl-sec"><span class="cl-label">Type</span></div>
     <div class="cl-chips">${Object.keys(FLOW_KINDS).map(k =>
       `<button class="cl-chip${s.kind === k ? ' cl-chip-on' : ''}" data-kind="${k}">${
-        FLOW_KINDS[k]}</button>`).join('')}</div>
+        FLOW_KINDS[k]}</button>`).join('')}</div>`}
 
     ${s.kind === 'checklist' ? `
     <div class="cl-sec"><span class="cl-label">Checklist</span></div>
@@ -4017,13 +4120,13 @@ function renderStepSheet() {
   sheet.querySelector('#fr-sheet-close').addEventListener('click', closeStepSheet);
   sheet.querySelector('#fr-pawn-to').addEventListener('change', e => {
     stepSheetPatch({ pawn_to_flow_id: e.target.value ? parseInt(e.target.value) : null },
-      `changed where "${s.content || FLOW_KINDS[s.kind]}" can be pawned`);
+      `changed where "${s.content || stepKindLabel(s)}" can be pawned`);
   });
   const pawnMin = sheet.querySelector('#fr-pawn-min');
   if (pawnMin) {
     pawnMin.addEventListener('change', () => {
       stepSheetPatch({ pawn_minutes: parseInt(pawnMin.value) || null },
-        `changed what "${s.content || FLOW_KINDS[s.kind]}" costs to pawn`);
+        `changed what "${s.content || stepKindLabel(s)}" costs to pawn`);
     });
   }
   sheet.querySelectorAll('[data-kind]').forEach(b => b.addEventListener('click', () => {
@@ -4036,7 +4139,7 @@ function renderStepSheet() {
       toast('A gated routine eases on a 24h delay — soft lands tomorrow');
     }
     stepSheetPatch({ requirement: b.dataset.req },
-      `made "${s.content || FLOW_KINDS[s.kind]}" ${b.dataset.req}`);
+      `made "${s.content || stepKindLabel(s)}" ${b.dataset.req}`);
   }));
   const listSel = sheet.querySelector('#fr-sheet-list');
   if (listSel) listSel.addEventListener('change', () => stepSheetPatch(
@@ -4045,7 +4148,7 @@ function renderStepSheet() {
   const softTxt = sheet.querySelector('#fr-sheet-soft');
   if (softTxt) softTxt.addEventListener('change', () => stepSheetPatch(
     { soft_content: softTxt.value },
-    `named the smaller version of "${s.content || FLOW_KINDS[s.kind]}"`));
+    `named the smaller version of "${s.content || stepKindLabel(s)}"`));
   const unpend = sheet.querySelector('#fr-sheet-unpend');
   if (unpend) unpend.addEventListener('click', async () => {
     await fetch(`/api/flow-steps/${s.id}/pending`, { method: 'DELETE' });
@@ -4066,7 +4169,7 @@ function renderStepSheet() {
     // — and a step that runs on no day is a step you would delete.
     if (!next) { toast('A step needs at least one day — remove it instead'); return; }
     stepSheetPatch({ days_of_week: next.length === 7 ? null : next },
-      `changed the days of "${s.content || FLOW_KINDS[s.kind]}"`);
+      `changed the days of "${s.content || stepKindLabel(s)}"`);
   }));
   const txt = sheet.querySelector('#fr-sheet-text');
   if (txt) {
@@ -4091,7 +4194,7 @@ function renderStepSheet() {
     if (res.pending) {
       // The 24h easing gate deferred it — the undo is the CANCEL, and the
       // sheet stays open showing the pending state.
-      pushUndo(`scheduled removal of "${s.content || FLOW_KINDS[s.kind]}"`, async () => {
+      pushUndo(`scheduled removal of "${s.content || stepKindLabel(s)}"`, async () => {
         await fetch(`/api/flow-steps/${s.id}/pending`, { method: 'DELETE' });
         await refreshAfterUndo();
       });
@@ -4100,7 +4203,7 @@ function renderStepSheet() {
       renderStepSheet();
       return;
     }
-    pushUndo(`removed "${s.content || FLOW_KINDS[s.kind]}"`, async () => {
+    pushUndo(`removed "${s.content || stepKindLabel(s)}"`, async () => {
       await fetch(`/api/flows/${f.id}/steps`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: s.content, kind: s.kind,
@@ -4543,6 +4646,28 @@ function renderFlowRun() {
     page = `<div class="fr-step-big">Social dose</div>
       <div class="fr-note">${day.total ?? 0} / ${day.d ?? '—'} point${(day.total ?? 0) === 1 ? '' : 's'}${
         okDose ? ' — the day is clear ✓' : ' — log what you actually did in ≡ Social'}</div>`;
+  } else if (REVIEW_KINDS[s.kind]) {
+    // A REVIEW STEP. Two of the eleven have a surface to open from here; the
+    // other nine state the step and take the tick, which is what the fold-out
+    // gave them and no less. They get their pages one at a time, deliberately —
+    // a page that only repeats its own label is not worth an endpoint.
+    const meta = REVIEW_KINDS[s.kind];
+    const n = state.inbox.length;
+    page = `<div class="fr-step-big">${escHtml(s.content)}</div>
+      ${meta.hint ? `<div class="fr-note">${escHtml(meta.hint)}</div>` : ''}
+      ${s.kind === 'review_in_zero'
+        ? `<div class="fr-note${n ? '' : ' fr-note-hard'}">${n
+            ? `${n} item${n === 1 ? '' : 's'} still in "in"`
+            : '"in" is empty ✓'}</div>
+           ${n ? '<button id="fr-rv-clarify" class="cl-pill">Clarify ' + n + ' →</button>' : ''}`
+        : ''}
+      ${s.kind === 'review_sweep'
+        ? '<button id="fr-rv-sweep" class="cl-pill">▶ 5-minute sweep</button>'
+        : ''}`;
+  } else {
+    // An unknown kind must still be a page you can get past — a blank one would
+    // strand the run (and, on a gated routine, the gate).
+    page = `<div class="fr-step-big">${escHtml(s.content || stepKindLabel(s))}</div>`;
   }
 
   el.innerHTML = `
@@ -4600,7 +4725,27 @@ function renderFlowRun() {
   if (pawn) pawn.addEventListener('click', () => pawnStep(s));
   const unpawn = el.querySelector('#fr-unpawn');
   if (unpawn) unpawn.addEventListener('click', () => unpawnStep(s));
+  // The two review steps that are a DOING, not a ticking — the same two acts
+  // the GTD fold-out offers, from the same registry. The runner closes first:
+  // both open a full-screen surface of their own, and one over the other would
+  // be two layers deep with no way back.
+  const rvClarify = el.querySelector('#fr-rv-clarify');
+  if (rvClarify) rvClarify.addEventListener('click', () => { closeFlowRun(); openClarify(); });
+  const rvSweep = el.querySelector('#fr-rv-sweep');
+  if (rvSweep) rvSweep.addEventListener('click', () => {
+    const iso = formatDateYMD(new Date());
+    closeFlowRun();
+    openDangerousWriting({ goalKind: 'time', goalTime: 5, hardcore: false,
+                           logName: `${iso} emptied`, autostart: true });
+  });
   el.querySelector('#fr-done').addEventListener('click', async () => {
+    // A HARD "get in to empty" means the inbox IS empty. Same rule as a hard
+    // checklist: a step that credits with the work still sitting there is
+    // checkbox theatre, and this one has a number to check against.
+    if (s.kind === 'review_in_zero' && s.requirement !== 'soft' && state.inbox.length) {
+      toast(`${state.inbox.length} still in "in" — clarify them, or make the step soft`);
+      return;
+    }
     // A HARD checklist step means every item — the same rule the nightly
     // journal's habit marks follow, for the same reason: a checklist you can
     // Done through unticked is checkbox theatre.

@@ -917,6 +917,18 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE flow ADD COLUMN pending TEXT')
         conn.commit()
+    # How OFTEN a routine runs (2026-08-12). NULL/'day' = the daily routine every
+    # flow was until now; 'week' = once per week, which is what the weekly review
+    # is. It changes exactly one thing: the KEY a flow_run is filed under
+    # (flow_period_key) — a weekly run is keyed by its Monday, so ticking on
+    # Saturday and finishing on Sunday are the same run. Everything else about a
+    # flow is unchanged.
+    try:
+        conn.execute('SELECT period FROM flow LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE flow ADD COLUMN period TEXT')
+        conn.commit()
+    _seed_review_flow(conn)
     # Reference lists NEST (2026-08-11): a list can live inside a list. The
     # split at the root is what the index shows; delete splices children up a
     # level, the same rule projects follow.
@@ -1580,20 +1592,10 @@ def get_gtd_review(week_start_date=None):
     return out
 
 
-def set_gtd_review_step(week_start_date, step, done):
-    conn = get_conn()
-    row = conn.execute('SELECT steps FROM gtd_review WHERE week_start_date = ?',
-                       (week_start_date,)).fetchone()
-    steps = json.loads(row['steps'] or '{}') if row else {}
-    if done:
-        steps[step] = datetime.now().isoformat(timespec='seconds')
-    else:
-        steps.pop(step, None)
-    conn.execute('UPDATE gtd_review SET steps = ? WHERE week_start_date = ?',
-                 (json.dumps(steps), week_start_date))
-    conn.commit()
-    conn.close()
-    return get_gtd_review(week_start_date)
+# gtd_review.steps IS NO LONGER WRITTEN (2026-08-12): the ticks belong to the
+# review's flow_run now, one store for both the fold-out and the runner. The
+# column stays as the only copy of what _seed_review_flow migrated from, so a
+# bad conversion is recoverable — the same reason time_preset was kept.
 
 
 def finish_gtd_review(week_start_date, note=''):
@@ -3795,6 +3797,107 @@ def step_due_on(step, day):
     return not dow or str(day.weekday()) in dow
 
 
+# WHICH RUN a given day belongs to. A daily routine files its run under the day;
+# a weekly one files it under that week's Monday, so every day of the week ticks
+# into the same run and Sunday's Done ✓ finishes what Tuesday started. This is
+# the ONLY thing `period` changes, and it is computed in one place so the runner,
+# the fold-out and the judge cannot disagree about it.
+def flow_period_key(period, day):
+    return _week_start(day) if (period or 'day') == 'week' else day.isoformat()
+
+
+def flow_period_key_for(flow_id, ymd):
+    conn = get_conn()
+    row = conn.execute('SELECT period FROM flow WHERE id = ?', (flow_id,)).fetchone()
+    conn.close()
+    return flow_period_key(row['period'] if row else 'day', date_cls.fromisoformat(ymd))
+
+
+# ── The weekly review IS a routine (2026-08-12) ───────────────
+#
+# It was a hardcoded 11-item checklist in app.js with its own run table
+# (gtd_review.steps) — a second grammar for exactly what flow + flow_step +
+# flow_run already say. So it becomes a flow: period 'week', one step per
+# Allen step, and the ticks live in flow_run like every other routine's.
+#
+# The step KINDS are the step→surface binding. `review_in_zero` and
+# `review_sweep` have real runner pages (clarify the inbox; the 5-minute
+# sweep); the other nine are pages that only state the step and take the tick,
+# deliberately, until each one earns its surface. The kind is what the GTD
+# fold-out joins its live counts on, so a step keeps its badge whether you tick
+# it there or run it in the runner.
+#
+# `content` is seeded from Allen's wording and is then the user's to rewrite —
+# the kind, not the text, is the identity.
+REVIEW_FLOW_NAME = 'Weekly review'
+REVIEW_FLOW_STEPS = (
+    ('review_collect', 'Collect loose papers and materials'),
+    ('review_in_zero', 'Get "in" to empty'),
+    ('review_sweep', 'Empty your head'),
+    ('review_next_actions', 'Review next-action lists'),
+    ('review_cal_back', 'Review previous calendar, 2–3 weeks back'),
+    ('review_cal_fwd', 'Review upcoming calendar'),
+    ('review_waiting', 'Review waiting-for and deferred'),
+    ('review_projects', 'Every active project has a next action'),
+    ('review_checklists', 'Review any relevant checklists'),
+    ('review_someday', 'Review someday/maybe'),
+    ('review_creative', 'Be creative and courageous'),
+)
+
+
+def _review_flow_id(conn):
+    # The review flow is the one that owns the in-zero step. No marker column:
+    # the kinds already identify it, and a second marker could disagree.
+    row = conn.execute(
+        "SELECT flow_id FROM flow_step WHERE kind = 'review_in_zero' LIMIT 1").fetchone()
+    return row['flow_id'] if row else None
+
+
+def get_review_flow_id():
+    conn = get_conn()
+    id = _review_flow_id(conn)
+    conn.close()
+    return id
+
+
+def _seed_review_flow(conn):
+    if _review_flow_id(conn):
+        return
+    pos = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM flow').fetchone()['p']
+    cur = conn.execute("INSERT INTO flow (name, position, period) VALUES (?, ?, 'week')",
+                       (REVIEW_FLOW_NAME, pos))
+    flow_id = cur.lastrowid
+    by_kind = {}
+    for i, (kind, content) in enumerate(REVIEW_FLOW_STEPS):
+        c = conn.execute(
+            '''INSERT INTO flow_step (flow_id, position, kind, content, requirement)
+               VALUES (?, ?, ?, ?, 'hard')''', (flow_id, i + 1, kind, content))
+        by_kind[kind] = c.lastrowid
+    # Carry the old checklist's ticks over rather than blanking a review in
+    # progress. Old keys were the step key ('in_zero') and, for the collect
+    # sweep, 'collect:<inbox>' — the sub-key idiom survives as '<step_id>:<inbox>'
+    # because flow_run.steps is a free blob and the runner only ever reads
+    # steps[step.id].
+    for row in conn.execute('SELECT * FROM gtd_review').fetchall():
+        try:
+            old = json.loads(row['steps'] or '{}')
+        except ValueError:
+            continue
+        moved = {}
+        for key, stamp in old.items():
+            base, _, sub = key.partition(':')
+            sid = by_kind.get('review_' + base)
+            if sid:
+                moved[f'{sid}:{sub}' if sub else str(sid)] = stamp
+        if not moved:
+            continue
+        conn.execute('''INSERT INTO flow_run (flow_id, date, steps, completed_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(flow_id, date) DO NOTHING''',
+                     (flow_id, row['week_start_date'], json.dumps(moved), row['completed_at']))
+    conn.commit()
+
+
 def get_flows(date=None):
     conn = get_conn()
     apply_due_flow_pendings(conn)
@@ -3804,11 +3907,16 @@ def get_flows(date=None):
     # so the weekday convention is decided in exactly one place.
     day = date_cls.fromisoformat(date) if date else None
     for f in flows:
+        f['period'] = f.get('period') or 'day'
+        f['period_key'] = flow_period_key(f['period'], day) if day else None
         f['steps'] = [dict(r) for r in conn.execute(
             'SELECT * FROM flow_step WHERE flow_id = ? ORDER BY position, id',
             (f['id'],)).fetchall()]
         for s in f['steps']:
-            s['due'] = step_due_on(s, day) if day else True
+            # A weekly routine's steps are due for the WHOLE period: asking
+            # which weekday a review step falls on would be asking the wrong
+            # question, so the weekday grammar is simply not consulted.
+            s['due'] = True if f['period'] == 'week' else (step_due_on(s, day) if day else True)
             # Pawned today: it is not this routine's problem any more. `due` is
             # what the runner filters on and what COMPLETION is measured against,
             # so clearing it here is the whole mechanic — no runner change needed.
@@ -3824,7 +3932,7 @@ def get_flows(date=None):
                 s['from_flow_id'] = s['flow_id']
                 f['steps'].append(s)
             run = conn.execute('SELECT * FROM flow_run WHERE flow_id = ? AND date = ?',
-                               (f['id'], date)).fetchone()
+                               (f['id'], f['period_key'])).fetchone()
             f['run'] = dict(run) if run else None
     conn.close()
     return flows
@@ -3895,10 +4003,11 @@ def pawn_flow_step(step_id, on=True, date=None):
     return dict(out)
 
 
-def create_flow(name):
+def create_flow(name, period='day'):
     conn = get_conn()
     row = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM flow').fetchone()
-    cur = conn.execute('INSERT INTO flow (name, position) VALUES (?, ?)', (name, row['p']))
+    cur = conn.execute('INSERT INTO flow (name, position, period) VALUES (?, ?, ?)',
+                       (name, row['p'], period or 'day'))
     out = conn.execute('SELECT * FROM flow WHERE id = ?', (cur.lastrowid,)).fetchone()
     conn.commit()
     conn.close()
@@ -3909,10 +4018,18 @@ def create_flow(name):
 
 def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node_id=_UNSET):
     conn = get_conn()
-    cur = conn.execute('SELECT qr_node_id, offset_min FROM flow WHERE id = ?', (id,)).fetchone()
+    cur = conn.execute('SELECT qr_node_id, offset_min, period FROM flow WHERE id = ?',
+                       (id,)).fetchone()
     apply_at = (datetime.now() + timedelta(hours=24)).isoformat()
     if name is not None:
         conn.execute('UPDATE flow SET name = ? WHERE id = ?', (name, id))
+    # A GATE JUDGES A DAY, so only a daily routine can gate one. Letting a weekly
+    # routine take the link would have the judge look for a run filed under the
+    # day while the routine files it under the week — a permanent "not done" on a
+    # path that charges real money. Refused at the storage layer, not the UI.
+    if qr_node_id not in (_UNSET, None) and cur and (cur['period'] or 'day') != 'day':
+        conn.close()
+        raise ValueError('a weekly routine cannot gate a QR — gates judge one day')
     if qr_node_id is not _UNSET:
         # UNLINKING a gated routine is the largest easing there is — the gate
         # stops judging on it entirely — so it waits 24h. Linking (or moving
@@ -4147,10 +4264,15 @@ def routine_gate_for_node(node_id, date):
     # The judge reads through here, not get_flows — a due easing (an unlink,
     # a softened step) must reach judgment without waiting for a UI read.
     apply_due_flow_pendings(conn)
+    # Daily routines only. A weekly one files its run under the week (see
+    # flow_period_key), so joining it on the day would read as never-done and
+    # charge for a routine that was in fact complete. update_flow refuses the
+    # link in the first place; this is the second lock on the money path.
     row = conn.execute(
         '''SELECT f.id, r.completed_at FROM flow f
            LEFT JOIN flow_run r ON r.flow_id = f.id AND r.date = ?
-           WHERE f.qr_node_id = ? ORDER BY f.position, f.id LIMIT 1''',
+           WHERE f.qr_node_id = ? AND COALESCE(f.period, 'day') = 'day'
+           ORDER BY f.position, f.id LIMIT 1''',
         (date, node_id)).fetchone()
     conn.close()
     if not row:

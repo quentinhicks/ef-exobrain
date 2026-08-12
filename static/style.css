@@ -4761,7 +4761,17 @@ button.eg-domain { cursor: pointer; }
   flex: none;
 }
 #gtd-review-head:hover { background: var(--surface-2); }
-.gtd-review-chevron { margin-left: auto; color: var(--text-secondary); }
+/* ▶ RUN THE REVIEW as the routine it is. A span, not a button — it lives
+   inside #gtd-review-head, which is itself a button; it takes the right-hand
+   end of the row and the chevron follows it. */
+.gr-run {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 13px;
+  padding: 4px 8px;
+}
+.gr-run:hover { color: var(--text-primary); }
+.gtd-review-chevron { margin-left: 4px; color: var(--text-secondary); }
 #review-panel {
   flex: none;
   max-height: 58%;
