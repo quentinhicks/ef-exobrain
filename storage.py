@@ -917,6 +917,16 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE flow ADD COLUMN pending TEXT')
         conn.commit()
+    # A ROUTINE HOLDS ITS OWN WINDOW (2026-08-12): open at one time, due at
+    # another, set independently of the gate it gates. `offset_min` stays as the
+    # fallback for routines that never got one — the source WINS where set, the
+    # same additive shape gates use. Because it is a schedule source it can also
+    # be DERIVED: "ends 30 min before the work scan closes" is one follow.
+    try:
+        conn.execute('SELECT source_uid FROM flow LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE flow ADD COLUMN source_uid TEXT')
+        conn.commit()
     # How OFTEN a routine runs (2026-08-12). NULL/'day' = the daily routine every
     # flow was until now; 'week' = once per week, which is what the weekly review
     # is. It changes exactly one thing: the KEY a flow_run is filed under
@@ -4016,8 +4026,14 @@ def create_flow(name, period='day'):
     return d
 
 
-def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node_id=_UNSET):
+def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node_id=_UNSET,
+                source_uid=_UNSET):
     conn = get_conn()
+    if source_uid is not _UNSET:
+        # Its own window applies at once. The 24h easing gate guards the GATE's
+        # hours (the money window); a routine's deadline is the reference you
+        # work to, and the gate still judges on completion at scan time.
+        conn.execute('UPDATE flow SET source_uid = ? WHERE id = ?', (source_uid or None, id))
     cur = conn.execute('SELECT qr_node_id, offset_min, period FROM flow WHERE id = ?',
                        (id,)).fetchone()
     apply_at = (datetime.now() + timedelta(hours=24)).isoformat()

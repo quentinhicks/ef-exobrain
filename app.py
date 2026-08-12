@@ -1676,6 +1676,8 @@ def patch_flow(id):
         kwargs['offset_min'] = data['offset_min']
     if 'before_node_id' in data:
         kwargs['before_node_id'] = data['before_node_id']
+    if 'source_uid' in data:
+        kwargs['source_uid'] = data['source_uid']
     try:
         flow = storage.update_flow(id, **kwargs)
     except ValueError as e:

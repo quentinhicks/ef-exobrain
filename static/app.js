@@ -3457,19 +3457,49 @@ function stepDueToday(s, d) {
 
 async function refreshRef() {
   const today = formatDateYMD(new Date());
-  const [lists, flows] = await Promise.all([
+  const [lists, flows, schedules] = await Promise.all([
     fetch('/api/ref').then(r => r.json()).catch(() => refView.lists),
     fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => refView.flows),
+    // A routine's own window resolves through here (flowWindow); unnamed=1
+    // because a routine's hours, like a gate's, are private to it.
+    fetch(`/api/schedules?date=${today}&unnamed=1`).then(r => r.json())
+      .catch(() => state.schedules),
   ]);
   refView.lists = lists;
   refView.flows = flows;
+  if (Array.isArray(schedules)) state.schedules = schedules;
   renderRef();
 }
 
 // A flow's deadline in display minutes, resolved from its linked gate the same
 // way Engage resolves hairlines (today_override > weekly window > defaults),
 // plus the ±offset — or the "before gate Y" anchor's deadline.
+// A routine's OWN window for today: {open, due} in view minutes, or null when it
+// has none and the gate-derived deadline is still the answer. The interval comes
+// from /api/schedules?date=, which is where every other consumer reads a
+// source's wall-clock answer — no second expander on the client.
+function flowWindow(f) {
+  if (!f || !f.source_uid) return null;
+  const src = (state.schedules || []).find(s => s.uid === f.source_uid);
+  const iv = src && (src.intervals || [])[0];
+  if (!iv) return null;
+  const open = timeToMinutes(iv.start);
+  let due = timeToMinutes(iv.end);
+  if (iv.into_next || due < open) due += 1440;   // past midnight, same rule as a gate
+  return { open, due };
+}
+
+function flowWindowLabel(f) {
+  const w = flowWindow(f);
+  if (!w) return null;
+  return `${minutesToHHMM(w.open % 1440)}–${minutesToHHMM(Math.round(w.due) % 1440)}`;
+}
+
 function flowDueMin(f) {
+  // Its own window wins where set; the gate-derived deadline is the fallback,
+  // so every routine written before this keeps answering the same way.
+  const own = flowWindow(f);
+  if (own) return own.due;
   const nodeId = f.before_node_id || f.qr_node_id;
   if (!nodeId) return null;
   const n = (state.accountabilityNodes || []).find(x => x.id === nodeId);
@@ -3516,7 +3546,9 @@ function renderRef() {
       const todaySteps = f.steps.filter(s => stepDueToday(s)).length;
       return `<div class="ref-row" data-flow="${f.id}">
         <span class="ref-name" title="Tap to edit steps · double-click to rename">${escHtml(f.name)}</span>
-        ${due != null ? `<span class="fr-due${done ? '' : ''}">${done ? '✓ done' : 'due ' + minutesToHHMM(Math.round(due) % 1440)}</span>` : done ? '<span class="fr-due">✓ done</span>' : ''}
+        ${due != null ? `<span class="fr-due">${done ? '✓ done'
+          : (flowWindowLabel(f) || 'due ' + minutesToHHMM(Math.round(due) % 1440))}</span>`
+          : done ? '<span class="fr-due">✓ done</span>' : ''}
         <span class="map-count" title="${todaySteps} of ${f.steps.length} steps run today">${todaySteps}${
           todaySteps === f.steps.length ? '' : `<span class="fr-of">/${f.steps.length}</span>`}</span>
         <button class="fr-play" data-flow="${f.id}" title="Run this routine">▶</button>
@@ -3860,6 +3892,21 @@ function renderFlowEditor(body, title, f) {
       <select id="fr-before" class="map-area">${nodeOpts(f.before_node_id)}</select>
     </div>
     <div class="fr-link-hint">Linked gates judge ✗ unless this routine completes for the day.</div>
+    ${/* THE ROUTINE'S OWN WINDOW (2026-08-12). A gate has an open and a due
+          time; a routine had only a deadline, derived from its gate's. So
+          "open at 7, due at a time I choose" could not be said. Its window is
+          a schedule source like everything else, which is what makes it
+          followable: pick "the work scan (gate)" in the picker's Follows row
+          and the routine's window is derived from that gate's hours. */''}
+    <div class="fr-link">
+      <span class="cl-label">Window</span>
+      <button class="cl-pill${f.source_uid ? ' cl-pill-on' : ''}" id="fr-window">${
+        f.source_uid ? escHtml(flowWindowLabel(f) || 'set') : 'set open + due…'}</button>
+      ${f.source_uid ? '<button class="cl-x" id="fr-window-x" title="Back to the gate\'s deadline">✕</button>' : ''}
+    </div>
+    <div class="fr-link-hint">${f.source_uid
+      ? 'Its own hours. Clear it to fall back to the gate deadline ± offset.'
+      : 'No window of its own — the deadline above is the gate\'s, ± the offset.'}</div>
     <div class="ref-list">${f.steps.map((s, i) => `
       <div class="ref-row${stepDueToday(s) ? '' : ' fr-step-off'}" data-step="${s.id}">
         <span class="cl-chain-n">${i + 1}</span>
@@ -3907,6 +3954,16 @@ function renderFlowEditor(body, title, f) {
     linkPatch({ offset_min: e.target.value === '' ? null : parseInt(e.target.value) }));
   body.querySelector('#fr-before').addEventListener('change', e =>
     linkPatch({ before_node_id: e.target.value ? parseInt(e.target.value) : null }));
+  // Consumer mode: the picker hands back a uid and the routine holds it. Follows
+  // is ALLOWED here (unlike a gate's picker) — a routine deriving its hours from
+  // the gate it serves is the point, and the gate's own window keeps the 24h
+  // protection whatever derives from it.
+  body.querySelector('#fr-window').addEventListener('click', () => openPicker({
+    sourceUid: f.source_uid || null,
+    onSaved: async uid => { await linkPatch({ source_uid: uid }); },
+  }));
+  const winX = body.querySelector('#fr-window-x');
+  if (winX) winX.addEventListener('click', () => linkPatch({ source_uid: null }));
 
   // Every SETTING is decided in the step sheet now (see openStepSheet) — the
   // row keeps only what a list alone can do: its order.
@@ -8356,6 +8413,18 @@ function endsDetail(ends) {
 // hold a source rather than their own fields — see CLAUDE.md's migration list.
 function followOptions() {
   const opts = [['', 'nothing — set a pattern']];
+  // A GATE's hours are followable (2026-08-12) even though its source is
+  // unnamed: "due 30 min before the work scan closes" is the thing you actually
+  // want to say, and the alternative — naming every gate's window in Settings →
+  // Times just to reference it — would fill that list with one row per gate.
+  // Offered under the gate's own name. The reverse direction stays refused:
+  // openPicker's `noFollows` is what keeps a gate from inheriting hours that
+  // could move without the 24h delay.
+  (state.accountabilityNodes || []).forEach(n => {
+    if (n.active && n.source_uid && n.source_uid !== pickerView.uid) {
+      opts.push([n.source_uid, `${n.label} (gate)`]);
+    }
+  });
   const named = (state.allSources || []).filter(s => s.title && s.uid !== pickerView.uid);
   const groups = [['schedule', 'Schedules'], ['derived', 'Schedules'], ['rule', 'Rules']];
   const seen = new Set();
