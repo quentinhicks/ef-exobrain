@@ -730,6 +730,24 @@ def init_db():
             tag    TEXT PRIMARY KEY,
             device TEXT NOT NULL
         )''')
+    # A tag ASKED ABOUT EACH DAY (2026-08-12). Some contexts are contingent on
+    # the day rather than on a place, a device or a clock: whether you will see
+    # a particular person. `tag_daily` is which tags to ask about; `tag_day` is
+    # the answer for one date. NO ROW MEANS NO EXCLUSION (Quentin) — skipping
+    # the morning routine must never hide work, exactly like the other three
+    # gates fail open. Only an explicit "not today" hides anything, and the pool
+    # header counts what it hid.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS tag_daily (
+            tag TEXT PRIMARY KEY
+        )''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS tag_day (
+            tag     TEXT NOT NULL,
+            date    TEXT NOT NULL,
+            applies INTEGER NOT NULL,
+            PRIMARY KEY (tag, date)
+        )''')
     # A tag bound to a location preset: items carrying the tag are only
     # AVAILABLE (pool-side, client-enforced) while the device is inside that
     # location's geofence. GTD's @contexts, literally.
@@ -5630,6 +5648,47 @@ def delete_tag_time(tag):
     conn.execute('DELETE FROM tag_time WHERE tag = ?', (tag,))
     conn.commit()
     conn.close()
+
+
+def get_tag_daily():
+    conn = get_conn()
+    rows = [r['tag'] for r in conn.execute('SELECT tag FROM tag_daily ORDER BY tag').fetchall()]
+    conn.close()
+    return rows
+
+
+def set_tag_daily(tag, on):
+    conn = get_conn()
+    if on:
+        conn.execute('INSERT OR IGNORE INTO tag_daily (tag) VALUES (?)', (tag,))
+    else:
+        # Unbinding drops the answers too: a tag nobody asks about must not keep
+        # hiding work from rows written when it was still asked.
+        conn.execute('DELETE FROM tag_daily WHERE tag = ?', (tag,))
+        conn.execute('DELETE FROM tag_day WHERE tag = ?', (tag,))
+    conn.commit()
+    conn.close()
+
+
+def get_tag_day(date):
+    # {tag: True/False} for the tags answered on this date. Absent = unanswered.
+    conn = get_conn()
+    rows = conn.execute('SELECT tag, applies FROM tag_day WHERE date = ?', (date,)).fetchall()
+    conn.close()
+    return {r['tag']: bool(r['applies']) for r in rows}
+
+
+def set_tag_day(tag, date, applies):
+    conn = get_conn()
+    if applies is None:
+        conn.execute('DELETE FROM tag_day WHERE tag = ? AND date = ?', (tag, date))
+    else:
+        conn.execute('''INSERT INTO tag_day (tag, date, applies) VALUES (?,?,?)
+                        ON CONFLICT(tag, date) DO UPDATE SET applies = excluded.applies''',
+                     (tag, date, 1 if applies else 0))
+    conn.commit()
+    conn.close()
+    return get_tag_day(date)
 
 
 def get_tag_devices():

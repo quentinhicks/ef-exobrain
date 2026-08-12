@@ -1851,6 +1851,36 @@ def delete_tag_time_route(tag):
     return '', 204
 
 
+# Which tags get asked about each morning, and today's answers. One GET so the
+# client needs a single round trip for both halves of the gate.
+@app.route('/api/tag-daily')
+def get_tag_daily_route():
+    date = request.args.get('date') or date_cls.today().isoformat()
+    return jsonify({'tags': storage.get_tag_daily(), 'answers': storage.get_tag_day(date)})
+
+
+@app.route('/api/tag-daily', methods=['POST'])
+def post_tag_daily():
+    data = request.get_json() or {}
+    tag = (data.get('tag') or '').strip().lower()
+    if not tag:
+        return jsonify({'error': 'tag is required'}), 400
+    storage.set_tag_daily(tag, bool(data.get('on', True)))
+    return jsonify({'tags': storage.get_tag_daily()}), 201
+
+
+@app.route('/api/tag-daily/answer', methods=['POST'])
+def post_tag_day():
+    data = request.get_json() or {}
+    tag = (data.get('tag') or '').strip().lower()
+    if not tag:
+        return jsonify({'error': 'tag is required'}), 400
+    date = data.get('date') or date_cls.today().isoformat()
+    # applies=null CLEARS the answer, which is what an undo replays — back to
+    # unanswered, which excludes nothing.
+    return jsonify(storage.set_tag_day(tag, date, data.get('applies')))
+
+
 @app.route('/api/tag-devices')
 def get_tag_devices_route():
     return jsonify(storage.get_tag_devices())

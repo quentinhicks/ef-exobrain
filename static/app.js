@@ -140,6 +140,8 @@ const state = {
   // covers the viewed date, computed by schedule.py, so the client is only ever
   // asked "is now inside one of these" — the half a phone can answer.
   tagDevices: [],
+  // Which tags are asked about each morning, and today's answers.
+  tagDaily: { tags: [], answers: {} },
   tagTimes: [],
   schedules: [],
   allSources: [],
@@ -161,7 +163,7 @@ const state = {
 // that is already on screen; on first load the initialiser makes that [].
 async function loadAll() {
   const dateStr = formatDateYMD(state.currentDate);
-  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes] = await Promise.all([
+  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily] = await Promise.all([
     fetch('/api/blocks').then(r => r.json()).catch(() => state.blocks),
     fetch('/api/areas').then(r => r.json()).catch(() => state.areas),
     fetch('/api/domains').then(r => r.json()).catch(() => state.domains),
@@ -180,12 +182,14 @@ async function loadAll() {
     fetch('/api/tag-locations').then(r => r.json()).catch(() => state.tagLocations),
     fetch('/api/tag-devices').then(r => r.json()).catch(() => state.tagDevices),
     fetch('/api/tag-times').then(r => r.json()).catch(() => state.tagTimes),
+    fetch('/api/tag-daily').then(r => r.json()).catch(() => state.tagDaily),
   ]);
 
   state.locations = Array.isArray(locations) ? locations : [];
   state.tagLocations = Array.isArray(tagLocations) ? tagLocations : [];
   state.tagDevices = Array.isArray(tagDevices) ? tagDevices : [];
   state.tagTimes = Array.isArray(tagTimes) ? tagTimes : [];
+  if (tagDaily && Array.isArray(tagDaily.tags)) state.tagDaily = tagDaily;
   state.blocks = blocks;
   state.areas = projects;
   state.domains = domains;
@@ -3846,6 +3850,7 @@ function renderRef() {
 // spec asks whether you made a plan, which a gate with money behind it must
 // not mistake for having done the thing.
 const FLOW_KINDS = { text: 'text', checklist: 'checklist',
+                     daily_contexts: 'today’s contexts',
                      social_spec: 'social spec (planned)',
                      social_dose: 'social dose (done)',
                      journal_night: 'nightly journal', crm_fill: 'CRM fill' };
@@ -3861,7 +3866,7 @@ function stepKindLabel(s) {
 // a review step both do (both are renamable). The ⚙ kind label is for the
 // feature pages that carry no text of their own.
 function stepShowsText(s) {
-  return s.kind === 'text' || !!REVIEW_KINDS[s.kind];
+  return s.kind === 'text' || s.kind === 'daily_contexts' || !!REVIEW_KINDS[s.kind];
 }
 
 // How long until a pending easing lands, in whole hours (ceil — "1h" until
@@ -4693,6 +4698,27 @@ function renderFlowRun() {
         ? 'filled tonight ✓' : 'log tonight\'s people entries'}</div>
       ${flowRunView.crmFilled ? ''
         : '<button id="fr-crm-fill" class="cl-pill">Mark filled (entries made)</button>'}`;
+  } else if (s.kind === 'daily_contexts') {
+    // WHICH CONTEXTS APPLY TODAY. Answering "no" hides that tag's pool items
+    // for the day and is counted on the pool header; leaving one unanswered
+    // excludes nothing, so this step can be skipped without consequence.
+    const dTags = ((state.tagDaily || {}).tags || []);
+    const dAns = ((state.tagDaily || {}).answers || {});
+    const unanswered = dTags.filter(t => dAns[t] === undefined).length;
+    page = `<div class="fr-step-big">${escHtml(s.content || 'Today’s contexts')}</div>
+      ${dTags.length ? `<div class="ref-list">${dTags.map(t => `
+        <div class="ref-row" data-dtag="${escHtml(t)}">
+          <span class="ref-text">${escHtml(t)}</span>
+          <div class="fr-rating">
+            <button class="fr-rate${dAns[t] === true ? ' fr-rate-on' : ''}" data-dset="yes">today</button>
+            <button class="fr-rate${dAns[t] === false ? ' fr-rate-on' : ''}" data-dset="no">not today</button>
+          </div>
+        </div>`).join('')}</div>
+        <div class="fr-note">${unanswered
+          ? `${unanswered} unanswered — those stay visible`
+          : 'all answered'}</div>`
+      : `<div class="fr-note">No tags are asked about yet. Long-press a tag in the
+         context picker and turn on “ask each day”.</div>`}`;
   } else if (s.kind === 'social_spec') {
     const okSpec = day.specOk === true;
     page = `<div class="fr-step-big">Social spec</div>
@@ -4945,6 +4971,33 @@ function renderFlowRun() {
   if (expGrad) expGrad.addEventListener('click', () => expEnd(false));
   const expDrop = el.querySelector('#fr-exp-drop');
   if (expDrop) expDrop.addEventListener('click', () => expEnd(true));
+
+  el.querySelectorAll('[data-dset]').forEach(b => b.addEventListener('click', async () => {
+    const row = b.closest('[data-dtag]');
+    const tag = row.dataset.dtag;
+    const want = b.dataset.dset === 'yes';
+    const prev = ((state.tagDaily || {}).answers || {})[tag];
+    // Tapping the answer you already gave clears it — back to unanswered, which
+    // excludes nothing. That is the only way to undo a "not today" in place.
+    const applies = prev === want ? null : want;
+    const answers = await fetch('/api/tag-daily/answer', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag, applies }),
+    }).then(r => r.json()).catch(() => null);
+    if (answers) state.tagDaily = { ...state.tagDaily, answers };
+    pushUndo(`set ${tag} ${applies === null ? 'unanswered' : applies ? 'today' : 'not today'}`,
+      async () => {
+        const back = await fetch('/api/tag-daily/answer', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tag, applies: prev === undefined ? null : prev }),
+        }).then(r => r.json()).catch(() => null);
+        if (back) state.tagDaily = { ...state.tagDaily, answers: back };
+        renderFlowRun();
+        renderEngage();
+      });
+    renderFlowRun();
+    renderEngage();   // the pool and its 👤 count follow immediately
+  }));
 
   const crm = el.querySelector('#fr-crm-fill');
   if (crm) crm.addEventListener('click', async () => {
@@ -8782,14 +8835,16 @@ function closeCtxSheet() {
 }
 
 async function ctxSheetRefresh() {
-  const [devs, times, sources] = await Promise.all([
+  const [devs, times, sources, daily] = await Promise.all([
     fetch('/api/tag-devices').then(r => r.json()).catch(() => state.tagDevices),
     fetch('/api/tag-times').then(r => r.json()).catch(() => state.tagTimes),
     fetch(`/api/schedules?date=${egDateStr()}&unnamed=1`).then(r => r.json()).catch(() => state.schedules),
+    fetch('/api/tag-daily').then(r => r.json()).catch(() => state.tagDaily),
   ]);
   state.tagDevices = devs;
   state.tagTimes = times;
   state.schedules = sources;
+  if (daily && Array.isArray(daily.tags)) state.tagDaily = daily;
   renderCtxSheet();
   renderEngage();
 }
@@ -8808,6 +8863,8 @@ function renderCtxSheet() {
   const implicit = !boundDev && DEVICE_TAGS.includes(tag);
   const boundLoc = (state.tagLocations || []).find(b => b.tag === tag);
   const boundTime = (state.tagTimes || []).find(b => b.tag === tag);
+  const dailyOn = ((state.tagDaily || {}).tags || []).includes(tag);
+  const todayAns = ((state.tagDaily || {}).answers || {})[tag];
 
   sheet.innerHTML = `
     <div class="cl-head">
@@ -8857,10 +8914,29 @@ function renderCtxSheet() {
         escHtml(p.label || '')} — ${p.due ? 'runs today' : 'not today'}</span></div>`;
     })() : ''}
 
+    ${/* The fourth axis, and the only one answered by HAND each day: whether a
+          context applies at all today. It is here because binding a tag belongs
+          on one surface, not four. */''}
+    <div class="cl-sec"><span class="cl-label">👤 Ask each day</span>
+      <span class="cl-hint">${dailyOn ? (todayAns === false ? 'not today'
+        : todayAns === true ? 'applies today' : 'unanswered — nothing hidden') : 'never asked'}</span></div>
+    <div class="cl-chips">
+      <button class="cl-chip${dailyOn ? ' cl-chip-on' : ''}" data-daily="on"
+        title="The morning routine's contexts step will ask about this tag">ask</button>
+      ${dailyOn ? '<button class="cl-chip" data-daily="off">✕ stop asking</button>' : ''}
+    </div>
+
     <div class="cl-row">
       <button class="cl-pill cl-pill-on" id="ctx-sheet-done">Done</button>
     </div>`;
 
+  sheet.querySelectorAll('[data-daily]').forEach(b => b.addEventListener('click', async () => {
+    await fetch('/api/tag-daily', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag, on: b.dataset.daily === 'on' }),
+    });
+    await ctxSheetRefresh();
+  }));
   sheet.querySelector('#ctx-sheet-close').addEventListener('click', closeCtxSheet);
   sheet.querySelector('#ctx-sheet-done').addEventListener('click', closeCtxSheet);
   back.onclick = closeCtxSheet;
@@ -9249,11 +9325,23 @@ function renderEngage() {
   // pool is multiplicative across 210 glances a week. Hidden-by-device is
   // counted the same way, and among the locOk rows only, so the two exclusions
   // can't both claim the same item.
+  // DAY gate: a tag can be asked about each morning (tag_daily) and answered for
+  // the date (tag_day). Only an explicit "not today" hides anything — an
+  // UNANSWERED day excludes nothing (Quentin), so skipping the routine leaves
+  // the pool exactly as it was. Only on TODAY: an answer is a statement about
+  // today, so applying it to a day you are merely planning would hide work for
+  // a reason that isn't true yet — the same rule the time gate follows.
+  const dayAns = (state.tagDaily || {}).answers || {};
+  const onToday = !engageView.date || engageView.date === formatDateYMD(new Date());
+  const dayOk = i => !onToday || itemTags(i).every(t => dayAns[t] !== false);
+
   const geoHidden = poolBase.filter(i => !locOk(i)).length;
   const devHidden = poolBase.filter(i => locOk(i) && !deviceOk(i)).length;
   const timeHidden = poolBase.filter(i => locOk(i) && deviceOk(i) && !timeOk(i)).length;
+  const dayHidden = poolBase.filter(i =>
+    locOk(i) && deviceOk(i) && timeOk(i) && !dayOk(i)).length;
   const pool = poolBase
-    .filter(i => locOk(i) && deviceOk(i) && timeOk(i))
+    .filter(i => locOk(i) && deviceOk(i) && timeOk(i) && dayOk(i))
     // In-progress floats first — "what am I on" is the glance the ◐ exists
     // for — then BY DUE DATE (2026-08-07: deadlines sort the pool; no
     // deadline sorts last), then oldest-first as always.
@@ -9507,7 +9595,8 @@ function renderEngage() {
     <div class="eg-pool-head">Not scheduled${geoHidden
       ? ` <span class="eg-geo-hidden" title="Hidden by location-bound tags — they return when you're there">⌖ ${geoHidden} elsewhere</span>` : ''}${devHidden
       ? ` <span class="eg-dev-hidden" title="Tagged #${otherDevice} — they show up on the ${otherDevice}">▭ ${devHidden} ${otherDevice}-only</span>` : ''}${timeHidden
-      ? ` <span class="eg-dev-hidden" title="Their context is bound to a time period you are not in — they come back when you are">◷ ${timeHidden} out of window</span>` : ''}</div>
+      ? ` <span class="eg-dev-hidden" title="Their context is bound to a time period you are not in — they come back when you are">◷ ${timeHidden} out of window</span>` : ''}${dayHidden
+      ? ` <span class="eg-dev-hidden" title="You said these contexts don't apply today — the morning routine is where that is answered">👤 ${dayHidden} not today</span>` : ''}</div>
     ${deferHtml}
     <div class="eg-pool">
       ${pool.map(i => `
