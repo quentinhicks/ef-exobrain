@@ -10,8 +10,14 @@ so a VM that was off catches up on boot.
 
 Each run takes a **consistent** SQLite snapshot first (`sqlite3`'s online
 backup API, the same call `storage.backup_db()` uses — a plain file copy of a
-live database can restore corrupt), then backs up that snapshot plus `logs/`
-and `config.json`.
+live database can restore corrupt), then backs up that snapshot plus `logs/`,
+`daybook/` and `config.json`.
+
+`daybook/` is the LEGIBLE copy: `daybook.py` writes one markdown file per day
+(`daybook/YYYY/YYYY-MM-DD.md`) holding that day's data plus the standing state it
+sat in, rendered from the schema at write time. The database backups restore the
+app; the daybook survives the app. Written on every start of the process that
+takes the snapshot, so the two travel together.
 
 | | |
 |---|---|
@@ -32,7 +38,7 @@ keep a full policy's worth. Grouping on the tag makes the path list irrelevant.
 ## The escape hatch — recovering without restic
 
 restic protects against losing the data. `~/qpa-escape/` protects against
-losing **restic**: a daily `tar.gz` of the db + logs + config, GnuPG symmetric
+losing **restic**: a daily `tar.gz` of the db + logs + daybook + config, GnuPG symmetric
 AES256, same passphrase as the repo (one secret to escrow, not two). It is
 included in the restic snapshot, so it is offsite too.
 
