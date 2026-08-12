@@ -3916,6 +3916,8 @@ body.np-body {
   padding: 12px 14px 10px;
   border-bottom: 1px solid var(--border);
   flex: none;
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 #eg-panel-btn {
@@ -3962,6 +3964,12 @@ body.np-body {
 .due-chip-inherited { border-style: dashed; opacity: 0.8; }
 .eg-spacer { flex: 1; }
 
+/* The context formula GROWS (2026-08-12). It is a sentence — `General ∧ ¬SF ∧
+   deep` — so with a few tags selected it outgrew one line and was clipped by the
+   header's row, which meant the thing telling you what the pool is filtered by
+   could not be read. It wraps instead, and the header grows with it: the formula
+   is the receipt for every hidden item, so it is the last thing that should be
+   truncated to save a few pixels. Right-aligned, because it is the row's tail. */
 .eg-domain {
   font: 11px var(--font-mono);
   background: var(--surface-2);
@@ -3969,6 +3977,11 @@ body.np-body {
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 4px 8px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: right;
+  line-height: 1.45;
+  max-width: 62%;
 }
 
 /* The bar is fixed, so the day's scroller pads under it. */

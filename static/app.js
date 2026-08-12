@@ -9566,10 +9566,12 @@ function renderEngage() {
   // for every other domain went with the chips (2026-08-08): with more than
   // two domains the label was mostly exclusions, and it grew with each domain
   // added — on a header that has to fit a phone.
+  // EVERY term is named (2026-08-12). The label was capped at two tags plus
+  // "+3", which is the one thing this button must not do: it is the receipt for
+  // the items the pool is hiding, and "+3" does not say which three. It wraps
+  // onto as many lines as it needs and the header grows — see .eg-domain.
   const tagTerms = [...engageView.ctxTags];
-  const shownTags = tagTerms.slice(0, 2);
-  const ctxLabel = [domainName(ctxDomainId), ...shownTags].join(' ∧ ')
-    + (tagTerms.length > 2 ? ` ∧ +${tagTerms.length - 2}` : '');
+  const ctxLabel = [domainName(ctxDomainId), ...tagTerms].join(' ∧ ');
 
   // 9c header: NOW-panel button top-left, the day as the title, domain chip.
   header.innerHTML = `
