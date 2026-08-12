@@ -1374,15 +1374,10 @@ def get_gtd_review():
     review = storage.get_gtd_review(request.args.get('week'))
     review['counts'] = storage.get_gtd_review_counts()
     review['habit'] = storage.get_habit_week_for(date_cls.today().isoformat())
+    # The STEPS are a routine now (storage._seed_review_flow) — this row keeps
+    # only what is the review's own and no routine's: the note and the filing.
+    review['flow_id'] = storage.get_review_flow_id()
     return jsonify(review)
-
-
-@app.route('/api/gtd-review/step', methods=['POST'])
-def post_gtd_review_step():
-    data = request.get_json()
-    if not data.get('week') or not data.get('step'):
-        return jsonify({'error': 'week and step are required'}), 400
-    return jsonify(storage.set_gtd_review_step(data['week'], data['step'], bool(data.get('done'))))
 
 
 @app.route('/api/gtd-review/finish', methods=['POST'])
@@ -1655,7 +1650,10 @@ def patch_flow(id):
         kwargs['offset_min'] = data['offset_min']
     if 'before_node_id' in data:
         kwargs['before_node_id'] = data['before_node_id']
-    flow = storage.update_flow(id, **kwargs)
+    try:
+        flow = storage.update_flow(id, **kwargs)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     return jsonify(flow)
 
 
@@ -1719,6 +1717,10 @@ def cancel_flow_step_pending_route(id):
 def put_flow_run(id):
     data = request.get_json()
     date = data.get('date') or date_cls.today().isoformat()
+    # The client sends the DAY it is on; which run that day belongs to is the
+    # flow's business (a weekly routine files under its Monday). Normalising
+    # here means no caller has to know the rule.
+    date = storage.flow_period_key_for(id, date)
     run = storage.upsert_flow_run(id, date, json.dumps(data.get('steps') or {}),
                                   bool(data.get('completed')))
     return jsonify(run)
