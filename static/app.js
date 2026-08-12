@@ -1149,9 +1149,56 @@ async function refreshInboxCount() {
 // in the inbox from every surface, and every list datatype adds through its
 // own button + the entry sheet (see openEntrySheet). barView/barModeNow went
 // with them.
+// HALF-TYPED TEXT IS DATA (2026-08-12). Two rules, because the bar had been
+// losing captures mid-sentence on the phone:
+//
+// 1. renderBar NEVER replaces the input while you are in it. It used to rebuild
+//    the whole bar with innerHTML, which destroys the focused <input> — the
+//    keyboard retracts and the text goes with the node. Nothing the user did
+//    triggered it: renderEngage repaints the bar, and refreshEngage is called by
+//    the 'online' event (a cellular↔wifi handoff), by visibilitychange/focus
+//    (which a phone fires for the notification shade, the share sheet, even a
+//    keyboard show), and by checkActiveBlock crossing into a new domain on its
+//    60s timer. checkActiveBlock already guarded renderInbox this way
+//    (`!inboxSection.contains(document.activeElement)`); the bar never was.
+// 2. The draft is MIRRORED to localStorage on every keystroke, so a real reload,
+//    a crash or the OS discarding the tab does not lose it either. Restored as
+//    text only — never focus, or opening the app would pop the keyboard.
+//
+// Both halves are needed: the guard covers the repaint, the mirror covers
+// everything that destroys the whole document.
+const CAPTURE_DRAFT_KEY = 'captureDraft';
+
+function captureDraftSet(v) {
+  try {
+    if (v) localStorage.setItem(CAPTURE_DRAFT_KEY, v);
+    else localStorage.removeItem(CAPTURE_DRAFT_KEY);
+  } catch (e) { /* private mode / full quota: the guard still holds */ }
+}
+
+function captureDraftGet() {
+  try { return localStorage.getItem(CAPTURE_DRAFT_KEY) || ''; } catch (e) { return ''; }
+}
+
+// The parts of the bar that are DERIVED from state and must stay honest even
+// when the input is left alone. Everything else in the bar is static markup.
+function renderBarCounts(bar) {
+  const undo = bar.querySelector('#eg-undo');
+  const clarify = bar.querySelector('#eg-clarify');
+  if (undo) undo.classList.toggle('hidden', !undoStack.length);
+  if (clarify) clarify.textContent = `Clarify ${state.inbox.length}`;
+}
+
 function renderBar() {
   const bar = document.getElementById('global-bar');
   if (!bar) return;
+  // Rule 1. Focused, or holding text you have not filed yet: patch the counts
+  // and leave the input alone.
+  const live = bar.querySelector('#eg-capture');
+  if (live && (document.activeElement === live || live.value)) {
+    renderBarCounts(bar);
+    return;
+  }
   bar.innerHTML = `
     <span class="eg-cap-plus">+</span>
     <input type="text" id="eg-capture" placeholder="Capture anything…" autocomplete="off">
@@ -1161,10 +1208,14 @@ function renderBar() {
   `;
 
   const input = bar.querySelector('#eg-capture');
+  // Rule 2, the read half. Text only: a draft restores what you typed, it does
+  // not decide that you are typing.
+  input.value = captureDraftGet();
+  input.addEventListener('input', () => captureDraftSet(input.value));
   input.addEventListener('keydown', async e => {
     if (e.key === 'Escape') {
       // Peel: text first, then let the overlay's own Esc take over.
-      if (input.value) { e.stopPropagation(); input.value = ''; return; }
+      if (input.value) { e.stopPropagation(); input.value = ''; captureDraftSet(''); return; }
       input.blur();
       return;
     }
@@ -1175,11 +1226,17 @@ function renderBar() {
     const raw = input.value.trim();
     if (!raw) return;
     input.value = '';
+    // The draft is dropped only once the item is SAFE. captureToInbox toasts
+    // and returns null on a failed write, and a capture that failed to reach
+    // the server is exactly when the text still needs to exist.
     if (await captureToInbox(raw)) {
+      captureDraftSet('');
       // MAP's untriaged "in" pile is on screen when capturing from MAP —
       // the new row appearing there is the receipt.
       const mapEl = document.getElementById('map-overlay');
       if (mapEl && !mapEl.classList.contains('hidden')) await refreshMap();
+    } else {
+      input.value = raw;
     }
   });
 
