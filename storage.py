@@ -3245,6 +3245,19 @@ def create_habit_experiment(content, started_on):
     return dict(row)
 
 
+def rename_habit_experiment(id, content):
+    # A RUNNING experiment can be reworded: you keep the same variable but say
+    # it better than you did last night. Only while running — rewriting one the
+    # review is about to judge would change the thing being judged.
+    conn = get_conn()
+    conn.execute("UPDATE habit_experiment SET content = ? WHERE id = ? AND status = 'running'",
+                 (content, id))
+    conn.commit()
+    row = conn.execute('SELECT * FROM habit_experiment WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def resolve_habit_experiment(id, resolution, today=None):
     conn = get_conn()
     conn.execute(
@@ -3300,6 +3313,27 @@ def unevaluate_habit_experiment(id):
     conn.execute('DELETE FROM habit WHERE experiment_id = ?', (id,))
     conn.commit()
     conn.close()
+
+
+def reopen_habit_experiment(id):
+    # The undo half of ending one at night, whichever end it was: back to
+    # running, with the resolution and any evaluation wiped, and any habit it
+    # minted removed. Refused while another is running — one at a time is the
+    # invariant, and an undo must not be the way around it.
+    conn = get_conn()
+    other = conn.execute(
+        "SELECT id FROM habit_experiment WHERE status = 'running' AND id != ?", (id,)).fetchone()
+    if other:
+        conn.close()
+        return {'error': 'another experiment is running'}
+    conn.execute('DELETE FROM habit WHERE experiment_id = ?', (id,))
+    conn.execute(
+        """UPDATE habit_experiment SET status = 'running', resolution = NULL,
+           resolved_on = NULL, outcome = NULL, evaluated_on = NULL WHERE id = ?""", (id,))
+    conn.commit()
+    row = conn.execute('SELECT * FROM habit_experiment WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def get_habit_experiments_overview(today):

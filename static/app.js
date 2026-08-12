@@ -2950,7 +2950,7 @@ function habitReviewHtml(hb) {
       ${escHtml(e.content)} <span class="gr-ht-counts">resolved: ${escHtml(e.resolution || '—')}</span>
       <span class="gr-ht-verbs">
         ${spent ? '' : '<button class="cl-pill" data-exverb="habit" title="promote it: start forming it as a tracked habit. One per week.">make a habit</button>'}
-        <button class="cl-pill" data-exverb="extend" title="carry it further yourself, off the tracker — no habit is created">extend</button>
+        <button class="cl-pill" data-exverb="extend" title="do something with it yourself, off the tracker — no habit is created">adapt</button>
         <button class="cl-pill" data-exverb="wait" title="leave it resolved; it will be here next review">wait</button>
         <button class="cl-pill" data-exverb="drop">drop</button>
       </span></div>`).join('')
@@ -4482,11 +4482,41 @@ function renderFlowRun() {
     page = `<div class="fr-step-big">Nightly journal</div>
       <textarea id="fr-jn-bottleneck" class="cl-notes" rows="2"
         placeholder="What do you want to do better tomorrow?">${escHtml(j.bottleneck || '')}</textarea>
-      ${running ? `<div class="fr-note">experiment: ${escHtml(running.content)} — how did it feel today?</div>` : ''}
+      ${running ? `<div class="fr-note">experiment: ${escHtml(running.content)}
+        <span class="fr-of">since ${escHtml(running.started_on)}</span> — how did it feel today?</div>` : ''}
       <textarea id="fr-jn-exp" class="cl-notes" rows="2"
         placeholder="${running ? 'Observations on the experiment…' : 'Active experiment…'}">${escHtml(j.active_experiment || '')}</textarea>
       <div class="fr-rating">${[1, 2, 3, 4, 5, 6, 7].map(n =>
         `<button class="fr-rate${j.rating === n ? ' fr-rate-on' : ''}" data-rate="${n}">${n}</button>`).join('')}</div>
+
+      ${/* THE NEXT EXPERIMENT, decided here (2026-08-12). Starting, rewording
+            and ending one lived only in the Journal OVERLAY, which is not the
+            surface this gets done on — the nightly routine is. So the page that
+            asks how the experiment felt is also the page that decides whether it
+            continues: keep it (do nothing), reword it, or end it. Ending asks
+            which end it was, because "graduate" and "drop" are different claims:
+            graduate hands it to the weekly review to judge, drop closes it now
+            and never queues it. */''}
+      <div class="fr-exp">
+        <div class="fr-exp-head">${running ? 'Tomorrow’s experiment' : 'Start an experiment'}</div>
+        ${running ? `
+          <input type="text" id="fr-exp-edit" class="cl-action" value="${escHtml(running.content)}"
+            title="Reword it and press keep — same variable, said better">
+          <div class="cl-row">
+            <button class="cl-pill" id="fr-exp-keep">Keep it running</button>
+            <button class="cl-pill" id="fr-exp-grad">End it → weekly review</button>
+            <button class="cl-pill" id="fr-exp-drop">End it → drop</button>
+          </div>
+          <div class="fr-note fr-exp-hint">Keeping it is the default — you can just carry on.</div>`
+        : `
+          <input type="text" id="fr-exp-new" class="cl-action"
+            placeholder="change one cue, one cost, or one reward">
+          <div class="cl-row"><button class="cl-pill" id="fr-exp-start">Start it</button></div>`}
+        ${(((flowRunView.habits || {}).experiments || {}).awaiting || []).length
+          ? `<div class="fr-note fr-exp-hint">${
+              ((flowRunView.habits.experiments.awaiting) || []).length} waiting for the weekly review</div>`
+          : ''}
+      </div>
       ${(hb.forming || []).map(h => {
         const m = marks[h.id] || {};
         return `<div class="fr-habit" data-habit="${h.id}">
@@ -4632,6 +4662,88 @@ function renderFlowRun() {
     b.parentElement.querySelectorAll('.fr-rate').forEach(x => x.classList.remove('fr-rate-on'));
     b.classList.add('fr-rate-on');
   }));
+  // The experiment lifecycle, on the page that asks about it. Each of these
+  // re-reads /api/habits and repaints, so the page always shows what the server
+  // now believes rather than an optimistic guess.
+  // `running` above is scoped to the page-building branch; the handlers run out
+  // here, so the experiment is re-read from the view state they share.
+  const expRunning = ((flowRunView.habits || {}).experiments || {}).running || null;
+  const expRefresh = async () => {
+    flowRunView.habits = await fetch('/api/habits').then(r => r.json())
+      .catch(() => flowRunView.habits);
+    renderFlowRun();
+  };
+  const expStart = el.querySelector('#fr-exp-start');
+  if (expStart) expStart.addEventListener('click', async () => {
+    const content = el.querySelector('#fr-exp-new').value.trim();
+    if (!content) { toast('Name the experiment first'); return; }
+    const res = await fetch('/api/habit-experiments', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!res.ok) { toast((await res.json()).error || 'could not start it'); return; }
+    const made = await res.json();
+    pushUndo(`started the experiment "${content}"`, async () => {
+      // Undoing a start closes it outright rather than queueing it: it never
+      // ran, so there is nothing for the review to judge.
+      await fetch(`/api/habit-experiments/${made.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolution: 'undone', outcome: 'drop' }),
+      });
+      await expRefresh();
+    });
+    toast(`running: ${content}`);
+    await expRefresh();
+  });
+  const expKeep = el.querySelector('#fr-exp-keep');
+  if (expKeep) expKeep.addEventListener('click', async () => {
+    const next = el.querySelector('#fr-exp-edit').value.trim();
+    if (!next) { toast('An experiment needs a name'); return; }
+    if (next === expRunning.content) { toast('Still running — unchanged'); return; }
+    const was = expRunning.content;
+    await fetch(`/api/habit-experiments/${expRunning.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: next }),
+    });
+    pushUndo(`reworded the experiment`, async () => {
+      await fetch(`/api/habit-experiments/${expRunning.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: was }),
+      });
+      await expRefresh();
+    });
+    toast('reworded — still running');
+    await expRefresh();
+  });
+  const expEnd = async drop => {
+    // The resolution is the EVIDENCE the review judges, so it is written now
+    // rather than reconstructed a week later. Dropping still asks for it: the
+    // ledger is the point even when the answer was no.
+    const note = prompt(drop ? 'Why drop it? One line for the ledger.'
+                             : 'How did it resolve? One line for the review.');
+    if (note == null) return;
+    const body = { resolution: note };
+    if (drop) body.outcome = 'drop';
+    const res = await fetch(`/api/habit-experiments/${expRunning.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { toast((await res.json()).error || 'could not end it'); return; }
+    pushUndo(drop ? 'dropped the experiment' : 'sent the experiment to the review', async () => {
+      // One call whichever end it was: reopen wipes the resolution, any
+      // evaluation, and any habit the promotion minted.
+      const r = await fetch(`/api/habit-experiments/${expRunning.id}/reopen`, { method: 'POST' });
+      if (!r.ok) toast((await r.json()).error || 'could not reopen it');
+      await expRefresh();
+    });
+    toast(drop ? 'dropped' : 'waiting for the weekly review');
+    await expRefresh();
+  };
+  const expGrad = el.querySelector('#fr-exp-grad');
+  if (expGrad) expGrad.addEventListener('click', () => expEnd(false));
+  const expDrop = el.querySelector('#fr-exp-drop');
+  if (expDrop) expDrop.addEventListener('click', () => expEnd(true));
+
   const crm = el.querySelector('#fr-crm-fill');
   if (crm) crm.addEventListener('click', async () => {
     const today = formatDateYMD(new Date());

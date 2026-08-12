@@ -1349,9 +1349,25 @@ def post_habit_experiment():
 @app.route('/api/habit-experiments/<int:id>', methods=['PATCH'])
 def patch_habit_experiment(id):
     data = request.get_json() or {}
+    # Reword the running one — same variable, said better.
+    if 'content' in data:
+        content = (data.get('content') or '').strip()
+        if not content:
+            return jsonify({'error': 'content is required'}), 400
+        row = storage.rename_habit_experiment(id, content)
+        return jsonify(row) if row else (jsonify({'error': 'no such experiment'}), 404)
     if 'resolution' in data:
         row = storage.resolve_habit_experiment(id, (data.get('resolution') or '').strip())
-        return jsonify(row) if row else (jsonify({'error': 'not running'}), 404)
+        if not row:
+            return jsonify({'error': 'not running'}), 404
+        # Dropping happens AT NIGHT as well as at the review: an experiment you
+        # already know was a dead end should not have to sit in the review queue
+        # to be closed. Resolve-then-evaluate, so there is one lifecycle rather
+        # than a second way to end one. 'drop' spends no promotion slot.
+        if data.get('outcome') == 'drop':
+            out = storage.evaluate_habit_experiment(id, 'drop')
+            return jsonify((out or {}).get('experiment') or row)
+        return jsonify(row)
     outcome = data.get('outcome')
     if outcome == 'resolved':
         # The undo half of an evaluation.
@@ -1364,6 +1380,16 @@ def patch_habit_experiment(id):
         return jsonify({'error': 'only a resolved experiment can be evaluated'}), 404
     if out.get('error') == 'promoted':
         return jsonify({'error': 'one promotion per week — this week\'s is already taken'}), 409
+    return jsonify(out)
+
+
+@app.route('/api/habit-experiments/<int:id>/reopen', methods=['POST'])
+def reopen_habit_experiment_route(id):
+    out = storage.reopen_habit_experiment(id)
+    if not out:
+        return jsonify({'error': 'no such experiment'}), 404
+    if out.get('error'):
+        return jsonify(out), 409
     return jsonify(out)
 
 
