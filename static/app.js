@@ -304,6 +304,86 @@ function onLongPress(el, fn) {
   }, true);
 }
 
+// A DRAG that touch can start too: on a mouse it begins on press, exactly as a
+// mouse drag always did; on a finger it begins after a 550ms still hold — the
+// same long press that stands in for right-click everywhere else (onLongPress).
+//
+// The press is what disambiguates. Touch cannot tell "grab this" from "scroll
+// the page" at pointerdown, so movement before the timer cancels the gesture and
+// lets the page scroll; once armed, the element takes pointer capture and
+// `touch-action: none` so the browser cannot steal the gesture mid-drag. Both
+// are restored on release, or a scroll would stay dead afterwards.
+//
+// `spec.start(e)` returns null to decline the gesture, else the handlers for it:
+// {move(clientY), end(clientY, e)}. That shape is what lets one drag body serve
+// both input paths instead of a mouse copy and a touch copy drifting apart.
+function onPointerDrag(el, spec) {
+  let t = null, live = null, sy = 0, pid = null, prevTouch = '';
+
+  const release = () => {
+    clearTimeout(t); t = null;
+    if (prevTouch !== null) el.style.touchAction = prevTouch;
+    if (pid != null && el.hasPointerCapture && el.hasPointerCapture(pid)) {
+      el.releasePointerCapture(pid);
+    }
+    pid = null;
+  };
+
+  const arm = e => {
+    live = spec.start(e);
+    if (!live) { release(); return; }
+    sy = e.clientY;
+    pid = e.pointerId;
+    prevTouch = el.style.touchAction;
+    el.style.touchAction = 'none';
+    try { el.setPointerCapture(pid); } catch (err) { /* capture is a nicety */ }
+  };
+
+  el.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse') { arm(e); if (live) e.preventDefault(); return; }
+    // Touch: hold still for 550ms to grab it.
+    sy = e.clientY;
+    const sx = e.clientX;
+    t = setTimeout(() => { t = null; arm(e); }, 550);
+    const cancelOnMove = ev => {
+      if (t && (Math.abs(ev.clientY - sy) > 10 || Math.abs(ev.clientX - sx) > 10)) {
+        clearTimeout(t); t = null;
+      }
+    };
+    el.addEventListener('pointermove', cancelOnMove);
+    const stop = () => {
+      clearTimeout(t); t = null;
+      el.removeEventListener('pointermove', cancelOnMove);
+    };
+    ['pointerup', 'pointercancel'].forEach(ev =>
+      el.addEventListener(ev, stop, { once: true }));
+  });
+
+  document.addEventListener('pointermove', e => {
+    if (!live) return;
+    e.preventDefault();
+    live.move(e.clientY);
+  }, { passive: false });
+
+  ['pointerup', 'pointercancel'].forEach(ev =>
+    document.addEventListener(ev, e => {
+      if (!live) return;
+      const done = live;
+      live = null;
+      release();
+      done.end(e.clientY, e);
+    }));
+
+  // A long press that became a drag must not also fire the element's click.
+  el.addEventListener('click', e => {
+    if (el.dataset.lpDragged === '1') {
+      delete el.dataset.lpDragged;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+}
+
 // Right-click a block / event / gate to drop it from the day's view. No backend
 // or config change — it returns next day (blocks/qr) or on restart. Ctrl+Z undoes.
 function hideTimelineItem(type, key, label) {
@@ -507,23 +587,36 @@ function initBlockBarDrag(layer, dateStr) {
     });
     bar.addEventListener('click', e => e.stopPropagation());
 
-    bar.addEventListener('mousedown', e => {
-      if (e.button !== 0) return;
-      e.preventDefault();
+    onPointerDrag(bar, { start(e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return null;
       e.stopPropagation();
       const span = state.view.end - state.view.start;
-      if (origEnd - origStart >= span) return;
+      if (origEnd - origStart >= span) return null;
       const r = bar.getBoundingClientRect();
-      const mode = (e.clientY - r.top < 10) ? 'start' : (r.bottom - e.clientY < 10) ? 'end' : 'move';
+      // A 10px edge is a mouse target, not a finger one, and touch has no hover
+      // to discover it with — so a finger splits the bar into THIRDS instead.
+      // Below ~36px there is no third worth aiming at, so the whole bar moves:
+      // offering a resize you cannot hit reliably is worse than not offering it.
+      const touch = e.pointerType !== 'mouse';
+      const mode = touch
+        ? (r.height < 36 ? 'move'
+          : e.clientY - r.top < r.height / 3 ? 'start'
+          : r.bottom - e.clientY < r.height / 3 ? 'end' : 'move')
+        : ((e.clientY - r.top < 10) ? 'start' : (r.bottom - e.clientY < 10) ? 'end' : 'move');
       const startY = e.clientY;
       const bodyPx = body.getBoundingClientRect().height;
       let moved = false;
       let curS = origStart, curE = origEnd;
+      // A finger has already committed by holding still for 550ms, so it must
+      // not also have to clear the 5px slop the mouse uses to tell a click from
+      // a drag — that would make a careful small adjustment do nothing.
+      const slop = touch ? 0 : 5;
+      if (touch) bar.dataset.lpDragged = '1';
 
-      function onMove(ev) {
-        if (!moved && Math.abs(ev.clientY - startY) < 5) return;
+      function onMove(clientY) {
+        if (!moved && Math.abs(clientY - startY) < slop) return;
         moved = true;
-        const deltaMin = Math.round(((ev.clientY - startY) / bodyPx) * span / 5) * 5;
+        const deltaMin = Math.round(((clientY - startY) / bodyPx) * span / 5) * 5;
         if (mode === 'move') {
           const len = origEnd - origStart;
           curS = Math.min(Math.max(state.view.start, origStart + deltaMin), state.view.end - len);
@@ -538,8 +631,6 @@ function initBlockBarDrag(layer, dateStr) {
       }
 
       async function onUp() {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
         document.body.style.cursor = '';
         if (!moved || (curS === origStart && curE === origEnd)) { renderTimeline(); return; }
         const res = await fetch('/api/overrides', {
@@ -560,9 +651,8 @@ function initBlockBarDrag(layer, dateStr) {
       }
 
       document.body.style.cursor = mode === 'move' ? 'grabbing' : 'ns-resize';
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
+      return { move: onMove, end: onUp };
+    } });
   });
 }
 
@@ -5848,7 +5938,9 @@ function renderQrLayer() {
     xBtn.title = dismissed ? 'Restore' : 'Gray out for this day';
     label.appendChild(xBtn);
 
-    xBtn.addEventListener('mousedown', e => e.stopPropagation());
+    // pointerdown, not mousedown: the pill's drag starts on pointerdown now, so
+    // a mousedown guard would no longer keep pressing ✕ from grabbing the pill.
+    xBtn.addEventListener('pointerdown', e => e.stopPropagation());
     xBtn.addEventListener('click', e => {
       e.stopPropagation();
       if (state.qrDismissed[cacheKey]) delete state.qrDismissed[cacheKey];
@@ -5859,16 +5951,19 @@ function renderQrLayer() {
     let dragging = false;
     let dragStartY = 0;
 
-    label.addEventListener('mousedown', e => {
-      if ((e.button !== 0 && e.button !== 2) || dismissed) return;
-      e.preventDefault();
+    // Either mouse button drags the deadline; a finger does it after a 550ms
+    // hold. Hiding for the day is the pill's ✕ on touch, which is why only the
+    // drag needed a touch path.
+    onPointerDrag(label, { start(e) {
+      if (dismissed) return null;
+      if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 2) return null;
       dragging = true;
       dragStartY = e.clientY;
       line.classList.add('tl-qr-dragging');
       document.body.style.cursor = 'ns-resize';
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
+      if (e.pointerType !== 'mouse') label.dataset.lpDragged = '1';
+      return { move: onMove, end: onUp };
+    } });
 
     function calcMinutes(clientY) {
       const bodyRect = body.getBoundingClientRect();
@@ -5878,9 +5973,9 @@ function renderQrLayer() {
       return Math.round(clamped / 5) * 5;
     }
 
-    function onMove(e) {
+    function onMove(clientY) {
       if (!dragging) return;
-      const mins = calcMinutes(e.clientY);
+      const mins = calcMinutes(clientY);
       const displayPct = Math.min(100, Math.max(0, minutesToViewPercent(mins)));
       line.style.top = `${displayPct}%`;
       setLabelEdge(displayPct);
@@ -5888,13 +5983,11 @@ function renderQrLayer() {
       labelText.textContent = `${node.label} ${minutesToHHMM(mins % 1440)}${nextDay ? ' +1d' : ''}`;
     }
 
-    async function onUp(e) {
+    async function onUp(clientY, e) {
       if (!dragging) return;
       dragging = false;
       line.classList.remove('tl-qr-dragging');
       document.body.style.cursor = '';
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
       // Right-button release fires a contextmenu event — swallow it
       document.addEventListener('contextmenu', ev => ev.preventDefault(), { once: true, capture: true });
 
@@ -5902,15 +5995,18 @@ function renderQrLayer() {
       // (a +1d line is pinned at the bottom edge, so its position doesn't
       // round-trip through calcMinutes and would otherwise save a change).
       // A right-click without movement hides the pill for the day instead.
-      if (Math.abs(e.clientY - dragStartY) < 5) {
-        if (e.button === 2) {
+      // A FINGER has no such no-op press to guard against: it already committed
+      // by holding still for 550ms, so any movement it makes is deliberate.
+      const touch = e && e.pointerType !== 'mouse';
+      if (Math.abs(clientY - dragStartY) < (touch ? 1 : 5)) {
+        if (e && e.button === 2 && !touch) {
           hideTimelineItem('qr', cacheKey, node.label);
         }
         renderQrLayer();
         return;
       }
 
-      const mins = calcMinutes(e.clientY);
+      const mins = calcMinutes(clientY);
       const newOffsetDays = mins >= 1440 ? 1 : 0;
       const newEnd = minutesToHHMM(mins % 1440);
 
@@ -7821,9 +7917,10 @@ function dayControl(idx, days) {
       data-sp="daymenu" data-idx="${idx}">
       <span>${escHtml(dayLabel(days))}</span><span class="sp-caret">▾</span></button>
     ${open ? `<div class="sp-menu" data-idx="${idx}">
-      ${DAY_PRESETS.map(([v, label]) =>
-        `<button type="button" class="sp-menu-row" data-preset="${v}">${escHtml(label)}</button>`).join('')}
-      <div class="sp-menu-rule"></div>
+      ${/* The Mon–Fri / Weekends / Every day shortcuts were removed 2026-08-12:
+            seven toggles already say all three, and a preset that silently
+            replaced a selection was the only control here that discarded work.
+            DAY_PRESETS still NAMES those sets for the collapsed button. */''}
       ${SP_DAYS.map(d => `<button type="button" class="sp-menu-row${
         days.includes(d) ? ' sp-on' : ''}" data-day="${d}">
         <span>${SP_DAY_NAMES[d]}</span>${days.includes(d) ? '<span>✓</span>' : ''}</button>`).join('')}
@@ -8246,16 +8343,16 @@ async function savePicker() {
   const bad = d.rules.find(r => r.frequency === 'weekly' && !r.days.length);
   if (!d.follows && bad) {
     pickerView.error = 'Choose at least one day.';
+    toast(pickerView.error);   // the sheet's foot may be behind a keyboard
     renderPicker();
     return;
   }
+  // A blank name is FILLED IN, never refused (2026-08-12). Requiring one was
+  // the only thing that could dead-end Done, and the message sits at the foot of
+  // the sheet where a phone keyboard covers it — so Done looked broken rather
+  // than declined. The picker can always describe itself, so it names itself.
   const named = (pickerView.wantName || d.rules.length > 1) && !pickerView.onSaved;
-  if (named && !d.title.trim()) {
-    pickerView.error = kind === 'derived'
-      ? 'Give this a name so it can be reused.' : 'A schedule needs a name.';
-    renderPicker();
-    return;
-  }
+  if (named && !d.title.trim()) d.title = describeDraft() || 'Untitled';
   const btn = document.querySelector('#sp-sheet .sp-done');
   if (btn) btn.disabled = true;
 
@@ -8301,6 +8398,7 @@ async function savePicker() {
     }
   } catch (e) {
     pickerView.error = e.message;
+    toast(e.message);
     renderPicker();
     return;
   }
@@ -11123,7 +11221,10 @@ function openAddPerson() {
       </div>`).join('');
     suggest.classList.remove('hidden');
     suggest.querySelectorAll('.pa-suggest-item').forEach(it => {
-      it.addEventListener('mousedown', e => { e.preventDefault(); selectExisting(Number(it.dataset.id)); });
+      // pointerdown beats the input's blur on BOTH inputs; mousedown is
+      // synthesised after touchend on a phone, by which time the 120ms blur
+      // timer has already hidden the list and the tap hits nothing.
+      it.addEventListener('pointerdown', e => { e.preventDefault(); selectExisting(Number(it.dataset.id)); });
     });
   });
   nameInput.addEventListener('focus', () => { if (suggest.innerHTML) suggest.classList.remove('hidden'); });
