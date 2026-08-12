@@ -4481,7 +4481,7 @@ function renderFlowRun() {
     // answered.
     page = `<div class="fr-step-big">Nightly journal</div>
       <textarea id="fr-jn-bottleneck" class="cl-notes" rows="2"
-        placeholder="Today's bottleneck…">${escHtml(j.bottleneck || '')}</textarea>
+        placeholder="What do you want to do better tomorrow?">${escHtml(j.bottleneck || '')}</textarea>
       ${running ? `<div class="fr-note">experiment: ${escHtml(running.content)} — how did it feel today?</div>` : ''}
       <textarea id="fr-jn-exp" class="cl-notes" rows="2"
         placeholder="${running ? 'Observations on the experiment…' : 'Active experiment…'}">${escHtml(j.active_experiment || '')}</textarea>
@@ -6598,7 +6598,7 @@ function renderJournalCards(days) {
         <label class="jn-sel-label">rating ${sel('rating', RATING_OPTS, d.rating)}</label>
         <label class="jn-sel-label">habit ${sel('habit_mark', HABIT_MARK_OPTS, d.habit_mark)}</label>
       </div>
-      <label class="jn-lab">Biggest bottleneck</label>
+      <label class="jn-lab">What to do better tomorrow</label>
       <textarea class="jn-ta" data-field="bottleneck" rows="2">${escHtml(d.bottleneck || '')}</textarea>
       <label class="jn-lab">Active experiment</label>
       <textarea class="jn-ta" data-field="active_experiment" rows="2">${escHtml(d.active_experiment || '')}</textarea>
@@ -9898,6 +9898,18 @@ function clarifyResetItem() {
   }
   clarifyView.projectId = null;
   clarifyView.projectName = '';
+  // AN ITEM ALREADY FILED KEEPS ITS PROJECT ON SCREEN (2026-08-12). The sheet
+  // used to open saying "Project: none" for an action sitting inside one, which
+  // misreported where the thing lives, hid the ⛓ and the project's own notes
+  // (both of which only render once a project is chosen), and meant the
+  // post-filing composer never triggered for an item that was already filed.
+  // `clarifyLoadAux` is awaited before this runs in both entry points, so
+  // state.projects is loaded and the name resolves.
+  if (item && item.project_id) {
+    const p = (state.projects || []).find(x => x.id === item.project_id);
+    clarifyView.projectId = item.project_id;
+    clarifyView.projectName = p ? p.content : '';
+  }
   // Writing several actions into one project is one sitting; re-picking the
   // project per action is the tax this exists to remove.
   if (clarifyView.forProject && clarifyView.external) {
