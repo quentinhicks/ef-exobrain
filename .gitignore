@@ -8,6 +8,7 @@ tracker.db
 # to GitHub on every edit.
 logs/
 backups/
+daybook/
 __pycache__/
 *.pyc
 

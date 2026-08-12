@@ -56,6 +56,10 @@ PY
 
 TARGETS=("$STAGE/tracker.db")
 [ -d "$APP_DIR/logs" ] && TARGETS+=("$APP_DIR/logs")
+# daybook/ is the plain-text history — one markdown file per day, written by
+# daybook.py. It is the copy that stays readable when neither restic nor this
+# app is around, so it is backed up like the logs are.
+[ -d "$APP_DIR/daybook" ] && TARGETS+=("$APP_DIR/daybook")
 [ -f "$APP_DIR/config.json" ] && TARGETS+=("$APP_DIR/config.json")
 
 # ── The escape hatch ────────────────────────────────────────────────────────
@@ -71,9 +75,11 @@ TODAY=$(date +%F)
 ARCHIVE="$ESCAPE_DIR/qpa-$TODAY.tar.gz.gpg"
 if [ ! -f "$ARCHIVE" ]; then
   mkdir -p "$ESCAPE_DIR"; chmod 700 "$ESCAPE_DIR"
+  ESCAPE_PATHS=(logs config.json)
+  [ -d "$APP_DIR/daybook" ] && ESCAPE_PATHS+=(daybook)
   tar czf "$STAGE/escape.tar.gz" \
       -C "$STAGE" tracker.db \
-      -C "$APP_DIR" logs config.json 2>/dev/null
+      -C "$APP_DIR" "${ESCAPE_PATHS[@]}" 2>/dev/null
   gpg --batch --yes --quiet --symmetric --cipher-algo AES256 \
       --pinentry-mode loopback --passphrase-file "$PASSFILE" \
       -o "$ARCHIVE" "$STAGE/escape.tar.gz" || fail_out "gpg archive failed"
@@ -85,7 +91,10 @@ fi
 # moment you need them is the moment you cannot read anything encrypted.
 cat > "$ESCAPE_DIR/RESTORE.txt" <<'TXT'
 These are encrypted snapshots of the productivity app's data:
-tracker.db (SQLite), logs/ (markdown), config.json.
+tracker.db (SQLite), logs/ and daybook/ (markdown), config.json.
+
+daybook/ is the one you can read with no tools at all: one file per day,
+YYYY/YYYY-MM-DD.md, holding that day's data in plain text.
 
 To restore anywhere, with no restic and no app:
 

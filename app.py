@@ -23,6 +23,7 @@ import storage
 import schedule
 import aggregator
 import qr_judge
+import daybook
 from aggregator import fetch_gcal, fetch_sheets
 
 # THE DATA DIR. Everything the user owns — config.json, tracker.db, backups/,
@@ -840,6 +841,17 @@ def get_todo_yesterday():
 # Nothing here commits or pushes, which is also what lets the server run from
 # a read-only public clone with no deploy key.
 def _daily_backup():
+    # The daybook runs FIRST and on every start, not once a day: it is cheap
+    # (it rewrites only what changed) and today's file should be current even
+    # when the snapshot has already been taken. A failure here must not cost
+    # the snapshot — the database backup is the one that has to happen.
+    try:
+        written = daybook.catch_up()
+        if written:
+            print(f'daybook: {len(written)} day file(s) written '
+                  f'({written[0]} … {written[-1]})')
+    except Exception as e:
+        print(f'daybook: failed, snapshot continues — {e}')
     if storage.get_settings().get('last_backup_date') == date_cls.today().isoformat():
         return
     storage.backup_db()
