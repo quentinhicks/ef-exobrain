@@ -3952,13 +3952,20 @@ def get_flows(date=None):
                 s['due'] = False
                 s['pawned_out'] = True
         if date:
-            # …and it joins the destination for the day, marked so the runner can
-            # say where it came from. Appended, so it is the last thing you do.
+            # …and it joins the destination for the day, marked so the runner
+            # can say where it came from. PREPENDED (2026-08-15): a pawned step
+            # is debt carried over, so it is the first thing you do, not the
+            # last — the receiving gate is already shorter for it, and leaving
+            # it at the end puts the borrowed time against the deadline. Within
+            # the group they keep their own order (steps_pawned_into sorts by
+            # position), so a pawned routine arrives intact.
+            carried = []
             for s in steps_pawned_into(f['id'], date):
                 s['due'] = True
                 s['pawned_in'] = True
                 s['from_flow_id'] = s['flow_id']
-                f['steps'].append(s)
+                carried.append(s)
+            f['steps'] = carried + f['steps']
             run = conn.execute('SELECT * FROM flow_run WHERE flow_id = ? AND date = ?',
                                (f['id'], f['period_key'])).fetchone()
             f['run'] = dict(run) if run else None
@@ -4925,14 +4932,17 @@ def get_social_day(date):
         r['levels'] = json.loads(r['levels'] or '{}')
     d = get_social_d()
     total = sum(r['price'] for r in reps)
+    spec_total = sum(s['price'] for s in specs)
     return {
         'date': date, 'd': d, 'specs': specs, 'reps': reps, 'total': total,
-        # The two lines. specOk = SOME intended rep arithmetically clears D —
-        # a plan may hold several interactions, but the morning line is still
-        # carried by one that is hard enough on its own (stacking small ones
-        # never adds up to it). doseCleared = today's prices sum to D.
-        # Dryrun ✓/✗ only — no charge.
-        'specOk': d is not None and any(s['price'] >= d for s in specs),
+        'specTotal': spec_total,
+        # The two lines, and they are now the SAME arithmetic (2026-08-15,
+        # reversing the 2026-08-11 rule that the morning line had to be carried
+        # by one rep hard enough on its own). specOk = the day's PLAN sums to D;
+        # doseCleared = the day's stamped prices sum to D. A plan of three
+        # medium interactions is a real plan, and refusing it pushed the day
+        # into one big rep or nothing. Dryrun ✓/✗ only — no charge.
+        'specOk': d is not None and spec_total >= d,
         'doseCleared': d is not None and total >= d,
     }
 
@@ -5061,6 +5071,11 @@ def qr_create_node(label, token, window_start, window_end, offset_days=0,
 QR_NODE_FIELDS = ('label', 'window_start', 'window_end', 'window_end_offset_days',
                   'geofence_lat', 'geofence_lng', 'geofence_radius_m', 'active',
                   'days_of_week', 'weekly_windows', 'charge_cents', 'source_uid')
+
+# The pseudo-field a queued DELETION is filed under: deliberately not a column,
+# so nothing can ever UPDATE a node with it (qr_apply_due_pending_changes reads
+# it before the column branch, and qr_update_node's whitelist rejects it).
+QR_DELETE_FIELD = '__delete__'
 
 
 def qr_update_node(node_id, fields):
@@ -5202,6 +5217,17 @@ def qr_apply_due_pending_changes(now_iso):
                         (now_iso,)).fetchall()
     applied = []
     for r in rows:
+        # QR_DELETE_FIELD is not a column — it is the whole gate going away, the
+        # loosest change there is, so it takes the same 24h road as every other
+        # easing rather than a separate one. Rows for the node are cleared here
+        # rather than through qr_delete_node because that opens its own
+        # connection and this one is mid-transaction.
+        if r['field'] == QR_DELETE_FIELD:
+            for t in ('qr_scan', 'qr_override', 'qr_pending_change', 'qr_charge_log'):
+                conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (r['node_id'],))
+            conn.execute('DELETE FROM qr_node WHERE id = ?', (r['node_id'],))
+            applied.append(dict(r))
+            continue
         if r['field'] in QR_NODE_FIELDS:
             conn.execute('UPDATE qr_node SET ' + r['field'] + ' = ? WHERE id = ?',
                          (r['new_value'], r['node_id']))

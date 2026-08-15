@@ -62,7 +62,7 @@ STATE = ('domain', 'area', 'qr_node', 'qr_pending_change', 'flow', 'flow_step',
          'ref_list', 'recurring_block', 'recurring_task', 'routine_item',
          'location', 'bucket', 'person_bucket', 'calendar_source', 'deadline',
          'schedule_source', 'social_action', 'social_axis_level',
-         'tag_time', 'tag_device', 'tag_location', 'setting')
+         'tag_time', 'tag_device', 'tag_location', 'tag_daily', 'setting')
 
 # Both at once: dated for what came in that day, AND listed whole as standing
 # state. `inbox_item` needs both because completion DELETES the row — the live

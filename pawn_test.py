@@ -82,8 +82,9 @@ storage.pawn_flow_step(111)
 
 eq('pawned: the step leaves the routine it was pawned FROM',
    due()['Morning'], ['Meditate'])
-eq('pawned: and joins the one it was pawned TO, last',
-   due()['Night'], ['Journal', 'Tidy desk'])
+eq('pawned: and joins the one it was pawned TO, FIRST — carried debt is done'
+   ' before the receiving routine\'s own steps, not against its deadline',
+   due()['Night'], ['Tidy desk', 'Journal'])
 eq('pawned: the receiving gate closes 10 minutes earlier',
    window(), ('22:00', '22:50', 0))
 eq('pawned: it is marked so the runner can say where it came from',
@@ -148,6 +149,13 @@ eq('a gate with nothing pawned into it keeps its window',
 storage.qr_set_override(9, TODAY, '21:00', '21:30', 0)
 eq('a day override stands as written, pawn or no pawn',
    window(), ('21:00', '21:30', 0))
+
+# Two steps pawned onto the same routine arrive as a group, in the order they
+# had where they came from — a pawned routine is not shuffled by being carried.
+storage.update_flow_step(112, pawn_to_flow_id=102, pawn_minutes=5)
+storage.pawn_flow_step(112)
+eq('two pawned steps keep their own order, together at the front',
+   due()['Night'], ['Tidy desk', 'Meditate', 'Journal'])
 
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

@@ -1582,6 +1582,13 @@ def accountability_nodes():
             storage.qr_ensure_node_source(node_id)
         node = [n for n in storage.qr_get_nodes() if n['id'] == node_id][0]
         return jsonify(_node_payload(node, today)), 201
+    # Land anything whose 24h is up before answering — same idiom as
+    # apply_due_flow_pendings inside get_flows. The judge does this on its own
+    # tick, but a queued DELETE has no other way to take effect on a box where
+    # the timer isn't running, and the answer would keep listing a gate the
+    # user already deleted. apply_at has passed either way, so nothing about
+    # judgment changes.
+    storage.qr_apply_due_pending_changes(datetime.now().isoformat())
     routines = storage.get_flows()
     return jsonify([_node_payload(n, today, routines) for n in storage.qr_get_nodes()])
 
@@ -1603,13 +1610,18 @@ def patch_accountability_node(id):
         return jsonify({'error': 'unknown node'}), 404
 
     if request.method == 'DELETE':
-        # Only an already-inactive node can be deleted. Otherwise deleting
-        # would be an instant way to escape a live commitment, which is what
-        # the 24h disable delay exists to prevent.
-        if node['active']:
-            return jsonify({'error': 'deactivate first'}), 409
-        storage.qr_delete_node(id)
-        return jsonify({'ok': True})
+        # An inactive gate is already off the hook, so it goes at once. A LIVE
+        # one is deleted on the 24h road, exactly like disabling it: deleting
+        # is the loosest change there is, and an instant delete would be the
+        # escape hatch the whole system exists to close. Queued, not refused —
+        # "deactivate first" was a dead end that read as a bug (2026-08-15).
+        if not node['active']:
+            storage.qr_delete_node(id)
+            return jsonify({'ok': True})
+        apply_at = (datetime.now() + timedelta(hours=qr_judge.LOOSEN_DELAY_H)).isoformat()
+        storage.qr_cancel_pending_change(id, storage.QR_DELETE_FIELD)
+        storage.qr_add_pending_change(id, storage.QR_DELETE_FIELD, '1', apply_at)
+        return jsonify({'pending': True, 'apply_at': apply_at})
 
     immediate, pending = qr_judge.apply_node_patch(node, request.get_json() or {})
     if immediate:
@@ -1640,7 +1652,10 @@ def activate_accountability_node(id):
     # Only cancels a PENDING disable inside its 24h window. A node that has
     # already gone inactive stays inactive — re-activating instantly would let
     # you park a commitment and resume it once the awkward day had passed.
+    # A queued DELETION is called off too: keeping the gate is the same intent,
+    # and tightening (here, staying committed) always applies at once.
     storage.qr_cancel_pending_change(id, 'active')
+    storage.qr_cancel_pending_change(id, storage.QR_DELETE_FIELD)
     return jsonify({'ok': True})
 
 

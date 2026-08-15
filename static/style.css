@@ -4650,6 +4650,23 @@ button.eg-domain { cursor: pointer; }
 }
 .fr-rate-on { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 
+/* The runner page is a flex COLUMN, so every child shrinks by default. On a
+   phone that squeezed the nightly journal — the two textareas collapsed to a
+   sliver and the experiment block below them was clipped — because the page is
+   taller than the viewport and flex paid for it out of the children. Nothing
+   here may be compressed: the page SCROLLS instead (2026-08-15). */
+.fr-page > * { flex-shrink: 0; }
+/* .cl-notes is written for a sheet, which supplies its own 14px gutter; inside
+   the runner the page already has one, so it spans the width it is given. */
+.fr-page .cl-notes { width: 100%; margin: 0; min-height: 68px; }
+.fr-exp { display: flex; flex-direction: column; gap: 8px; }
+.fr-exp-head { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.fr-exp .cl-row { padding: 0; }
+.fr-exp .cl-action { width: 100%; }
+/* Wrap onto the next line rather than truncating: three verbs on one phone-wide
+   row do not fit, and a half-word button is unreadable. */
+.fr-exp .cl-pill { white-space: nowrap; }
+
 /* ── Dependency chains (clarify's ⛓ editor + the [n] badges) ── */
 .cl-chain {
   margin: 0 14px 8px;

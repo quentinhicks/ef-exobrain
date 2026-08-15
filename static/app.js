@@ -1939,7 +1939,9 @@ function renderSeSheet() {
       ${seSheet.error ? `<div class="se-error">${escHtml(seSheet.error)}</div>` : ''}
       <button class="se-save">${escHtml(spec.save(seSheet.item))}</button>
       ${spec.remove && seSheet.item && (!spec.canRemove || spec.canRemove(seSheet.item))
-        ? `<button class="se-del">${escHtml(spec.removeLabel || 'Delete')}</button>` : ''}
+        ? `<button class="se-del">${escHtml(
+            (typeof spec.removeLabel === 'function'
+              ? spec.removeLabel(seSheet.item) : spec.removeLabel) || 'Delete')}</button>` : ''}
     </div>`;
   wireSeSheet(fields);
 }
@@ -2335,12 +2337,16 @@ const SETTINGS_SHEETS = {
   gate: {
     title: it => it ? it.label : 'Add gate',
     save: it => it ? 'Save gate' : 'Create gate',
-    removeLabel: 'Delete gate',
-    // Deleting is only offered once the gate is already off, which is what
-    // keeps a live gate from being deleted to dodge it — deactivation is the
-    // 24h step, and delete is the cleanup afterwards.
-    canRemove: n => !n.active,
-    confirm: () => 'Delete this gate permanently? Its scan link stops working.',
+    removeLabel: n => (n && n.active ? 'Delete gate (in 24h)' : 'Delete gate'),
+    // Deleting a LIVE gate is offered, and takes the 24h road like every other
+    // easing (2026-08-15). Refusing it until the gate was deactivated was two
+    // waits for one decision, and the button read as broken. Turning the gate
+    // back on cancels a queued deletion, same as it cancels a queued disable.
+    canRemove: () => true,
+    confirm: n => (n && n.active
+      ? 'Delete this gate? Anything that lets you off waits 24h — it goes '
+        + 'tomorrow, and re-activating it before then calls the deletion off.'
+      : 'Delete this gate permanently? Its scan link stops working.'),
     blank: () => ({
       label: '', source: '', sourceLabel: '',
       location: '', radius: '', stake: '', routine: '',
@@ -2436,9 +2442,11 @@ const SETTINGS_SHEETS = {
         ...(pending.length ? [{ key: 'pending', label: 'Pending', kind: 'static',
           hint: 'Anything that makes a gate easier waits 24h, so it can\'t be loosened '
             + 'in the moment you want to dodge it.',
-          text: pending.map(p => `${GATE_FIELDS[p.field] || p.field} → `
-            + `${p.field === 'charge_cents' ? '$' + ((p.new_value || 0) / 100).toFixed(2)
-              : p.new_label || p.new_value}`
+          text: pending.map(p => (p.field === '__delete__'
+            ? 'gate is deleted'
+            : `${GATE_FIELDS[p.field] || p.field} → `
+              + `${p.field === 'charge_cents' ? '$' + ((p.new_value || 0) / 100).toFixed(2)
+                : p.new_label || p.new_value}`)
             + ` (applies ${new Date(p.apply_at).toLocaleString()})`).join('; ') }] : []),
       ];
     },
@@ -2516,7 +2524,11 @@ const SETTINGS_SHEETS = {
     },
     remove: async n => {
       const res = await fetch(`/api/accountability/nodes/${n.id}`, { method: 'DELETE' });
-      if (!res.ok) alert(`Delete failed (${res.status}): ${await res.text()}`);
+      if (!res.ok) { alert(`Delete failed (${res.status}): ${await res.text()}`); return; }
+      const out = await res.json().catch(() => ({}));
+      // A live gate's deletion is QUEUED, so say when it lands — the gate is
+      // still on the list until then, and silence would read as a failure.
+      if (out.pending) toast(`Deletion applies ${new Date(out.apply_at).toLocaleString()}`);
       await renderQrManager();
     },
   },
@@ -2896,6 +2908,40 @@ async function checkActiveBlock() {
   // block change unless the user is mid-edit inside the inbox.
   const inboxSection = document.getElementById('inbox-section');
   if (inboxSection && !inboxSection.contains(document.activeElement)) renderInbox();
+}
+
+// ── Midnight: the day's routines start over ──────────────────
+//
+// The app is left open for days at a time. Every day-scoped FETCH already
+// computes its date at call time, so nothing is wrong with what the server
+// says — what rots is the data sitting in state from before midnight: the
+// routine fold-out still showing yesterday's ticks, the daily checklist still
+// crossed off, the timeline still pointed at yesterday. This rides
+// checkActiveBlock's 60s tick and also runs when the window comes back (a
+// phone sleeps through midnight rather than ticking through it), and reloads
+// the day the moment the local date moves.
+//
+// The RUNNER is the deliberate exception, see creditFlowStep: a run credits
+// the day it was OPENED on, so a night routine finished at 00:05 files against
+// the night it started and the new day does not begin already ticked.
+let dayStamp = formatDateYMD(new Date());
+
+async function checkDayRollover() {
+  const now = formatDateYMD(new Date());
+  if (now === dayStamp) return;
+  // Only follow the timeline forward if it was sitting on the old today; a day
+  // deliberately navigated to stays where it was put.
+  const follow = formatDateYMD(state.currentDate) === dayStamp;
+  dayStamp = now;
+  if (follow) {
+    state.currentDate = new Date();
+    await fetchOverridesForDate(state.currentDate);
+  }
+  await loadAll();
+  if (!engageView.date) await refreshEngage();
+  const lists = document.getElementById('tab-lists');
+  if (lists && !lists.classList.contains('hidden')) await refreshRef();
+  toast('New day — routines start over');
 }
 
 // ── Weekly Review (GTD) ──────────────────────────────────────
@@ -4585,6 +4631,9 @@ async function openFlowRun(flowId) {
     ? journal.days.find(x => x.date === today) || null : null;
   flowRunView.crmFilled = false;
   flowRunView.habits = habits;
+  // The day this run belongs to, pinned. Everything below files against it,
+  // never against the wall clock — see creditFlowStep.
+  flowRunView.date = today;
   flowRunView.open = true;
   renderFlowRun();
 }
@@ -4596,7 +4645,12 @@ function closeFlowRun() {
 }
 
 async function creditFlowStep(step, how) {
-  const today = formatDateYMD(new Date());
+  // The day the run was OPENED on, not the clock now. A night routine ticked
+  // at 00:05 belongs to the night it started: crediting it to the calendar day
+  // would both lose the night's completion (the gate it holds open judges that
+  // day) and hand the new day a routine already half done. checkDayRollover
+  // starts the NEXT day's routines over; this keeps this one whole.
+  const today = flowRunView.date || formatDateYMD(new Date());
   flowRunView.steps[step.id] = how;
   const complete = flowRunView.flow.steps.every(s => flowRunView.steps[s.id]);
   await fetch(`/api/flows/${flowRunView.flow.id}/run`, {
@@ -4779,8 +4833,10 @@ function renderFlowRun() {
   } else if (s.kind === 'social_spec') {
     const okSpec = day.specOk === true;
     page = `<div class="fr-step-big">Social spec</div>
-      <div class="fr-note">${(day.specs || []).length ? 'spec set' : 'no spec yet'}${
-        okSpec ? ' — an intended rep clears D ✓' : ' — plan one in ≡ Social'}</div>`;
+      <div class="fr-note">${(day.specs || []).length
+        ? `${(day.specs || []).length} planned · ${day.specTotal ?? 0}/${day.d ?? '—'}`
+        : 'no spec yet'}${
+        okSpec ? ' — the plan clears D ✓' : ' — plan enough in ≡ Social'}</div>`;
   } else if (s.kind === 'social_dose') {
     const okDose = day.doseCleared === true;
     page = `<div class="fr-step-big">Social dose</div>
@@ -4928,7 +4984,9 @@ function renderFlowRun() {
       }
     }
     if (s.kind === 'journal_night') {
-      const today = formatDateYMD(new Date());
+      // The run's day, not the clock's — the night's entry belongs to the night
+      // even when it is written after midnight (same rule as creditFlowStep).
+      const today = flowRunView.date || formatDateYMD(new Date());
       const rate = el.querySelector('.fr-rate-on');
       await fetch(`/api/journal/${today}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -5973,24 +6031,23 @@ function renderSocial() {
       <div class="so-meter">
         <span class="so-meter-text">${day.total} / ${day.d}</span>
         <div class="so-meter-bar"><div class="so-meter-fill${day.doseCleared ? ' so-fill-ok' : ''}" style="width:${pct}%"></div></div>
-        <span class="so-line${day.specOk ? ' so-ok' : ''}" title="The morning line: an intended rep that clears D">spec ${day.specOk ? '✓' : '·'}</span>
+        <span class="so-line${day.specOk ? ' so-ok' : ''}" title="The morning line: today's plan sums to D">spec ${day.specTotal || 0}/${day.d} ${day.specOk ? '✓' : '·'}</span>
         <span class="so-line${day.doseCleared ? ' so-ok' : ''}" title="The evening line: logged prices sum to D">dose ${day.doseCleared ? '✓' : '·'}</span>
       </div>`;
 
     // The spec cards — today's intended reps, each startable from its card
-    // alone. A plan can hold several interactions (2026-08-11); the one
-    // carrying the morning line (price >= D) is the anchor of the set, and
-    // the others are stacked on top of it, not instead of it.
+    // alone. A plan can hold several interactions and they ADD UP to the
+    // morning line (2026-08-15): no single one has to carry it, so a card is
+    // never refused for being small — the meter says how far the plan is from D.
     const specs = day.specs || [];
+    const specShort = day.d == null ? 0 : Math.max(0, day.d - (day.specTotal || 0));
     if (!f || f.intent !== 'spec') {
       specs.forEach((s, i) => {
         main += `
         <div class="so-card">
           <div class="so-card-top"><span class="cl-label">${specs.length > 1 ? `Spec ${i + 1}` : "Today's spec"}</span>
             <span class="so-price">${s.price}</span>
-            ${s.price >= day.d ? '<span class="so-ok">carries the line</span>'
-              : specs.some(x => x.price >= day.d) ? ''
-              : `<span class="so-short">${day.d - s.price} short of D</span>`}</div>
+            ${s.price >= day.d ? '<span class="so-ok">carries the line</span>' : ''}</div>
           <div class="so-spec-desc">${escHtml(socialRepDesc(s))}</div>
           ${s.opener ? `<div class="so-opener">“${escHtml(s.opener)}”</div>` : ''}
           <div class="so-card-btns">
@@ -6003,7 +6060,8 @@ function renderSocial() {
     }
     if (!f) {
       main += specs.length
-        ? `<button id="so-spec-new" class="so-add">+ plan another interaction</button>`
+        ? `<button id="so-spec-new" class="so-add">+ plan another interaction${
+            specShort ? ` <span class="cl-hint">${specShort} still short of D</span>` : ''}</button>`
         : `<button id="so-spec-new" class="so-add">+ plan today's rep <span class="cl-hint">the morning line — person, channel, opener</span></button>`;
     }
 
@@ -6025,17 +6083,19 @@ function renderSocial() {
           ${spec ? '' : `<input type="number" id="so-pre" class="so-input so-pre" min="0" max="10" placeholder="pressure 0–10 (optional)" value="${f.pre ?? ''}">`}
           <div class="so-card-btns">
             <span class="so-price">${price == null ? '—' : price}</span>
-            ${spec && price != null ? (price >= cfg.d
-              ? '<span class="so-ok">clears D</span>'
-              // The morning line is carried by ONE spec hard enough on its
-              // own; once the day has it, further interactions stack at any
-              // priceable level (small ones never add up to the line).
-              : (day.specs || []).some(s => s.price >= cfg.d && s.id !== f.editId)
-                ? '<span class="cl-hint">stacks on the spec that carries the line</span>'
-                : `<span class="so-short">${cfg.d - price} short — upgrade a level</span>`) : ''}
-            <button id="so-form-go" ${price == null || (spec && price < cfg.d
-              && !(day.specs || []).some(s => s.price >= cfg.d && s.id !== f.editId))
-              ? 'disabled' : ''}>${spec ? 'Save spec' : 'Log it'}</button>
+            ${spec && price != null ? (() => {
+              // Specs SUM to the morning line (2026-08-15): the plan as a whole
+              // has to reach D, no single interaction has to. So a small spec is
+              // saveable — the hint says what the plan would still be missing,
+              // which is the number to act on, and no button is ever dead.
+              const others = (day.specs || [])
+                .filter(s => s.id !== f.editId).reduce((n, s) => n + s.price, 0);
+              const left = cfg.d - (others + price);
+              return left <= 0
+                ? `<span class="so-ok">${others ? 'plan clears D' : 'clears D'}</span>`
+                : `<span class="so-short">plan still ${left} short of D</span>`;
+            })() : ''}
+            <button id="so-form-go" ${price == null ? 'disabled' : ''}>${spec ? 'Save spec' : 'Log it'}</button>
             <button id="so-form-x">cancel</button>
           </div>
         </div>`;
@@ -6276,7 +6336,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // session is not a document — leaving it is stopping, and stopping is what
   // the mechanic punishes. Same event, opposite meaning, on purpose.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'hidden') return;
+    // Coming BACK is when a sleeping device notices midnight happened.
+    if (document.visibilityState !== 'hidden') { checkDayRollover(); return; }
     if (dwView.phase === 'writing') { dwFail(); return; }
     flushOpenNotes();
     flushLogSave();
@@ -6287,7 +6348,7 @@ document.addEventListener('DOMContentLoaded', () => {
     flushLogSave();
   });
   loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); });
-  setInterval(checkActiveBlock, 60000);
+  setInterval(() => { checkDayRollover(); checkActiveBlock(); }, 60000);
 });
 
 // ── Accountability ────────────────────────────────────────────
@@ -6610,7 +6671,7 @@ const GATE_FIELDS = {
   charge_cents: 'stake', window_start: 'from', window_end: 'to',
   window_end_offset_days: 'crosses midnight', days_of_week: 'days',
   geofence_radius_m: 'radius', weekly_windows: 'per-day times', active: 'state',
-  source_uid: 'schedule',
+  source_uid: 'schedule', __delete__: 'delete gate',
 };
 
 const GATE_REASONS = {
@@ -6894,8 +6955,11 @@ function gateRowOpts(n) {
   const pendingDisable = (n.pending_changes || []).find(p => p.field === 'active' && String(p.new_value) === '0');
   const otherPending = (n.pending_changes || []).filter(p => p.field !== 'active');
 
+  const pendingDelete = (n.pending_changes || []).find(p => p.field === '__delete__');
+
   let badge = '';
-  if (!n.active) badge = 'inactive';
+  if (pendingDelete) badge = 'deleting';
+  else if (!n.active) badge = 'inactive';
   else if (pendingDisable) badge = 'deactivating';
   else if (n.today_override) badge = 'today';
   else if (otherPending.length) badge = 'pending';
