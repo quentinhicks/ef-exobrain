@@ -1954,8 +1954,14 @@ def post_accountability_override(id):
         return jsonify({'error': 'unknown node or bad date'}), 400
     if qr_judge.override_locked(nodes[id], date):
         return jsonify({'error': 'Locked — deadline within 24h'}), 403
-    storage.qr_set_override(id, date, d['window_start'], d['window_end'],
-                            d.get('window_end_offset_days') or 0)
+    offset = d.get('window_end_offset_days') or 0
+    # A deadline dragged above its own opening is an unsatisfiable gate — the
+    # window would be empty and every day would judge absent. Same clamp the
+    # pawn shortening uses: never past the opening. (The drag is bounded client
+    # side too; this is the lock on the money path.)
+    if qr_judge._hhmm_min(d['window_end']) + offset * 1440 < qr_judge._hhmm_min(d['window_start']):
+        return jsonify({'error': 'A deadline cannot come before the window opens'}), 400
+    storage.qr_set_override(id, date, d['window_start'], d['window_end'], offset)
     return jsonify({'ok': True})
 
 
@@ -2015,8 +2021,13 @@ def post_person_skip_cycle(id):
     return jsonify(storage.skip_cycle(id))
 
 
-@app.route('/api/people/night', methods=['POST'])
+@app.route('/api/people/night', methods=['GET', 'POST'])
 def post_people_night():
+    if request.method == 'GET':
+        # Was tonight's fill recorded? The routine runner asks, so its CRM step
+        # can state the fact instead of asking you to attest to it.
+        date = request.args.get('date') or date_cls.today().isoformat()
+        return jsonify(storage.get_crm_night(date) or {})
     data = request.get_json()
     if not data or not data.get('date') or not data.get('kind'):
         return jsonify({'error': 'date and kind required'}), 400

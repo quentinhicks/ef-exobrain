@@ -198,6 +198,70 @@ def _utc_iso(ymd, hhmm):
     return datetime.utcfromtimestamp(epoch).strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
 
+# ── Two deadlines, not one (2026-08-15) ───────────────────────────────────
+#
+# A gate is satisfied by a SCAN and, where a routine is linked, by that routine.
+# They are two commitments with two clocks: the window on the node is the SCAN's
+# deadline, and the routine has its own. Either one missed at ITS OWN deadline
+# renders the day false — the judge no longer waits for the scan window to close
+# before noticing that a 21:00 routine was not done.
+#
+# Mirrors flowDueMin in app.js: the routine's own window where it has one, else
+# the deadline it is anchored to (`before_node_id` if set, otherwise the gate it
+# gates) plus `offset_min`. One rule, two implementations that must agree — the
+# app draws it and the judge charges for it.
+
+
+def _flow_own_end(flow, ymd, resolve=None):
+    uid = flow.get('source_uid')
+    if not uid:
+        return None
+    if resolve is None:
+        resolve, _ = storage.schedule_resolver()
+    src = resolve(uid)
+    if not src:
+        return None
+    day = date_cls.fromisoformat(ymd)
+    try:
+        occs = schedule.occurrences(src, resolve, day, day)
+    except schedule.Cycle:
+        return None
+    occ = next(((s, e) for s, e in occs if s.date() == day), None)
+    return occ[1] if occ else None
+
+
+def routine_deadline(node, flow, ymd, resolve=None):
+    """When the linked routine is due on this date, as a local datetime."""
+    own = _flow_own_end(flow, ymd, resolve)
+    if own:
+        return own
+    anchor_id = flow.get('before_node_id') or flow.get('qr_node_id')
+    if not anchor_id:
+        return None
+    anchor = node if anchor_id == node['id'] else next(
+        (n for n in storage.qr_get_nodes() if n['id'] == anchor_id), None)
+    if not anchor:
+        return None
+    _, end, offset = resolve_window(anchor, ymd)
+    due = _local_dt(_date_plus(ymd, 1) if offset else ymd, end)
+    # A "before X" routine is due when X closes, full stop; the offset belongs
+    # to the gate it gates, not to a deadline it merely points at.
+    if not flow.get('before_node_id') and flow.get('offset_min'):
+        due += timedelta(minutes=flow['offset_min'])
+    return due
+
+
+def _completed_local(iso):
+    """flow_run.completed_at (UTC, tz-aware) as a naive LOCAL datetime."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return datetime.fromtimestamp(dt.timestamp()) if dt.tzinfo else dt
+
+
 def judge(now=None, verbose=False):
     now = now or datetime.now()
     today = now.date().isoformat()
@@ -216,26 +280,40 @@ def judge(now=None, verbose=False):
                 continue
             start, end, offset = resolve_window(node, ymd)
             close_date = _date_plus(ymd, 1) if offset == 1 else ymd
-            if now < _local_dt(close_date, end):
-                continue  # window still open
+            scan_close = _local_dt(close_date, end)
+
+            # The routine's own clock, which can run out well before the scan
+            # window closes — and when it does, that alone decides the day.
+            flow = storage.gating_flow_for_node(node['id'], ymd)
+            r_due = routine_deadline(node, flow, ymd) if flow else None
+            r_late = (flow is not None and r_due is not None and now >= r_due
+                      and not (_completed_local(flow['completed_at'])
+                               and _completed_local(flow['completed_at']) <= r_due))
+
+            if now < scan_close and not r_late:
+                continue  # both clocks still running
             if storage.qr_judgment_exists(node['id'], ymd):
                 continue
 
-            scans = storage.qr_scans_in_window(
-                node['id'], _utc_iso(ymd, start), _utc_iso(close_date, end))
-            satisfied = any(
-                node.get('geofence_lat') is None or s.get('geofence_pass') == 1
-                for s in scans)
-
-            # A LINKED routine is the second half of the test. Order matters:
-            # no scan at all is the more basic failure, so it wins the reason —
-            # "routine not done" on a day you were never there would send you
-            # to fix the wrong thing.
-            routine_done = storage.routine_gate_for_node(node['id'], ymd)
             reason = None
-            if not satisfied:
-                reason = 'absent'
-            elif routine_done is False:
+            if now >= scan_close:
+                scans = storage.qr_scans_in_window(
+                    node['id'], _utc_iso(ymd, start), _utc_iso(close_date, end))
+                satisfied = any(
+                    node.get('geofence_lat') is None or s.get('geofence_pass') == 1
+                    for s in scans)
+                # Order matters when both clocks have run out: no scan at all is
+                # the more basic failure, so it wins the reason — "routine not
+                # done" on a day you were never there would send you to fix the
+                # wrong thing.
+                if not satisfied:
+                    reason = 'absent'
+                elif r_late:
+                    reason = 'routine_incomplete'
+            elif r_late:
+                # The scan still has time; the routine does not. Judging now is
+                # the point of the change — the day is already lost, and saying
+                # so at 21:00 rather than at 23:00 is the honest answer.
                 reason = 'routine_incomplete'
             tag = '' if ymd == today else ' (%s)' % ymd
             if reason is None:

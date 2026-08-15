@@ -9,6 +9,7 @@ qr_judge only ever checked presence. The tests below are the enforcement.
 """
 
 import os
+import sqlite3
 import sys
 import tempfile
 from datetime import date as date_cls, datetime, timedelta
@@ -48,6 +49,24 @@ def scan(node_id, ymd, hhmm='07:00', geo_pass=None):
     utc = local.astimezone(None).utctimetuple()
     iso = datetime(*utc[:6]).strftime('%Y-%m-%dT%H:%M:%S.000Z')
     storage.qr_log_scan(node_id, iso, None, None, geo_pass)
+
+
+def complete(flow_id, ymd, hhmm):
+    """Finish a run at a LOCAL wall-clock time on that date.
+
+    upsert_flow_run stamps completed_at with the clock NOW, which for a
+    yesterday-dated fixture is always late — and since 2026-08-15 the judge
+    asks WHEN a routine was done, not merely whether. So the stamp is written
+    explicitly, in the shape storage writes it (UTC, offset-aware).
+    """
+    storage.upsert_flow_run(flow_id, ymd, '{}', True)
+    local = datetime.fromisoformat(f'{ymd}T{hhmm}:00')
+    iso = datetime.utcfromtimestamp(local.timestamp()).isoformat() + '+00:00'
+    conn = sqlite3.connect(storage.DB_PATH)
+    conn.execute('UPDATE flow_run SET completed_at = ? WHERE flow_id = ? AND date = ?',
+                 (iso, flow_id, ymd))
+    conn.commit()
+    conn.close()
 
 
 def reason_for(node_id, ymd):
@@ -118,22 +137,65 @@ nid = storage.qr_create_node('Wake', 'tok-wake-6', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
 storage.update_flow(flow['id'], qr_node_id=nid)
 scan(nid, YESTERDAY)
-storage.upsert_flow_run(flow['id'], YESTERDAY, '{}', True)
+complete(flow['id'], YESTERDAY, '07:30')
 qr_judge.judge()
-check('scanned AND routine done passes', reason_for(nid, YESTERDAY) is None,
+check('scanned AND routine done in time passes', reason_for(nid, YESTERDAY) is None,
       reason_for(nid, YESTERDAY))
+
+# ── each half has its OWN deadline (2026-08-15) ──────────────
+# Done, but after the routine was due. The routine's deadline here is the gate's
+# close (it has no window of its own and no offset), so 08:30 is late.
+fresh()
+nid = storage.qr_create_node('Wake', 'tok-wake-6b', '06:00', '08:00')
+flow = storage.create_flow('Morning routine')
+storage.update_flow(flow['id'], qr_node_id=nid)
+scan(nid, YESTERDAY)
+complete(flow['id'], YESTERDAY, '08:30')
+qr_judge.judge()
+check('a routine finished AFTER its deadline does not save the day',
+      reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
+
+# The routine falls due before the scan window closes (offset_min = -240 on a
+# 20:00–23:00 gate → due 19:00). At 20:00 the scan still has three hours, but
+# the routine's clock has run out and the day is already lost.
+fresh()
+TODAY = date_cls.today().isoformat()
+nid = storage.qr_create_node('Sleep', 'tok-sleep-6c', '20:00', '23:00')
+flow = storage.create_flow('Night routine')
+storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-240)
+at_2000 = datetime.fromisoformat(f'{TODAY}T20:00:00')
+qr_judge.judge(now=at_2000)
+check('a routine missed at ITS deadline fails the gate while the scan window is'
+      ' still open', reason_for(nid, TODAY) == 'routine_incomplete', reason_for(nid, TODAY))
+
+# …and the same day, done in time, is not judged early: the scan still has
+# until 23:00 to happen.
+fresh()
+nid = storage.qr_create_node('Sleep', 'tok-sleep-6d', '20:00', '23:00')
+flow = storage.create_flow('Night routine')
+storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-240)
+complete(flow['id'], TODAY, '18:30')
+qr_judge.judge(now=at_2000)
+check('a routine done in time leaves the scan window alone',
+      reason_for(nid, TODAY) is None, reason_for(nid, TODAY))
+qr_judge.judge(now=datetime.fromisoformat(f'{TODAY}T23:01:00'))
+check('…and once the scan window closes unscanned, THAT is the failure',
+      reason_for(nid, TODAY) == 'absent', reason_for(nid, TODAY))
 
 fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-7', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
 storage.update_flow(flow['id'], qr_node_id=nid)
-storage.upsert_flow_run(flow['id'], YESTERDAY, '{}', True)
+complete(flow['id'], YESTERDAY, '07:30')
 qr_judge.judge()
 check('routine done but NEVER SCANNED still reads as absent, not as the routine',
       reason_for(nid, YESTERDAY) == 'absent', reason_for(nid, YESTERDAY))
 
 # Unlinking has to actually release the gate, or a removed requirement keeps
-# failing days forever.
+# failing days forever — but it is an EASING, so it releases in 24h and not
+# tonight. This test asserted the instant release and had been failing since the
+# 24h rule reached routines; the rule is the intended behaviour, so the
+# assertion moved rather than the code.
 fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-8', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
@@ -141,7 +203,23 @@ storage.update_flow(flow['id'], qr_node_id=nid)
 storage.update_flow(flow['id'], qr_node_id=None)
 scan(nid, YESTERDAY)
 qr_judge.judge()
-check('unlinking the routine releases the gate',
+check('unlinking the routine does NOT release the gate tonight',
+      reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
+
+fresh()
+nid = storage.qr_create_node('Wake', 'tok-wake-8b', '06:00', '08:00')
+flow = storage.create_flow('Morning routine')
+storage.update_flow(flow['id'], qr_node_id=nid)
+storage.update_flow(flow['id'], qr_node_id=None)
+conn = sqlite3.connect(storage.DB_PATH)          # the 24h elapses
+conn.execute("""UPDATE flow SET pending = replace(pending, substr(pending,
+                instr(pending, '"apply_at": "') + 13, 26), '2000-01-01T00:00:00')
+                WHERE id = ?""", (flow['id'],))
+conn.commit()
+conn.close()
+scan(nid, YESTERDAY)
+qr_judge.judge()
+check('…and once the 24h is up, it does',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 
 # Deleting the routine outright is the same release.

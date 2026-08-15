@@ -4294,13 +4294,14 @@ def cancel_flow_step_pending(id):
     return dict(row) if row else None
 
 
-def routine_gate_for_node(node_id, date):
-    # Does a routine gate this node on this date, and was it done?
+def gating_flow_for_node(node_id, date):
+    # The routine that GATES this node, with that date's run stamped onto it
+    # (`completed_at`, NULL when unfinished) — or None when nothing gates it,
+    # which is the common case.
     #
-    # Returns None when nothing gates it (the common case — a gate is presence
-    # proof), else True/False. `qr_node_id` is the GATING link; `before_node_id`
-    # is only a deadline reference, so matching on it here would make a gate
-    # judge on a routine it has no relationship to.
+    # `qr_node_id` is the GATING link; `before_node_id` is only a deadline
+    # reference, so matching on it here would make a gate judge on a routine it
+    # has no relationship to.
     conn = get_conn()
     # The judge reads through here, not get_flows — a due easing (an unlink,
     # a softened step) must reach judgment without waiting for a UI read.
@@ -4310,15 +4311,23 @@ def routine_gate_for_node(node_id, date):
     # charge for a routine that was in fact complete. update_flow refuses the
     # link in the first place; this is the second lock on the money path.
     row = conn.execute(
-        '''SELECT f.id, r.completed_at FROM flow f
+        '''SELECT f.*, r.completed_at FROM flow f
            LEFT JOIN flow_run r ON r.flow_id = f.id AND r.date = ?
            WHERE f.qr_node_id = ? AND COALESCE(f.period, 'day') = 'day'
            ORDER BY f.position, f.id LIMIT 1''',
         (date, node_id)).fetchone()
     conn.close()
-    if not row:
+    return dict(row) if row else None
+
+
+def routine_gate_for_node(node_id, date):
+    # Does a routine gate this node on this date, and was it done AT ALL?
+    # None when nothing gates it, else True/False. The judge asks the sharper
+    # question — done by WHEN — through gating_flow_for_node.
+    flow = gating_flow_for_node(node_id, date)
+    if flow is None:
         return None
-    return bool(row['completed_at'])
+    return bool(flow['completed_at'])
 
 
 def upsert_flow_run(flow_id, date, steps, completed):

@@ -34,7 +34,27 @@ function initThemeToggle() {
 // Persistent, unlike Ctrl+Alt+M's 10-second hide: the setting survives
 // restarts (app.py creates the panel window hidden when it is set).
 
+// The eye, open or struck through. One drawing, two surfaces: the Settings row
+// and Engage's header button, which is the one actually reached day to day.
+function panelEyeSvg(hidden) {
+  return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" stroke-width="2">${hidden ? `
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+    <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>` : `
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>`}
+  </svg>`;
+}
+
 function paintPanelToggle(hidden) {
+  // Engage's eye says which state the panel is in, not just that a panel
+  // exists — patched in place rather than through renderEngage, so toggling
+  // never repaints the day (or the focused capture input under it).
+  const eg = document.getElementById('eg-panel-btn');
+  if (eg && window.pywebview) {
+    eg.innerHTML = panelEyeSvg(hidden);
+    eg.title = hidden ? 'NOW panel — off' : 'NOW panel';
+  }
   const label = document.getElementById('panel-toggle-label');
   if (!label) return;
   label.textContent = hidden ? 'Panel off' : 'Panel';
@@ -3397,8 +3417,23 @@ function openM(id) {
 
 function closeM(id) {
   flushOpenNotes();
-  document.getElementById(id).classList.add('hidden');
+  const el = document.getElementById(id);
+  el.classList.add('hidden');
+  // The CRM raised above the runner returns to its own layer, and the routine
+  // step it was opened from re-reads the night before it repaints.
+  if (id === 'tab-people' && document.body.classList.contains('crm-over-runner')) {
+    document.body.classList.remove('crm-over-runner');
+    if (flowRunView.open) refreshCrmNight();
+  }
   renderBar();
+}
+
+async function refreshCrmNight() {
+  const night = await fetch(`/api/people/night?date=${flowRunView.date
+    || formatDateYMD(new Date())}`).then(r => r.json()).catch(() => null);
+  flowRunView.crmFilled = !!(night && night.satisfied_at);
+  flowRunView.crmKind = night ? night.kind : null;
+  renderFlowRun();
 }
 
 function initHub() {
@@ -3444,6 +3479,12 @@ function initHub() {
     // A step's settings sheet peels before the editor it opened from.
     if (stepSheet.id != null) {
       closeStepSheet();
+      return;
+    }
+    // …except the CRM the runner itself raised above it: innermost first, so
+    // Esc puts the People surface back down before it touches the routine.
+    if (document.body.classList.contains('crm-over-runner')) {
+      closeM('tab-people');
       return;
     }
     // The routine runner peels before anything under it.
@@ -4601,12 +4642,13 @@ const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
 
 async function openFlowRun(flowId) {
   const today = formatDateYMD(new Date());
-  const [flows, day, journal, habits, refLists] = await Promise.all([
+  const [flows, day, journal, habits, refLists, crmNight] = await Promise.all([
     fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => []),
     fetch(`/api/social/day?date=${today}`).then(r => r.json()).catch(() => null),
     fetch('/api/journal').then(r => r.json()).catch(() => null),
     fetch('/api/habits').then(r => r.json()).catch(() => null),
     fetch('/api/ref').then(r => r.json()).catch(() => []),
+    fetch(`/api/people/night?date=${today}`).then(r => r.json()).catch(() => null),
   ]);
   flowRunView.refLists = refLists;
   flowRunView.checks = {};
@@ -4629,7 +4671,10 @@ async function openFlowRun(flowId) {
   flowRunView.day = day;
   flowRunView.journal = journal && journal.days
     ? journal.days.find(x => x.date === today) || null : null;
-  flowRunView.crmFilled = false;
+  // Not an attestation any more: the CRM step reads the night it is asking
+  // about, so re-entering the routine after filling shows it filled.
+  flowRunView.crmFilled = !!(crmNight && crmNight.satisfied_at);
+  flowRunView.crmKind = crmNight ? crmNight.kind : null;
   flowRunView.habits = habits;
   // The day this run belongs to, pinned. Everything below files against it,
   // never against the wall clock — see creditFlowStep.
@@ -4804,11 +4849,22 @@ function renderFlowRun() {
         </div>`;
       }).join('')}`;
   } else if (s.kind === 'crm_fill') {
+    // Running the step IS the fill (2026-08-15). It used to offer only "mark
+    // filled" — an attestation about work you had no way of doing from here,
+    // since the People surface is read-only until a fill session is open. The
+    // step now opens one: reaching this page in tonight's routine is the same
+    // intent the sleep scan was proof of. The CRM opens OVER the runner, so
+    // closing it drops you back on this page.
     page = `<div class="fr-step-big">CRM nightly fill</div>
       <div class="fr-note">${flowRunView.crmFilled
-        ? 'filled tonight ✓' : 'log tonight\'s people entries'}</div>
-      ${flowRunView.crmFilled ? ''
-        : '<button id="fr-crm-fill" class="cl-pill">Mark filled (entries made)</button>'}`;
+        ? `filled tonight ✓${flowRunView.crmKind === 'nothing' ? ' — nothing to log' : ''}`
+        : 'log tonight\'s people entries'}</div>
+      <div class="cl-row">
+        <button id="fr-crm-open" class="cl-pill">Open the CRM${
+          flowRunView.crmFilled ? '' : ' — 10 minutes'}</button>
+        ${flowRunView.crmFilled ? ''
+          : '<button id="fr-crm-fill" class="cl-pill">Mark filled (entries made)</button>'}
+      </div>`;
   } else if (s.kind === 'daily_contexts') {
     // WHICH CONTEXTS APPLY TODAY. Answering "no" hides that tag's pool items
     // for the day and is counted on the pool header; leaving one unanswered
@@ -5113,6 +5169,17 @@ function renderFlowRun() {
     renderFlowRun();
     renderEngage();   // the pool and its 👤 count follow immediately
   }));
+
+  const crmOpen = el.querySelector('#fr-crm-open');
+  if (crmOpen) crmOpen.addEventListener('click', () => {
+    openM('tab-people');
+    // Over the runner (165) for as long as the routine holds it open; the class
+    // comes off in closeM, so the z-ladder is back to normal the moment you
+    // leave. Nothing else moves.
+    document.body.classList.add('crm-over-runner');
+    openPeopleSurface();
+    startPeopleSession({ force: true });
+  });
 
   const crm = el.querySelector('#fr-crm-fill');
   if (crm) crm.addEventListener('click', async () => {
@@ -6380,7 +6447,9 @@ function renderQrLayer() {
     // ±12h drag bounds in semantic minutes: a +1d deadline counts as end + 1440,
     // so dragging preserves the offset and can cross midnight in either direction
     const originalMinutes = timeToMinutes(windowEnd) + (offsetDays ? 1440 : 0);
-    const minMinutes = Math.max(0, originalMinutes - 720);
+    // Never above the window's OPENING: a deadline before its own start is an
+    // empty window, which judges absent every day. The server refuses it too.
+    const minMinutes = Math.max(timeToMinutes(windowStart), originalMinutes - 720);
     const maxMinutes = Math.min(originalMinutes + 720, 2875);
 
     const pct = minutesToViewPercent(originalMinutes);
@@ -6514,6 +6583,13 @@ function renderQrLayer() {
         if (viewingToday) {
           state.accountabilityNodes = await fetch('/api/accountability/nodes').then(r => r.json()).catch(() => state.accountabilityNodes);
         }
+      } else {
+        // A refused move must SAY so. The pill has already been dragged to the
+        // new position on screen, so silence reads as "saved" — and the next
+        // re-render silently snaps it back. 403 is the 24h lock, which is the
+        // only refusal a hand can produce.
+        const msg = await res.json().catch(() => ({}));
+        toast(msg.error || `Could not move it (${res.status})`);
       }
       // Moving the wake/sleep deadline moves the view window itself
       const isWindowNode = String(node.id) === String(state.settings.qr_wake_node_id)
@@ -7183,17 +7259,23 @@ async function peopleWindowPoll() {
     peopleView.win = await fetch('/api/people/window').then(r => r.json())
       .catch(() => ({ open: false, seconds_left: 0 }));
   }
-  // if the window closed while a session was running, end it
-  if (!peopleView.win.open && peopleView.editable) endPeopleSession();
+  // if the window closed while a session was running, end it — unless the
+  // ROUTINE opened this one, which never had a scan window behind it.
+  if (!peopleView.win.open && peopleView.editable && !peopleView.forced) endPeopleSession();
   renderSessionBar();
 }
 
-function startPeopleSession() {
-  if (!peopleView.win.open) return;
+function startPeopleSession(opts) {
+  // `force` is the ROUTINE opening the fill (the crm_fill step). The scan-gated
+  // window is not the only honest opener — running tonight's routine is the
+  // same statement — but the 10-minute cap still applies, unchanged.
+  const forced = !!(opts && opts.force);
+  if (!peopleView.win.open && !forced) return;
   const cap = window.__peopleCapSecs || PEOPLE_CAP_SECS;
-  const winLeft = peopleView.win.seconds_left || cap;
+  const winLeft = forced ? cap : (peopleView.win.seconds_left || cap);
   peopleView.sessionEnd = Date.now() + Math.min(cap, winLeft) * 1000;
   peopleView.editable = true;
+  peopleView.forced = forced;
   if (peopleView.sessionTimer) clearInterval(peopleView.sessionTimer);
   peopleView.sessionTimer = setInterval(() => {
     if (Date.now() >= peopleView.sessionEnd) endPeopleSession();
@@ -7204,6 +7286,7 @@ function startPeopleSession() {
 
 function endPeopleSession() {
   peopleView.editable = false;
+  peopleView.forced = false;
   if (peopleView.sessionTimer) { clearInterval(peopleView.sessionTimer); peopleView.sessionTimer = null; }
   peopleView.sessionEnd = 0;
   document.getElementById('person-detail-overlay').classList.add('hidden');
@@ -9647,10 +9730,9 @@ function renderEngage() {
 
   // 9c header: NOW-panel button top-left, the day as the title, domain chip.
   header.innerHTML = `
-    <button id="eg-panel-btn" title="NOW panel">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-      </svg>
+    <button id="eg-panel-btn" title="${window.pywebview && state.settings.panel_hidden === '1'
+      ? 'NOW panel — off' : 'NOW panel'}">
+      ${panelEyeSvg(!!window.pywebview && state.settings.panel_hidden === '1')}
     </button>
     <button class="eg-nav" id="eg-prev" title="Previous day">‹</button>
     <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"

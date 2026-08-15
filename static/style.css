@@ -2939,6 +2939,15 @@ body.np-body {
   overflow: hidden;
 }
 
+/* Opened FROM the routine runner (165), which stays open underneath so closing
+   the CRM lands back on the step. The whole People stack moves up together —
+   raising the tab alone would bury its own add/detail forms (150) behind it.
+   Still below the sheets (200) and the fill timer (250). */
+body.crm-over-runner #tab-people { z-index: 170; }
+body.crm-over-runner #person-detail-overlay,
+body.crm-over-runner #person-add-overlay,
+body.crm-over-runner #bucket-mgr-overlay { z-index: 175; }
+
 #people-wrap {
   display: flex;
   flex-direction: column;
