@@ -278,11 +278,16 @@ def post_domain():
 
 @app.route('/api/domains/<int:id>', methods=['PATCH'])
 def patch_domain(id):
-    data = request.get_json()
-    name = (data.get('name') or '').strip()
-    if not name:
-        return jsonify({'error': 'name is required'}), 400
-    return jsonify(storage.update_domain(id, name))
+    data = request.get_json() or {}
+    name = None
+    if 'name' in data:
+        name = (data.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': 'name is required'}), 400
+    active = data.get('active') if 'active' in data else None
+    if name is None and active is None:
+        return jsonify({'error': 'name or active is required'}), 400
+    return jsonify(storage.update_domain(id, name, active))
 
 
 @app.route('/api/domains/<int:id>', methods=['DELETE'])
@@ -768,6 +773,10 @@ def delete_block(id):
 @app.route('/api/blocks/<int:id>', methods=['PATCH'])
 def patch_block(id):
     data = request.get_json()
+    # Pausing is the one patch that does not move the block, so it does not go
+    # through the overlap check — a paused block occupies no time at all.
+    if set(data) == {'active'}:
+        return jsonify(storage.set_block_active(id, data['active']))
     overlap = storage.validate_no_overlap(
         data['day_of_week'], data['start_time'], data['end_time'], exclude_id=id
     )
@@ -1937,6 +1946,25 @@ def post_tag_location():
 def delete_tag_location_route(tag):
     storage.delete_tag_location(tag)
     return '', 204
+
+
+@app.route('/api/locations/<int:id>', methods=['PATCH'])
+def patch_location(id):
+    # Rename and pause, the same two verbs every other settings item has. The
+    # coordinates are deliberately not patchable — see storage.update_location.
+    data = request.get_json() or {}
+    name = None
+    if 'name' in data:
+        name = (data.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': 'name is required'}), 400
+    active = data.get('active') if 'active' in data else None
+    if name is None and active is None:
+        return jsonify({'error': 'name or active is required'}), 400
+    row = storage.update_location(id, name, active)
+    if row is None:
+        return jsonify({'error': 'unknown location'}), 404
+    return jsonify(row)
 
 
 @app.route('/api/locations/<int:id>', methods=['DELETE'])

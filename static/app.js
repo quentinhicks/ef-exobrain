@@ -2066,18 +2066,42 @@ async function removeSeItem() {
 
 // Option lists the sheets share. `— none —` stays first so a select's empty
 // value is a real choice rather than a blank row.
-function seAreaOptions() {
+//
+// PAUSED things are not offered — that is what pausing is for — but the one
+// already SELECTED is always kept in the list, or opening a sheet would
+// silently drop the choice it is showing you.
+function seAreaOptions(current) {
   return [{ value: '', name: '— none —' }].concat(
-    (state.areas || []).filter(p => p.active).map(p => ({ value: p.id, name: p.name })));
+    (state.areas || []).filter(p => p.active || String(p.id) === String(current))
+      .map(p => ({ value: p.id, name: p.name + (p.active ? '' : ' (paused)') })));
 }
 
-function seLocationOptions(firstName) {
+function seLocationOptions(firstName, current) {
   return [{ value: '', name: firstName || '— none —' }].concat(
-    (state.locations || []).map(l => ({ value: l.id, name: l.name })));
+    (state.locations || []).filter(l => l.active !== 0 || String(l.id) === String(current))
+      .map(l => ({ value: l.id, name: l.name + (l.active === 0 ? ' (paused)' : '') })));
 }
 
-function seDomainOptions() {
-  return (state.domains || []).map(d => ({ value: d.id, name: d.name }));
+function seDomainOptions(current) {
+  return (state.domains || []).filter(d => d.active !== 0 || String(d.id) === String(current))
+    .map(d => ({ value: d.id, name: d.name + (d.active === 0 ? ' (paused)' : '') }));
+}
+
+// ── The common interface (2026-08-15) ────────────────────────
+//
+// Every settings item answers the SAME three verbs, in the same words and the
+// same place: EDIT it (the sheet's fields), PAUSE it (this row, always last,
+// just above the buttons) and DELETE it (`remove`, the sheet's foot). They
+// used to disagree — a gate could not be deleted, a block could not be paused
+// though its column existed, a location could not even be renamed, and the
+// state row said Archived / Inactive / Hidden / Paused for one idea.
+//
+// Paused NEVER deletes and never rewrites what already points at the thing: it
+// stops it running and stops it being offered. `hint` is where a kind explains
+// what its own pause means (a gate's waits 24h, like every other easing).
+function seStateRow(hint) {
+  return { key: 'active', label: 'State', kind: 'check', on: 'Active', off: 'Paused',
+           ...(hint ? { hint } : {}) };
 }
 
 // ── Per-datatype sheets ──────────────────────────────────────
@@ -2090,20 +2114,28 @@ const SETTINGS_SHEETS = {
     title: it => it ? 'Edit block' : 'Add block',
     save: () => 'Save block',
     removeLabel: 'Delete block',
-    blank: () => ({ label: '', color: BLOCK_COLORS[0], days: [], start: '', end: '', area: '', location: '' }),
+    blank: () => ({ label: '', color: BLOCK_COLORS[0], days: [], start: '', end: '',
+                    area: '', location: '', active: true }),
     load: g => ({
       label: g.label, color: g.color, days: g.days.slice(),
       start: g.start_time, end: g.end_time,
       area: g.area_id || '', location: g.location_id || '',
+      // A group is paused when every row in it is — the rows only ever move
+      // together, and a half-paused group has no meaning on the timeline.
+      active: g.rows.some(r => r.active),
     }),
-    fields: () => [
+    fields: (v, g) => [
       { key: 'label', label: 'Label', kind: 'text', placeholder: 'e.g. Deep work' },
       { key: 'color', label: 'Colour', kind: 'swatches' },
       { key: 'days', label: 'Days', kind: 'days' },
       { key: 'start', label: 'From', kind: 'time', half: true },
       { key: 'end', label: 'To', kind: 'time', half: true },
-      { key: 'area', label: 'Area', kind: 'select', half: true, options: seAreaOptions },
-      { key: 'location', label: 'Location', kind: 'select', half: true, options: () => seLocationOptions() },
+      { key: 'area', label: 'Area', kind: 'select', half: true,
+        options: () => seAreaOptions(v.area) },
+      { key: 'location', label: 'Location', kind: 'select', half: true,
+        options: () => seLocationOptions(null, v.location) },
+      ...(g ? [seStateRow('Paused: off the timeline, and its hours are free for '
+                          + 'another block. Nothing is deleted.')] : []),
     ],
     submit: async (v, g) => {
       if (!v.label.trim() || !v.color || !v.start || !v.end) return 'Label, colour, from and to are required.';
@@ -2118,7 +2150,32 @@ const SETTINGS_SHEETS = {
         }),
       });
       const data = await res.json();
-      if (!res.ok) return data.error || 'Error saving block.';
+      if (!res.ok) {
+        // The old rows were deleted to make room for the new ones, so a refused
+        // POST (an overlap) would otherwise take the block with it. Put it back
+        // as it was and report the refusal.
+        if (g) {
+          await fetch('/api/blocks', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              label: g.label, color: g.color, days: g.days,
+              start_time: g.start_time, end_time: g.end_time,
+              area_id: g.area_id || null, location_id: g.location_id || null,
+            }),
+          }).catch(() => {});
+          await refreshBlockEditor();
+        }
+        return data.error || 'Error saving block.';
+      }
+      // The group is re-POSTed on every save (the API has no group identity),
+      // and rows arrive active — so a paused group has to be paused again, or
+      // editing one would quietly turn it back on.
+      if (!v.active) {
+        await Promise.all(data.map(b => fetch(`/api/blocks/${b.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active: 0 }),
+        })));
+      }
       await refreshBlockEditor();
       return null;
     },
@@ -2153,7 +2210,7 @@ const SETTINGS_SHEETS = {
             (state.projects || []).map(p => ({
               value: p.id, name: p.area_name ? `${p.content} · ${p.area_name}` : p.content,
             }))) },
-        { key: 'active', label: 'State', kind: 'check', on: 'Running', off: 'Paused' },
+        seStateRow('Paused: no new occurrences are seeded. Ones already filed stay.'),
       ];
       const unit = v.kind === 'every_n_days' ? 'day(s)' : v.kind === 'weekly' ? 'week(s)' : 'month(s)';
       return [
@@ -2236,19 +2293,21 @@ const SETTINGS_SHEETS = {
       if (!it) return [
         { key: 'name', label: 'Name', kind: 'text', placeholder: 'Area name' },
         { key: 'type', label: 'Type', kind: 'select', half: true, options: () => types },
-        { key: 'domain', label: 'Domain', kind: 'select', half: true, options: seDomainOptions },
+        { key: 'domain', label: 'Domain', kind: 'select', half: true,
+          options: () => seDomainOptions(v.domain) },
       ];
       return [
         { key: 'name', label: 'Name', kind: 'static', text: it.name },
         { key: 'type', label: 'Type', kind: 'select', half: true, rerender: true, options: () => types },
-        { key: 'domain', label: 'Domain', kind: 'select', half: true, options: seDomainOptions },
+        { key: 'domain', label: 'Domain', kind: 'select', half: true,
+          options: () => seDomainOptions(v.domain) },
         // A routine area can hang off a gate: the routine then nests under
         // that gate's hairline on Engage even with no block on the calendar.
         ...(v.type === 'routine' ? [{ key: 'qr', label: 'Gate anchor', kind: 'select',
           options: () => [{ value: '', name: 'no gate anchor' }].concat(
             (state.accountabilityNodes || []).filter(n => n.active)
               .map(n => ({ value: n.id, name: n.label }))) }] : []),
-        { key: 'active', label: 'State', kind: 'check', on: 'Active', off: 'Archived' },
+        seStateRow('Paused: not offered anywhere new. Its items and history stay.'),
       ];
     },
     submit: async (v, a) => {
@@ -2287,16 +2346,22 @@ const SETTINGS_SHEETS = {
     save: () => 'Save domain',
     removeLabel: 'Delete domain',
     confirm: it => `Delete domain "${it.name}"? Its areas move to the default domain.`,
-    blank: () => ({ name: '' }),
-    load: d => ({ name: d.name }),
-    fields: () => [{ key: 'name', label: 'Name', kind: 'text', placeholder: 'Domain name' }],
+    blank: () => ({ name: '', active: true }),
+    load: d => ({ name: d.name, active: d.active !== 0 }),
+    fields: (v, it) => [
+      { key: 'name', label: 'Name', kind: 'text', placeholder: 'Domain name' },
+      // The default domain is the fallback every area lands in, so it is the
+      // one thing here that cannot be taken out of circulation.
+      ...(it && !it.is_default
+        ? [seStateRow('Paused: not offered when filing. Its areas keep working.')] : []),
+    ],
     submit: async (v, d) => {
       const name = v.name.trim();
       if (!name) return 'Name is required.';
       if (d) {
         await fetch(`/api/domains/${d.id}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({ name, ...(d.is_default ? {} : { active: v.active ? 1 : 0 }) }),
         });
       } else {
         await fetch('/api/domains', {
@@ -2313,20 +2378,24 @@ const SETTINGS_SHEETS = {
     },
   },
 
-  // /api/locations has no PATCH: a location's coordinates are what gates and
-  // context tags were pinned against, so the sheet states them and offers the
-  // only decision the API supports.
+  // A location's COORDINATES stay immutable — they are what gates and context
+  // tags were pinned against, and moving them would silently redefine every
+  // geofence that quoted them. Its name and its state are ordinary edits, the
+  // same two verbs every other settings item has.
   location: {
     title: it => it ? 'Location' : 'Add location',
-    save: it => it ? 'Done' : 'Save location',
+    save: it => it ? 'Save location' : 'Save location',
     removeLabel: 'Delete location',
     confirm: it => `Delete "${it.name}"? Gates and tags pinned to it lose their anchor.`,
-    blank: () => ({ name: '', lat: '', lng: '', radius: '' }),
-    load: l => ({ name: l.name, lat: l.lat, lng: l.lng, radius: l.radius_m }),
+    blank: () => ({ name: '', lat: '', lng: '', radius: '', active: true }),
+    load: l => ({ name: l.name, lat: l.lat, lng: l.lng, radius: l.radius_m,
+                  active: l.active !== 0 }),
     fields: (v, it) => it ? [
-      { key: 'name', label: 'Name', kind: 'static', text: it.name },
-      { key: 'coords', label: 'Coordinates', kind: 'static', text: `${it.lat}, ${it.lng}` },
+      { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Mox' },
+      { key: 'coords', label: 'Coordinates', kind: 'static', text: `${it.lat}, ${it.lng}`,
+        hint: 'Fixed — a gate quotes these, so moving them would move the gate.' },
       { key: 'radius', label: 'Radius', kind: 'static', text: `${it.radius_m}m` },
+      seStateRow('Paused: not offered to gates or tags. Ones already pinned keep their anchor.'),
     ] : [
       { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Mox' },
       { key: 'lat', label: 'Latitude', kind: 'number', step: 'any', half: true },
@@ -2334,7 +2403,18 @@ const SETTINGS_SHEETS = {
       { key: 'radius', label: 'Radius', kind: 'number', suffix: 'm', hint: 'blank = 150m' },
     ],
     submit: async (v, it) => {
-      if (it) return null;
+      if (it) {
+        if (!v.name.trim()) return 'Name is required.';
+        const res = await fetch(`/api/locations/${it.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: v.name.trim(), active: v.active ? 1 : 0 }),
+        });
+        if (!res.ok) return 'Error saving location.';
+        state.locations = await fetch('/api/locations').then(r => r.json())
+          .catch(() => state.locations);
+        await renderQrManager();
+        return null;
+      }
       const lat = parseFloat(v.lat);
       const lng = parseFloat(v.lng);
       if (!v.name.trim() || isNaN(lat) || isNaN(lng)) return 'Name, latitude and longitude are required.';
@@ -2426,8 +2506,6 @@ const SETTINGS_SHEETS = {
           half: true, placeholder: 'default',
           hint: 'What failing this gate costs. Blank uses the default in Billing below.'
             + ' Raising it applies now; lowering waits 24h, like any other easing.' }] : []),
-        ...(it ? [{ key: 'active', label: 'State', kind: 'check', on: 'Active', off: 'Inactive',
-          hint: 'Deactivating takes effect in 24h.' }] : []),
         // What this gate is actually judged ON. The routine half is configured
         // in the routine editor, so without this line the rule that decides
         // ✓/✗ appears nowhere on the gate it decides about.
@@ -2459,6 +2537,10 @@ const SETTINGS_SHEETS = {
             + `${it.today_override.window_end_offset_days ? ' +1d' : ''}`,
           action: 'Remove',
           run: n => removeOverride(n.id, n.today_override.date) }] : []),
+        // Last, like every other sheet's — the read-outs above it are facts
+        // about the gate, not fields, so the ladder still ends on the switch.
+        ...(it ? [seStateRow('Pausing a gate is an easing, so it takes effect in 24h —'
+          + ' turning it back on before then calls it off.')] : []),
         ...(pending.length ? [{ key: 'pending', label: 'Pending', kind: 'static',
           hint: 'Anything that makes a gate easier waits 24h, so it can\'t be loosened '
             + 'in the moment you want to dodge it.',
@@ -2533,7 +2615,7 @@ const SETTINGS_SHEETS = {
       if (v.active !== v.active0) {
         const route = v.active ? 'activate' : 'disable';
         const r = await fetch(`/api/accountability/nodes/${n.id}/${route}`, { method: 'PATCH' });
-        if (!r.ok) return `${v.active ? 'Activate' : 'Deactivate'} failed (${r.status}).`;
+        if (!r.ok) return `${v.active ? 'Resume' : 'Pause'} failed (${r.status}).`;
       }
       if (result.pending && result.pending.length) {
         alert(`Saved. Loosening changes apply ${new Date(result.apply_at).toLocaleString()}:\n`
@@ -2603,14 +2685,14 @@ const SETTINGS_SHEETS = {
   calendar: {
     title: it => it ? 'Calendar' : 'Add calendar',
     save: it => it ? 'Save calendar' : 'Fetch calendar',
-    removeLabel: 'Remove calendar',
-    confirm: it => `Remove "${it.name}"? Its events leave the timeline.`,
+    removeLabel: 'Delete calendar',
+    confirm: it => `Delete "${it.name}"? Its events leave the timeline.`,
     blank: () => ({ url: '', color: BLOCK_COLORS[0] }),
     load: c => ({ name: c.name, color: c.color, active: !!c.active }),
     fields: (v, it) => it ? [
       { key: 'name', label: 'Name', kind: 'text' },
       { key: 'color', label: 'Colour', kind: 'swatches' },
-      { key: 'active', label: 'On the timeline', kind: 'check', on: 'Shown', off: 'Hidden' },
+      seStateRow('Paused: not fetched, and its events leave the timeline.'),
     ] : [
       { key: 'url', label: 'iCal URL', kind: 'url', placeholder: 'https://…/basic.ics' },
       { key: 'color', label: 'Colour', kind: 'swatches' },
@@ -2779,7 +2861,8 @@ function renderBeCalendars(calendars) {
   beCounts.calendars = calendars.filter(c => c.active).length;
   list.innerHTML = calendars.map(c => beRow({
     id: c.id, color: c.color, name: c.name, dim: !c.active,
-    meta: c.active ? 'On the timeline' : 'Hidden',
+    meta: c.active ? 'On the timeline' : 'Off the timeline',
+    badge: c.active ? '' : 'paused',
   })).join('') + beAddRow('Add calendar');
   wireBeList(list, 'calendar', calendars);
 }
@@ -2792,7 +2875,7 @@ function renderBeAreas(projects) {
   list.innerHTML = projects.map(p => beRow({
     id: p.id, name: p.name, dim: !p.active,
     meta: `${p.type} · ${domainName(p.domain_id)}`,
-    badge: p.active ? '' : 'archived',
+    badge: p.active ? '' : 'paused',
   })).join('') + beAddRow('Add area');
   wireBeList(list, 'area', projects);
 }
@@ -2807,9 +2890,9 @@ function renderBeDomains() {
     if (a.domain_id) counts[a.domain_id] = (counts[a.domain_id] || 0) + 1;
   });
   list.innerHTML = state.domains.map(d => beRow({
-    id: d.id, name: d.name,
+    id: d.id, name: d.name, dim: d.active === 0,
     meta: plural(counts[d.id], 'area'),
-    badge: d.is_default ? 'default' : '',
+    badge: d.active === 0 ? 'paused' : d.is_default ? 'default' : '',
   })).join('') + beAddRow('Add domain');
   wireBeList(list, 'domain', state.domains);
 }
@@ -2850,8 +2933,10 @@ function renderBeBlocks(blocks) {
   beCounts.blocks = groups.length;
   list.innerHTML = groups.map(g => beRow({
     id: g.id, color: g.color, name: g.label,
+    dim: !g.rows.some(r => r.active),
     meta: `${formatDays(g.days)} · ${g.start_time}–${g.end_time}`,
     sub: [g.project_name, g.location_name].filter(Boolean).join(' · '),
+    badge: g.rows.some(r => r.active) ? '' : 'paused',
   })).join('') + beAddRow('Add block');
   wireBeList(list, 'block', groups);
 }
@@ -6684,7 +6769,7 @@ async function renderQrManager() {
   state.accountabilityNodes = nodes;
   state.locations = Array.isArray(locations) ? locations : [];
   beCounts.qr = nodes.filter(n => n.active).length;
-  beCounts.locations = state.locations.length;
+  beCounts.locations = state.locations.filter(l => l.active !== 0).length;
 
   const nodeOptions = selectedId => '<option value="">— none —</option>'
     + nodes.filter(n => n.active).map(n =>
@@ -6733,8 +6818,9 @@ async function renderQrManager() {
   locPanel.innerHTML = `
     <div class="be-list" id="be-location-list">
       ${state.locations.map(l => beRow({
-        id: l.id, name: l.name,
+        id: l.id, name: l.name, dim: l.active === 0,
         meta: `${l.lat}, ${l.lng} · ${l.radius_m}m`,
+        badge: l.active === 0 ? 'paused' : '',
       })).join('')}${beAddRow('Add location')}
     </div>`;
   wireBeList(document.getElementById('be-location-list'), 'location', state.locations);
@@ -7035,8 +7121,8 @@ function gateRowOpts(n) {
 
   let badge = '';
   if (pendingDelete) badge = 'deleting';
-  else if (!n.active) badge = 'inactive';
-  else if (pendingDisable) badge = 'deactivating';
+  else if (!n.active) badge = 'paused';
+  else if (pendingDisable) badge = 'pausing';
   else if (n.today_override) badge = 'today';
   else if (otherPending.length) badge = 'pending';
   else if (!n.schedule_label && Object.keys(weekly).length) badge = 'per-day';
@@ -9101,7 +9187,8 @@ function renderCtxSheet() {
     <div class="cl-sec"><span class="cl-label">⌖ Location</span>
       <span class="cl-hint">${state.geo.ok ? 'located' : 'no fix — nothing is hidden'}</span></div>
     <div class="cl-chips">
-      ${(state.locations || []).map(l => `<button class="cl-chip${
+      ${(state.locations || []).filter(l => l.active !== 0
+        || (boundLoc && boundLoc.location_id === l.id)).map(l => `<button class="cl-chip${
         boundLoc && boundLoc.location_id === l.id ? ' cl-chip-on' : ''}"
         data-loc="${l.id}">${escHtml(l.name)}</button>`).join('')
         || '<span class="cl-hint">no presets — add one in Settings → Locations</span>'}
@@ -9691,7 +9778,10 @@ function renderEngage() {
       >${escHtml(d.name)}${engageView.ctxDomainPick ? '' : ' ▾'}</button>`;
   };
   // Expanded: every domain, plus the way back to letting the calendar decide.
-  const domainPicker = () => `${state.domains.map(d => {
+  // A paused domain is not offered — unless it is the one in force, which the
+  // block calendar can still derive and the chip must be able to name.
+  const domainPicker = () => `${state.domains.filter(d =>
+      d.active !== 0 || String(d.id) === String(ctxDomainId)).map(d => {
       const inForce = String(d.id) === String(ctxDomainId);
       return `<button class="ctx-chip ${inForce ? 'ctx-req' : 'ctx-off'}"
         data-pickdomain="${d.id}">${escHtml(d.name)}</button>`;
@@ -10984,7 +11074,8 @@ function renderClarify() {
       <div class="cl-sec"><span class="cl-label">Filing to</span>
         <span class="cl-hint">domain${siblings.length > 1 ? ' · area' : ''}</span></div>
       <div class="cl-chips">
-        ${state.domains.map(d => `<button class="cl-chip${d.id === curDomain ? ' cl-chip-on' : ''}"
+        ${state.domains.filter(d => d.active !== 0 || d.id === curDomain)
+          .map(d => `<button class="cl-chip${d.id === curDomain ? ' cl-chip-on' : ''}"
            data-domain="${d.id}">${escHtml(d.name)}</button>`).join('')}
       </div>
       ${siblings.length > 1 ? `<div class="cl-chips">

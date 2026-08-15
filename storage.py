@@ -676,6 +676,18 @@ def init_db():
             completed_at TEXT,
             PRIMARY KEY (flow_id, date)
         )''')
+    # PAUSING is a verb every settings item now has (2026-08-15): areas,
+    # recurring tasks, calendars, gates and blocks already carried `active`, so
+    # domains and locations get the same column rather than a second idiom.
+    # Paused means "stop offering it" — never a deletion, and never a change to
+    # anything already pointing at it (a gate copies a location's coordinates,
+    # it does not reference them).
+    for table in ('domain', 'location'):
+        try:
+            conn.execute(f'SELECT active FROM {table} LIMIT 1')
+        except Exception:
+            conn.execute(f'ALTER TABLE {table} ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
+            conn.commit()
     # Which days a routine step runs. Same grammar the rest of the app already
     # speaks — a digit string, '0'=Mon..'6'=Sun, NULL = every day (exactly how
     # recurring_task.days_of_week and nodes.days_of_week read). NULL meaning
@@ -1327,9 +1339,12 @@ def create_domain(name):
     return dict(row)
 
 
-def update_domain(id, name):
+def update_domain(id, name=None, active=None):
     conn = get_conn()
-    conn.execute('UPDATE domain SET name = ? WHERE id = ?', (name, id))
+    if name is not None:
+        conn.execute('UPDATE domain SET name = ? WHERE id = ?', (name, id))
+    if active is not None:
+        conn.execute('UPDATE domain SET active = ? WHERE id = ?', (1 if active else 0, id))
     conn.commit()
     row = conn.execute('SELECT * FROM domain WHERE id = ?', (id,)).fetchone()
     conn.close()
@@ -4388,6 +4403,31 @@ def create_location(name, lat, lng, radius_m):
     row = conn.execute('SELECT * FROM location WHERE id = ?', (cur.lastrowid,)).fetchone()
     conn.close()
     return dict(row)
+
+
+def update_location(id, name=None, active=None):
+    # Name and state only. The COORDINATES stay immutable on purpose: they are
+    # what gates and context tags were pinned against, and editing them in place
+    # would silently redefine every geofence that quoted them.
+    conn = get_conn()
+    if name is not None:
+        conn.execute('UPDATE location SET name = ? WHERE id = ?', (name, id))
+    if active is not None:
+        conn.execute('UPDATE location SET active = ? WHERE id = ?', (1 if active else 0, id))
+    conn.commit()
+    row = conn.execute('SELECT * FROM location WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def set_block_active(id, active):
+    conn = get_conn()
+    conn.execute('UPDATE recurring_block SET active = ? WHERE id = ?',
+                 (1 if active else 0, id))
+    conn.commit()
+    row = _fetch_block(conn, id)
+    conn.close()
+    return row
 
 
 def delete_location(id):
