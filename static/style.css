@@ -3564,6 +3564,23 @@ body.crm-over-runner #bucket-mgr-overlay { z-index: 175; }
   color: var(--text-primary);
 }
 
+/* The escape for two real people with one name. Its own line and a full finger
+   target — it sits inside a sentence, but it is a decision, not a word. */
+.pa-dup-btn {
+  display: block;
+  margin-top: 7px;
+  min-height: 36px;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.pa-dup-btn:hover { color: var(--text-primary); }
+
 .pa-contact {
   font-size: 13px;
 }

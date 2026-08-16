@@ -11850,6 +11850,7 @@ async function reloadBuckets() {
 function openAddPerson() {
   if (!peopleView.editable) return;
   peopleView.addSelectedId = null;
+  peopleView.addAllowDuplicate = false;
   const title = document.getElementById('person-add-title');
   if (title) title.textContent = 'Add interaction';
   const body = document.getElementById('person-add-body');
@@ -11899,6 +11900,35 @@ function openAddPerson() {
   // The notes-append box is a markdown field like every other notes surface.
   wireMdShortcuts(document.getElementById('pa-notes-add'));
 
+  // Typing a name in FULL is the same intent as tapping it in the suggestion
+  // list, and it is the likelier one on a phone (the list is a 36px target you
+  // have to notice). Before this, only the tap set addSelectedId, so typing
+  // "Sarah Chen" over an existing Sarah Chen minted a second row. The match is
+  // resolved here and at submit; the server 409s as the backstop.
+  const exactMatch = () => {
+    const key = nameInput.value.trim().toLowerCase();
+    if (!key) return null;
+    return peopleView.people.find(p => (p.name || '').trim().toLowerCase() === key) || null;
+  };
+
+  // Tapping a suggestion PREFILLS the form from the person, so saving it whole
+  // is safe. Typing the name does not, so the form is blank — and a blank field
+  // there means "I didn't fill this in", never "clear what's on file". Sending
+  // it whole would blank their company, birthday, cadence and buckets. Only
+  // what was actually entered travels.
+  const prunedFields = f => {
+    const out = {};
+    ['company', 'location', 'birthday', 'how_we_met', 'next_action'].forEach(k => {
+      if ((f[k] || '').trim()) out[k] = f[k];
+    });
+    if (f.cadence && f.cadence !== 'none') out.cadence = f.cadence;
+    if (f.has_contact) out.has_contact = true;
+    // Empty means "checked nothing", and update_person replaces the whole set —
+    // an empty list would unfile them from every bucket they are in.
+    if ((f.bucket_ids || []).length) out.bucket_ids = f.bucket_ids;
+    return out;
+  };
+
   const updateBanner = () => {
     const banner = document.getElementById('pa-existing');
     const submit = document.getElementById('pa-submit');
@@ -11907,10 +11937,26 @@ function openAddPerson() {
       banner.innerHTML = `Existing contact — edits save to <strong>${escHtml(p ? p.name : '')}</strong> and your interaction is logged.`;
       banner.classList.remove('hidden');
       submit.textContent = 'Save + log interaction';
-    } else {
-      banner.classList.add('hidden');
-      submit.textContent = 'Add person';
+      return;
     }
+    const m = peopleView.addAllowDuplicate ? null : exactMatch();
+    if (m) {
+      // Said before the press, not refused after it: the button already names
+      // what it will do, and the escape for two real people with one name is
+      // right here rather than being a dead end.
+      banner.innerHTML = `Already in your CRM — this logs to <strong>${escHtml(m.name)}</strong> instead of adding a second row. `
+        + `<button type="button" class="pa-dup-btn" id="pa-dup">Add as a separate person</button>`;
+      banner.classList.remove('hidden');
+      const dup = document.getElementById('pa-dup');
+      if (dup) dup.addEventListener('click', () => {
+        peopleView.addAllowDuplicate = true;
+        updateBanner();
+      });
+      submit.textContent = 'Log interaction';
+      return;
+    }
+    banner.classList.add('hidden');
+    submit.textContent = peopleView.addAllowDuplicate ? 'Add separate person' : 'Add person';
   };
 
   const selectExisting = id => {
@@ -11940,6 +11986,9 @@ function openAddPerson() {
 
   nameInput.addEventListener('input', () => {
     peopleView.addSelectedId = null;   // typing means diverging from any picked person
+    // …but a CHANGED name is a fresh question, so an earlier "separate person"
+    // decision does not carry over to whoever is being typed now.
+    peopleView.addAllowDuplicate = false;
     updateBanner();
     document.getElementById('pa-notes-current').classList.add('hidden');
     const q = nameInput.value.trim().toLowerCase();
@@ -11988,20 +12037,46 @@ function openAddPerson() {
     submit.disabled = true;
     try {
       let personId = peopleView.addSelectedId;
+      // A name typed in full names the person it matches, exactly as tapping
+      // the suggestion would have. Without this the form's own autocomplete was
+      // the only thing standing between you and a second row.
+      let adopted = null;
+      if (!personId && !peopleView.addAllowDuplicate) {
+        adopted = exactMatch();
+        if (adopted) personId = adopted.id;
+      }
       if (personId) {
         // notes_append, never notes: appending in SQL is what keeps this form
         // from overwriting notes it never showed.
-        const body = notesAdd ? { ...fields, notes_append: notesAdd } : fields;
+        const base = adopted ? prunedFields(fields) : fields;
+        const body = notesAdd ? { ...base, notes_append: notesAdd } : base;
         const res = await fetch(`/api/people/${personId}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!res.ok) { errEl.textContent = `Save failed (${res.status})`; return; }
+        if (adopted) toast(`Logged to ${adopted.name} — already in your CRM`);
       } else {
         // A new person has nothing to append to, so this IS their notes.
         const body = notesAdd ? { ...fields, notes: notesAdd } : fields;
+        if (peopleView.addAllowDuplicate) body.allow_duplicate = true;
         const res = await fetch('/api/people', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!res.ok) { errEl.textContent = `Add failed (${res.status})`; return; }
-        personId = (await res.json()).id;
+        // The server's own name guard, for the case the client could not see:
+        // a people list loaded before someone else's session added them. It
+        // hands back the person, so this becomes the log it should have been.
+        if (res.status === 409) {
+          const dup = (await res.json()).person;
+          personId = dup.id;
+          const pbody = prunedFields(fields);
+          if (notesAdd) pbody.notes_append = notesAdd;
+          const pres = await fetch(`/api/people/${personId}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pbody) });
+          if (!pres.ok) { errEl.textContent = `Save failed (${pres.status})`; return; }
+          toast(`Logged to ${dup.name} — already in your CRM`);
+        } else if (!res.ok) {
+          errEl.textContent = `Add failed (${res.status})`; return;
+        } else {
+          personId = (await res.json()).id;
+        }
       }
       if (intNote && intDate) {
         const ires = await fetch(`/api/people/${personId}/interactions`, {

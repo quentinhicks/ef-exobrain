@@ -2019,6 +2019,15 @@ def post_person():
     data = request.get_json()
     if not data.get('name'):
         return jsonify({'error': 'name is required'}), 400
+    # A name that already exists is a LOG, not a new contact. The client
+    # resolves this itself; 409 is the backstop for the paths that can't (a
+    # stale people list, the phone). It hands back the person so the caller can
+    # go log to them instead of guessing. `allow_duplicate` is the deliberate
+    # escape for two genuinely different people with one name.
+    if not data.get('allow_duplicate'):
+        existing = storage.find_person_by_name(data['name'])
+        if existing:
+            return jsonify({'error': 'exists', 'person': existing}), 409
     return jsonify(storage.create_person(data)), 201
 
 

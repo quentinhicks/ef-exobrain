@@ -4524,6 +4524,24 @@ def get_person(id):
     return result
 
 
+# The ONE definition of "same person by name" (2026-08-16). Every path that can
+# mint a person from a typed name resolves through this: the add/log form, the
+# API, the phone capture merge. Matching is trimmed + case-insensitive, and an
+# ARCHIVED match still counts — otherwise archiving someone quietly turns the
+# next mention of them into a second row, which is the duplicate this prevents.
+# Archived rows sort last so a live person wins when both exist.
+def find_person_by_name(name):
+    if not (name or '').strip():
+        return None
+    conn = get_conn()
+    row = conn.execute(
+        '''SELECT * FROM person WHERE lower(trim(name)) = lower(trim(?))
+           ORDER BY archived, id LIMIT 1''', (name,)).fetchone()
+    result = _assemble_person(conn, row) if row else None
+    conn.close()
+    return result
+
+
 def create_person(data):
     cols = [c for c in PERSON_FIELDS if c in data]
     conn = get_conn()
@@ -4873,7 +4891,11 @@ def apply_people_capture(ops):
             add_interaction(op['person_id'], {
                 'date': op.get('date'), 'note': op.get('note', ''), 'source': 'phone'})
         elif kind == 'new_person' and op.get('name'):
-            create_person(op)
+            # The phone types a name with no id to pick from, so it cannot know
+            # the person already exists — and a capture blob can be merged more
+            # than once. Resolving by name makes this idempotent either way.
+            if not find_person_by_name(op['name']):
+                create_person(op)
         if op.get('date'):
             record_crm_night(op['date'], 'nothing' if kind == 'nothing' else 'entries')
 
