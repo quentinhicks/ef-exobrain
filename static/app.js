@@ -8424,25 +8424,41 @@ function wireScheduleList(el, all, kind) {
 // removing the second variation returns the draft to a single rule.
 
 const DURATIONS = [
-  ['PT15M', '15 min'], ['PT30M', '30 min'], ['PT45M', '45 min'],
+  ['PT5M', '5 min'], ['PT10M', '10 min'], ['PT15M', '15 min'], ['PT20M', '20 min'],
+  ['PT30M', '30 min'], ['PT45M', '45 min'],
   ['PT1H', '1 hr'], ['PT1H30M', '1 hr 30'], ['PT2H', '2 hr'], ['PT2H30M', '2 hr 30'],
-  ['PT3H', '3 hr'], ['PT3H30M', '3 hr 30'], ['PT4H', '4 hr'], ['PT6H', '6 hr'],
-  ['PT8H', '8 hr'], ['P1D', 'all day'], ['', 'no duration'],
+  ['PT3H', '3 hr'], ['PT3H30M', '3 hr 30'], ['PT4H', '4 hr'], ['PT5H', '5 hr'],
+  ['PT6H', '6 hr'], ['PT8H', '8 hr'], ['PT10H', '10 hr'], ['PT12H', '12 hr'],
+  ['P1D', 'all day'], ['', 'no duration'],
 ];
 const FREQS = [['daily', 'day'], ['weekly', 'week'], ['monthly', 'month'], ['yearly', 'year']];
 const MONTH_MODES = [['date', 'a day of the month'], ['nth', 'an nth weekday']];
 const NTHS = [[1, '1st'], [2, '2nd'], [3, '3rd'], [4, '4th'], [-1, 'last']];
 // relativeTo + offset as ONE control, the way the design states it.
+// Both lists were too short to describe things the app already stores — a
+// gate's 10-hour window could be READ but never PICKED, so opening the picker
+// on one and pressing Done silently shortened it (see spOptionsWith).
 const OPENS = [
-  ['-PT2H|start', '2 hr before it starts'], ['-PT1H|start', '1 hr before it starts'],
-  ['-PT30M|start', '30 min before it starts'], ['PT0S|start', 'when it starts'],
-  ['PT0S|end', 'when it ends'], ['PT30M|end', '30 min after it ends'],
-  ['PT1H|end', '1 hr after it ends'],
+  ['-PT8H|start', '8 hr before it starts'], ['-PT6H|start', '6 hr before it starts'],
+  ['-PT4H|start', '4 hr before it starts'], ['-PT3H|start', '3 hr before it starts'],
+  ['-PT2H|start', '2 hr before it starts'], ['-PT1H30M|start', '1 hr 30 before it starts'],
+  ['-PT1H|start', '1 hr before it starts'], ['-PT45M|start', '45 min before it starts'],
+  ['-PT30M|start', '30 min before it starts'], ['-PT15M|start', '15 min before it starts'],
+  ['PT0S|start', 'when it starts'],
+  ['PT0S|end', 'when it ends'], ['PT15M|end', '15 min after it ends'],
+  ['PT30M|end', '30 min after it ends'], ['PT45M|end', '45 min after it ends'],
+  ['PT1H|end', '1 hr after it ends'], ['PT1H30M|end', '1 hr 30 after it ends'],
+  ['PT2H|end', '2 hr after it ends'], ['PT3H|end', '3 hr after it ends'],
+  ['PT4H|end', '4 hr after it ends'], ['PT6H|end', '6 hr after it ends'],
 ];
 const EXTENTS = [
   ['until-source-start', 'until it starts'], ['until-source-end', 'until it ends'],
-  ['same-as-source', 'as long as it runs'], ['PT15M', 'for 15 min'],
-  ['PT30M', 'for 30 min'], ['PT1H', 'for 1 hr'], ['PT2H', 'for 2 hr'],
+  ['same-as-source', 'as long as it runs'],
+  ['PT15M', 'for 15 min'], ['PT30M', 'for 30 min'], ['PT45M', 'for 45 min'],
+  ['PT1H', 'for 1 hr'], ['PT1H30M', 'for 1 hr 30'], ['PT2H', 'for 2 hr'],
+  ['PT3H', 'for 3 hr'], ['PT4H', 'for 4 hr'], ['PT5H', 'for 5 hr'],
+  ['PT6H', 'for 6 hr'], ['PT8H', 'for 8 hr'], ['PT10H', 'for 10 hr'],
+  ['PT12H', 'for 12 hr'], ['PT16H', 'for 16 hr'], ['P1D', 'for 24 hr'],
 ];
 const ONLY_ON = [
   ['', 'every day it runs'], ['mo,tu,we,th,fr', 'weekdays only'], ['sa,su', 'weekends only'],
@@ -8471,6 +8487,31 @@ function durationOptions(current) {
     opts.unshift([current, `for ${isoHuman(current)}`]);
   }
   return opts;
+}
+
+// The same protection every OTHER spSelect needs and did not have. A <select>
+// whose value is not among its options selects NOTHING, so the browser shows
+// the first one — and Done then writes that back. Opening the picker on a
+// source built elsewhere (a gate's window, a hand-written rule) and pressing
+// Done silently rewrote it. Widening the lists shrinks the odds; this removes
+// them. The stored value always appears, named as itself.
+function spOptionsWith(options, value, label) {
+  if (value == null || value === '') return options;
+  if (options.some(([v]) => String(v) === String(value))) return options;
+  return [[value, label(value)], ...options];
+}
+
+// `offset|relativeTo`, e.g. '-PT90M|start' -> '1 hr 30 before it starts'.
+function opensLabel(value) {
+  const [offset, rel] = String(value).split('|');
+  const anchor = rel === 'end' ? 'it ends' : 'it starts';
+  if (!offset || offset === 'PT0S') return `when ${anchor}`;
+  const neg = offset.startsWith('-');
+  return `${isoHuman(offset.replace(/^-/, ''))} ${neg ? 'before' : 'after'} ${anchor}`;
+}
+
+function extentLabel(value) {
+  return /^P/.test(String(value)) ? `for ${isoHuman(value)}` : String(value);
 }
 
 const SP_DAYS = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'];
@@ -8681,10 +8722,12 @@ function renderPicker() {
   if (kind === 'derived') {
     const f = d.follows;
     const target = (state.allSources || []).find(s => s.uid === f.source);
+    const opensVal = `${f.offset || 'PT0S'}|${f.relativeTo || 'start'}`;
+    const extentVal = f.extent || 'until-source-start';
     body += `<div class="sp-row"><span class="sp-label">Opens</span>${
-      spSelect('opens', OPENS, `${f.offset || 'PT0S'}|${f.relativeTo || 'start'}`)}</div>`;
+      spSelect('opens', spOptionsWith(OPENS, opensVal, opensLabel), opensVal)}</div>`;
     body += `<div class="sp-row"><span class="sp-label">Stays open</span>${
-      spSelect('extent', EXTENTS, f.extent || 'until-source-start')}</div>`;
+      spSelect('extent', spOptionsWith(EXTENTS, extentVal, extentLabel), extentVal)}</div>`;
     body += `<div class="sp-row"><span class="sp-label">Only on</span>${
       spSelect('only', ONLY_ON, ((f.only || {}).byDay || []).join(','))}</div>`;
     body += '<div class="sp-rule"></div>';
