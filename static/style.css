@@ -4674,6 +4674,13 @@ button.eg-domain { cursor: pointer; }
   padding: 1px 5px;
   flex: none;
 }
+/* What the routine adds up to. A statement under the list, not a badge on it —
+   it belongs to the whole routine rather than any one step. */
+.fr-total {
+  font: 10px var(--font-mono);
+  color: var(--text-secondary);
+  padding: 6px 2px 0;
+}
 .fr-open { color: var(--text-secondary); padding: 2px 6px; font-size: 14px; }
 .fr-open:hover { color: var(--accent); }
 .fr-sheet-del { color: var(--danger); }

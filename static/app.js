@@ -4174,6 +4174,16 @@ function renderFlowEditor(body, title, f) {
         <button class="fr-open" data-step="${s.id}" title="Settings for this step">›</button>
       </div>`).join('')
       || '<div class="gtd-empty">No steps yet.</div>'}
+    ${(() => {
+      // What the routine adds up to, over the steps that RUN TODAY — a total
+      // across every step would be wrong for anything with per-weekday steps.
+      // NOT `.filter(stepDueToday)`: filter passes the INDEX as the second
+      // argument, which stepDueToday reads as a Date and blows up on.
+      const t = stepsMinutes(f.steps.filter(s => stepDueToday(s)));
+      if (!t.total) return '';
+      return `<div class="fr-total">${humanMinutes(t.total)} today${
+        t.unknown ? ` · ${t.unknown} step${t.unknown === 1 ? '' : 's'} unestimated` : ''}</div>`;
+    })()}
     <button id="fr-add-step" class="map-add-btn">+ step</button></div>
     <button class="fr-play fr-play-big" data-flow="${f.id}">▶ Run</button>`;
 
@@ -4273,6 +4283,27 @@ function renderFlowEditor(body, title, f) {
 // a delete, all on a 430px row: four grammars saying what one sheet says once.
 // What stays on the row is what only a LIST can do — its order (↑↓), the way
 // only a tree could do MAP's nesting.
+// Chips for the common answers, a box for everything else — the same shape the
+// dangerous-writing goal uses. Tapping the lit chip CLEARS it, the idiom the
+// day-context answers already established.
+const STEP_MINUTES = [2, 5, 10, 15, 20, 30, 45, 60];
+
+function humanMinutes(m) {
+  if (!m) return '';
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h} hr ${r}` : `${h} hr`;
+}
+
+// What the DUE steps of a routine add up to, and what is left in a run. Steps
+// with no duration contribute nothing and are counted separately, so the runner
+// can say "25 min + 2 unestimated" rather than quietly under-reporting.
+function stepsMinutes(steps) {
+  let total = 0, unknown = 0;
+  (steps || []).forEach(s => { if (s.duration_min) total += s.duration_min; else unknown += 1; });
+  return { total, unknown };
+}
+
 const stepSheet = { id: null };
 
 // Badges say what the settings decided, in the order you scan for them. Only
@@ -4285,6 +4316,10 @@ function stepBadges(s) {
       .map(d => DAY_LETTERS[Number(d)]).join('');
     out.push(`<span class="fr-badge" title="Runs ${String(s.days_of_week).split('').sort()
       .map(d => DAY_NAMES[Number(d)]).join(', ')}">${days}</span>`);
+  }
+  if (s.duration_min) {
+    out.push(`<span class="fr-badge" title="About how long this step takes">${
+      humanMinutes(s.duration_min)}</span>`);
   }
   if (s.requirement === 'soft') out.push('<span class="fr-badge">soft</span>');
   if (s.kind === 'checklist') out.push('<span class="fr-badge">☰</span>');
@@ -4410,6 +4445,17 @@ function renderStepSheet() {
         ? 'only the lit days' : 'every day'}</span>
     </div>
 
+    <div class="cl-sec"><span class="cl-label">Takes</span></div>
+    <div class="cl-chips">
+      ${STEP_MINUTES.map(m => `<button class="cl-chip${s.duration_min === m ? ' cl-chip-on' : ''}"
+        data-dur="${m}" title="${s.duration_min === m ? 'Tap again to clear' : ''}">${m} min</button>`).join('')}
+      <input type="number" min="0" class="fr-pawn-min" id="fr-sheet-dur" placeholder="min"
+        value="${s.duration_min && !STEP_MINUTES.includes(s.duration_min) ? s.duration_min : ''}">
+      <span class="cl-hint">${s.duration_min
+        ? `about ${humanMinutes(s.duration_min)} — the runner counts down what is left`
+        : 'optional — how long this takes'}</span>
+    </div>
+
     <div class="cl-sec"><span class="cl-label">Can be pawned to</span></div>
     <div class="cl-chips">
       <select class="fr-pawn-sel" id="fr-pawn-to">
@@ -4430,6 +4476,18 @@ function renderStepSheet() {
     </div>`;
 
   sheet.querySelector('#fr-sheet-close').addEventListener('click', closeStepSheet);
+  sheet.querySelectorAll('[data-dur]').forEach(b => b.addEventListener('click', () => {
+    const m = parseInt(b.dataset.dur);
+    // Tapping the one already chosen clears it — an estimate you no longer
+    // stand behind should be removable without a second control.
+    stepSheetPatch({ duration_min: s.duration_min === m ? null : m },
+      `set how long "${s.content || stepKindLabel(s)}" takes`);
+  }));
+  const durIn = sheet.querySelector('#fr-sheet-dur');
+  if (durIn) durIn.addEventListener('change', () => {
+    stepSheetPatch({ duration_min: parseInt(durIn.value) || null },
+      `set how long "${s.content || stepKindLabel(s)}" takes`);
+  });
   sheet.querySelector('#fr-pawn-to').addEventListener('change', e => {
     stepSheetPatch({ pawn_to_flow_id: e.target.value ? parseInt(e.target.value) : null },
       `changed where "${s.content || stepKindLabel(s)}" can be pawned`);
@@ -4870,6 +4928,12 @@ function renderFlowRun() {
   const day = flowRunView.day || {};
   const due = flowDueMin(f);
   const credited = flowRunView.steps[s.id];
+  // What is LEFT: the uncredited steps only. f.steps is already narrowed to
+  // what is due today, so this is the run's remaining work, not the routine's
+  // whole length. Steps with no estimate are counted apart (+2?) rather than
+  // folded in as zero — under-reporting the time left is the one thing a
+  // number like this must not do.
+  const left = stepsMinutes(f.steps.filter(x => !flowRunView.steps[x.id]));
 
   let page = '';
   if (s.kind === 'text') {
@@ -5031,7 +5095,8 @@ function renderFlowRun() {
   el.innerHTML = `
     <div class="fr-head">
       <span class="fr-title">${escHtml(f.name)}</span>
-      <span class="fr-meta">${flowRunView.idx + 1}/${f.steps.length}${
+      <span class="fr-meta">${flowRunView.idx + 1}/${f.steps.length}${left.total
+        ? ` · ${humanMinutes(left.total)} left${left.unknown ? ` +${left.unknown}?` : ''}` : ''}${
         due != null ? ` · due ${minutesToHHMM(Math.round(due) % 1440)}` : ''}</span>
       <button class="modal-close-btn" id="fr-close">✕</button>
     </div>
