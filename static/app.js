@@ -9661,9 +9661,8 @@ function renderEngage() {
       ${returning.map(i => `
         <div class="eg-row eg-pool-item eg-defer-row" data-id="${i.id}">
           <span class="eg-text">${escHtml(i.content)}</span>
-          ${itemTags(i).map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
-          ${dueChip(i, 'eg-tag')}
-          <span class="eg-tag">${escHtml(i.project_name || i.area_name || '')}</span>
+          <span class="eg-tags">${itemTags(i).map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}${
+            dueChip(i, 'eg-tag')}<span class="eg-tag">${escHtml(i.project_name || i.area_name || '')}</span></span>
         </div>`).join('')}
     </div>` : '';
 
@@ -9907,11 +9906,10 @@ function renderEngage() {
           <span class="eg-check${i.started_at ? ' eg-check-started' : ''}" data-id="${i.id}"
             title="Done">${i.started_at ? '◐' : ''}</span>
           <span class="eg-text">${escHtml(i.content)}</span>
-          ${itemTags(i).filter(t => EST_TAGS.includes(t))
-            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
-          ${dueChip(i, 'eg-tag')}
-          ${itemTags(i).filter(t => !EST_TAGS.includes(t))
-            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
+          <span class="eg-tags">${itemTags(i).filter(t => EST_TAGS.includes(t))
+            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}${dueChip(i, 'eg-tag')}${
+            itemTags(i).filter(t => !EST_TAGS.includes(t))
+            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}</span>
         </div>`).join('') || '<div class="eg-empty">Nothing available — done, parked, or handed off.</div>'}
     </div>
     ${popHtml}

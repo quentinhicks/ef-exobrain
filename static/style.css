@@ -4215,6 +4215,43 @@ body.crm-over-runner #bucket-mgr-overlay { z-index: 175; }
   white-space: nowrap;
 }
 
+/* The tags are a COLUMN, not a tail (2026-08-16). They used to be direct
+   children of the row, so the row was one flex line: the text wrapped and the
+   tags could only squeeze, and a well-tagged action on a 430px phone pushed
+   them into a crush of 10px chips. Wrapping them in their own flex box makes
+   the row two columns that each wrap, and the height negotiation is what
+   flexbox already does — no library, and none would be allowed (vanilla JS,
+   no new dependencies). `flex-basis` is the whole balance: the text asks for
+   55% and the tags take what they need, both give way when the other needs it
+   more, and the row is as tall as the taller column rather than as tall as
+   the worst single line. */
+.eg-pool-item {
+  align-items: flex-start;
+  row-gap: 3px;
+}
+
+/* A checkbox centred against a three-line row floats in the middle of nowhere;
+   against the FIRST line it reads as belonging to the item. */
+.eg-pool-item .eg-check { margin-top: 2px; }
+
+/* The balance is a FLOOR on the text, not a ceiling on the tags. Capping the
+   tags column forces it to stack even when the row had width to spare — three
+   chips became three lines and the row got TALLER than the crush it replaced.
+   Giving the text a minimum instead lets the tags take their natural width
+   and wrap only when they genuinely run out, which is the shorter row in
+   every case measured. */
+.eg-pool-item .eg-text { flex: 1 1 auto; min-width: 45%; }
+
+.eg-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .eg-empty { font-size: 12px; color: var(--text-secondary); padding: 8px 14px; }
 /* Items hidden by a location-bound tag — counted, never silent. */
 .eg-geo-hidden,
