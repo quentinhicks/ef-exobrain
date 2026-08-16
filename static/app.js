@@ -444,7 +444,7 @@ function computeViewWindow() {
   if (!wake || !sleep) return { start: 0, end: 1440 };
   const pageDate = formatDateYMD(state.currentDate);
   const viewingToday = isToday(state.currentDate);
-  const pageDow = (state.currentDate.getDay() + 6) % 7;
+  const pageDow = jsDateToDayOfWeek(state.currentDate);
   const deadlineMin = (node) => {
     const ov = viewingToday ? node.today_override : (state.qrPageOverrides[`${node.id}:${pageDate}`] || null);
     const def = nodeWindowForDow(node, pageDow);
@@ -491,9 +491,7 @@ function renderDateLabel() {
 }
 
 function updateNavButtons() {
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const cur = new Date(state.currentDate); cur.setHours(0, 0, 0, 0);
-  const diff = Math.round((cur - today) / 86400000);
+  const diff = dayOffset(state.currentDate);
   const prev = document.getElementById('nav-prev');
   const next = document.getElementById('nav-next');
   const bounds = navBounds();
@@ -903,17 +901,13 @@ function renderReviewPassBar() {
 
 function initTimeline() {
   document.getElementById('nav-prev').addEventListener('click', async () => {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const cur = new Date(state.currentDate); cur.setHours(0, 0, 0, 0);
-    if (Math.round((cur - today) / 86400000) <= navBounds().min) return;
+    if (dayOffset(state.currentDate) <= navBounds().min) return;
     state.currentDate = new Date(state.currentDate.getTime() - 86400000);
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   });
   document.getElementById('nav-next').addEventListener('click', async () => {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const cur = new Date(state.currentDate); cur.setHours(0, 0, 0, 0);
-    if (Math.round((cur - today) / 86400000) >= navBounds().max) return;
+    if (dayOffset(state.currentDate) >= navBounds().max) return;
     state.currentDate = new Date(state.currentDate.getTime() + 86400000);
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
@@ -2626,7 +2620,7 @@ const SETTINGS_SHEETS = {
     },
     remove: async n => {
       const res = await fetch(`/api/accountability/nodes/${n.id}`, { method: 'DELETE' });
-      if (!res.ok) { alert(`Delete failed (${res.status}): ${await res.text()}`); return; }
+      if (!res.ok) { toast(`Delete failed (${res.status}): ${await res.text()}`); return; }
       const out = await res.json().catch(() => ({}));
       // A live gate's deletion is QUEUED, so say when it lands — the gate is
       // still on the list until then, and silence would read as a failure.
@@ -6515,7 +6509,7 @@ function renderQrLayer() {
   const body = document.getElementById('tl-body');
   const pageDate = formatDateYMD(state.currentDate);
   const viewingToday = isToday(state.currentDate);
-  const pageDow = String((state.currentDate.getDay() + 6) % 7);
+  const pageDow = String(jsDateToDayOfWeek(state.currentDate));
 
   nodes.forEach(node => {
     if (!gateAppliesOnDow(node, pageDow)) return;
@@ -6730,8 +6724,7 @@ function nodeSourceWindowForDow(node, dow) {
   if (!days) return null;
   for (const date of Object.keys(days).sort()) {
     // Mon=0..Sun=6, matching qr_judge._dow_of and weekly_windows' keys.
-    const jsDow = new Date(date + 'T12:00:00').getDay();
-    if ((jsDow + 6) % 7 === Number(dow)) return days[date];
+    if (jsDateToDayOfWeek(new Date(date + 'T12:00:00')) === Number(dow)) return days[date];
   }
   return null;
 }
@@ -7175,7 +7168,7 @@ function gateRowOpts(n) {
 
 async function removeOverride(nodeId, date) {
   const res = await fetch(`/api/accountability/nodes/${nodeId}/overrides/${date}`, { method: 'DELETE' });
-  if (!res.ok) alert(`Remove override failed (${res.status}): ${await res.text()}`);
+  if (!res.ok) toast(`Remove override failed (${res.status}): ${await res.text()}`);
   await renderQrManager();
 }
 
@@ -7278,7 +7271,7 @@ function renderJournalCards(days) {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [field]: value }),
     });
-    if (!res.ok) alert(`Save failed (${res.status})`);
+    if (!res.ok) toast(`Save failed (${res.status})`);
   };
   grid.querySelectorAll('.jn-ta').forEach(ta =>
     ta.addEventListener('blur', () => save(ta.closest('.jn-card'), ta.dataset.field, ta.value)));
@@ -7537,7 +7530,7 @@ function renderDueStrip() {
       if (!peopleView.editable) return;
       btn.disabled = true;
       const res = await fetch(`/api/people/${btn.dataset.id}/skip-cycle`, { method: 'POST' });
-      if (!res.ok) { alert(`Skip failed (${res.status})`); btn.disabled = false; return; }
+      if (!res.ok) { toast(`Skip failed (${res.status})`); btn.disabled = false; return; }
       await loadPeopleData();
     });
   });
@@ -7608,7 +7601,7 @@ function renderPersonDetail(p) {
     const res = await fetch(`/api/people/${p.id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     });
-    if (!res.ok) { alert(`Save failed (${res.status})`); return null; }
+    if (!res.ok) { toast(`Save failed (${res.status})`); return null; }
     const person = await res.json();
     syncPersonRow(person);
     return person;
@@ -7658,7 +7651,7 @@ function renderPersonDetail(p) {
       const res = await fetch(`/api/people/${p.id}/interactions`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date, note, source }),
       });
-      if (!res.ok) { alert(`Log failed (${res.status})`); return; }
+      if (!res.ok) { toast(`Log failed (${res.status})`); return; }
       await peopleSatisfy('entries');
       await loadPeopleData();
       const fresh = peopleView.people.find(x => x.id === p.id);
@@ -7673,7 +7666,7 @@ function renderPersonDetail(p) {
     const btn = document.getElementById('pd-delete');
     btn.disabled = true;
     const res = await fetch(`/api/people/${p.id}`, { method: 'DELETE' });
-    if (!res.ok) { alert(`Delete failed (${res.status})`); btn.disabled = false; return; }
+    if (!res.ok) { toast(`Delete failed (${res.status})`); btn.disabled = false; return; }
     document.getElementById('person-detail-overlay').classList.add('hidden');
     await loadPeopleData();
   });
@@ -9954,10 +9947,8 @@ function renderEngage() {
   // the pill that appears only when you're elsewhere.
   header.querySelector('#eg-day-btn').addEventListener('click', async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const target = egViewDate();
-    const diff = Math.round((new Date(target).setHours(0, 0, 0, 0) - today) / 86400000);
     const b = navBounds();
-    const clamped = Math.max(b.min, Math.min(b.max, diff));
+    const clamped = Math.max(b.min, Math.min(b.max, dayOffset(egViewDate())));
     state.currentDate = new Date(today.getTime() + clamped * 86400000);
     await fetchOverridesForDate(state.currentDate);
     openM('cal-overlay');
@@ -11833,7 +11824,7 @@ function renderBucketMgr() {
       const res = await fetch('/api/buckets', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
       });
-      if (!res.ok) { alert(`Add bucket failed (${res.status})`); return; }
+      if (!res.ok) { toast(`Add bucket failed (${res.status})`); return; }
       await reloadBuckets();
       renderBucketMgr();
     } finally {
@@ -11848,7 +11839,7 @@ async function patchBucket(id, body) {
   const res = await fetch(`/api/buckets/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
-  if (!res.ok) { alert(`Bucket update failed (${res.status})`); return; }
+  if (!res.ok) { toast(`Bucket update failed (${res.status})`); return; }
   await reloadBuckets();
   renderBucketMgr();
   renderPeopleList();

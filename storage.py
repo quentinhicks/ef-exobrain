@@ -4355,10 +4355,48 @@ def get_inbox_items_like(pattern, deadline):
     # The social-spec item's dedupe lookup: active auto-minted rows for a date.
     conn = get_conn()
     rows = conn.execute(
-        "SELECT id FROM inbox_item WHERE content LIKE ? AND deadline = ? AND status = 'active'",
+        "SELECT id, content FROM inbox_item WHERE content LIKE ? AND deadline = ?"
+        " AND status = 'active' ORDER BY id",
         (pattern, deadline)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# Each spec'd interaction is also a NEXT ACTION: it mints a pool item
+# ("Social plan: …", tag 5m — the message is already drafted — due today), so
+# the plan shows up where the day is worked and not only in the Social tab. One
+# item PER SPEC; the set is reconciled against the day's specs on every spec
+# write, so add and remove cannot drift from what is planned.
+#
+# RECONCILED, not rebuilt (2026-08-16). It used to delete every row and
+# re-create it, which made this the only writer in the app that churns record
+# ids — and an id is a promise here: undoableDelete replays the ORIGINAL id
+# through /api/inbox/restore precisely because children and placements point at
+# it. Rewording in place keeps the promise; only a genuine surplus is deleted.
+# It lives here rather than in app.py for the same reason all the other SQL
+# does: it is an inventory write, not a route.
+SOCIAL_ITEM_PREFIX = 'Social plan: '
+
+
+def sync_social_spec_items(date):
+    existing = get_inbox_items_like(SOCIAL_ITEM_PREFIX + '%', date)
+    # The pool JOINs area, so an area-less row would never show: default area.
+    default = next((a for a in get_areas() if a.get('is_default') and a.get('active')), None)
+    labels = []
+    for spec in get_social_day(date)['specs']:
+        who = spec.get('person') or ''
+        opener = (spec.get('opener') or '').strip()
+        labels.append((SOCIAL_ITEM_PREFIX
+                       + (', '.join(x for x in [who, opener] if x) or 'run the spec'))[:120])
+    for row, label in zip(existing, labels):
+        if row['content'] != label:
+            update_inbox_item(row['id'], content=label)
+    for label in labels[len(existing):]:
+        item = create_inbox_item(label, 'active',
+                                 default['id'] if default else None, None, '5m')
+        update_inbox_item(item['id'], deadline=date)
+    for row in existing[len(labels):]:
+        delete_inbox_item(row['id'])
 
 
 def get_tag_locations():
