@@ -23,10 +23,7 @@ function initThemeToggle() {
     const theme = document.documentElement.classList.contains('theme-light') ? 'dark' : 'light';
     applyTheme(theme);
     localStorage.setItem('theme', theme);
-    state.settings = await fetch('/api/settings', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ theme }),
-    }).then(r => r.json());
+    state.settings = await apiSend('/api/settings', 'PATCH', { theme }).then(r => r.json());
   });
 }
 
@@ -71,7 +68,7 @@ async function togglePanel() {
   if (window.pywebview && window.pywebview.api && window.pywebview.api.toggle_panel) {
     hidden = await window.pywebview.api.toggle_panel();
   } else {
-    const res = await fetch('/api/panel/toggle', { method: 'POST' }).then(r => r.json());
+    const res = await apiSend('/api/panel/toggle', 'POST').then(r => r.json());
     hidden = res.hidden;
   }
   state.settings.panel_hidden = hidden ? '1' : '0';
@@ -92,17 +89,13 @@ function currentTimezone() {
 async function initTimezone() {
   const sel = document.getElementById('tz-select');
   if (!sel) return;
-  const zones = await fetch('/api/timezones').then(r => r.json()).catch(() => []);
+  const zones = await apiGet('/api/timezones', []);
   const current = currentTimezone();
   sel.innerHTML = zones.map(z =>
     `<option value="${escHtml(z)}"${z === current ? ' selected' : ''}>${escHtml(z)}</option>`).join('');
   sel.addEventListener('change', async () => {
     sel.disabled = true;
-    state.settings = await fetch('/api/settings', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ timezone: sel.value }),
-    }).then(r => r.json());
+    state.settings = await apiSend('/api/settings', 'PATCH', { timezone: sel.value }).then(r => r.json());
     toast(`Timezone → ${sel.value}. Re-reading the calendar…`);
     // The server re-expands calendars in the background; give it a beat, then
     // repaint everything that renders times.
@@ -184,25 +177,25 @@ const state = {
 async function loadAll() {
   const dateStr = formatDateYMD(state.currentDate);
   const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily] = await Promise.all([
-    fetch('/api/blocks').then(r => r.json()).catch(() => state.blocks),
-    fetch('/api/areas').then(r => r.json()).catch(() => state.areas),
-    fetch('/api/domains').then(r => r.json()).catch(() => state.domains),
-    fetch('/api/gcal').then(r => r.json()).catch(() => state.gcalEvents),
-    fetch(`/api/overrides?date=${dateStr}`).then(r => r.json()).catch(() => state.overrides),
-    fetch('/api/inbox').then(r => r.json()).catch(() => state.inbox),
-    fetch('/api/sheets/inbox').then(r => r.json()).catch(() => state.sheetsInbox),
-    fetch('/api/gtd-review').then(r => r.json()).catch(() => ({})),
-    fetch('/api/experiments').then(r => r.json()).catch(() => state.experiments),
-    fetch('/api/accountability/nodes').then(r => r.json()).catch(() => []),
-    fetch('/api/calendars').then(r => r.json()).catch(() => []),
-    fetch('/api/settings').then(r => r.json()).catch(() => ({})),
-    fetch(`/api/accountability/outcomes?from=${localDatePlusDays(dateStr, -4)}&to=${dateStr}`).then(r => r.json()).catch(() => []),
-    fetch('/api/dismissals').then(r => r.json()).catch(() => []),
-    fetch('/api/locations').then(r => r.json()).catch(() => state.locations),
-    fetch('/api/tag-locations').then(r => r.json()).catch(() => state.tagLocations),
-    fetch('/api/tag-devices').then(r => r.json()).catch(() => state.tagDevices),
-    fetch('/api/tag-times').then(r => r.json()).catch(() => state.tagTimes),
-    fetch('/api/tag-daily').then(r => r.json()).catch(() => state.tagDaily),
+    apiGet('/api/blocks', state.blocks),
+    apiGet('/api/areas', state.areas),
+    apiGet('/api/domains', state.domains),
+    apiGet('/api/gcal', state.gcalEvents),
+    apiGet(`/api/overrides?date=${dateStr}`, state.overrides),
+    apiGet('/api/inbox', state.inbox),
+    apiGet('/api/sheets/inbox', state.sheetsInbox),
+    apiGet('/api/gtd-review', ({})),
+    apiGet('/api/experiments', state.experiments),
+    apiGet('/api/accountability/nodes', []),
+    apiGet('/api/calendars', []),
+    apiGet('/api/settings', ({})),
+    apiGet(`/api/accountability/outcomes?from=${localDatePlusDays(dateStr, -4)}&to=${dateStr}`, []),
+    apiGet('/api/dismissals', []),
+    apiGet('/api/locations', state.locations),
+    apiGet('/api/tag-locations', state.tagLocations),
+    apiGet('/api/tag-devices', state.tagDevices),
+    apiGet('/api/tag-times', state.tagTimes),
+    apiGet('/api/tag-daily', state.tagDaily),
   ]);
 
   state.locations = Array.isArray(locations) ? locations : [];
@@ -247,9 +240,9 @@ async function loadAll() {
   const activeAreaId = activeBlock ? activeBlock.area_id : (defaultArea ? defaultArea.id : null);
   state.activeAreaId = activeAreaId;
   state.activeDomainId = domainIdForArea(activeAreaId);
-  state.projects = await fetch('/api/projects').then(r => r.json()).catch(() => state.projects);
+  state.projects = await apiGet('/api/projects', state.projects);
   if (state.activeDomainId) {
-    state.activeDomainItems = await fetch(`/api/inbox/active?domain_id=${state.activeDomainId}`).then(r => r.json()).catch(() => state.activeDomainItems);
+    state.activeDomainItems = await apiGet(`/api/inbox/active?domain_id=${state.activeDomainId}`, state.activeDomainItems);
   } else {
     state.activeDomainItems = [];
   }
@@ -416,20 +409,12 @@ function onPointerDrag(el, spec) {
 function hideTimelineItem(type, key, label) {
   if (state.tlHidden[type][key]) return;
   state.tlHidden[type][key] = true;
-  fetch('/api/dismissals', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type, key }),
-  }).catch(() => {});
+  apiSend('/api/dismissals', 'POST', { type, key }).catch(() => {});
   renderTimeline();
   renderEngage();   // Engage shares the event dismissal set (⌘-click there)
   pushUndo(`hid "${label || 'item'}"`, async () => {
     delete state.tlHidden[type][key];
-    await fetch('/api/dismissals', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, key }),
-    }).catch(() => {});
+    await apiSend('/api/dismissals', 'DELETE', { type, key }).catch(() => {});
     renderTimeline();
     renderEngage();
   });
@@ -658,15 +643,11 @@ function initBlockBarDrag(layer, dateStr) {
       async function onUp() {
         document.body.style.cursor = '';
         if (!moved || (curS === origStart && curE === origEnd)) { renderTimeline(); return; }
-        const res = await fetch('/api/overrides', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const res = await apiSend('/api/overrides', 'POST', {
             block_id: blockId, date: dateStr, cancelled: false,
             start_time: minutesToHHMM(curS % 1440),
             end_time: minutesToHHMM(curE % 1440),
-          }),
-        });
+          });
         if (res.ok) {
           const data = await res.json();
           const idx = state.overrides.findIndex(o => o.block_id === blockId && o.date === dateStr);
@@ -772,8 +753,8 @@ async function refreshExternal() {
   fetchFailed = false;
   const todayStr = formatDateYMD(new Date());
   const [gcalResult, sheetsResult, outcomesResult] = await Promise.allSettled([
-    fetch('/api/gcal/refresh', { method: 'POST' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-    fetch('/api/sheets/refresh', { method: 'POST' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+    apiSend('/api/gcal/refresh', 'POST').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+    apiSend('/api/sheets/refresh', 'POST').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     fetch(`/api/accountability/outcomes?from=${localDatePlusDays(todayStr, -4)}&to=${todayStr}`).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
   ]);
   if (gcalResult.status === 'fulfilled') state.gcalEvents = gcalResult.value;
@@ -886,10 +867,7 @@ function renderReviewPassBar() {
     // tick is a button rather than automatic.
     const step = reviewPass.step;
     if (gtdReview) {
-      gtdReview = await fetch('/api/gtd-review/step', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ week: gtdReview.week_start_date, step, done: true }),
-      }).then(r => r.json());
+      gtdReview = await apiSend('/api/gtd-review/step', 'POST', { week: gtdReview.week_start_date, step, done: true }).then(r => r.json());
     }
     endReviewPass();
     // Back to where the pass was started from. openM shows one overlay at a
@@ -950,7 +928,7 @@ async function toggleBlockOverride(blockId) {
     state.overrides.splice(idx, 1);
     renderTimeline();
     try {
-      const res = await fetch(`/api/overrides/${saved.id}`, { method: 'DELETE' });
+      const res = await apiSend(`/api/overrides/${saved.id}`, 'DELETE');
       if (!res.ok) throw new Error();
     } catch (err) {
       state.overrides.push(saved);
@@ -968,11 +946,7 @@ async function toggleBlockOverride(blockId) {
   else state.overrides.push(optimistic);
   renderTimeline();
   try {
-    const res = await fetch('/api/overrides', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ block_id: blockId, date: dateStr, cancelled: !!cancelled }),
-    });
+    const res = await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: !!cancelled });
     if (!res.ok) throw new Error();
     const data = await res.json();
     const idx = state.overrides.indexOf(optimistic);
@@ -994,7 +968,7 @@ async function toggleBlockOverride(blockId) {
 // refresh. The name is historical (the panel used to edit the to-do plan).
 // Refetches the inbox too: the footer's "Clarify N" count is stale otherwise.
 async function refreshTodoNow() {
-  state.inbox = await fetch('/api/inbox').then(r => r.json()).catch(() => state.inbox);
+  state.inbox = await apiGet('/api/inbox', state.inbox);
   await refreshEngage();
   return;
 }
@@ -1113,16 +1087,12 @@ function paintUndo() {
 // capture is the one write with no decisions attached, so it stays a single
 // function — which is also the only place that has to own the inverse.
 async function captureToInbox(content) {
-  const res = await fetch('/api/inbox', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  }).catch(() => null);
+  const res = await apiSend('/api/inbox', 'POST', { content }).catch(() => null);
   if (!res || !res.ok) { toast('Capture failed'); return null; }
   const item = await res.json();
   // A create inverts to a delete of the new id (see the undo rule).
   pushUndo(`captured "${content}"`, async () => {
-    await fetch(`/api/inbox/${item.id}`, { method: 'DELETE' });
+    await apiSend(`/api/inbox/${item.id}`, 'DELETE');
     await refreshInboxCount();
   });
   await refreshInboxCount();
@@ -1130,7 +1100,7 @@ async function captureToInbox(content) {
 }
 
 async function refreshInboxCount() {
-  state.inbox = await fetch('/api/inbox').then(r => r.json()).catch(() => state.inbox);
+  state.inbox = await apiGet('/api/inbox', state.inbox);
   // The footer only exists while Engage is rendered; capture works from
   // anywhere, so this is a soft update rather than a re-render.
   const clarify = document.getElementById('eg-clarify');
@@ -1299,6 +1269,36 @@ function initSwipe() {
   root.addEventListener('pointercancel', () => { live = false; });
 }
 
+// ── The two shapes every call in this file already had ───────
+//
+// One JSON envelope, written once instead of at 134 call sites. They are
+// deliberately TWO functions, not one, because the file has two different
+// contracts and collapsing them would break one:
+//
+// apiGet SWALLOWS and falls back. That is the rule loadAll is built on — a
+// fetch never blanks the surface it feeds, so a dead endpoint yields the
+// CURRENT value, not []. Promise.all rejects as a unit, and one dead endpoint
+// used to blank the whole day.
+//
+// apiSend returns the RESPONSE, not the parsed body: 39 call sites read res.ok
+// or res.status to decide what to say, and a helper that hid the response
+// would send every one of them back to a raw fetch. Body omitted = no
+// Content-Type header, which is what a bare DELETE always sent.
+function apiGet(path, fallback) {
+  // Written out, not via a helper: this IS the helper. (The sweep that created
+  // the call sites rewrote this body into a call to itself — a good reminder
+  // that a mechanical transform will happily eat its own definition.)
+  return fetch(path).then(r => r.json()).catch(() => fallback);
+}
+
+function apiSend(path, method, body) {
+  return fetch(path, body === undefined ? { method } : {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 let toastTimer = null;
 
 function toast(msg) {
@@ -1349,11 +1349,7 @@ async function snapshotItem(id) {
 }
 
 function patchInboxItem(id, body) {
-  return fetch(`/api/inbox/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  return apiSend(`/api/inbox/${id}`, 'PATCH', body);
 }
 
 // The common case: a PATCH whose inverse is the same PATCH with the values
@@ -1421,14 +1417,10 @@ function flushOpenNotes() {
 // A delete whose inverse restores the captured snapshot.
 async function undoableDelete(id, label) {
   const snap = await snapshotItem(id);
-  await fetch(`/api/inbox/${id}`, { method: 'DELETE' });
+  await apiSend(`/api/inbox/${id}`, 'DELETE');
   if (snap) {
     pushUndo(label, async () => {
-      await fetch('/api/inbox/restore', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(snap),
-      });
+      await apiSend('/api/inbox/restore', 'POST', snap);
       await refreshAfterUndo();
     });
   }
@@ -2134,29 +2126,23 @@ const SETTINGS_SHEETS = {
     submit: async (v, g) => {
       if (!v.label.trim() || !v.color || !v.start || !v.end) return 'Label, colour, from and to are required.';
       if (!v.days.length) return 'Select at least one day.';
-      if (g) await Promise.all(g.rows.map(r => fetch(`/api/blocks/${r.id}`, { method: 'DELETE' })));
-      const res = await fetch('/api/blocks', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      if (g) await Promise.all(g.rows.map(r => apiSend(`/api/blocks/${r.id}`, 'DELETE')));
+      const res = await apiSend('/api/blocks', 'POST', {
           label: v.label.trim(), color: v.color, days: v.days,
           start_time: v.start, end_time: v.end,
           area_id: v.area || null, location_id: v.location || null,
-        }),
-      });
+        });
       const data = await res.json();
       if (!res.ok) {
         // The old rows were deleted to make room for the new ones, so a refused
         // POST (an overlap) would otherwise take the block with it. Put it back
         // as it was and report the refusal.
         if (g) {
-          await fetch('/api/blocks', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+          await apiSend('/api/blocks', 'POST', {
               label: g.label, color: g.color, days: g.days,
               start_time: g.start_time, end_time: g.end_time,
               area_id: g.area_id || null, location_id: g.location_id || null,
-            }),
-          }).catch(() => {});
+            }).catch(() => {});
           await refreshBlockEditor();
         }
         return data.error || 'Error saving block.';
@@ -2165,16 +2151,13 @@ const SETTINGS_SHEETS = {
       // and rows arrive active — so a paused group has to be paused again, or
       // editing one would quietly turn it back on.
       if (!v.active) {
-        await Promise.all(data.map(b => fetch(`/api/blocks/${b.id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ active: 0 }),
-        })));
+        await Promise.all(data.map(b => apiSend(`/api/blocks/${b.id}`, 'PATCH', { active: 0 })));
       }
       await refreshBlockEditor();
       return null;
     },
     remove: async g => {
-      await Promise.all(g.rows.map(r => fetch(`/api/blocks/${r.id}`, { method: 'DELETE' })));
+      await Promise.all(g.rows.map(r => apiSend(`/api/blocks/${r.id}`, 'DELETE')));
       await refreshBlockEditor();
     },
   },
@@ -2231,13 +2214,10 @@ const SETTINGS_SHEETS = {
     },
     submit: async (v, it) => {
       if (it) {
-        const res = await fetch(`/api/recurring/${it.id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const res = await apiSend(`/api/recurring/${it.id}`, 'PATCH', {
             project_id: v.project ? parseInt(v.project) : null,
             active: v.active ? 1 : 0,
-          }),
-        });
+          });
         if (!res.ok) return 'Error saving.';
         await refreshRecurringList();
         return null;
@@ -2254,16 +2234,13 @@ const SETTINGS_SHEETS = {
         body.nth = parseInt(v.nth);
         body.weekday = parseInt(v.weekday);
       }
-      const res = await fetch('/api/recurring', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const res = await apiSend('/api/recurring', 'POST', body);
       if (!res.ok) return 'Error saving.';
       await refreshRecurringList();
       return null;
     },
     remove: async it => {
-      await fetch(`/api/recurring/${it.id}`, { method: 'DELETE' });
+      await apiSend(`/api/recurring/${it.id}`, 'DELETE');
       await refreshRecurringList();
     },
   },
@@ -2307,17 +2284,11 @@ const SETTINGS_SHEETS = {
     submit: async (v, a) => {
       if (!a) {
         if (!v.name.trim()) return 'Name is required.';
-        await fetch('/api/areas', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: v.name.trim(), type: v.type, domain_id: parseInt(v.domain) || null }),
-        });
+        await apiSend('/api/areas', 'POST', { name: v.name.trim(), type: v.type, domain_id: parseInt(v.domain) || null });
         await refreshBlockEditor();
         return null;
       }
-      const patch = async body => fetch(`/api/areas/${a.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const patch = async body => apiSend(`/api/areas/${a.id}`, 'PATCH', body);
       if (v.type !== a.type) await patch({ type: v.type });
       if (String(v.domain) !== String(a.domain_id || '')) await patch({ domain_id: parseInt(v.domain) });
       if (v.type === 'routine' && String(v.qr) !== String(a.qr_node_id || '')) {
@@ -2328,7 +2299,7 @@ const SETTINGS_SHEETS = {
       return null;
     },
     remove: async a => {
-      await fetch(`/api/areas/${a.id}`, { method: 'DELETE' });
+      await apiSend(`/api/areas/${a.id}`, 'DELETE');
       await refreshBlockEditor();
     },
   },
@@ -2353,21 +2324,15 @@ const SETTINGS_SHEETS = {
       const name = v.name.trim();
       if (!name) return 'Name is required.';
       if (d) {
-        await fetch(`/api/domains/${d.id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, ...(d.is_default ? {} : { active: v.active ? 1 : 0 }) }),
-        });
+        await apiSend(`/api/domains/${d.id}`, 'PATCH', { name, ...(d.is_default ? {} : { active: v.active ? 1 : 0 }) });
       } else {
-        await fetch('/api/domains', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        });
+        await apiSend('/api/domains', 'POST', { name });
       }
       await refreshBlockEditor();
       return null;
     },
     remove: async d => {
-      await fetch(`/api/domains/${d.id}`, { method: 'DELETE' });
+      await apiSend(`/api/domains/${d.id}`, 'DELETE');
       await refreshBlockEditor();
     },
   },
@@ -2399,10 +2364,7 @@ const SETTINGS_SHEETS = {
     submit: async (v, it) => {
       if (it) {
         if (!v.name.trim()) return 'Name is required.';
-        const res = await fetch(`/api/locations/${it.id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: v.name.trim(), active: v.active ? 1 : 0 }),
-        });
+        const res = await apiSend(`/api/locations/${it.id}`, 'PATCH', { name: v.name.trim(), active: v.active ? 1 : 0 });
         if (!res.ok) return 'Error saving location.';
         state.locations = await fetch('/api/locations').then(r => r.json())
           .catch(() => state.locations);
@@ -2413,15 +2375,12 @@ const SETTINGS_SHEETS = {
       const lng = parseFloat(v.lng);
       if (!v.name.trim() || isNaN(lat) || isNaN(lng)) return 'Name, latitude and longitude are required.';
       const radius = parseInt(v.radius);
-      await fetch('/api/locations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: v.name.trim(), lat, lng, radius_m: isNaN(radius) ? null : radius }),
-      });
+      await apiSend('/api/locations', 'POST', { name: v.name.trim(), lat, lng, radius_m: isNaN(radius) ? null : radius });
       await renderQrManager();
       return null;
     },
     remove: async l => {
-      await fetch(`/api/locations/${l.id}`, { method: 'DELETE' });
+      await apiSend(`/api/locations/${l.id}`, 'DELETE');
       await renderQrManager();
     },
   },
@@ -2554,15 +2513,12 @@ const SETTINGS_SHEETS = {
         const radius = parseInt(v.radius);
         // No window fields: the server derives them from the source, so the
         // legacy columns and the schedule cannot disagree from the start.
-        const resp = await fetch('/api/accountability/nodes', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const resp = await apiSend('/api/accountability/nodes', 'POST', {
             label: v.label.trim(), source_uid: v.source,
             geofence_lat: loc ? loc.lat : null,
             geofence_lng: loc ? loc.lng : null,
             geofence_radius_m: loc ? (isNaN(radius) ? loc.radius_m : radius) : null,
-          }),
-        });
+          });
         if (!resp.ok) return `Create failed (${resp.status}).`;
         const node = await resp.json();
         const workerUrl = state.settings.gate_scan_url || '';
@@ -2583,16 +2539,10 @@ const SETTINGS_SHEETS = {
       // flows route keeps the Worker's routine_required flag in step both ways.
       if (v.routine !== v.routine0) {
         if (v.routine0) {
-          await fetch(`/api/flows/${v.routine0}`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qr_node_id: null }),
-          });
+          await apiSend(`/api/flows/${v.routine0}`, 'PATCH', { qr_node_id: null });
         }
         if (v.routine) {
-          await fetch(`/api/flows/${v.routine}`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qr_node_id: n.id }),
-          });
+          await apiSend(`/api/flows/${v.routine}`, 'PATCH', { qr_node_id: n.id });
         }
       }
       if (v.location) {
@@ -2600,15 +2550,12 @@ const SETTINGS_SHEETS = {
         body.geofence_lat = loc.lat;
         body.geofence_lng = loc.lng;
       }
-      const res = await fetch(`/api/accountability/nodes/${n.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const res = await apiSend(`/api/accountability/nodes/${n.id}`, 'PATCH', body);
       if (!res.ok) return `Edit failed (${res.status}).`;
       const result = await res.json();
       if (v.active !== v.active0) {
         const route = v.active ? 'activate' : 'disable';
-        const r = await fetch(`/api/accountability/nodes/${n.id}/${route}`, { method: 'PATCH' });
+        const r = await apiSend(`/api/accountability/nodes/${n.id}/${route}`, 'PATCH');
         if (!r.ok) return `${v.active ? 'Resume' : 'Pause'} failed (${r.status}).`;
       }
       if (result.pending && result.pending.length) {
@@ -2619,7 +2566,7 @@ const SETTINGS_SHEETS = {
       return null;
     },
     remove: async n => {
-      const res = await fetch(`/api/accountability/nodes/${n.id}`, { method: 'DELETE' });
+      const res = await apiSend(`/api/accountability/nodes/${n.id}`, 'DELETE');
       if (!res.ok) { toast(`Delete failed (${res.status}): ${await res.text()}`); return; }
       const out = await res.json().catch(() => ({}));
       // A live gate's deletion is QUEUED, so say when it lands — the gate is
@@ -2666,10 +2613,7 @@ const SETTINGS_SHEETS = {
       // Empty means "leave it alone", so saving the cap can't wipe the token.
       if (String(v.token).trim()) body.beeminder_auth_token = String(v.token).trim();
       if (String(v.user).trim()) body.beeminder_user = String(v.user).trim();
-      const res = await fetch('/api/gates/billing', {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const res = await apiSend('/api/gates/billing', 'PATCH', body);
       if (!res.ok) return `Save failed (${res.status}).`;
       await renderGatesBilling(true);
       return null;
@@ -2698,10 +2642,7 @@ const SETTINGS_SHEETS = {
         return null;
       }
       if (!v.url.trim()) return 'Paste an iCal URL.';
-      const res = await fetch('/api/calendars', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: v.url.trim(), color: v.color }),
-      });
+      const res = await apiSend('/api/calendars', 'POST', { url: v.url.trim(), color: v.color });
       const data = await res.json();
       if (!res.ok) return data.error || 'Could not add calendar.';
       await refreshCalendars();
@@ -2710,7 +2651,7 @@ const SETTINGS_SHEETS = {
       return null;
     },
     remove: async c => {
-      await fetch(`/api/calendars/${c.id}`, { method: 'DELETE' });
+      await apiSend(`/api/calendars/${c.id}`, 'DELETE');
       await refreshCalendars();
     },
   },
@@ -2766,7 +2707,7 @@ function initBlockEditor() {
     const status = document.getElementById('be-ics-status');
     btn.disabled = true;
     status.textContent = 'Saving…';
-    const res = await fetch('/api/blocks/export-ics', { method: 'POST' });
+    const res = await apiSend('/api/blocks/export-ics', 'POST');
     const data = await res.json();
     btn.disabled = false;
     status.textContent = res.ok ? `Saved to ${data.path}` : 'Error';
@@ -2776,7 +2717,7 @@ function initBlockEditor() {
 async function openBlockEditor() {
   const [projects, domains, blocks, locations] = await Promise.all([
     fetch('/api/areas').then(r => r.json()),
-    fetch('/api/domains').then(r => r.json()).catch(() => []),
+    apiGet('/api/domains', []),
     fetch('/api/blocks').then(r => r.json()),
     fetch('/api/locations').then(r => r.json()),
   ]);
@@ -2787,8 +2728,8 @@ async function openBlockEditor() {
   renderBeDomains();
   renderBeBlocks(blocks);
   await renderQrManager();
-  renderBeRecurring(await fetch('/api/recurring').then(r => r.json()).catch(() => []), projects);
-  renderBeCalendars(await fetch('/api/calendars').then(r => r.json()).catch(() => []));
+  renderBeRecurring(await apiGet('/api/recurring', []), projects);
+  renderBeCalendars(await apiGet('/api/calendars', []));
   await renderSchedules();
   settingsView.section = null;
   closeSeSheet();
@@ -2802,10 +2743,10 @@ async function closeBlockEditor() {
   document.getElementById('modal-overlay').classList.add('hidden');
   const [projects, domains, blocks, gcal, calendars] = await Promise.all([
     fetch('/api/areas').then(r => r.json()),
-    fetch('/api/domains').then(r => r.json()).catch(() => []),
+    apiGet('/api/domains', []),
     fetch('/api/blocks').then(r => r.json()),
     fetch('/api/gcal').then(r => r.json()),
-    fetch('/api/calendars').then(r => r.json()).catch(() => []),
+    apiGet('/api/calendars', []),
   ]);
   state.areas = projects;
   state.domains = domains;
@@ -2825,7 +2766,7 @@ async function closeBlockEditor() {
 async function refreshBlockEditor() {
   const [projects, domains, blocks] = await Promise.all([
     fetch('/api/areas').then(r => r.json()),
-    fetch('/api/domains').then(r => r.json()).catch(() => []),
+    apiGet('/api/domains', []),
     fetch('/api/blocks').then(r => r.json()),
   ]);
   state.areas = projects;
@@ -2841,10 +2782,7 @@ async function refreshCalendars() {
 }
 
 async function patchCalendar(id, body) {
-  await fetch(`/api/calendars/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  await apiSend(`/api/calendars/${id}`, 'PATCH', body);
 }
 
 // ── Section lists ────────────────────────────────────────────
@@ -3144,8 +3082,8 @@ async function openGtdReview() {
   const today = formatDateYMD(new Date());
   const [review, habits, flows] = await Promise.all([
     fetch('/api/gtd-review').then(r => r.json()),
-    fetch('/api/habits').then(r => r.json()).catch(() => null),
-    fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => []),
+    apiGet('/api/habits', null),
+    apiGet(`/api/flows?date=${today}`, []),
   ]);
   gtdReview = review;
   gtdReview.habits = habits;
@@ -3163,10 +3101,7 @@ async function setReviewTick(key, done) {
   const ticks = reviewTicks();
   if (done) ticks[key] = 'done'; else delete ticks[key];
   const complete = reviewSteps().every(s => ticks[s.id]);
-  const run = await fetch(`/api/flows/${gtdReview.flow.id}/run`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ date: formatDateYMD(new Date()), steps: ticks, completed: complete }),
-  }).then(r => r.json()).catch(() => null);
+  const run = await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: formatDateYMD(new Date()), steps: ticks, completed: complete }).then(r => r.json()).catch(() => null);
   if (run) gtdReview.flow.run = run;
   renderGtdReview();
   updateReviewNavDot();
@@ -3257,15 +3192,9 @@ async function habitVerb(id, verb, name) {
   const verdict = prompt(verb === 'graduated'
     ? 'One line for the ledger — what made it stick?'
     : 'One line for the ledger — why drop it?') || null;
-  await fetch(`/api/habits/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: verb, verdict }),
-  });
+  await apiSend(`/api/habits/${id}`, 'PATCH', { status: verb, verdict });
   pushUndo(`${verb === 'graduated' ? 'graduated' : 'dropped'} "${name}"`, async () => {
-    await fetch(`/api/habits/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'forming' }),
-    });
+    await apiSend(`/api/habits/${id}`, 'PATCH', { status: 'forming' });
     await openGtdReview();
   });
   toast(`${verb}: ${name}`);
@@ -3278,18 +3207,12 @@ async function experimentVerb(id, verb, name) {
   // "I considered it and left it" and "I never looked" should not be the same
   // gesture.
   if (verb === 'wait') { toast(`left for next review: ${name}`); return; }
-  const res = await fetch(`/api/habit-experiments/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ outcome: verb }),
-  });
+  const res = await apiSend(`/api/habit-experiments/${id}`, 'PATCH', { outcome: verb });
   if (!res.ok) { toast((await res.json()).error || 'could not evaluate'); return; }
   // Undoing an evaluation also unmints the habit it may have created — half
   // an undo would strand a habit nothing decided on.
   pushUndo(`${verb === 'habit' ? 'promoted' : verb + 'ed'} experiment "${name}"`, async () => {
-    await fetch(`/api/habit-experiments/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ outcome: 'resolved' }),
-    });
+    await apiSend(`/api/habit-experiments/${id}`, 'PATCH', { outcome: 'resolved' });
     await openGtdReview();
   });
   toast(verb === 'habit' ? `now forming: ${name}` : `${verb}: ${name}`);
@@ -3453,28 +3376,18 @@ function renderGtdReview() {
       // the finish route no longer receives it.
       const newHabit = document.getElementById('gr-habit').value.trim();
       if (newHabit) {
-        await fetch('/api/habits', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: newHabit }),
-        });
+        await apiSend('/api/habits', 'POST', { content: newHabit });
       }
-      await fetch('/api/gtd-review/finish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await apiSend('/api/gtd-review/finish', 'POST', {
           week: gtdReview.week_start_date,
           note: document.getElementById('gr-note').value,
-        }),
-      });
+        });
       // FILING THE REVIEW IS FINISHING THE ROUTINE. Deciding you are done is
       // the same act whichever surface you say it on, so the run is completed
       // here too — otherwise the runner would still show the week as open.
       if (gtdReview.flow) {
-        await fetch(`/api/flows/${gtdReview.flow.id}/run`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date: formatDateYMD(new Date()),
-                                 steps: reviewTicks(), completed: true }),
-        });
+        await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: formatDateYMD(new Date()),
+                                 steps: reviewTicks(), completed: true });
       }
       state.review.due = false;
       updateReviewNavDot();
@@ -3508,8 +3421,8 @@ function closeM(id) {
 }
 
 async function refreshCrmNight() {
-  const night = await fetch(`/api/people/night?date=${flowRunView.date
-    || formatDateYMD(new Date())}`).then(r => r.json()).catch(() => null);
+  const night = await apiGet(`/api/people/night?date=${flowRunView.date
+    || formatDateYMD(new Date())}`, null);
   flowRunView.crmFilled = !!(night && night.satisfied_at);
   flowRunView.crmKind = night ? night.kind : null;
   renderFlowRun();
@@ -3685,8 +3598,8 @@ function stepDueToday(s, d) {
 async function refreshRef() {
   const today = formatDateYMD(new Date());
   const [lists, flows, schedules] = await Promise.all([
-    fetch('/api/ref').then(r => r.json()).catch(() => refView.lists),
-    fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => refView.flows),
+    apiGet('/api/ref', refView.lists),
+    apiGet(`/api/flows?date=${today}`, refView.flows),
     // A routine's own window resolves through here (flowWindow); unnamed=1
     // because a routine's hours, like a gate's, are private to it.
     fetch(`/api/schedules?date=${today}&unnamed=1`).then(r => r.json())
@@ -3812,15 +3725,9 @@ function renderRef() {
         clearTimeout(t);
         const was = span.textContent;
         refRenameEl(span, async name => {
-          await fetch(`/api/flows/${id}`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name }),
-          });
+          await apiSend(`/api/flows/${id}`, 'PATCH', { name });
           pushUndo(`renamed routine to "${name}"`, async () => {
-            await fetch(`/api/flows/${id}`, {
-              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: was }),
-            });
+            await apiSend(`/api/flows/${id}`, 'PATCH', { name: was });
             await refreshAfterUndo();
           });
           await refreshRef();
@@ -3832,12 +3739,9 @@ function renderRef() {
     }));
     const frNew = body.querySelector('#fr-new');
     if (frNew) frNew.addEventListener('click', async () => {
-      const created = await fetch('/api/flows', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'New routine' }),
-      }).then(r => r.json());
+      const created = await apiSend('/api/flows', 'POST', { name: 'New routine' }).then(r => r.json());
       pushUndo(`created routine "${created.name}"`, async () => {
-        await fetch(`/api/flows/${created.id}`, { method: 'DELETE' });
+        await apiSend(`/api/flows/${created.id}`, 'DELETE');
         await refreshAfterUndo();
       });
       refView.openFlow = created.id;
@@ -3848,12 +3752,9 @@ function renderRef() {
       title: 'New list', placeholder: 'Name the list…', button: 'Create',
       closeOnAdd: true,
       add: async name => {
-        const created = await fetch('/api/ref/lists', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        }).then(r => r.json());
+        const created = await apiSend('/api/ref/lists', 'POST', { name }).then(r => r.json());
         pushUndo(`created list "${name}"`, async () => {
-          await fetch(`/api/ref/lists/${created.id}`, { method: 'DELETE' });
+          await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
           await refreshAfterUndo();
         });
         refView.open = created.id;
@@ -3863,17 +3764,11 @@ function renderRef() {
     body.querySelectorAll('[data-flow-del]').forEach(b => b.addEventListener('click', async () => {
       const id = parseInt(b.dataset.flowDel);
       const f = refView.flows.find(x => x.id === id);
-      await fetch(`/api/flows/${id}`, { method: 'DELETE' });
+      await apiSend(`/api/flows/${id}`, 'DELETE');
       pushUndo(`deleted routine "${f.name}"`, async () => {
-        const nf = await fetch('/api/flows', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: f.name }),
-        }).then(r => r.json());
+        const nf = await apiSend('/api/flows', 'POST', { name: f.name }).then(r => r.json());
         for (const s of f.steps) {
-          await fetch(`/api/flows/${nf.id}/steps`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: s.content, kind: s.kind, requirement: s.requirement }),
-          });
+          await apiSend(`/api/flows/${nf.id}/steps`, 'POST', { content: s.content, kind: s.kind, requirement: s.requirement });
         }
         await refreshAfterUndo();
       });
@@ -3895,10 +3790,7 @@ function renderRef() {
       span.addEventListener('dblclick', () => {
         clearTimeout(t);
         refRename(span, id => name =>
-          fetch(`/api/ref/lists/${id}`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name }),
-          }));
+          apiSend(`/api/ref/lists/${id}`, 'PATCH', { name }));
       });
     });
     // [data-id] again: the routine rows' × carries data-flow-del and is wired
@@ -3907,19 +3799,13 @@ function renderRef() {
     body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
       const id = parseInt(b.dataset.id);
       const l = refView.lists.find(x => x.id === id);
-      await fetch(`/api/ref/lists/${id}`, { method: 'DELETE' });
+      await apiSend(`/api/ref/lists/${id}`, 'DELETE');
       // Recreate replays name + items; new ids are fine — nothing references
       // a ref id from outside (unlike inbox restore).
       pushUndo(`deleted list "${l.name}"`, async () => {
-        const nl = await fetch('/api/ref/lists', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: l.name }),
-        }).then(r => r.json());
+        const nl = await apiSend('/api/ref/lists', 'POST', { name: l.name }).then(r => r.json());
         for (const it of l.items) {
-          await fetch('/api/ref/items', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ list_id: nl.id, content: it.content, done: it.done }),
-          });
+          await apiSend('/api/ref/items', 'POST', { list_id: nl.id, content: it.content, done: it.done });
         }
         await refreshAfterUndo();
       });
@@ -3955,12 +3841,9 @@ function renderRef() {
   document.getElementById('ref-add-item').addEventListener('click', () => openEntrySheet({
     title: open.name, placeholder: `Add to ${open.name}…`,
     add: async raw => {
-      const created = await fetch('/api/ref/items', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ list_id: open.id, content: raw }),
-      }).then(r => r.json());
+      const created = await apiSend('/api/ref/items', 'POST', { list_id: open.id, content: raw }).then(r => r.json());
       pushUndo(`added "${raw}" to ${open.name}`, async () => {
-        await fetch(`/api/ref/items/${created.id}`, { method: 'DELETE' });
+        await apiSend(`/api/ref/items/${created.id}`, 'DELETE');
         await refreshAfterUndo();
       });
       await refreshRef();
@@ -3970,12 +3853,9 @@ function renderRef() {
     title: `List inside ${open.name}`, placeholder: 'Name the list…', button: 'Create',
     closeOnAdd: true,
     add: async name => {
-      const created = await fetch('/api/ref/lists', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, parent_id: open.id }),
-      }).then(r => r.json());
+      const created = await apiSend('/api/ref/lists', 'POST', { name, parent_id: open.id }).then(r => r.json());
       pushUndo(`created list "${name}" in ${open.name}`, async () => {
-        await fetch(`/api/ref/lists/${created.id}`, { method: 'DELETE' });
+        await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
         await refreshAfterUndo();
       });
       refView.open = created.id;
@@ -3995,26 +3875,17 @@ function renderRef() {
     span.addEventListener('dblclick', () => {
       clearTimeout(t);
       refRename(span, id => name =>
-        fetch(`/api/ref/lists/${id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        }));
+        apiSend(`/api/ref/lists/${id}`, 'PATCH', { name }));
     });
   });
   body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
     const id = parseInt(b.dataset.id);
     const l = refView.lists.find(x => x.id === id);
-    await fetch(`/api/ref/lists/${id}`, { method: 'DELETE' });
+    await apiSend(`/api/ref/lists/${id}`, 'DELETE');
     pushUndo(`deleted list "${l.name}"`, async () => {
-      const nl = await fetch('/api/ref/lists', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: l.name, parent_id: l.parent_id }),
-      }).then(r => r.json());
+      const nl = await apiSend('/api/ref/lists', 'POST', { name: l.name, parent_id: l.parent_id }).then(r => r.json());
       for (const it of l.items) {
-        await fetch('/api/ref/items', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ list_id: nl.id, content: it.content, done: it.done }),
-        });
+        await apiSend('/api/ref/items', 'POST', { list_id: nl.id, content: it.content, done: it.done });
       }
       await refreshAfterUndo();
     });
@@ -4024,15 +3895,9 @@ function renderRef() {
     const id = parseInt(c.dataset.item);
     const it = open.items.find(x => x.id === id);
     const to = it.done ? 0 : 1;
-    await fetch(`/api/ref/items/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ done: to }),
-    });
+    await apiSend(`/api/ref/items/${id}`, 'PATCH', { done: to });
     pushUndo(`${to ? 'checked' : 'unchecked'} "${it.content}"`, async () => {
-      await fetch(`/api/ref/items/${id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ done: it.done }),
-      });
+      await apiSend(`/api/ref/items/${id}`, 'PATCH', { done: it.done });
       await refreshAfterUndo();
     });
     await refreshRef();
@@ -4041,10 +3906,7 @@ function renderRef() {
     span.addEventListener('dblclick', () => {
       const id = parseInt(span.closest('.ref-row').dataset.item);
       refRenameEl(span, async content => {
-        await fetch(`/api/ref/items/${id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content }),
-        });
+        await apiSend(`/api/ref/items/${id}`, 'PATCH', { content });
         await refreshRef();
       });
     });
@@ -4052,12 +3914,9 @@ function renderRef() {
   body.querySelectorAll('.ref-del[data-item]').forEach(b => b.addEventListener('click', async () => {
     const id = parseInt(b.dataset.item);
     const it = open.items.find(x => x.id === id);
-    await fetch(`/api/ref/items/${id}`, { method: 'DELETE' });
+    await apiSend(`/api/ref/items/${id}`, 'DELETE');
     pushUndo(`removed "${it.content}"`, async () => {
-      await fetch('/api/ref/items', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ list_id: open.id, content: it.content, done: it.done }),
-      });
+      await apiSend('/api/ref/items', 'POST', { list_id: open.id, content: it.content, done: it.done });
       await refreshAfterUndo();
     });
     await refreshRef();
@@ -4153,12 +4012,9 @@ function renderFlowEditor(body, title, f) {
   body.querySelector('#fr-add-step').addEventListener('click', () => openEntrySheet({
     title: `${f.name} · add step`, placeholder: 'What is the step?',
     add: async raw => {
-      const created = await fetch(`/api/flows/${f.id}/steps`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: raw }),
-      }).then(r => r.json());
+      const created = await apiSend(`/api/flows/${f.id}/steps`, 'POST', { content: raw }).then(r => r.json());
       pushUndo(`added step "${raw}"`, async () => {
-        await fetch(`/api/flow-steps/${created.id}`, { method: 'DELETE' });
+        await apiSend(`/api/flow-steps/${created.id}`, 'DELETE');
         await refreshAfterUndo();
       });
       await refreshRef();
@@ -4170,10 +4026,7 @@ function renderFlowEditor(body, title, f) {
     renderRef();
   });
   const linkPatch = async patch => {
-    await fetch(`/api/flows/${f.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
+    await apiSend(`/api/flows/${f.id}`, 'PATCH', patch);
     await refreshRef();
   };
   body.querySelector('#fr-qr').addEventListener('change', e =>
@@ -4203,16 +4056,12 @@ function renderFlowEditor(body, title, f) {
     if (j < 0 || j >= f.steps.length) return;
     const a = f.steps[i], b = f.steps[j];
     pushUndo(`reordered "${f.name}"`, async () => {
-      await fetch(`/api/flow-steps/${a.id}`, { method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position: a.position }) });
-      await fetch(`/api/flow-steps/${b.id}`, { method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position: b.position }) });
+      await apiSend(`/api/flow-steps/${a.id}`, 'PATCH', { position: a.position });
+      await apiSend(`/api/flow-steps/${b.id}`, 'PATCH', { position: b.position });
       await refreshAfterUndo();
     });
-    await fetch(`/api/flow-steps/${a.id}`, { method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position: b.position }) });
-    await fetch(`/api/flow-steps/${b.id}`, { method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ position: a.position }) });
+    await apiSend(`/api/flow-steps/${a.id}`, 'PATCH', { position: b.position });
+    await apiSend(`/api/flow-steps/${b.id}`, 'PATCH', { position: a.position });
     await refreshRef();
   };
   body.querySelectorAll('.fr-up').forEach(b =>
@@ -4223,10 +4072,7 @@ function renderFlowEditor(body, title, f) {
     span.addEventListener('dblclick', () => {
       const id = parseInt(span.closest('.ref-row').dataset.step);
       refRenameEl(span, async v => {
-        await fetch(`/api/flow-steps/${id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: v }),
-        });
+        await apiSend(`/api/flow-steps/${id}`, 'PATCH', { content: v });
         await refreshRef();
       });
     });
@@ -4293,16 +4139,10 @@ async function stepSheetPatch(patch, label) {
   const prev = {};
   Object.keys(patch).forEach(k => { prev[k] = s[k] ?? null; });
   pushUndo(label, async () => {
-    await fetch(`/api/flow-steps/${s.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(prev),
-    });
+    await apiSend(`/api/flow-steps/${s.id}`, 'PATCH', prev);
     await refreshAfterUndo();
   });
-  await fetch(`/api/flow-steps/${s.id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  });
+  await apiSend(`/api/flow-steps/${s.id}`, 'PATCH', patch);
   await refreshRef();
   renderStepSheet();
 }
@@ -4436,7 +4276,7 @@ function renderStepSheet() {
     `named the smaller version of "${s.content || stepKindLabel(s)}"`));
   const unpend = sheet.querySelector('#fr-sheet-unpend');
   if (unpend) unpend.addEventListener('click', async () => {
-    await fetch(`/api/flow-steps/${s.id}/pending`, { method: 'DELETE' });
+    await apiSend(`/api/flow-steps/${s.id}/pending`, 'DELETE');
     await refreshRef();
     renderStepSheet();
   });
@@ -4474,13 +4314,13 @@ function renderStepSheet() {
     });
   }
   sheet.querySelector('#fr-sheet-del').addEventListener('click', async () => {
-    const res = await fetch(`/api/flow-steps/${s.id}`, { method: 'DELETE' })
+    const res = await apiSend(`/api/flow-steps/${s.id}`, 'DELETE')
       .then(r => r.json()).catch(() => ({}));
     if (res.pending) {
       // The 24h easing gate deferred it — the undo is the CANCEL, and the
       // sheet stays open showing the pending state.
       pushUndo(`scheduled removal of "${s.content || stepKindLabel(s)}"`, async () => {
-        await fetch(`/api/flow-steps/${s.id}/pending`, { method: 'DELETE' });
+        await apiSend(`/api/flow-steps/${s.id}/pending`, 'DELETE');
         await refreshAfterUndo();
       });
       toast('A gated routine eases on a 24h delay — removal is scheduled');
@@ -4489,11 +4329,8 @@ function renderStepSheet() {
       return;
     }
     pushUndo(`removed "${s.content || stepKindLabel(s)}"`, async () => {
-      await fetch(`/api/flows/${f.id}/steps`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: s.content, kind: s.kind,
-                               requirement: s.requirement, days_of_week: s.days_of_week }),
-      });
+      await apiSend(`/api/flows/${f.id}/steps`, 'POST', { content: s.content, kind: s.kind,
+                               requirement: s.requirement, days_of_week: s.days_of_week });
       await refreshAfterUndo();
     });
     closeStepSheet();
@@ -4597,10 +4434,7 @@ function renderEvSheet() {
     const end = sheet.querySelector('#ev-end').value;
     if (!summary) { toast('The event needs a name'); return; }
     if (!date || !start) { toast('The event needs a date and a start time'); return; }
-    const resp = await fetch('/api/gcal/events', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ summary, date, start, end: end || null }),
-    });
+    const resp = await apiSend('/api/gcal/events', 'POST', { summary, date, start, end: end || null });
     const created = await resp.json();
     // The sheet stays open on failure — the config-missing message has to be
     // readable, and closing would throw the typed event away with it.
@@ -4609,8 +4443,8 @@ function renderEvSheet() {
     // the chips above the When row (see recentBump).
     recentBump('evtime', start + '|' + (end || ''));
     pushUndo(`added event "${summary}"`, async () => {
-      const r = await fetch(`/api/gcal/events/${encodeURIComponent(created.event_id)}`
-        + `?uid=${encodeURIComponent(created.uid)}`, { method: 'DELETE' });
+      const r = await apiSend(`/api/gcal/events/${encodeURIComponent(created.event_id)}`
+        + `?uid=${encodeURIComponent(created.uid)}`, 'DELETE');
       if (!r.ok) throw new Error('delete failed');
       await reloadGcal();
     });
@@ -4722,12 +4556,12 @@ const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
 async function openFlowRun(flowId) {
   const today = formatDateYMD(new Date());
   const [flows, day, journal, habits, refLists, crmNight] = await Promise.all([
-    fetch(`/api/flows?date=${today}`).then(r => r.json()).catch(() => []),
-    fetch(`/api/social/day?date=${today}`).then(r => r.json()).catch(() => null),
-    fetch('/api/journal').then(r => r.json()).catch(() => null),
-    fetch('/api/habits').then(r => r.json()).catch(() => null),
-    fetch('/api/ref').then(r => r.json()).catch(() => []),
-    fetch(`/api/people/night?date=${today}`).then(r => r.json()).catch(() => null),
+    apiGet(`/api/flows?date=${today}`, []),
+    apiGet(`/api/social/day?date=${today}`, null),
+    apiGet('/api/journal', null),
+    apiGet('/api/habits', null),
+    apiGet('/api/ref', []),
+    apiGet(`/api/people/night?date=${today}`, null),
   ]);
   flowRunView.refLists = refLists;
   flowRunView.checks = {};
@@ -4777,10 +4611,7 @@ async function creditFlowStep(step, how) {
   const today = flowRunView.date || formatDateYMD(new Date());
   flowRunView.steps[step.id] = how;
   const complete = flowRunView.flow.steps.every(s => flowRunView.steps[s.id]);
-  await fetch(`/api/flows/${flowRunView.flow.id}/run`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ date: today, steps: flowRunView.steps, completed: complete }),
-  });
+  await apiSend(`/api/flows/${flowRunView.flow.id}/run`, 'PUT', { date: today, steps: flowRunView.steps, completed: complete });
   if (complete) {
     toast(`${flowRunView.flow.name} complete ✓`);
     closeFlowRun();
@@ -4802,7 +4633,7 @@ function flowName(flowId) {
 // is deliberately not undoable through the undo stack (the config surfaces are
 // not either); taking it back is the same button on the other side.
 async function pawnStep(step) {
-  const res = await fetch(`/api/flow-steps/${step.id}/pawn`, { method: 'POST' });
+  const res = await apiSend(`/api/flow-steps/${step.id}/pawn`, 'POST');
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     toast(err.error || 'Could not pawn that step');
@@ -4816,7 +4647,7 @@ async function pawnStep(step) {
 }
 
 async function unpawnStep(step) {
-  await fetch(`/api/flow-steps/${step.id}/pawn`, { method: 'DELETE' });
+  await apiSend(`/api/flow-steps/${step.id}/pawn`, 'DELETE');
   toast('Taken back — the gate is its full length again');
   await afterPawnChange();
 }
@@ -5112,10 +4943,7 @@ function renderFlowRun() {
         const body = { date: formatDateYMD(new Date()) };
         if (mark) body.mark = mark.dataset.mark;
         if (eff) body.effort = eff.dataset.effort;
-        await fetch(`/api/habits/${r.dataset.habit}/mark`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
+        await apiSend(`/api/habits/${r.dataset.habit}/mark`, 'POST', body);
       }
     }
     if (s.kind === 'journal_night') {
@@ -5123,14 +4951,11 @@ function renderFlowRun() {
       // even when it is written after midnight (same rule as creditFlowStep).
       const today = flowRunView.date || formatDateYMD(new Date());
       const rate = el.querySelector('.fr-rate-on');
-      await fetch(`/api/journal/${today}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await apiSend(`/api/journal/${today}`, 'PATCH', {
           bottleneck: el.querySelector('#fr-jn-bottleneck').value,
           active_experiment: el.querySelector('#fr-jn-exp').value,
           rating: rate ? parseInt(rate.dataset.rate) : null,
-        }),
-      });
+        });
     }
     creditFlowStep(s, 'done');
   });
@@ -5155,19 +4980,13 @@ function renderFlowRun() {
   if (expStart) expStart.addEventListener('click', async () => {
     const content = el.querySelector('#fr-exp-new').value.trim();
     if (!content) { toast('Name the experiment first'); return; }
-    const res = await fetch('/api/habit-experiments', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    });
+    const res = await apiSend('/api/habit-experiments', 'POST', { content });
     if (!res.ok) { toast((await res.json()).error || 'could not start it'); return; }
     const made = await res.json();
     pushUndo(`started the experiment "${content}"`, async () => {
       // Undoing a start closes it outright rather than queueing it: it never
       // ran, so there is nothing for the review to judge.
-      await fetch(`/api/habit-experiments/${made.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resolution: 'undone', outcome: 'drop' }),
-      });
+      await apiSend(`/api/habit-experiments/${made.id}`, 'PATCH', { resolution: 'undone', outcome: 'drop' });
       await expRefresh();
     });
     toast(`running: ${content}`);
@@ -5179,15 +4998,9 @@ function renderFlowRun() {
     if (!next) { toast('An experiment needs a name'); return; }
     if (next === expRunning.content) { toast('Still running — unchanged'); return; }
     const was = expRunning.content;
-    await fetch(`/api/habit-experiments/${expRunning.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: next }),
-    });
+    await apiSend(`/api/habit-experiments/${expRunning.id}`, 'PATCH', { content: next });
     pushUndo(`reworded the experiment`, async () => {
-      await fetch(`/api/habit-experiments/${expRunning.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: was }),
-      });
+      await apiSend(`/api/habit-experiments/${expRunning.id}`, 'PATCH', { content: was });
       await expRefresh();
     });
     toast('reworded — still running');
@@ -5202,15 +5015,12 @@ function renderFlowRun() {
     if (note == null) return;
     const body = { resolution: note };
     if (drop) body.outcome = 'drop';
-    const res = await fetch(`/api/habit-experiments/${expRunning.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const res = await apiSend(`/api/habit-experiments/${expRunning.id}`, 'PATCH', body);
     if (!res.ok) { toast((await res.json()).error || 'could not end it'); return; }
     pushUndo(drop ? 'dropped the experiment' : 'sent the experiment to the review', async () => {
       // One call whichever end it was: reopen wipes the resolution, any
       // evaluation, and any habit the promotion minted.
-      const r = await fetch(`/api/habit-experiments/${expRunning.id}/reopen`, { method: 'POST' });
+      const r = await apiSend(`/api/habit-experiments/${expRunning.id}/reopen`, 'POST');
       if (!r.ok) toast((await r.json()).error || 'could not reopen it');
       await expRefresh();
     });
@@ -5230,17 +5040,11 @@ function renderFlowRun() {
     // Tapping the answer you already gave clears it — back to unanswered, which
     // excludes nothing. That is the only way to undo a "not today" in place.
     const applies = prev === want ? null : want;
-    const answers = await fetch('/api/tag-daily/answer', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tag, applies }),
-    }).then(r => r.json()).catch(() => null);
+    const answers = await apiSend('/api/tag-daily/answer', 'POST', { tag, applies }).then(r => r.json()).catch(() => null);
     if (answers) state.tagDaily = { ...state.tagDaily, answers };
     pushUndo(`set ${tag} ${applies === null ? 'unanswered' : applies ? 'today' : 'not today'}`,
       async () => {
-        const back = await fetch('/api/tag-daily/answer', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tag, applies: prev === undefined ? null : prev }),
-        }).then(r => r.json()).catch(() => null);
+        const back = await apiSend('/api/tag-daily/answer', 'POST', { tag, applies: prev === undefined ? null : prev }).then(r => r.json()).catch(() => null);
         if (back) state.tagDaily = { ...state.tagDaily, answers: back };
         renderFlowRun();
         renderEngage();
@@ -5263,10 +5067,7 @@ function renderFlowRun() {
   const crm = el.querySelector('#fr-crm-fill');
   if (crm) crm.addEventListener('click', async () => {
     const today = formatDateYMD(new Date());
-    await fetch('/api/people/night', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'entries', date: today }),
-    });
+    await apiSend('/api/people/night', 'POST', { kind: 'entries', date: today });
     flowRunView.crmFilled = true;
     renderFlowRun();
   });
@@ -5304,11 +5105,7 @@ async function flushLogSave() {
   const ta = document.getElementById('log-editor');
   if (!ta) return;
   logsView.dirty = false;
-  await fetch(`/api/logs/${encodeURIComponent(logsView.open)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: ta.value }),
-  });
+  await apiSend(`/api/logs/${encodeURIComponent(logsView.open)}`, 'PUT', { content: ta.value });
   const status = document.getElementById('log-save-status');
   if (status) status.textContent = 'Saved';
 }
@@ -5412,15 +5209,9 @@ async function dwSucceed() {
   const stamp = `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()}`;
   const first = text.replace(/\s+/g, ' ').trim().slice(0, 48).replace(/[\\/:*?"<>|]/g, '');
   const name = dwView.logName || `${stamp} ${first || 'writing'}`;
-  const log = await fetch('/api/logs', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  }).then(r => r.json());
+  const log = await apiSend('/api/logs', 'POST', { name }).then(r => r.json());
   const body = text;
-  await fetch(`/api/logs/${encodeURIComponent(log.name)}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: body }),
-  });
+  await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT', { content: body });
   closeDangerousWriting();
   openM('logs-overlay');
   logsView.logs = await fetch('/api/logs').then(r => r.json());
@@ -6018,10 +5809,7 @@ function renderLogs() {
       placeholder: `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()} topic…`,
       button: 'Create', closeOnAdd: true,
       add: async raw => {
-        const log = await fetch('/api/logs', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: raw }),
-        }).then(r => r.json());
+        const log = await apiSend('/api/logs', 'POST', { name: raw }).then(r => r.json());
         logsView.open = log.name;
         logsView.content = log.content;
         logsView.dirty = false;
@@ -6087,7 +5875,7 @@ function renderLogs() {
 const socialView = { config: null, day: null, cues: '', form: null, calOpen: false };
 
 async function refreshSocialDot() {
-  socialView.day = await fetch('/api/social/day').then(r => r.json()).catch(() => socialView.day);
+  socialView.day = await apiGet('/api/social/day', socialView.day);
   paintSocialDot();
 }
 
@@ -6102,9 +5890,9 @@ function paintSocialDot() {
 
 async function refreshSocial() {
   const [config, day, engage] = await Promise.all([
-    fetch('/api/social').then(r => r.json()).catch(() => socialView.config),
-    fetch('/api/social/day').then(r => r.json()).catch(() => socialView.day),
-    fetch('/api/engage/day').then(r => r.json()).catch(() => null),
+    apiGet('/api/social', socialView.config),
+    apiGet('/api/social/day', socialView.day),
+    apiGet('/api/engage/day', null),
   ]);
   socialView.config = config;
   socialView.day = day;
@@ -6298,10 +6086,7 @@ function renderSocial() {
 
   body.querySelectorAll('.so-rate').forEach(inp => inp.addEventListener('change', async () => {
     const v = inp.value === '' ? null : Math.max(0, Math.min(10, parseInt(inp.value) || 0));
-    await fetch(`/api/social/levels/${inp.dataset.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rating: v }),
-    });
+    await apiSend(`/api/social/levels/${inp.dataset.id}`, 'PATCH', { rating: v });
     await refreshSocial();
   }));
 
@@ -6309,10 +6094,7 @@ function renderSocial() {
     const next = { ...(socialView.config.anchor || {}) };
     next[b.dataset.axis] = parseInt(b.dataset.id);
     if (next.warmth && next.medium && next.ask) {
-      await fetch('/api/social/anchor', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next),
-      });
+      await apiSend('/api/social/anchor', 'PUT', next);
       await refreshSocial();
     } else {
       socialView.config.anchor = next;
@@ -6328,11 +6110,8 @@ function renderSocial() {
   const specById = id => (socialView.day.specs || []).find(s => s.id === parseInt(id));
   // Replays a removed spec verbatim — id AND price — so an undo after
   // recalibration restores the plan as it was, not as it would price now.
-  const respec = s => fetch('/api/social/specs', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: s.id, date: s.date, family: s.family, levels: s.levels,
-                           person: s.person, opener: s.opener, price: s.price }),
-  });
+  const respec = s => apiSend('/api/social/specs', 'POST', { id: s.id, date: s.date, family: s.family, levels: s.levels,
+                           person: s.person, opener: s.opener, price: s.price });
   body.querySelectorAll('.so-spec-edit').forEach(b => b.addEventListener('click', () => {
     const s = specById(b.dataset.spec);
     socialView.form = { intent: 'spec', editId: s.id, family: s.family,
@@ -6341,19 +6120,16 @@ function renderSocial() {
   }));
   body.querySelectorAll('.so-spec-did').forEach(b => b.addEventListener('click', async () => {
     const s = specById(b.dataset.spec);
-    const rep = await fetch('/api/social/reps', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ family: s.family, levels: s.levels, person: s.person, planned: 1 }),
-    }).then(r => r.json());
+    const rep = await apiSend('/api/social/reps', 'POST', { family: s.family, levels: s.levels, person: s.person, planned: 1 }).then(r => r.json());
     pushUndo(`logged the spec'd rep (+${rep.price})`, async () => {
-      await fetch(`/api/social/reps/${rep.id}`, { method: 'DELETE' });
+      await apiSend(`/api/social/reps/${rep.id}`, 'DELETE');
       await refreshSocialIfOpen();
     });
     await refreshSocial();
   }));
   body.querySelectorAll('.so-spec-del').forEach(b => b.addEventListener('click', async () => {
     const s = specById(b.dataset.spec);
-    await fetch(`/api/social/specs/${s.id}`, { method: 'DELETE' });
+    await apiSend(`/api/social/specs/${s.id}`, 'DELETE');
     pushUndo('unplanned an interaction', async () => {
       await respec(s);
       await refreshSocialIfOpen();
@@ -6396,28 +6172,22 @@ function renderSocial() {
         // Replacing = add the new, then remove the one being edited; one
         // undo entry reverses both, so half a replacement can't survive.
         const prev = f.editId ? specById(f.editId) : null;
-        const spec = await fetch('/api/social/specs', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ family: f.family, levels: f.levels,
-                                 person: f.person, opener: f.opener }),
-        }).then(r => r.json());
+        const spec = await apiSend('/api/social/specs', 'POST', { family: f.family, levels: f.levels,
+                                 person: f.person, opener: f.opener }).then(r => r.json());
         if (spec.error) return;
-        if (prev) await fetch(`/api/social/specs/${prev.id}`, { method: 'DELETE' });
+        if (prev) await apiSend(`/api/social/specs/${prev.id}`, 'DELETE');
         pushUndo(prev ? 'replaced a planned interaction' : 'planned an interaction', async () => {
-          await fetch(`/api/social/specs/${spec.id}`, { method: 'DELETE' });
+          await apiSend(`/api/social/specs/${spec.id}`, 'DELETE');
           if (prev) await respec(prev);
           await refreshSocialIfOpen();
         });
       } else {
-        const rep = await fetch('/api/social/reps', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ family: f.family, levels: f.levels, person: f.person,
+        const rep = await apiSend('/api/social/reps', 'POST', { family: f.family, levels: f.levels, person: f.person,
                                  pre_rating: f.pre === '' || f.pre == null ? null
-                                   : Math.max(0, Math.min(10, parseInt(f.pre) || 0)) }),
-        }).then(r => r.json());
+                                   : Math.max(0, Math.min(10, parseInt(f.pre) || 0)) }).then(r => r.json());
         if (rep.error) return;
         pushUndo(`logged social rep (+${rep.price})`, async () => {
-          await fetch(`/api/social/reps/${rep.id}`, { method: 'DELETE' });
+          await apiSend(`/api/social/reps/${rep.id}`, 'DELETE');
           await refreshSocialIfOpen();
         });
       }
@@ -6429,13 +6199,10 @@ function renderSocial() {
   }
 
   body.querySelectorAll('.so-micro').forEach(b => b.addEventListener('click', async () => {
-    const rep = await fetch('/api/social/reps', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ family: 'micro', levels: { micro: parseInt(b.dataset.id) } }),
-    }).then(r => r.json());
+    const rep = await apiSend('/api/social/reps', 'POST', { family: 'micro', levels: { micro: parseInt(b.dataset.id) } }).then(r => r.json());
     if (rep.error) return;
     pushUndo(`logged "${socialShortLabel(rep.levels.micro)}" (+${rep.price})`, async () => {
-      await fetch(`/api/social/reps/${rep.id}`, { method: 'DELETE' });
+      await apiSend(`/api/social/reps/${rep.id}`, 'DELETE');
       await refreshSocialIfOpen();
     });
     await refreshSocial();
@@ -6444,13 +6211,10 @@ function renderSocial() {
   body.querySelectorAll('.so-del').forEach(b => b.addEventListener('click', async () => {
     const id = parseInt(b.dataset.id);
     const rep = (socialView.day.reps || []).find(r => r.id === id);
-    await fetch(`/api/social/reps/${id}`, { method: 'DELETE' });
+    await apiSend(`/api/social/reps/${id}`, 'DELETE');
     // Replay verbatim — id and stamped price included, so undo can't reprice.
     pushUndo(`removed rep (${rep ? '+' + rep.price : ''})`, async () => {
-      await fetch('/api/social/reps', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(rep),
-      });
+      await apiSend('/api/social/reps', 'POST', rep);
       await refreshSocialIfOpen();
     });
     await refreshSocial();
@@ -6651,16 +6415,12 @@ function renderQrLayer() {
         window_end: newEnd,
         window_end_offset_days: newOffsetDays,
       };
-      const res = await fetch(`/api/accountability/nodes/${node.id}/overrides`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ovBody),
-      });
+      const res = await apiSend(`/api/accountability/nodes/${node.id}/overrides`, 'POST', ovBody);
       if (res.ok) {
         // Cache the override so non-today pages stay in the right position on re-render
         state.qrPageOverrides[cacheKey] = ovBody;
         if (viewingToday) {
-          state.accountabilityNodes = await fetch('/api/accountability/nodes').then(r => r.json()).catch(() => state.accountabilityNodes);
+          state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
         }
       } else {
         // A refused move must SAY so. The pill has already been dragged to the
@@ -6760,7 +6520,7 @@ async function renderQrManager() {
     [nodes, locations, state.gateRoutines] = await Promise.all([
       fetch('/api/accountability/nodes').then(r => r.json()),
       fetch('/api/locations').then(r => r.json()),
-      fetch('/api/flows').then(r => r.json()).catch(() => []),
+      apiGet('/api/flows', []),
     ]);
   } catch (e) {
     nodes = null;
@@ -6807,10 +6567,7 @@ async function renderQrManager() {
       if (!sel) return;
       sel.addEventListener('change', async e => {
         const value = e.target.value || null;
-        state.settings = await fetch('/api/settings', {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ [key]: value }),
-        }).then(r => r.json());
+        state.settings = await apiSend('/api/settings', 'PATCH', { [key]: value }).then(r => r.json());
         renderTimeline();
       });
     });
@@ -7089,13 +6846,10 @@ async function renderGatesBilling(verify) {
       if (mode === 'live' && !confirm('Charge for real? A failed gate will bill '
         + `${b.user || 'your Beeminder account'} immediately, up to `
         + `$${(b.cap_cents / 100).toFixed(2)} a week.`)) return;
-      await fetch('/api/gates/billing', {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await apiSend('/api/gates/billing', 'PATCH', {
           gate_charging_live: mode !== 'off',
           gate_charge_dryrun: mode !== 'live',
-        }),
-      });
+        });
       await renderGatesBilling(false);
     });
   });
@@ -7167,7 +6921,7 @@ function gateRowOpts(n) {
 }
 
 async function removeOverride(nodeId, date) {
-  const res = await fetch(`/api/accountability/nodes/${nodeId}/overrides/${date}`, { method: 'DELETE' });
+  const res = await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${date}`, 'DELETE');
   if (!res.ok) toast(`Remove override failed (${res.status}): ${await res.text()}`);
   await renderQrManager();
 }
@@ -7232,11 +6986,11 @@ window.renderJournal = renderJournal;
 // Opening the tab pulls phone-written entries from the Worker (a no-op merge if
 // the Worker is unconfigured/unreachable) and renders the merged local view.
 async function loadJournalData() {
-  const data = await fetch('/api/journal/sync', { method: 'POST' }).then(r => r.json())
+  const data = await apiSend('/api/journal/sync', 'POST').then(r => r.json())
     .catch(() => null)
-    || await fetch('/api/journal').then(r => r.json()).catch(() => ({ days: [], habit: null }));
+    || await apiGet('/api/journal', ({ days: [], habit: null }));
   journalView.habit = data.habit;
-  renderJournalHabit(await fetch('/api/habits').then(r => r.json()).catch(() => null));
+  renderJournalHabit(await apiGet('/api/habits', null));
   renderJournalCards(data.days || []);
 }
 
@@ -7267,10 +7021,7 @@ function renderJournalCards(days) {
     const date = card.dataset.date;
     if (field === 'rating') value = value === '' ? null : Number(value);
     if (field === 'habit_mark' && value === '') value = null;
-    const res = await fetch(`/api/journal/${date}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [field]: value }),
-    });
+    const res = await apiSend(`/api/journal/${date}`, 'PATCH', { [field]: value });
     if (!res.ok) toast(`Save failed (${res.status})`);
   };
   grid.querySelectorAll('.jn-ta').forEach(ta =>
@@ -7324,10 +7075,7 @@ function renderJournalHabit(hb) {
   if (start) start.addEventListener('click', async () => {
     const content = el.querySelector('#jh-exp-new').value.trim();
     if (!content) return;
-    const res = await fetch('/api/habit-experiments', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    });
+    const res = await apiSend('/api/habit-experiments', 'POST', { content });
     if (!res.ok) { toast((await res.json()).error || 'could not start'); return; }
     renderJournalHabit(await fetch('/api/habits').then(r => r.json()));
   });
@@ -7337,10 +7085,7 @@ function renderJournalHabit(hb) {
     // for here rather than reconstructed from memory a week later.
     const note = prompt('How did it resolve? One line.');
     if (note == null) return;
-    await fetch(`/api/habit-experiments/${resolve.dataset.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resolution: note }),
-    });
+    await apiSend(`/api/habit-experiments/${resolve.dataset.id}`, 'PATCH', { resolution: note });
     renderJournalHabit(await fetch('/api/habits').then(r => r.json()));
   });
 }
@@ -7392,10 +7137,7 @@ async function peopleSatisfy(kind) {
   const today = formatDateYMD(new Date());
   if (kind === 'entries' && peopleView.satisfiedDate === today) return;
   peopleView.satisfiedDate = today;
-  await fetch('/api/people/night', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind, date: today }),
-  }).catch(() => {});
+  await apiSend('/api/people/night', 'POST', { kind, date: today }).catch(() => {});
 }
 
 // The countdown, over every surface. The .psb bar below lives inside the
@@ -7463,8 +7205,8 @@ function bucketChip(b) {
 
 async function loadPeopleData() {
   const [buckets, people] = await Promise.all([
-    fetch('/api/buckets').then(r => r.json()).catch(() => []),
-    fetch('/api/people').then(r => r.json()).catch(() => []),
+    apiGet('/api/buckets', []),
+    apiGet('/api/people', []),
   ]);
   peopleView.buckets = Array.isArray(buckets) ? buckets : [];
   peopleView.people = Array.isArray(people) ? people : [];
@@ -7529,7 +7271,7 @@ function renderDueStrip() {
       e.stopPropagation();
       if (!peopleView.editable) return;
       btn.disabled = true;
-      const res = await fetch(`/api/people/${btn.dataset.id}/skip-cycle`, { method: 'POST' });
+      const res = await apiSend(`/api/people/${btn.dataset.id}/skip-cycle`, 'POST');
       if (!res.ok) { toast(`Skip failed (${res.status})`); btn.disabled = false; return; }
       await loadPeopleData();
     });
@@ -7598,9 +7340,7 @@ function renderPersonDetail(p) {
     </div>`;
 
   const pdPatch = async payload => {
-    const res = await fetch(`/api/people/${p.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
+    const res = await apiSend(`/api/people/${p.id}`, 'PATCH', payload);
     if (!res.ok) { toast(`Save failed (${res.status})`); return null; }
     const person = await res.json();
     syncPersonRow(person);
@@ -7629,9 +7369,7 @@ function renderPersonDetail(p) {
   pdNotes.readOnly = !peopleView.editable;
   const pdFlush = wireNotesAutosave(pdNotes, async value => {
     if (!peopleView.editable) return;
-    const res = await fetch(`/api/people/${p.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes: value }),
-    });
+    const res = await apiSend(`/api/people/${p.id}`, 'PATCH', { notes: value });
     if (!res.ok) return;
     p.notes = value;
     syncPersonRow(await res.json());
@@ -7648,9 +7386,7 @@ function renderPersonDetail(p) {
     if (!date) return;
     btn.disabled = true;
     try {
-      const res = await fetch(`/api/people/${p.id}/interactions`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date, note, source }),
-      });
+      const res = await apiSend(`/api/people/${p.id}/interactions`, 'POST', { date, note, source });
       if (!res.ok) { toast(`Log failed (${res.status})`); return; }
       await peopleSatisfy('entries');
       await loadPeopleData();
@@ -7665,7 +7401,7 @@ function renderPersonDetail(p) {
     if (!confirm(`Delete ${p.name || 'this person'} and all their logged interactions? This cannot be undone.`)) return;
     const btn = document.getElementById('pd-delete');
     btn.disabled = true;
-    const res = await fetch(`/api/people/${p.id}`, { method: 'DELETE' });
+    const res = await apiSend(`/api/people/${p.id}`, 'DELETE');
     if (!res.ok) { toast(`Delete failed (${res.status})`); btn.disabled = false; return; }
     document.getElementById('person-detail-overlay').classList.add('hidden');
     await loadPeopleData();
@@ -7833,10 +7569,7 @@ function wireMapRows(body, byId, afterFn) {
         const content = input.value.trim();
         row.draggable = true;
         if (!save || !content || content === item.content) { await after(); return; }
-        await fetch(`/api/inbox/${id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content }),
-        });
+        await apiSend(`/api/inbox/${id}`, 'PATCH', { content });
         await after();
       };
       input.addEventListener('keydown', e => {
@@ -8080,11 +7813,7 @@ function renderMap() {
     </div>`;
   }).join('') : '<div class="pm-empty">Nothing in the inventory yet — capture into the inbox first.</div>') + inboxHtml;
 
-  const patchItem = (id, patch) => fetch(`/api/inbox/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  });
+  const patchItem = (id, patch) => apiSend(`/api/inbox/${id}`, 'PATCH', patch);
   const after = async () => { await refreshMap(); await refreshActiveItems(); };
 
   wireMapRows(body, byId);
@@ -9007,14 +8736,8 @@ function ruleBody(r) {
 
 async function saveSource(uid, body) {
   const res = uid
-    ? await fetch(`/api/schedules/${uid}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    : await fetch('/api/schedules', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    ? await apiSend(`/api/schedules/${uid}`, 'PATCH', body)
+    : await apiSend('/api/schedules', 'POST', body);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Could not save.');
   return data;
@@ -9079,7 +8802,7 @@ async function savePicker() {
     for (const uid of d.removed) {
       if (pickerView.onSaved) break;   // the old set is still what the holder has
       const src = (state.allSources || []).find(s => s.uid === uid);
-      if (src && !src.title) await fetch(`/api/schedules/${uid}`, { method: 'DELETE' });
+      if (src && !src.title) await apiSend(`/api/schedules/${uid}`, 'DELETE');
     }
   } catch (e) {
     pickerView.error = e.message;
@@ -9110,7 +8833,7 @@ async function deleteFromPicker() {
       + ' stop changing together.'
     : '';
   if (!confirm(`Delete "${d.title || 'this schedule'}"?${detail}`)) return;
-  await fetch(`/api/schedules/${pickerView.uid}`, { method: 'DELETE' });
+  await apiSend(`/api/schedules/${pickerView.uid}`, 'DELETE');
   closePicker();
   await renderSchedules();
   renderSettingsIndex();
@@ -9142,10 +8865,10 @@ function closeCtxSheet() {
 
 async function ctxSheetRefresh() {
   const [devs, times, sources, daily] = await Promise.all([
-    fetch('/api/tag-devices').then(r => r.json()).catch(() => state.tagDevices),
-    fetch('/api/tag-times').then(r => r.json()).catch(() => state.tagTimes),
-    fetch(`/api/schedules?date=${egDateStr()}&unnamed=1`).then(r => r.json()).catch(() => state.schedules),
-    fetch('/api/tag-daily').then(r => r.json()).catch(() => state.tagDaily),
+    apiGet('/api/tag-devices', state.tagDevices),
+    apiGet('/api/tag-times', state.tagTimes),
+    apiGet(`/api/schedules?date=${egDateStr()}&unnamed=1`, state.schedules),
+    apiGet('/api/tag-daily', state.tagDaily),
   ]);
   state.tagDevices = devs;
   state.tagTimes = times;
@@ -9238,10 +8961,7 @@ function renderCtxSheet() {
     </div>`;
 
   sheet.querySelectorAll('[data-daily]').forEach(b => b.addEventListener('click', async () => {
-    await fetch('/api/tag-daily', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tag, on: b.dataset.daily === 'on' }),
-    });
+    await apiSend('/api/tag-daily', 'POST', { tag, on: b.dataset.daily === 'on' });
     await ctxSheetRefresh();
   }));
   sheet.querySelector('#ctx-sheet-close').addEventListener('click', closeCtxSheet);
@@ -9250,35 +8970,26 @@ function renderCtxSheet() {
 
   sheet.querySelectorAll('[data-dev]').forEach(b => b.addEventListener('click', async () => {
     if (b.dataset.dev === 'none') {
-      await fetch(`/api/tag-devices/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+      await apiSend(`/api/tag-devices/${encodeURIComponent(tag)}`, 'DELETE');
     } else {
-      await fetch('/api/tag-devices', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tag, device: b.dataset.dev }),
-      });
+      await apiSend('/api/tag-devices', 'POST', { tag, device: b.dataset.dev });
     }
     await ctxSheetRefresh();
   }));
   sheet.querySelectorAll('[data-loc]').forEach(b => b.addEventListener('click', async () => {
     if (b.dataset.loc === 'none') {
-      await fetch(`/api/tag-locations/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+      await apiSend(`/api/tag-locations/${encodeURIComponent(tag)}`, 'DELETE');
       state.tagLocations = state.tagLocations.filter(x => x.tag !== tag);
     } else {
-      state.tagLocations = await fetch('/api/tag-locations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tag, location_id: parseInt(b.dataset.loc) }),
-      }).then(r => r.json());
+      state.tagLocations = await apiSend('/api/tag-locations', 'POST', { tag, location_id: parseInt(b.dataset.loc) }).then(r => r.json());
     }
     await ctxSheetRefresh();
   }));
   sheet.querySelectorAll('[data-time]').forEach(b => b.addEventListener('click', async () => {
     if (b.dataset.time === 'none') {
-      await fetch(`/api/tag-times/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+      await apiSend(`/api/tag-times/${encodeURIComponent(tag)}`, 'DELETE');
     } else {
-      await fetch('/api/tag-times', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tag, source_uid: b.dataset.time }),
-      });
+      await apiSend('/api/tag-times', 'POST', { tag, source_uid: b.dataset.time });
     }
     await ctxSheetRefresh();
   }));
@@ -9379,24 +9090,24 @@ async function refreshEngage() {
   // note on loadAll.
   const [placements, futurePlaced, pool, all, overrides, routineItems, flows,
          schedules, deferred] = await Promise.all([
-    fetch(`/api/engage/placements?date=${dateStr}`).then(r => r.json()).catch(() => engageView.placements),
+    apiGet(`/api/engage/placements?date=${dateStr}`, engageView.placements),
     // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
     // shows what still NEEDS a day, and these have one).
-    fetch(`/api/engage/placements?from=${dateStr}`).then(r => r.json()).catch(() => engageView.futurePlaced),
+    apiGet(`/api/engage/placements?from=${dateStr}`, engageView.futurePlaced),
     // Everything available, every domain: the context picker narrows it
     // client-side, so switching contexts is instant.
-    fetch('/api/inbox/active').then(r => r.json()).catch(() => engageView.pool),
-    fetch('/api/map').then(r => r.json()).catch(() => engageView.allItems),
-    fetch(`/api/overrides?date=${dateStr}`).then(r => r.json()).catch(() => []),
-    fetch('/api/routine-items').then(r => r.json()).catch(() => []),
+    apiGet('/api/inbox/active', engageView.pool),
+    apiGet('/api/map', engageView.allItems),
+    apiGet(`/api/overrides?date=${dateStr}`, []),
+    apiGet('/api/routine-items', []),
     // The day's routines, so a gate hairline can name the routine that gates it
     // — the link is what makes the gate pass or fail, and it was only visible
     // inside the step editor.
-    fetch(`/api/flows?date=${dateStr}`).then(r => r.json()).catch(() => engageView.flows),
-    fetch(`/api/schedules?date=${dateStr}&unnamed=1`).then(r => r.json()).catch(() => state.schedules),
+    apiGet(`/api/flows?date=${dateStr}`, engageView.flows),
+    apiGet(`/api/schedules?date=${dateStr}&unnamed=1`, state.schedules),
     // Everything parked on a future date, unfiltered — walking the calendar
     // then costs no round trip, same as the pool.
-    fetch('/api/inbox/deferred').then(r => r.json()).catch(() => engageView.deferred),
+    apiGet('/api/inbox/deferred', engageView.deferred),
   ]);
   engageView.placements = placements;
   engageView.futurePlaced = futurePlaced;
@@ -10113,7 +9824,6 @@ function renderEngage() {
 
   const pop = body.querySelector('.eg-rt-pop');
   if (pop) {
-    const rtHeaders = { 'Content-Type': 'application/json' };
     pop.querySelector('#eg-rt-close').addEventListener('click', () => {
       engageView.routinePop = null;
       renderEngage();
@@ -10124,13 +9834,9 @@ function renderEngage() {
         const item = engageView.routineItems.find(i => i.id === id);
         if (!item) return;
         const wasDone = item.done_date === dateStr;
-        await fetch(`/api/routine-items/${id}`, {
-          method: 'PATCH', headers: rtHeaders, body: JSON.stringify({ done: !wasDone }),
-        });
+        await apiSend(`/api/routine-items/${id}`, 'PATCH', { done: !wasDone });
         pushUndo(`${wasDone ? 'un-checked' : 'checked'} "${item.content}"`, async () => {
-          await fetch(`/api/routine-items/${id}`, {
-            method: 'PATCH', headers: rtHeaders, body: JSON.stringify({ done: wasDone }),
-          });
+          await apiSend(`/api/routine-items/${id}`, 'PATCH', { done: wasDone });
           await refreshAfterUndo();
         });
         await refreshEngage();
@@ -10140,12 +9846,10 @@ function renderEngage() {
       el.addEventListener('click', async () => {
         const id = parseInt(el.dataset.rt);
         const row = engageView.routineItems.find(i => i.id === id);
-        await fetch(`/api/routine-items/${id}`, { method: 'DELETE' });
+        await apiSend(`/api/routine-items/${id}`, 'DELETE');
         if (row) {
           pushUndo(`removed "${row.content}" from the routine`, async () => {
-            await fetch('/api/routine-items/restore', {
-              method: 'POST', headers: rtHeaders, body: JSON.stringify(row),
-            });
+            await apiSend('/api/routine-items/restore', 'POST', row);
             await refreshAfterUndo();
           });
         }
@@ -10170,9 +9874,7 @@ function renderEngage() {
           settled = true;
           const content = input.value.trim();
           if (!save || !content || content === item.content) { renderEngage(); return; }
-          await fetch(`/api/routine-items/${id}`, {
-            method: 'PATCH', headers: rtHeaders, body: JSON.stringify({ content }),
-          });
+          await apiSend(`/api/routine-items/${id}`, 'PATCH', { content });
           await refreshEngage();
         };
         input.addEventListener('keydown', e => {
@@ -10189,10 +9891,8 @@ function renderEngage() {
       const content = rtAdd.value.trim();
       if (!content) return;
       rtAdd.value = '';
-      await fetch('/api/routine-items', {
-        method: 'POST', headers: rtHeaders,
-        body: JSON.stringify({ area_id: engageView.routinePop, content }),
-      });
+      await apiSend('/api/routine-items', 'POST',
+        { area_id: engageView.routinePop, content });
       await refreshEngage();
       body.querySelector('.eg-rt-add')?.focus();
     });
@@ -10210,25 +9910,16 @@ function renderEngage() {
     if (existing && existing.cancelled === 1 && !hasTimes) {
       // Un-cancel with nothing else on the row — drop the override entirely
       // (same rule as the timeline's toggle).
-      await fetch(`/api/overrides/${existing.id}`, { method: 'DELETE' });
+      await apiSend(`/api/overrides/${existing.id}`, 'DELETE');
       pushUndo(`restored "${label}"`, async () => {
-        await fetch('/api/overrides', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ block_id: blockId, date: dateStr, cancelled: true }),
-        });
+        await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: true });
         await refreshAfterUndo();
       });
     } else {
       const target = !(existing && existing.cancelled === 1);
-      await fetch('/api/overrides', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ block_id: blockId, date: dateStr, cancelled: target }),
-      });
+      await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: target });
       pushUndo(`${target ? 'cancelled' : 'restored'} "${label}"`, async () => {
-        await fetch('/api/overrides', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ block_id: blockId, date: dateStr, cancelled: !target }),
-        });
+        await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: !target });
         await refreshAfterUndo();
       });
     }
@@ -10256,14 +9947,10 @@ function renderEngage() {
     el.addEventListener('click', async () => {
       const id = parseInt(el.dataset.id);
       const was = engageView.placements.find(p => p.item_id === id);
-      await fetch(`/api/engage/placements/${id}?date=${dateStr}`, { method: 'DELETE' });
+      await apiSend(`/api/engage/placements/${id}?date=${dateStr}`, 'DELETE');
       if (was) {
         pushUndo('unscheduled an action', async () => {
-          await fetch('/api/engage/placements', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: dateStr, item_id: id, minute: was.minute }),
-          });
+          await apiSend('/api/engage/placements', 'POST', { date: dateStr, item_id: id, minute: was.minute });
           await refreshAfterUndo();
         });
       }
@@ -10275,20 +9962,12 @@ function renderEngage() {
   const placeAt = async (id, minute) => {
     engageView.dragId = null;
     const was = engageView.placements.find(p => p.item_id === id);
-    await fetch('/api/engage/placements', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: dateStr, item_id: id, minute }),
-    });
+    await apiSend('/api/engage/placements', 'POST', { date: dateStr, item_id: id, minute });
     pushUndo(was ? 'moved an action' : 'scheduled an action', async () => {
       if (was) {
-        await fetch('/api/engage/placements', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date: dateStr, item_id: id, minute: was.minute }),
-        });
+        await apiSend('/api/engage/placements', 'POST', { date: dateStr, item_id: id, minute: was.minute });
       } else {
-        await fetch(`/api/engage/placements/${id}?date=${dateStr}`, { method: 'DELETE' });
+        await apiSend(`/api/engage/placements/${id}?date=${dateStr}`, 'DELETE');
       }
       await refreshAfterUndo();
     });
@@ -10348,7 +10027,7 @@ function renderEngage() {
 async function renderNowFull() {
   const body = document.getElementById('now-full-body');
   if (!body) return;
-  const day = await fetch('/api/engage/day').then(r => r.json()).catch(() => null);
+  const day = await apiGet('/api/engage/day', null);
   if (!day) { body.innerHTML = '<div class="gtd-empty">Could not load the day.</div>'; return; }
   const d = new Date();
   const m = d.getHours() * 60 + d.getMinutes();
@@ -10390,17 +10069,9 @@ async function renderNowFull() {
       const id = parseInt(b.dataset.id);
       const label = b.querySelector('.nf-text')?.textContent || 'item';
       if (b.dataset.type === 'routine') {
-        await fetch(`/api/routine-items/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ done: true }),
-        });
+        await apiSend(`/api/routine-items/${id}`, 'PATCH', { done: true });
         pushUndo(`checked "${label}"`, async () => {
-          await fetch(`/api/routine-items/${id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ done: false }),
-          });
+          await apiSend(`/api/routine-items/${id}`, 'PATCH', { done: false });
           await renderNowFull();
           await refreshAfterUndo();
         });
@@ -10463,10 +10134,10 @@ const clarifyView = {
 // shared by every way in — the inbox queue, a single pool item, external.
 async function clarifyLoadAux() {
   const [people, all, projects, refLists] = await Promise.all([
-    fetch('/api/people').then(r => r.json()).catch(() => []),
-    fetch('/api/map').then(r => r.json()).catch(() => []),
-    fetch('/api/projects').then(r => r.json()).catch(() => []),
-    fetch('/api/ref').then(r => r.json()).catch(() => []),
+    apiGet('/api/people', []),
+    apiGet('/api/map', []),
+    apiGet('/api/projects', []),
+    apiGet('/api/ref', []),
   ]);
   clarifyView.refLists = Array.isArray(refLists) ? refLists : [];
   clarifyView.peopleNames = (Array.isArray(people) ? people : [])
@@ -10749,11 +10420,7 @@ async function fileClarify(bucket, refListId) {
     // Filing is one-way by GTD design, but a misfile should still be
     // recoverable: snapshot the item exactly as it sat in "in".
     const snap = await snapshotItem(item.id);
-    const patch = body => fetch(`/api/inbox/${item.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const patch = body => apiSend(`/api/inbox/${item.id}`, 'PATCH', body);
     const content = clarifyView.action.trim() || item.content;
     // The design has no area control: the block calendar's area is the silent
     // default (same suggestion the old processing table made), a chosen project
@@ -10770,15 +10437,12 @@ async function fileClarify(bucket, refListId) {
     // that was written as an action into an outcome it doesn't read as.)
     if (bucket === 'trash' || bucket === 'do') {
       // Do now = the two-minute rule: you did it; filing marks it done.
-      await fetch(`/api/inbox/${item.id}`, { method: 'DELETE' });
+      await apiSend(`/api/inbox/${item.id}`, 'DELETE');
     } else if (bucket === 'reference') {
       // The other non-actionable keep: the text moves to a reference list and
       // the item leaves the action inventory entirely.
-      refCreated = await fetch('/api/ref/items', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ list_id: refListId, content }),
-      }).then(r => r.json());
-      await fetch(`/api/inbox/${item.id}`, { method: 'DELETE' });
+      refCreated = await apiSend('/api/ref/items', 'POST', { list_id: refListId, content }).then(r => r.json());
+      await apiSend(`/api/inbox/${item.id}`, 'DELETE');
     } else if (bucket === 'someday') {
       // No due input on this exit, but the prefilled value rides along so
       // parking a deadlined item never silently drops its deadline.
@@ -10808,14 +10472,10 @@ async function fileClarify(bucket, refListId) {
         // Prior placements go first, so re-clarifying to a new slot never
         // leaves a stale one behind on another date.
         for (const p of (snap && snap.placements) || []) {
-          await fetch(`/api/engage/placements/${item.id}?date=${p.date}`, { method: 'DELETE' });
+          await apiSend(`/api/engage/placements/${item.id}?date=${p.date}`, 'DELETE');
         }
-        await fetch('/api/engage/placements', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ item_id: item.id, date: clarifyView.showDate,
-                                 minute: timeToMinutes(clarifyView.showTime) }),
-        });
+        await apiSend('/api/engage/placements', 'POST', { item_id: item.id, date: clarifyView.showDate,
+                                 minute: timeToMinutes(clarifyView.showTime) });
       }
     }
 
@@ -10825,12 +10485,8 @@ async function fileClarify(bucket, refListId) {
                      reference: 'referenced' }[bucket] || 'filed';
       pushUndo(`${verb} "${item.content}"`, async () => {
         // A reference filing has TWO effects; undo reverses both.
-        if (refCreated) await fetch(`/api/ref/items/${refCreated.id}`, { method: 'DELETE' });
-        await fetch('/api/inbox/restore', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(snap),
-        });
+        if (refCreated) await apiSend(`/api/ref/items/${refCreated.id}`, 'DELETE');
+        await apiSend('/api/inbox/restore', 'POST', snap);
         // Put it back at the head of the queue if the sheet is still open.
         if (clarifyView.open) {
           clarifyView.queue.unshift(snap.row);
@@ -10891,28 +10547,17 @@ async function fileClarifyExternal(bucket, refListId) {
   try {
     if (bucket === 'reference') {
       // Straight to the list — reference never touches the action inventory.
-      const created = await fetch('/api/ref/items', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ list_id: refListId, content }),
-      }).then(r => r.json());
+      const created = await apiSend('/api/ref/items', 'POST', { list_id: refListId, content }).then(r => r.json());
       pushUndo(`referenced "${content}"`, async () => {
-        await fetch(`/api/ref/items/${created.id}`, { method: 'DELETE' });
+        await apiSend(`/api/ref/items/${created.id}`, 'DELETE');
         await refreshAfterUndo();
       });
     } else if (bucket !== 'trash' && bucket !== 'do') {
       const areaId = clarifyView.areaId || state.activeAreaId
         || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
       rememberFiledDomain(areaId);   // the external step teaches it too
-      const created = await fetch('/api/inbox', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
-      }).then(r => r.json());
-      const patch = body => fetch(`/api/inbox/${created.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const created = await apiSend('/api/inbox', 'POST', { content }).then(r => r.json());
+      const patch = body => apiSend(`/api/inbox/${created.id}`, 'PATCH', body);
       if (bucket === 'someday') {
         await patch({ status: 'on_hold', area_id: areaId, notes: clarifyView.notes,
                       deadline: clarifyView.due || null });
@@ -10933,16 +10578,12 @@ async function fileClarifyExternal(bucket, refListId) {
         if (clarifyView.projectId) body.project_id = clarifyView.projectId;
         await patch(body);
         if (clarifyView.showDate && clarifyView.showTime) {
-          await fetch('/api/engage/placements', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ item_id: created.id, date: clarifyView.showDate,
-                                   minute: timeToMinutes(clarifyView.showTime) }),
-          });
+          await apiSend('/api/engage/placements', 'POST', { item_id: created.id, date: clarifyView.showDate,
+                                   minute: timeToMinutes(clarifyView.showTime) });
         }
       }
       pushUndo(`clarified "${content}"`, async () => {
-        await fetch(`/api/inbox/${created.id}`, { method: 'DELETE' });
+        await apiSend(`/api/inbox/${created.id}`, 'DELETE');
         await refreshAfterUndo();
       });
     }
@@ -11300,10 +10941,7 @@ function renderClarify() {
     e.stopPropagation();
     const name = refNew.value.trim();
     if (!name) return;
-    const nl = await fetch('/api/ref/lists', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    }).then(r => r.json());
+    const nl = await apiSend('/api/ref/lists', 'POST', { name }).then(r => r.json());
     clarifyView.refLists.push(nl);
     fileClarify('reference', nl.id);
   });
@@ -11486,11 +11124,7 @@ async function clarifyCreateProject(name) {
   if (!name) return;
   const areaId = clarifyView.areaId || state.activeAreaId
     || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
-  const p = await fetch('/api/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: name, area_id: areaId }),
-  }).then(r => r.json());
+  const p = await apiSend('/api/projects', 'POST', { content: name, area_id: areaId }).then(r => r.json());
   state.projects = await fetch('/api/projects').then(r => r.json());
   recentBump('project', p.id);
   clarifyView.projectId = p.id;
@@ -11507,27 +11141,21 @@ async function clarifyCreateProject(name) {
     // the composer never silently drops a tag or a due date.
     const snap = await snapshotItem(item.id);
     const content = clarifyView.action.trim() || item.content;
-    await fetch(`/api/inbox/${item.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, status: 'active', area_id: areaId,
+    await apiSend(`/api/inbox/${item.id}`, 'PATCH', { content, status: 'active', area_id: areaId,
                              project_id: p.id,
                              tags: [...clarifyView.tags].join(' '),
                              notes: clarifyView.notes,
                              deadline: clarifyView.due || null,
-                             defer_until: clarifyView.showDate || null }),
-    });
+                             defer_until: clarifyView.showDate || null });
     item.content = content;
     item.notes = clarifyView.notes;
     // One undo for the whole act: the item goes back to "in" AND the project
     // it was created for goes away. Half of it would leave an empty project.
     pushUndo(`broke down "${content}"`, async () => {
       if (snap) {
-        await fetch('/api/inbox/restore', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(snap),
-        });
+        await apiSend('/api/inbox/restore', 'POST', snap);
       }
-      await fetch(`/api/inbox/${p.id}`, { method: 'DELETE' });
+      await apiSend(`/api/inbox/${p.id}`, 'DELETE');
       await refreshAfterUndo();
     });
     // It has left "in", so it leaves the queue — the composer is what stands
@@ -11559,7 +11187,7 @@ async function openComposeFor(project, origin) {
 // the blocked/unblocked state are the real ones, not a local guess.
 async function refreshCompose() {
   if (!clarifyView.compose) return;
-  const all = await fetch('/api/map').then(r => r.json()).catch(() => []);
+  const all = await apiGet('/api/map', []);
   clarifyView.compose.actions = all.filter(
     i => i.project_id === clarifyView.compose.id && i.kind !== 'project');
   renderClarify();
@@ -11647,13 +11275,10 @@ function renderClarifyCompose(sheet) {
     if (!raw) { closeCompose(); return; }
     add.value = '';
     const { content, tags } = parseTags(raw);
-    const created = await fetch('/api/inbox', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, status: 'active', area_id: c.areaId,
-                             project_id: c.id, tags: tags.join(' ') }),
-    }).then(r => r.json());
+    const created = await apiSend('/api/inbox', 'POST', { content, status: 'active', area_id: c.areaId,
+                             project_id: c.id, tags: tags.join(' ') }).then(r => r.json());
     pushUndo(`added "${content}"`, async () => {
-      await fetch(`/api/inbox/${created.id}`, { method: 'DELETE' });
+      await apiSend(`/api/inbox/${created.id}`, 'DELETE');
       await refreshAfterUndo();
       if (clarifyView.compose) await refreshCompose();
     });
@@ -11677,10 +11302,7 @@ function renderClarifyCompose(sheet) {
       cur = byId[cur.after_id];
     }
     undoablePatch(it, ['after_id'], `chained "${it.content}"`);
-    await fetch(`/api/inbox/${fromId}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ after_id: toId }),
-    });
+    await apiSend(`/api/inbox/${fromId}`, 'PATCH', { after_id: toId });
     c.arm = null;
     await refreshCompose();
   };
@@ -11706,10 +11328,7 @@ function renderClarifyCompose(sheet) {
     const id = parseInt(b.dataset.id);
     const it = byId[id];
     undoablePatch(it, ['after_id'], `unchained "${it.content}"`);
-    await fetch(`/api/inbox/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ after_id: null }),
-    });
+    await apiSend(`/api/inbox/${id}`, 'PATCH', { after_id: null });
     await refreshCompose();
   }));
   sheet.querySelector('#cl-compose-done').addEventListener('click', closeCompose);
@@ -11821,9 +11440,7 @@ function renderBucketMgr() {
     if (!name) return;
     btn.disabled = true;
     try {
-      const res = await fetch('/api/buckets', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
-      });
+      const res = await apiSend('/api/buckets', 'POST', { name });
       if (!res.ok) { toast(`Add bucket failed (${res.status})`); return; }
       await reloadBuckets();
       renderBucketMgr();
@@ -11836,9 +11453,7 @@ function renderBucketMgr() {
 }
 
 async function patchBucket(id, body) {
-  const res = await fetch(`/api/buckets/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
+  const res = await apiSend(`/api/buckets/${id}`, 'PATCH', body);
   if (!res.ok) { toast(`Bucket update failed (${res.status})`); return; }
   await reloadBuckets();
   renderBucketMgr();
@@ -11846,7 +11461,7 @@ async function patchBucket(id, body) {
 }
 
 async function reloadBuckets() {
-  const buckets = await fetch('/api/buckets').then(r => r.json()).catch(() => []);
+  const buckets = await apiGet('/api/buckets', []);
   peopleView.buckets = Array.isArray(buckets) ? buckets : [];
 }
 
@@ -11998,21 +11613,17 @@ function openAddPerson() {
         // notes_append, never notes: appending in SQL is what keeps this form
         // from overwriting notes it never showed.
         const body = notesAdd ? { ...fields, notes_append: notesAdd } : fields;
-        const res = await fetch(`/api/people/${personId}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const res = await apiSend(`/api/people/${personId}`, 'PATCH', body);
         if (!res.ok) { errEl.textContent = `Save failed (${res.status})`; return; }
       } else {
         // A new person has nothing to append to, so this IS their notes.
         const body = notesAdd ? { ...fields, notes: notesAdd } : fields;
-        const res = await fetch('/api/people', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const res = await apiSend('/api/people', 'POST', body);
         if (!res.ok) { errEl.textContent = `Add failed (${res.status})`; return; }
         personId = (await res.json()).id;
       }
       if (intNote && intDate) {
-        const ires = await fetch(`/api/people/${personId}/interactions`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date: intDate, note: intNote, source: intSource }) });
+        const ires = await apiSend(`/api/people/${personId}/interactions`, 'POST', { date: intDate, note: intNote, source: intSource });
         if (!ires.ok) { errEl.textContent = `Person saved, but logging failed (${ires.status})`; await loadPeopleData(); return; }
       }
       await peopleSatisfy('entries');
