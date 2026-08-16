@@ -1781,13 +1781,13 @@ const SETTINGS_SECTIONS = [
   { key: 'qr', name: 'Gates', group: 'Where and what',
     desc: 'Scan points that gate the day.',
     summary: () => plural(beCounts.qr, 'gate') },
-  { key: 'calendars', name: 'Calendars', group: 'App',
-    desc: 'iCal feeds drawn on the timeline.',
-    summary: () => `${beCounts.calendars || 0} connected` },
   { key: 'metrics', name: 'Metrics', group: 'Where and what',
     desc: 'What you track about yourself. Asked on a routine step — a metric can '
       + 'be asked by a morning step AND a night one.',
     summary: () => plural((metricsView.all || []).filter(m => m.active).length, 'metric') },
+  { key: 'calendars', name: 'Calendars', group: 'App',
+    desc: 'iCal feeds drawn on the timeline.',
+    summary: () => `${beCounts.calendars || 0} connected` },
   { key: 'config', name: 'Connections', group: 'App',
     desc: 'Accounts, keys and paths the app talks to the outside world with. '
       + 'Stored in config.json on the server, never in the database.',
