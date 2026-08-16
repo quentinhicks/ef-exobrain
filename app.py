@@ -97,8 +97,11 @@ def _update_config(values):
 # link built from the old Worker host would log a scan into a database nothing
 # judges. `qr_worker_url` stays as the fallback so an unmigrated config.json
 # keeps rendering a link at all.
-_GATE_SCAN_URL = (config.get('gate_scan_url')
-                  or config.get('qr_worker_url', ''))
+# A FUNCTION, not a constant (2026-08-16): config.json is editable from the
+# app now, and a value frozen at import would mean "saved" but not "in force"
+# until the next restart — the exact confusion the panel is meant to remove.
+def _gate_scan_url():
+    return config.get('gate_scan_url') or config.get('qr_worker_url', '')
 # qr_todo_node_ids is retired: QR judgment is presence-only since the daily
 # to-do list was removed (2026-08). Left unread so old config.json files with
 # the key still load.
@@ -922,7 +925,7 @@ def get_settings():
     # needs it to build scan URLs. Serving it here keeps ONE source of truth —
     # it used to be hardcoded separately in app.js, so changing the Worker
     # meant changing two files and finding out later if you missed one.
-    return jsonify(dict(storage.get_settings(), gate_scan_url=_GATE_SCAN_URL))
+    return jsonify(dict(storage.get_settings(), gate_scan_url=_gate_scan_url()))
 
 
 VALID_TIMEZONES = [
@@ -966,7 +969,7 @@ def patch_settings():
         threading.Thread(target=_refresh_all_calendars, daemon=True).start()
     # Same shape as GET — a client that assigns this response over its settings
     # state would otherwise lose qr_worker_url until the next full load.
-    return jsonify(dict(storage.get_settings(), gate_scan_url=_GATE_SCAN_URL))
+    return jsonify(dict(storage.get_settings(), gate_scan_url=_gate_scan_url()))
 
 
 @app.route('/api/timezones')
@@ -1586,6 +1589,84 @@ def patch_gates_billing():
     if creds:
         _update_config(creds)
     return jsonify(qr_judge.charge_settings() | {'token': None, 'user': None})
+
+
+# ── config.json, from inside the app (2026-08-16) ─────────────
+#
+# These values used to be reachable only over ssh, so in practice they were set
+# once and never corrected. The keys are an ALLOWLIST, not whatever happens to
+# be in the file: a config.json that arrives with something unknown in it keeps
+# it untouched, and nothing the app does not read can be written from here.
+#
+# `secret` is the whole reason this needs care. A secret is WRITE-ONLY — the
+# GET reports only whether one is set, never a value, not even masked, because
+# a mask still has to travel. The db is dumped to backups/ and pushed off-box,
+# which is why the token lives in this file and not in `setting`; sending it to
+# a client would undo that on the wire instead of in the backup.
+# A word, not an empty string: for a secret, empty already means "unchanged".
+CLEAR_SENTINEL = '__clear__'
+
+CONFIG_KEYS = [
+    {'key': 'beeminder_user', 'label': 'Beeminder user',
+     'hint': 'the account the gates bill'},
+    {'key': 'beeminder_auth_token', 'label': 'Beeminder token', 'secret': True,
+     'hint': 'moves real money — write-only, never shown again'},
+    {'key': 'gate_scan_url', 'label': 'Scan URL',
+     'hint': 'where a gate\'s QR link points'},
+    {'key': 'sheets_url', 'label': 'Sheets URL',
+     'hint': 'the spreadsheet the aggregator reads'},
+    {'key': 'gcal_credentials_path', 'label': 'Google credentials',
+     'hint': 'path to the service-account JSON'},
+    {'key': 'gcal_write_calendar_id', 'label': 'Calendar to write to',
+     'hint': 'the one calendar the app may create events in'},
+    {'key': 'gcal_write_source_id', 'label': 'Write-back source',
+     'hint': 'which local calendar those events belong to'},
+    {'key': 'autohotkey_path', 'label': 'AutoHotkey', 'hint': 'path to AutoHotkey.exe (Windows)'},
+]
+_CONFIG_BY_KEY = {c['key']: c for c in CONFIG_KEYS}
+
+
+@app.route('/api/config')
+def get_config():
+    out = []
+    for spec in CONFIG_KEYS:
+        row = dict(spec)
+        if spec.get('secret'):
+            # Whether it is set, never what it is.
+            row['set'] = bool(str(config.get(spec['key']) or '').strip())
+        else:
+            row['value'] = config.get(spec['key']) or ''
+        out.append(row)
+    return jsonify(out)
+
+
+@app.route('/api/config', methods=['PATCH'])
+def patch_config():
+    data = request.get_json() or {}
+    values, cleared = {}, []
+    for key, raw in data.items():
+        spec = _CONFIG_BY_KEY.get(key)
+        if not spec:
+            continue
+        text = '' if raw is None else str(raw).strip()
+        if spec.get('secret'):
+            # Blank means LEAVE IT ALONE — the field renders empty every time
+            # (there is nothing to render), so saving the row next to it must
+            # not wipe the token. Clearing is a deliberate, separate word.
+            if text == CLEAR_SENTINEL:
+                cleared.append(key)
+            elif text:
+                values[key] = text
+        elif text == CLEAR_SENTINEL or text == '':
+            cleared.append(key)
+        else:
+            values[key] = text
+    if cleared:
+        values.update({k: '' for k in cleared})
+    if values:
+        _update_config(values)
+    return get_config()
+
 
 
 @app.route('/api/accountability/nodes', methods=['GET', 'POST'])

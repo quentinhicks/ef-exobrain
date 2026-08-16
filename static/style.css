@@ -5468,6 +5468,39 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .so-cal-row .so-input { width: 52px; flex: none; margin: 0; font: 12px var(--font-mono); }
 .so-cal-row .so-rep-text { font-size: 12px; color: var(--text-secondary); }
 
+/* ── Connections (config.json) ──────────────────────────────
+   Each row is name · field · Save · Clear · hint, and it wraps on a phone
+   rather than squeezing the field to nothing. A secret's field is empty by
+   design — the value never leaves the server — so the placeholder is what
+   tells you whether one is stored. */
+.be-config-row {
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 6px;
+}
+
+.be-config-row .be-set-name { flex: 0 0 auto; min-width: 132px; }
+
+.be-config-input {
+  flex: 1 1 150px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 9px;
+  font: 12px var(--font-mono);
+  color: var(--text-primary);
+  background: var(--surface-low);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.be-config-input:focus { outline: none; border-color: var(--accent); }
+
+.be-config-hint {
+  flex: 1 0 100%;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 /* ---- Light theme ---- */
 
 /* One contiguous appendix: the palette swap, then the handful of rules whose
