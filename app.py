@@ -199,12 +199,36 @@ def panel_interrupted():
 def panel_hide():
     if _panel_window and not _panel_toggled_off():
         _panel_window.hide()
-        threading.Timer(10, lambda: None if _panel_toggled_off() else _panel_window.show()).start()
+        threading.Timer(10, lambda: None if _panel_off() else _panel_show()).start()
     return '', 204
 
 
 def _panel_toggled_off():
     return storage.get_settings().get('panel_hidden') == '1'
+
+
+# Off is off, in BOTH modes: local reads the setting, client mode owns no db and
+# tracks it in memory (mirrored from the server at launch and on every toggle).
+def _panel_off():
+    return _client_panel_hidden if _CLIENT_SERVER else _panel_toggled_off()
+
+
+# A RESIZE UNHIDES THE WINDOW (2026-08-16). pywebview's WinForms resize() calls
+# SetWindowPos with 0x0040 = SWP_SHOWWINDOW, so every set_height was also a
+# show. The panel keeps polling while it is switched off — that is deliberate,
+# it is what makes it current the moment it comes back — and any content change
+# alters its measured height, so an off panel resurrected itself minutes later
+# while the setting still said off and the UI still said "panel off". The
+# height is remembered instead and applied when it is genuinely shown.
+_panel_pending_height = None
+
+
+def _panel_show():
+    global _panel_pending_height
+    _panel_window.show()
+    if _panel_pending_height is not None:
+        _panel_window.resize(320, _panel_pending_height)
+        _panel_pending_height = None
 
 
 # The persistent on/off switch, unlike Ctrl+Alt+M's 10-second hide. The setting
@@ -217,7 +241,7 @@ def panel_toggle():
         if hidden:
             _panel_window.hide()
         else:
-            _panel_window.show()
+            _panel_show()
     return jsonify({'hidden': hidden})
 
 
@@ -2223,7 +2247,7 @@ class WindowApi:
             if hidden:
                 _panel_window.hide()
             else:
-                _panel_window.show()
+                _panel_show()
         return hidden
 
 
@@ -2284,7 +2308,7 @@ def _client_bridge():
             elif self.path == '/api/panel/hide':
                 if _panel_window and not _client_panel_hidden:
                     _panel_window.hide()
-                    threading.Timer(10, lambda: None if _client_panel_hidden else _panel_window.show()).start()
+                    threading.Timer(10, lambda: None if _panel_off() else _panel_show()).start()
                 self._done()
             else:
                 self._proxy()
@@ -2463,6 +2487,13 @@ class PanelApi:
     def set_height(self, height):
         # Panel is pinned at the monitor's top-left, so it grows downward
         # (default NORTH|WEST anchor keeps the top edge fixed).
+        global _panel_pending_height
+        # Never resize a panel that is switched off — resize() is also a show
+        # (SWP_SHOWWINDOW, see _panel_show). Keep the measurement for when it
+        # comes back, so it returns at the size its content needs.
+        if _panel_off():
+            _panel_pending_height = int(height)
+            return
         self._window.resize(320, int(height))
 
 
