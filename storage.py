@@ -822,7 +822,13 @@ def init_db():
             scale_max INTEGER NOT NULL DEFAULT 7,
             unit      TEXT NOT NULL DEFAULT '',
             active    INTEGER NOT NULL DEFAULT 1,
-            position  INTEGER NOT NULL DEFAULT 0
+            position  INTEGER NOT NULL DEFAULT 0,
+            -- WHICH DAYS this question is asked on, in the app's one weekday
+            -- grammar ('0'=Mon … '6'=Sun; NULL = every day, see step_due_on).
+            -- A SECOND filter under the step's own days, not a copy of them:
+            -- the step decides whether the routine asks anything today, this
+            -- decides whether THIS question is one of the things it asks.
+            days_of_week TEXT
         )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS metric_step (
@@ -844,6 +850,13 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE (date, metric_id, step_id)
         )''')
+    # Here rather than with the other ALTERs above: those run before this block,
+    # and on a fresh database there is no `metric` table yet to alter.
+    try:
+        conn.execute('SELECT days_of_week FROM metric LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE metric ADD COLUMN days_of_week TEXT')
+        conn.commit()
     conn.execute('''
         CREATE TABLE IF NOT EXISTS tag_daily (
             tag TEXT PRIMARY KEY
@@ -5234,17 +5247,41 @@ def _metric_row(r):
     return m
 
 
+# A metric's days in the app's one weekday grammar. Accepts the list the picker
+# sends or the string the column holds; '' and a full week both become NULL,
+# which is what "no opinion about the calendar" is stored as everywhere else
+# (step_due_on reads NULL as every day).
+def _norm_days(v):
+    if v is None:
+        return None
+    if isinstance(v, (list, tuple, set)):
+        v = ''.join(sorted(str(int(d)) for d in v))
+    v = ''.join(sorted(set(ch for ch in str(v) if ch in '0123456')))
+    # Every day and no opinion are the same statement, so they get the same
+    # storage. Two spellings of one meaning is how a predicate starts
+    # disagreeing with the row that renders it.
+    return None if v in ('', '0123456') else v
+
+
 def get_metrics(include_paused=True):
     conn = get_conn()
     where = '' if include_paused else 'WHERE active = 1'
     rows = conn.execute(f'SELECT * FROM metric {where} ORDER BY position, id').fetchall()
     out = [_metric_row(r) for r in rows]
     # Which steps ask it, so the settings row can say where it is asked without
-    # a second request.
+    # a second request. NAMED, not just counted: "asked on 2 steps" tells you
+    # nothing you can act on, and the whole point of the join is that the
+    # morning step and the night step are different questions about one day.
     for m in out:
-        m['step_ids'] = [x['step_id'] for x in conn.execute(
-            'SELECT step_id FROM metric_step WHERE metric_id = ? ORDER BY step_id',
-            (m['id'],)).fetchall()]
+        rows2 = conn.execute(
+            '''SELECT ms.step_id, s.content, f.name AS flow_name
+               FROM metric_step ms
+               JOIN flow_step s ON s.id = ms.step_id
+               JOIN flow f ON f.id = s.flow_id
+               WHERE ms.metric_id = ? ORDER BY f.position, f.id, s.position, s.id''',
+            (m['id'],)).fetchall()
+        m['steps'] = [dict(r) for r in rows2]
+        m['step_ids'] = [r['step_id'] for r in rows2]
     conn.close()
     return out
 
@@ -5254,11 +5291,12 @@ def create_metric(data):
     conn = get_conn()
     pos = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM metric').fetchone()['p']
     cur = conn.execute(
-        '''INSERT INTO metric (name, kind, prompt, scale_min, scale_max, unit, position)
-           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        '''INSERT INTO metric (name, kind, prompt, scale_min, scale_max, unit, position,
+                               days_of_week)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
         ((data.get('name') or '').strip(), kind, (data.get('prompt') or '').strip(),
          int(data.get('scale_min') or 1), int(data.get('scale_max') or 7),
-         (data.get('unit') or '').strip(), pos))
+         (data.get('unit') or '').strip(), pos, _norm_days(data.get('days_of_week'))))
     mid = cur.lastrowid
     conn.commit()
     conn.close()
@@ -5289,6 +5327,8 @@ def update_metric(id, data):
     for c in ('scale_min', 'scale_max', 'position'):
         if c in data and data[c] is not None:
             fields[c] = int(data[c])
+    if 'days_of_week' in data:
+        fields['days_of_week'] = _norm_days(data['days_of_week'])
     # PAUSING never deletes and never touches entries already recorded: a paused
     # metric stops being ASKED and stops being offered, and its history stands.
     if 'active' in data:
@@ -5336,14 +5376,33 @@ def metrics_for_step(step_id, ymd):
            JOIN metric_step ms ON ms.metric_id = m.id
            WHERE ms.step_id = ? AND m.active = 1
            ORDER BY m.position, m.id''', (step_id,)).fetchall()
-    out = [_metric_row(r) for r in rows]
-    for m in out:
+    day = date_cls.fromisoformat(ymd)
+    out = []
+    for r in rows:
+        m = _metric_row(r)
         e = conn.execute(
             'SELECT * FROM metric_entry WHERE date = ? AND metric_id = ? AND step_id = ?',
             (ymd, m['id'], step_id)).fetchone()
         m['entry'] = dict(e) if e else None
+        # NOT DUE TODAY drops out — but an answer already recorded still comes
+        # back, exactly as it does for a paused metric: narrowing the days
+        # mid-day must never blank something you already said.
+        if not step_due_on(m, day) and not m['entry']:
+            continue
+        out.append(m)
     conn.close()
     return out
+
+
+# The active metrics BOUND to a step, whatever day it is. Only the completeness
+# rule needs this — see the note there.
+def metrics_linked_to_step(step_id):
+    conn = get_conn()
+    n = conn.execute(
+        '''SELECT COUNT(*) n FROM metric m JOIN metric_step ms ON ms.metric_id = m.id
+           WHERE ms.step_id = ? AND m.active = 1''', (step_id,)).fetchone()['n']
+    conn.close()
+    return n
 
 
 # One answer. Upsert on (date, metric, step) — the step is in the key because a
@@ -5391,8 +5450,17 @@ def set_metric_entry(ymd, metric_id, step_id, value):
 # to credit an empty or unlinked one. A step that asks NOTHING cannot be
 # satisfied by asking nothing — same refusal.
 def metrics_step_complete(step_id, ymd):
-    asked = metrics_for_step(step_id, ymd)
-    return bool(asked) and all(m['entry'] for m in asked)
+    # A step that asks NOTHING is not satisfied — that guards a hard step whose
+    # metrics were never bound, which would otherwise credit itself for free.
+    #
+    # But "asks nothing" has two causes now, and only one of them is a mistake.
+    # A step with metrics bound, none of which fall on today, has genuinely
+    # nothing to ask and IS complete. Reading the empty list as unsatisfiable
+    # would make a Mon-only metric on a hard daily step impossible to clear for
+    # six days a week — and a hard step can gate a QR, so that is real money.
+    if not metrics_linked_to_step(step_id):
+        return False
+    return all(m['entry'] for m in metrics_for_step(step_id, ymd))
 
 
 def metric_history(metric_id, start, end):

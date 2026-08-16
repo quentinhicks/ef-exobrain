@@ -5549,9 +5549,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .mt-input:focus { outline: none; border-color: var(--accent); }
 
 /* The settings row: name, shape, where it is asked, then the three verbs. */
-.mt-set-row { flex-wrap: wrap; row-gap: 6px; }
-.mt-kind, .mt-asked { font: 10px var(--font-mono); color: var(--text-secondary); }
-.mt-asked { flex: 1 1 auto; }
+/* A metric with nowhere to be asked is a question that will never be put —
+   the one state on this list worth colouring. */
+.be-list-row .be-row-sub.be-row-warn { color: var(--danger); }
 
 /* ---- Light theme ---- */
 

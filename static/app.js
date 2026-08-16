@@ -1888,7 +1888,7 @@ function openSettingsSection(key) {
   // the file, and a stale "not set" next to a token is the worst thing this
   // page could say.
   if (key === 'config') { configView.status = ''; loadConfigRows(); }
-  if (key === 'metrics') loadMetrics().then(() => { renderMetricsSettings(); wireMetricAdd(); });
+  if (key === 'metrics') loadMetrics().then(renderMetricsSettings);
 }
 
 function backToSettingsIndex() {
@@ -2424,6 +2424,90 @@ const SETTINGS_SHEETS = {
   // tags were pinned against, and moving them would silently redefine every
   // geofence that quoted them. Its name and its state are ordinary edits, the
   // same two verbs every other settings item has.
+  // A metric is a QUESTION. Its kind decides what the answer looks like, so
+  // the scale bounds and the unit only appear for the kinds that have them
+  // (`rerender: true` on the kind select is what makes that switch live).
+  metric: {
+    title: it => it ? it.name : 'Add metric',
+    save: it => it ? 'Save metric' : 'Add metric',
+    removeLabel: 'Delete metric',
+    // Deleting the QUESTION deletes its answers — a number with no question is
+    // unreadable, not history. Pausing is the verb that keeps the history, so
+    // the confirm says which one this is.
+    confirm: it => `Delete "${it.name}" and every answer ever recorded for it?\n\n`
+      + 'Pause instead if you want to stop being asked but keep the history.',
+    blank: () => ({ name: '', kind: 'scale', prompt: '', scale_min: 1, scale_max: 7,
+                    unit: '', days: [], active: true }),
+    load: m => ({ name: m.name, kind: m.kind, prompt: m.prompt || '',
+                  scale_min: m.scale_min, scale_max: m.scale_max, unit: m.unit || '',
+                  days: [...(m.days_of_week || '')].map(Number), active: !!m.active }),
+    fields: (v, it) => [
+      { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Mood' },
+      { key: 'kind', label: 'Answer', kind: 'select', rerender: true,
+        options: () => Object.entries(METRIC_KIND_LABELS)
+          .map(([value, name]) => ({ value, name })) },
+      ...(v.kind === 'scale' ? [
+        { key: 'scale_min', label: 'From', kind: 'number', half: true },
+        { key: 'scale_max', label: 'To', kind: 'number', half: true },
+      ] : []),
+      ...(v.kind === 'count' ? [
+        { key: 'unit', label: 'Unit', kind: 'text', placeholder: 'e.g. cups',
+          hint: 'optional — what the number counts' },
+      ] : []),
+      { key: 'prompt', label: 'Asked as', kind: 'text',
+        placeholder: 'optional — the wording the runner shows' },
+      // Under the STEP's own days, not instead of them: the step decides
+      // whether the routine asks anything today, this decides whether this
+      // question is one of the things it asks.
+      { key: 'days', label: 'Days', kind: 'days',
+        hint: v.days.length && v.days.length < 7
+          ? 'Only on the lit days — and only if the step itself runs that day.'
+          : 'Every day the step that asks it runs.' },
+      // Read-only: a metric is bound to a step from the STEP's sheet, where
+      // you can see the rest of that routine. Stating it here rather than
+      // offering a second binder keeps one way to do it (same idiom as
+      // Recurring's read-only "Repeats").
+      ...(it ? [{ key: 'asked', label: 'Asked on', kind: 'static',
+                  text: (it.steps || []).length
+                    ? it.steps.map(s => s.flow_name).join(', ')
+                    : 'nothing yet',
+                  hint: 'Add a "metrics" step to a routine, then pick this '
+                    + 'metric in that step’s sheet.' }] : []),
+      ...(it ? [seStateRow('Paused: not asked and not offered on a step. '
+                           + 'Every answer already recorded stays.')] : []),
+    ],
+    submit: async (v, it) => {
+      if (!v.name.trim()) return 'Name is required.';
+      const min = parseInt(v.scale_min), max = parseInt(v.scale_max);
+      if (v.kind === 'scale' && (isNaN(min) || isNaN(max) || min >= max)) {
+        return 'A scale needs a low number and a higher one.';
+      }
+      const body = { name: v.name.trim(), kind: v.kind, prompt: v.prompt.trim(),
+                     unit: v.unit.trim(), days_of_week: v.days.join('') };
+      if (v.kind === 'scale') { body.scale_min = min; body.scale_max = max; }
+      if (it) {
+        body.active = v.active ? 1 : 0;
+        const res = await apiSend(`/api/metrics/${it.id}`, 'PATCH', body);
+        if (!res.ok) return 'Error saving metric.';
+      } else {
+        const res = await apiSend('/api/metrics', 'POST', body);
+        if (!res.ok) return 'Error adding metric.';
+        const created = await res.json();
+        // A create inverts to a delete, like every other create.
+        pushUndo(`added metric "${created.name}"`, async () => {
+          await apiSend(`/api/metrics/${created.id}`, 'DELETE');
+          await refreshMetricsSettings();
+        });
+      }
+      await refreshMetricsSettings();
+      return null;
+    },
+    remove: async m => {
+      await apiSend(`/api/metrics/${m.id}`, 'DELETE');
+      await refreshMetricsSettings();
+    },
+  },
+
   location: {
     title: it => it ? 'Location' : 'Add location',
     save: it => it ? 'Save location' : 'Save location',
@@ -2813,6 +2897,11 @@ async function openBlockEditor() {
   await renderQrManager();
   renderBeRecurring(await apiGet('/api/recurring', []), projects);
   renderBeOccasions(await apiGet('/api/occasions', []));
+  // Loaded on OPEN, not only when the section is entered: the index states
+  // "N metrics" beside the row, and a count that reads 0 until you tap it is
+  // worse than no count.
+  await loadMetrics();
+  renderMetricsSettings();
   renderBeCalendars(await apiGet('/api/calendars', []));
   await renderSchedules();
   settingsView.section = null;
@@ -4326,79 +4415,49 @@ function stepSheetFind() {
 // it owes all three verbs: edit, PAUSE and delete, in the same words and the
 // same place as every other kind. Pausing stops it being ASKED and stops it
 // being offered on a step; it never touches an answer already recorded.
+// The row states, the SHEET decides — the same shape as every other settings
+// list (beRow + beAddRow + wireBeList → SETTINGS_SHEETS.metric). It used to
+// carry Pause/Resume and Delete as buttons on the row and had no sheet at all,
+// which meant a metric was the one settings item you could not EDIT: no
+// rename, no change of kind, scale or unit. Two rules at once — "a row is its
+// text, its badges and ONE control", and "every settings kind can be edited,
+// paused and deleted, in the same words and the same place".
 function renderMetricsSettings() {
   const el = document.getElementById('be-metrics-list');
   if (!el) return;
   const rows = metricsView.all || [];
-  el.innerHTML = rows.map(m => `
-    <div class="be-set-row mt-set-row${m.active ? '' : ' se-paused'}" data-metric="${m.id}">
-      <span class="be-set-name">${escHtml(m.name)}</span>
-      <span class="mt-kind">${escHtml(METRIC_KIND_LABELS[m.kind] || m.kind)}${
-        m.kind === 'scale' ? ` ${m.scale_min}–${m.scale_max}` : ''}${
-        m.unit ? ` · ${escHtml(m.unit)}` : ''}</span>
-      ${m.active ? '' : '<span class="fr-badge">paused</span>'}
-      <span class="mt-asked">${(m.step_ids || []).length
-        ? `asked on ${(m.step_ids || []).length} step${(m.step_ids || []).length === 1 ? '' : 's'}`
-        : 'not asked anywhere yet'}</span>
-      <button class="be-btn-secondary mt-pause" data-metric="${m.id}">${
-        m.active ? 'Pause' : 'Resume'}</button>
-      <button class="be-btn-secondary mt-del" data-metric="${m.id}">Delete</button>
-    </div>`).join('') || '<div class="gtd-empty">No metrics yet.</div>';
-
-  el.querySelectorAll('.mt-pause').forEach(b => b.addEventListener('click', async () => {
-    const m = metricsView.all.find(x => x.id === parseInt(b.dataset.metric));
-    await fetch(`/api/metrics/${m.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ active: !m.active }) }).catch(() => null);
-    await loadMetrics();
-    renderMetricsSettings();
-  }));
-  el.querySelectorAll('.mt-del').forEach(b => b.addEventListener('click', async () => {
-    const m = metricsView.all.find(x => x.id === parseInt(b.dataset.metric));
-    // Deleting the QUESTION deletes its answers — a number with no question is
-    // unreadable, not history. Pausing is the verb that keeps the history, so
-    // say which one this is before doing it.
-    if (!confirm(`Delete "${m.name}" and every answer ever recorded for it?\n\n`
-                 + 'Pause instead if you want to stop being asked but keep the history.')) return;
-    await fetch(`/api/metrics/${m.id}`, { method: 'DELETE' }).catch(() => null);
-    await loadMetrics();
-    renderMetricsSettings();
-  }));
+  el.innerHTML = rows.map(m => beRow({
+    id: m.id, name: m.name, dim: !m.active,
+    meta: metricShape(m),
+    // Where it is asked is the thing you actually come here to check, and a
+    // count cannot answer it — the whole point of the join is that the morning
+    // step and the night step are different questions about one day.
+    sub: (m.steps || []).length
+      ? 'asked on ' + m.steps.map(s => s.flow_name).join(', ')
+      : 'not asked anywhere yet — put it on a routine step',
+    subClass: (m.steps || []).length ? '' : 'be-row-warn',
+    badge: m.active ? '' : 'paused',
+  })).join('') + beAddRow('Add metric');
+  wireBeList(el, 'metric', rows);
 }
 
-// Wired once per section open, not per render — the add row is outside the
-// list that renderMetricsSettings rewrites.
-let metricAddWired = false;
+// Kind, range and unit in one line: "likert scale 1–7", "count · cups".
+function metricShape(m) {
+  return (METRIC_KIND_LABELS[m.kind] || m.kind)
+    + (m.kind === 'scale' ? ` ${m.scale_min}–${m.scale_max}` : '')
+    + (m.unit ? ` · ${m.unit}` : '')
+    + (m.days_of_week ? ' · ' + daysWord(m.days_of_week) : '');
+}
 
-function wireMetricAdd() {
-  if (metricAddWired) return;
-  const btn = document.getElementById('be-metric-add');
-  const name = document.getElementById('be-metric-name');
-  const kind = document.getElementById('be-metric-kind');
-  if (!btn || !name || !kind) return;
-  metricAddWired = true;
-  const status = document.getElementById('be-metric-status');
-  const add = async () => {
-    const v = name.value.trim();
-    if (!v) { if (status) status.textContent = 'Give it a name.'; return; }
-    const res = await fetch('/api/metrics', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: v, kind: kind.value }) }).catch(() => null);
-    if (!res || !res.ok) { if (status) status.textContent = 'Could not add that.'; return; }
-    const created = await res.json();
-    name.value = '';
-    if (status) status.textContent = `"${created.name}" added — put it on a routine step to be asked.`;
-    // A create inverts to a delete, like every other create.
-    pushUndo(`added metric "${created.name}"`, async () => {
-      await fetch(`/api/metrics/${created.id}`, { method: 'DELETE' });
-      await loadMetrics();
-      renderMetricsSettings();
-    });
-    await loadMetrics();
-    renderMetricsSettings();
-  };
-  btn.addEventListener('click', add);
-  name.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+// '0'=Mon…'6'=Sun as letters, the same grammar the picker writes.
+function daysWord(dow) {
+  return [...dow].sort().map(d => DAY_LETTERS[parseInt(d)]).join('');
+}
+
+async function refreshMetricsSettings() {
+  await loadMetrics();
+  renderMetricsSettings();
+  if (settingsView.section == null) renderSettingsIndex();
 }
 
 function openStepSheet(id) {

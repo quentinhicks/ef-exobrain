@@ -110,6 +110,69 @@ c.delete(f"/api/metrics/{note['id']}")
 check('the metric is gone', all(m['name'] != 'One line' for m in c.get('/api/metrics').get_json()))
 check('its entries went with it', c.get(f"/api/metrics/{note['id']}/history").get_json() == [])
 
+# ── WHICH DAYS a metric is asked on ─────────────────────────────
+# A second filter UNDER the step's own days: the step decides whether the
+# routine asks anything today, the metric decides whether this question is one
+# of the things it asks. Same weekday grammar as everywhere else.
+today_dow = str(datetime.date.today().weekday())
+other_dow = str((datetime.date.today().weekday() + 1) % 7)
+
+wk = c.post('/api/metrics', json={'name': 'Weekly weigh-in', 'kind': 'count',
+                                  'days_of_week': other_dow,
+                                  'step_ids': [ms['id']]}).get_json()
+check('a metric stores its days', wk['days_of_week'] == other_dow, wk)
+asked = c.get(f"/api/metrics/step/{ms['id']}?date={TODAY}").get_json()
+check('a metric not due today is not asked',
+      'Weekly weigh-in' not in [m['name'] for m in asked['metrics']],
+      [m['name'] for m in asked['metrics']])
+
+c.patch(f"/api/metrics/{wk['id']}", json={'days_of_week': today_dow})
+asked = c.get(f"/api/metrics/step/{ms['id']}?date={TODAY}").get_json()
+check('and IS asked on a day it is due',
+      'Weekly weigh-in' in [m['name'] for m in asked['metrics']],
+      [m['name'] for m in asked['metrics']])
+
+# Narrowing the days mid-day must not blank an answer already given.
+c.put('/api/metrics/entry', json={'date': TODAY, 'metric_id': wk['id'],
+                                  'step_id': ms['id'], 'value': 81})
+c.patch(f"/api/metrics/{wk['id']}", json={'days_of_week': other_dow})
+asked = c.get(f"/api/metrics/step/{ms['id']}?date={TODAY}").get_json()
+check('an answer already given survives narrowing the days',
+      'Weekly weigh-in' in [m['name'] for m in asked['metrics']],
+      [m['name'] for m in asked['metrics']])
+
+# THE MONEY CASE. A hard metrics step can gate a QR. A step whose metrics all
+# fall on other days has nothing to ask and must be COMPLETE — reading the
+# empty list as unsatisfiable would make it impossible to clear six days a week.
+lone = c.post('/api/flows', json={'name': 'Lonely'}).get_json()
+ls = c.post(f"/api/flows/{lone['id']}/steps",
+            json={'content': 'metrics', 'kind': 'metrics'}).get_json()
+check('a metrics step with NOTHING bound is still not complete',
+      c.get(f"/api/metrics/step/{ls['id']}?date={TODAY}").get_json()['complete'] is False)
+off = c.post('/api/metrics', json={'name': 'Off-day only', 'kind': 'count',
+                                   'days_of_week': other_dow,
+                                   'step_ids': [ls['id']]}).get_json()
+check('but one whose metrics are all off-day IS complete',
+      c.get(f"/api/metrics/step/{ls['id']}?date={TODAY}").get_json()['complete'] is True)
+c.patch(f"/api/metrics/{off['id']}", json={'days_of_week': today_dow})
+check('and is incomplete again on a day it IS due',
+      c.get(f"/api/metrics/step/{ls['id']}?date={TODAY}").get_json()['complete'] is False)
+
+c.patch(f"/api/metrics/{off['id']}", json={'days_of_week': ''})
+check('clearing the days means every day',
+      [m for m in c.get('/api/metrics').get_json()
+       if m['id'] == off['id']][0]['days_of_week'] is None)
+c.patch(f"/api/metrics/{off['id']}", json={'days_of_week': '0123456'})
+check('and so does picking all seven',
+      [m for m in c.get('/api/metrics').get_json()
+       if m['id'] == off['id']][0]['days_of_week'] is None)
+
+# ── the settings row names WHERE it is asked ────────────────────
+m_mood = [m for m in c.get('/api/metrics').get_json() if m['id'] == mood['id']][0]
+check('a metric names the steps that ask it, not just a count',
+      sorted(s['flow_name'] for s in m_mood['steps']) == ['Morning', 'Night'],
+      m_mood.get('steps'))
+
 print('\n'.join(ok + bad))
 print('\n%d passed, %d failed' % (len(ok), len(bad)))
 sys.exit(1 if bad else 0)
