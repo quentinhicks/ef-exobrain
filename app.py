@@ -308,16 +308,17 @@ def get_inbox():
 
 @app.route('/api/inbox/active')
 def get_inbox_active():
-    area_id = request.args.get('area_id', type=int)
     domain_id = request.args.get('domain_id', type=int)
     storage.seed_recurring_tasks()
     # No filter = every available item across domains: the Engage context
     # picker narrows client-side so switching contexts costs no round trip.
-    if not area_id and not domain_id:
-        return jsonify(storage.get_active_items_all())
+    # (?area_id was a third branch nothing has called since the pool became
+    # domain-scoped, and it had quietly drifted out of lockstep — no inherited
+    # deadlines. Removed 2026-08-16: a predicate nobody exercises is a predicate
+    # nobody notices going wrong.)
     if domain_id:
         return jsonify(storage.get_active_items_for_domain(domain_id))
-    return jsonify(storage.get_active_items_for_area(area_id))
+    return jsonify(storage.get_active_items_all())
 
 
 @app.route('/api/recurring')
@@ -816,34 +817,6 @@ def delete_override(id):
     return '', 204
 
 
-@app.route('/api/todo/today', methods=['GET'])
-def get_todo_today():
-    today = date_cls.today().isoformat()
-    return jsonify(storage.create_or_get_todo(today))
-
-
-@app.route('/api/todo/today', methods=['PATCH'])
-def patch_todo_today():
-    data = request.get_json()
-    today = date_cls.today().isoformat()
-    return jsonify(storage.update_todo(today, **data))
-
-
-@app.route('/api/todo/sync', methods=['POST'])
-def sync_todo():
-    # Dormant with the rest of /api/todo/*. Nothing syncs to a Worker any more;
-    # it keeps the daily backup it always triggered.
-    threading.Thread(target=_daily_backup, daemon=True).start()
-    return jsonify({'pending': 0})
-
-
-@app.route('/api/todo/yesterday')
-def get_todo_yesterday():
-    yesterday = (date_cls.today() - timedelta(days=1)).isoformat()
-    todo = storage.get_todo(yesterday)
-    return jsonify(todo or {})
-
-
 # Local snapshot only. Git is no longer a sync or backup layer for data: the
 # repo carries code, the data dir carries data, and durability is the restic
 # timer's job (encrypted client-side, offsite, versioned — deploy/BACKUPS.md).
@@ -1230,25 +1203,6 @@ def update_experiment(id):
 
 
 # --- Block Feedback ---
-
-@app.route('/api/blocks/feedback')
-def get_blocks_feedback():
-    area_id = request.args.get('area_id', type=int)
-    since = request.args.get('since')
-    until = request.args.get('until')
-    return jsonify(storage.get_block_hit_rate(area_id, since, until))
-
-
-@app.route('/api/blocks/<int:id>/feedback', methods=['POST'])
-def add_block_feedback(id):
-    data = request.get_json()
-    if 'date' not in data:
-        return jsonify({'error': 'date is required'}), 400
-    if 'positive' not in data:
-        return jsonify({'error': 'positive is required'}), 400
-    result = storage.upsert_block_feedback(id, data['date'], data['positive'])
-    return jsonify(result), 201
-
 
 @app.route('/api/journal')
 def get_journal():
@@ -2092,81 +2046,9 @@ def people_window():
     return jsonify(_people_window())
 
 
-# --- Social gamification ---
-
-@app.route('/api/social/actions')
-def get_social_actions():
-    return jsonify(storage.get_social_actions(request.args.get('all') == '1'))
-
-
-@app.route('/api/social/actions/<int:id>', methods=['PATCH'])
-def patch_social_action(id):
-    return jsonify(storage.update_social_action(id, request.get_json() or {}))
-
-
-def _social_today_payload(date):
-    floor_raw = storage.get_settings().get('social_floor')
-    floor = int(floor_raw) if floor_raw is not None else None
-    total = storage.social_points_for_date(date)
-    since = (date_cls.fromisoformat(date) - timedelta(days=13)).isoformat()
-    hist = storage.social_history(since)
-    history = []
-    for i in range(14):
-        d = (date_cls.fromisoformat(since) + timedelta(days=i)).isoformat()
-        history.append({'date': d, 'total': hist.get(d, 0)})
-    journal = storage.get_journal_day(date)
-    crm = storage.get_crm_night(date)
-    todo = storage.get_todo(date)
-    met = floor is not None and total >= floor
-    return {
-        'date': date,
-        'total': total,
-        'floor': floor,
-        'met': met,
-        'bank': storage.social_bank(floor) if floor is not None else 0,
-        'log': storage.get_social_log(date),
-        'history': history,
-        'requirements': {
-            'social': met,
-            'journal': bool(journal and (journal.get('rating') is not None
-                            or journal.get('habit_mark') or journal.get('bottleneck')
-                            or journal.get('active_experiment'))),
-            'crm': bool(crm and crm.get('satisfied_at')),
-            'checkin': bool(todo and todo.get('planning_finished_at')),
-        },
-    }
-
-
-@app.route('/api/social/today')
-def get_social_today():
-    date = request.args.get('date') or date_cls.today().isoformat()
-    return jsonify(_social_today_payload(date))
-
-
-# The dormant points system's refresh hook. Nothing to pull since the Worker's
-# /social page went with the rest of the phone pages.
-@app.route('/api/social/sync', methods=['POST'])
-def sync_social_route():
-    return jsonify(_social_today_payload(date_cls.today().isoformat()))
-
-
-@app.route('/api/social/log', methods=['POST'])
-def post_social_log():
-    data = request.get_json() or {}
-    if not data.get('action_id'):
-        return jsonify({'error': 'action_id is required'}), 400
-    data.setdefault('date', date_cls.today().isoformat())
-    row = storage.log_social_interaction(data)
-    if row is None:
-        return jsonify({'error': 'unknown action_id'}), 400
-    return jsonify({'entry': row, 'total': storage.social_points_for_date(data['date'])}), 201
-
-
-@app.route('/api/social/log/<int:id>', methods=['DELETE'])
-def delete_social_log(id):
-    storage.delete_social_log(id)
-    return '', 204
-
+# --- People buckets ---
+# (Was headed "Social gamification": that was the dormant points system's
+# banner, and the buckets sat under it only by adjacency. They are the CRM's.)
 
 @app.route('/api/buckets')
 def get_buckets():

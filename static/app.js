@@ -6518,7 +6518,7 @@ function renderQrLayer() {
   const pageDow = String((state.currentDate.getDay() + 6) % 7);
 
   nodes.forEach(node => {
-    if (node.days_of_week != null && !String(node.days_of_week).includes(pageDow)) return;
+    if (!gateAppliesOnDow(node, pageDow)) return;
     // today_override from the API is only for the Worker's local today.
     // For other dates, use the client-side cache populated by drag saves.
     const cacheKey = `${node.id}:${pageDate}`;
@@ -6708,6 +6708,21 @@ function nodeWindowForDow(node, dow) {
   return w
     ? { window_start: w.window_start, window_end: w.window_end, window_end_offset_days: w.window_end_offset_days || 0 }
     : { window_start: node.window_start, window_end: node.window_end, window_end_offset_days: node.window_end_offset_days };
+}
+
+// DOES this gate run on that weekday — one answer, and it is the server's.
+//
+// `day_windows` is built by SKIPPING every date qr_judge.applies_on refuses, so
+// a weekday missing from it is a day the gate is not judged on. Reading
+// `days_of_week` first was the drift (2026-08-16): a gate scheduled by a SOURCE
+// keeps whatever that legacy column was created with — usually '0123456' — so a
+// Monday-only gate drew its hairline on Engage and the timeline every day of the
+// week while the judge only ever judged Monday. Display and the money path may
+// not disagree. The column stays as the fallback for a gate with no source yet,
+// exactly as it is in resolve_window.
+function gateAppliesOnDow(node, dow) {
+  if (node.day_windows) return !!nodeSourceWindowForDow(node, dow);
+  return node.days_of_week == null || String(node.days_of_week).includes(String(dow));
 }
 
 function nodeSourceWindowForDow(node, dow) {
@@ -9423,7 +9438,7 @@ function renderEngage() {
 
   const qrMinutes = {};
   (state.accountabilityNodes || []).filter(n => n.active)
-    .filter(n => n.days_of_week == null || String(n.days_of_week).includes(String(dow)))
+    .filter(n => gateAppliesOnDow(n, dow))
     .forEach(n => {
       // today_override is the Worker's resolution FOR TODAY — on any other
       // viewed day fall back to weekly window > defaults. (Date overrides for

@@ -1381,23 +1381,19 @@ def get_inbox_items():
     return [dict(r) for r in rows]
 
 
-def get_active_items_for_area(area_id):
-    # Projects are ordinary items that acquired children, so they appear in
-    # this list too. Rows go out flat; the client assembles the tree from
-    # project_id, since nesting can't be expressed by a flat ORDER BY.
-    today = date_cls.today().isoformat()
-    conn = get_conn()
-    rows = conn.execute(
-        '''SELECT * FROM inbox_item i
-           WHERE area_id = ? AND status = 'active'
-             AND (defer_until IS NULL OR defer_until <= ?)
-             AND (after_id IS NULL
-                  OR NOT EXISTS (SELECT 1 FROM inbox_item p WHERE p.id = i.after_id))
-           ORDER BY captured_at DESC''',
-        (area_id, today)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+# AVAILABILITY, written ONCE. Active, not waiting, no future defer date, and
+# either unblocked or blocked by a row that no longer exists (completion deletes
+# rows, so a dangling after_id IS the unblock). Every query that answers "what
+# could I do now" interpolates this fragment and binds `today` where the ? sits.
+#
+# It used to be hand-copied into each of them and kept in step by a comment
+# saying they must be. They were not: the per-area query had drifted out of the
+# inherited-deadline pass. A constant cannot drift (2026-08-16). Callers must
+# alias inbox_item as `i` — the correlated sub-select names it.
+_AVAILABLE = """i.status = 'active'
+             AND (i.defer_until IS NULL OR i.defer_until <= ?)
+             AND (i.after_id IS NULL
+                  OR NOT EXISTS (SELECT 1 FROM inbox_item p WHERE p.id = i.after_id))"""
 
 
 # A PROJECT'S DEADLINE BINDS EVERYTHING UNDER IT. If the outcome is due today
@@ -1449,12 +1445,9 @@ def get_active_items_all():
     today = date_cls.today().isoformat()
     conn = get_conn()
     rows = conn.execute(
-        '''SELECT i.*, a.domain_id AS domain_id, a.name AS area_name
+        f'''SELECT i.*, a.domain_id AS domain_id, a.name AS area_name
            FROM inbox_item i JOIN area a ON a.id = i.area_id
-           WHERE i.status = 'active'
-             AND (i.defer_until IS NULL OR i.defer_until <= ?)
-             AND (i.after_id IS NULL
-                  OR NOT EXISTS (SELECT 1 FROM inbox_item p WHERE p.id = i.after_id))
+           WHERE {_AVAILABLE}
            ORDER BY i.captured_at DESC''',
         (today,)
     ).fetchall()
@@ -1470,11 +1463,8 @@ def get_active_items_for_domain(domain_id):
     today = date_cls.today().isoformat()
     conn = get_conn()
     rows = conn.execute(
-        '''SELECT i.* FROM inbox_item i JOIN area a ON a.id = i.area_id
-           WHERE a.domain_id = ? AND i.status = 'active'
-             AND (i.defer_until IS NULL OR i.defer_until <= ?)
-             AND (i.after_id IS NULL
-                  OR NOT EXISTS (SELECT 1 FROM inbox_item p WHERE p.id = i.after_id))
+        f'''SELECT i.* FROM inbox_item i JOIN area a ON a.id = i.area_id
+           WHERE a.domain_id = ? AND {_AVAILABLE}
            ORDER BY i.captured_at DESC''',
         (domain_id, today)
     ).fetchall()
