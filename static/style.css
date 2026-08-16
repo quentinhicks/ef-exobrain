@@ -4027,6 +4027,25 @@ body.crm-over-runner #bucket-mgr-overlay { z-index: 175; }
 .eg-past .eg-text { color: var(--text-secondary); }
 .eg-cancelled .eg-text { color: var(--text-secondary); text-decoration: line-through; }
 
+/* What is happening RIGHT NOW (2026-08-16). The day already said what was
+   PAST by dimming it; the present said nothing, so finding your place meant
+   reading the clock and then the times. Only ever true on today.
+   Built from existing vars so it carries a light value for free — and it is a
+   tint, not a colour: the day has exactly one accent (the gate outcomes) and
+   "now" must not compete with judged money. Cancelled and past win over it in
+   source order below, so a cancelled block does not glow. */
+.eg-now {
+  background: var(--tint);
+  border-radius: 6px;
+}
+.eg-now .eg-time,
+.eg-now .eg-end { color: var(--accent); }
+.eg-now .eg-text { color: var(--text-primary); }
+/* A cancelled row is not happening, whatever the clock says. */
+.eg-now.eg-cancelled { background: none; }
+.eg-now.eg-cancelled .eg-time,
+.eg-now.eg-cancelled .eg-end { color: var(--text-secondary); }
+
 /* gate eyebrows are NEUTRAL until judged: green only on success, red on fail. */
 .eg-qr { display: flex; align-items: center; gap: 9px; padding: 7px 14px 3px; }
 .eg-qr .eg-time { width: auto; color: var(--text-secondary); }

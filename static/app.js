@@ -3031,6 +3031,27 @@ async function checkActiveBlock() {
 // the night it started and the new day does not begin already ticked.
 let dayStamp = formatDateYMD(new Date());
 
+// The now-highlight has to move with the clock, and re-rendering the day every
+// minute to move one class is both wasteful and the kind of repaint that
+// clobbers whatever the user is holding (the capture-bar rule). The rows carry
+// their own span, so the classes can be re-derived in place from the DOM.
+function paintNowRows() {
+  const rows = document.querySelectorAll('.eg-row[data-s]');
+  if (!rows.length) return;
+  const now = new Date();
+  const today = formatDateYMD(now);
+  const shown = formatDateYMD(egViewDate());
+  // Same three-way clock as renderEngage: a future day has no now, a past day
+  // is entirely past.
+  const nowMin = shown === today ? now.getHours() * 60 + now.getMinutes()
+    : shown < today ? 5760 : -1;
+  rows.forEach(el => {
+    const s = Number(el.dataset.s), e = Number(el.dataset.e);
+    el.classList.toggle('eg-now', e > s && s <= nowMin && nowMin < e);
+    el.classList.toggle('eg-past', e <= nowMin);
+  });
+}
+
 async function checkDayRollover() {
   const now = formatDateYMD(new Date());
   if (now === dayStamp) return;
@@ -6500,7 +6521,7 @@ document.addEventListener('DOMContentLoaded', () => {
     flushLogSave();
   });
   loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); });
-  setInterval(() => { checkDayRollover(); checkActiveBlock(); }, 60000);
+  setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); }, 60000);
 });
 
 // ── Accountability ────────────────────────────────────────────
@@ -9415,6 +9436,13 @@ function renderEngage() {
   // today's view: a future day has no past yet, and a past day is all past.
   const nowMin = isToday ? now.getHours() * 60 + now.getMinutes()
     : dateStr < formatDateYMD(now) ? 5760 : -1;
+  // What is happening RIGHT NOW. nowMin is -1 on a future day and 5760 on a
+  // past one, so containment can only ever be true on today — the same trick
+  // the past-dimming relies on. Every row whose span contains now is marked:
+  // a block and an event really can both be running, and unlike the NOW panel
+  // (which has room for one and picks by priority) the timeline can say so.
+  const isNow = r => r.endMin > r.minute && r.minute <= nowMin && nowMin < r.endMin;
+  const nowAttrs = r => ` data-s="${r.minute}" data-e="${r.endMin}"`;
   const dow = jsDateToDayOfWeek(viewDate);
   const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
 
@@ -9691,7 +9719,7 @@ function renderEngage() {
       </div>`;
     }
     if (r.kind === 'block') {
-      return `<div class="eg-row eg-block${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}"
+      return `<div class="eg-row eg-block${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
         data-block="${r.id}" title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text">${escHtml(r.label)}</span>
@@ -9706,7 +9734,7 @@ function renderEngage() {
         i => i.area_id === r.areaId && i.done_date !== dateStr).length;
       // A gate-anchored routine has no span of its own: it rides under the
       // hairline as a bare label, exactly like the design's routine rows.
-      return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}">
+      return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}>
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-routine-btn${engageView.routinePop === r.areaId ? ' eg-routine-btn-on' : ''}"
@@ -9717,7 +9745,7 @@ function renderEngage() {
     if (r.kind === 'event') {
       // The source calendar's pastel rides along as an inset edge (inset
       // box-shadow, so no layout shift) — same identity the timeline shows.
-      return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}"
+      return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
         data-ekey="${escHtml(r.ekey)}" title="⌘-click / long-press to hide from the day"
         ${r.color ? `style="box-shadow: inset 3px 0 0 ${escHtml(r.color)}"` : ''}>
         <span class="eg-time">${hhmm(r.minute)}</span>
