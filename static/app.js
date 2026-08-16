@@ -1801,7 +1801,7 @@ const configView = { rows: [], status: '' };
 const CONFIG_ROW_COUNT = 8;
 
 async function loadConfigRows() {
-  configView.rows = await fetch('/api/config').then(r => r.json()).catch(() => configView.rows);
+  configView.rows = await apiGet('/api/config', configView.rows);
   renderConfig();
 }
 
@@ -1826,10 +1826,7 @@ function renderConfig() {
   const save = async (key, value) => {
     configView.status = 'Saving…';
     renderConfig();
-    const res = await fetch('/api/config', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [key]: value }),
-    }).catch(() => null);
+    const res = await apiSend('/api/config', 'PATCH', { [key]: value }).catch(() => null);
     if (!res || !res.ok) {
       configView.status = `Could not save (${res ? res.status : 'no connection'})`;
       renderConfig();
