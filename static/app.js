@@ -1287,7 +1287,8 @@ function initSwipe() {
 function apiGet(path, fallback) {
   // Written out, not via a helper: this IS the helper. (The sweep that created
   // the call sites rewrote this body into a call to itself — a good reminder
-  // that a mechanical transform will happily eat its own definition.)
+  // that a mechanical transform will happily eat its own definition — twice, as
+  // it turned out: once on the sweep, once on the re-sweep after a merge.)
   return fetch(path).then(r => r.json()).catch(() => fallback);
 }
 
@@ -2962,6 +2963,27 @@ async function checkActiveBlock() {
 // the day it was OPENED on, so a night routine finished at 00:05 files against
 // the night it started and the new day does not begin already ticked.
 let dayStamp = formatDateYMD(new Date());
+
+// The now-highlight has to move with the clock, and re-rendering the day every
+// minute to move one class is both wasteful and the kind of repaint that
+// clobbers whatever the user is holding (the capture-bar rule). The rows carry
+// their own span, so the classes can be re-derived in place from the DOM.
+function paintNowRows() {
+  const rows = document.querySelectorAll('.eg-row[data-s]');
+  if (!rows.length) return;
+  const now = new Date();
+  const today = formatDateYMD(now);
+  const shown = formatDateYMD(egViewDate());
+  // Same three-way clock as renderEngage: a future day has no now, a past day
+  // is entirely past.
+  const nowMin = shown === today ? now.getHours() * 60 + now.getMinutes()
+    : shown < today ? 5760 : -1;
+  rows.forEach(el => {
+    const s = Number(el.dataset.s), e = Number(el.dataset.e);
+    el.classList.toggle('eg-now', e > s && s <= nowMin && nowMin < e);
+    el.classList.toggle('eg-past', e <= nowMin);
+  });
+}
 
 async function checkDayRollover() {
   const now = formatDateYMD(new Date());
@@ -6261,7 +6283,7 @@ document.addEventListener('DOMContentLoaded', () => {
     flushLogSave();
   });
   loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); });
-  setInterval(() => { checkDayRollover(); checkActiveBlock(); }, 60000);
+  setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); }, 60000);
 });
 
 // ── Accountability ────────────────────────────────────────────
@@ -8143,25 +8165,41 @@ function wireScheduleList(el, all, kind) {
 // removing the second variation returns the draft to a single rule.
 
 const DURATIONS = [
-  ['PT15M', '15 min'], ['PT30M', '30 min'], ['PT45M', '45 min'],
+  ['PT5M', '5 min'], ['PT10M', '10 min'], ['PT15M', '15 min'], ['PT20M', '20 min'],
+  ['PT30M', '30 min'], ['PT45M', '45 min'],
   ['PT1H', '1 hr'], ['PT1H30M', '1 hr 30'], ['PT2H', '2 hr'], ['PT2H30M', '2 hr 30'],
-  ['PT3H', '3 hr'], ['PT3H30M', '3 hr 30'], ['PT4H', '4 hr'], ['PT6H', '6 hr'],
-  ['PT8H', '8 hr'], ['P1D', 'all day'], ['', 'no duration'],
+  ['PT3H', '3 hr'], ['PT3H30M', '3 hr 30'], ['PT4H', '4 hr'], ['PT5H', '5 hr'],
+  ['PT6H', '6 hr'], ['PT8H', '8 hr'], ['PT10H', '10 hr'], ['PT12H', '12 hr'],
+  ['P1D', 'all day'], ['', 'no duration'],
 ];
 const FREQS = [['daily', 'day'], ['weekly', 'week'], ['monthly', 'month'], ['yearly', 'year']];
 const MONTH_MODES = [['date', 'a day of the month'], ['nth', 'an nth weekday']];
 const NTHS = [[1, '1st'], [2, '2nd'], [3, '3rd'], [4, '4th'], [-1, 'last']];
 // relativeTo + offset as ONE control, the way the design states it.
+// Both lists were too short to describe things the app already stores — a
+// gate's 10-hour window could be READ but never PICKED, so opening the picker
+// on one and pressing Done silently shortened it (see spOptionsWith).
 const OPENS = [
-  ['-PT2H|start', '2 hr before it starts'], ['-PT1H|start', '1 hr before it starts'],
-  ['-PT30M|start', '30 min before it starts'], ['PT0S|start', 'when it starts'],
-  ['PT0S|end', 'when it ends'], ['PT30M|end', '30 min after it ends'],
-  ['PT1H|end', '1 hr after it ends'],
+  ['-PT8H|start', '8 hr before it starts'], ['-PT6H|start', '6 hr before it starts'],
+  ['-PT4H|start', '4 hr before it starts'], ['-PT3H|start', '3 hr before it starts'],
+  ['-PT2H|start', '2 hr before it starts'], ['-PT1H30M|start', '1 hr 30 before it starts'],
+  ['-PT1H|start', '1 hr before it starts'], ['-PT45M|start', '45 min before it starts'],
+  ['-PT30M|start', '30 min before it starts'], ['-PT15M|start', '15 min before it starts'],
+  ['PT0S|start', 'when it starts'],
+  ['PT0S|end', 'when it ends'], ['PT15M|end', '15 min after it ends'],
+  ['PT30M|end', '30 min after it ends'], ['PT45M|end', '45 min after it ends'],
+  ['PT1H|end', '1 hr after it ends'], ['PT1H30M|end', '1 hr 30 after it ends'],
+  ['PT2H|end', '2 hr after it ends'], ['PT3H|end', '3 hr after it ends'],
+  ['PT4H|end', '4 hr after it ends'], ['PT6H|end', '6 hr after it ends'],
 ];
 const EXTENTS = [
   ['until-source-start', 'until it starts'], ['until-source-end', 'until it ends'],
-  ['same-as-source', 'as long as it runs'], ['PT15M', 'for 15 min'],
-  ['PT30M', 'for 30 min'], ['PT1H', 'for 1 hr'], ['PT2H', 'for 2 hr'],
+  ['same-as-source', 'as long as it runs'],
+  ['PT15M', 'for 15 min'], ['PT30M', 'for 30 min'], ['PT45M', 'for 45 min'],
+  ['PT1H', 'for 1 hr'], ['PT1H30M', 'for 1 hr 30'], ['PT2H', 'for 2 hr'],
+  ['PT3H', 'for 3 hr'], ['PT4H', 'for 4 hr'], ['PT5H', 'for 5 hr'],
+  ['PT6H', 'for 6 hr'], ['PT8H', 'for 8 hr'], ['PT10H', 'for 10 hr'],
+  ['PT12H', 'for 12 hr'], ['PT16H', 'for 16 hr'], ['P1D', 'for 24 hr'],
 ];
 const ONLY_ON = [
   ['', 'every day it runs'], ['mo,tu,we,th,fr', 'weekdays only'], ['sa,su', 'weekends only'],
@@ -8190,6 +8228,31 @@ function durationOptions(current) {
     opts.unshift([current, `for ${isoHuman(current)}`]);
   }
   return opts;
+}
+
+// The same protection every OTHER spSelect needs and did not have. A <select>
+// whose value is not among its options selects NOTHING, so the browser shows
+// the first one — and Done then writes that back. Opening the picker on a
+// source built elsewhere (a gate's window, a hand-written rule) and pressing
+// Done silently rewrote it. Widening the lists shrinks the odds; this removes
+// them. The stored value always appears, named as itself.
+function spOptionsWith(options, value, label) {
+  if (value == null || value === '') return options;
+  if (options.some(([v]) => String(v) === String(value))) return options;
+  return [[value, label(value)], ...options];
+}
+
+// `offset|relativeTo`, e.g. '-PT90M|start' -> '1 hr 30 before it starts'.
+function opensLabel(value) {
+  const [offset, rel] = String(value).split('|');
+  const anchor = rel === 'end' ? 'it ends' : 'it starts';
+  if (!offset || offset === 'PT0S') return `when ${anchor}`;
+  const neg = offset.startsWith('-');
+  return `${isoHuman(offset.replace(/^-/, ''))} ${neg ? 'before' : 'after'} ${anchor}`;
+}
+
+function extentLabel(value) {
+  return /^P/.test(String(value)) ? `for ${isoHuman(value)}` : String(value);
 }
 
 const SP_DAYS = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'];
@@ -8400,10 +8463,12 @@ function renderPicker() {
   if (kind === 'derived') {
     const f = d.follows;
     const target = (state.allSources || []).find(s => s.uid === f.source);
+    const opensVal = `${f.offset || 'PT0S'}|${f.relativeTo || 'start'}`;
+    const extentVal = f.extent || 'until-source-start';
     body += `<div class="sp-row"><span class="sp-label">Opens</span>${
-      spSelect('opens', OPENS, `${f.offset || 'PT0S'}|${f.relativeTo || 'start'}`)}</div>`;
+      spSelect('opens', spOptionsWith(OPENS, opensVal, opensLabel), opensVal)}</div>`;
     body += `<div class="sp-row"><span class="sp-label">Stays open</span>${
-      spSelect('extent', EXTENTS, f.extent || 'until-source-start')}</div>`;
+      spSelect('extent', spOptionsWith(EXTENTS, extentVal, extentLabel), extentVal)}</div>`;
     body += `<div class="sp-row"><span class="sp-label">Only on</span>${
       spSelect('only', ONLY_ON, ((f.only || {}).byDay || []).join(','))}</div>`;
     body += '<div class="sp-rule"></div>';
@@ -9352,6 +9417,13 @@ function renderEngage() {
   // today's view: a future day has no past yet, and a past day is all past.
   const nowMin = isToday ? now.getHours() * 60 + now.getMinutes()
     : dateStr < formatDateYMD(now) ? 5760 : -1;
+  // What is happening RIGHT NOW. nowMin is -1 on a future day and 5760 on a
+  // past one, so containment can only ever be true on today — the same trick
+  // the past-dimming relies on. Every row whose span contains now is marked:
+  // a block and an event really can both be running, and unlike the NOW panel
+  // (which has room for one and picks by priority) the timeline can say so.
+  const isNow = r => r.endMin > r.minute && r.minute <= nowMin && nowMin < r.endMin;
+  const nowAttrs = r => ` data-s="${r.minute}" data-e="${r.endMin}"`;
   const dow = jsDateToDayOfWeek(viewDate);
   const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
 
@@ -9416,9 +9488,8 @@ function renderEngage() {
       ${returning.map(i => `
         <div class="eg-row eg-pool-item eg-defer-row" data-id="${i.id}">
           <span class="eg-text">${escHtml(i.content)}</span>
-          ${itemTags(i).map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
-          ${dueChip(i, 'eg-tag')}
-          <span class="eg-tag">${escHtml(i.project_name || i.area_name || '')}</span>
+          <span class="eg-tags">${itemTags(i).map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}${
+            dueChip(i, 'eg-tag')}<span class="eg-tag">${escHtml(i.project_name || i.area_name || '')}</span></span>
         </div>`).join('')}
     </div>` : '';
 
@@ -9447,7 +9518,7 @@ function renderEngage() {
       </div>`;
     }
     if (r.kind === 'block') {
-      return `<div class="eg-row eg-block${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}"
+      return `<div class="eg-row eg-block${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
         data-block="${r.id}" title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text">${escHtml(r.label)}</span>
@@ -9462,7 +9533,7 @@ function renderEngage() {
         i => i.area_id === r.areaId && i.done_date !== dateStr).length;
       // A gate-anchored routine has no span of its own: it rides under the
       // hairline as a bare label, exactly like the design's routine rows.
-      return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}">
+      return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}>
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-routine-btn${engageView.routinePop === r.areaId ? ' eg-routine-btn-on' : ''}"
@@ -9473,7 +9544,7 @@ function renderEngage() {
     if (r.kind === 'event') {
       // The source calendar's pastel rides along as an inset edge (inset
       // box-shadow, so no layout shift) — same identity the timeline shows.
-      return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}"
+      return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
         data-ekey="${escHtml(r.ekey)}" title="⌘-click / long-press to hide from the day"
         ${r.color ? `style="box-shadow: inset 3px 0 0 ${escHtml(r.color)}"` : ''}>
         <span class="eg-time">${hhmm(r.minute)}</span>
@@ -9662,11 +9733,10 @@ function renderEngage() {
           <span class="eg-check${i.started_at ? ' eg-check-started' : ''}" data-id="${i.id}"
             title="Done">${i.started_at ? '◐' : ''}</span>
           <span class="eg-text">${escHtml(i.content)}</span>
-          ${itemTags(i).filter(t => EST_TAGS.includes(t))
-            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
-          ${dueChip(i, 'eg-tag')}
-          ${itemTags(i).filter(t => !EST_TAGS.includes(t))
-            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}
+          <span class="eg-tags">${itemTags(i).filter(t => EST_TAGS.includes(t))
+            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}${dueChip(i, 'eg-tag')}${
+            itemTags(i).filter(t => !EST_TAGS.includes(t))
+            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}</span>
         </div>`).join('') || '<div class="eg-empty">Nothing available — done, parked, or handed off.</div>'}
     </div>
     ${popHtml}
@@ -11150,12 +11220,15 @@ function renderClarifyProjSearch(sheet, item) {
   });
 }
 
-// Creating a project IS the breakdown flow now (2026-08-07, replacing "⤷ Break
-// this down"). The old one made the CAPTURE become the project and left you in
-// the bar with an empty outcome; this one names the outcome, puts the thing you
-// were clarifying IN it as action [1], and opens the composer so the rest of
-// the decomposition — more actions, then the order they go in — happens in one
-// place, while you still have the project in your head.
+// Creating a project is now exactly PICKING one that happens not to exist yet
+// (Quentin, 2026-08-16). It used to be the breakdown flow: it filed the item as
+// action [1], took it out of the queue and opened the composer on the spot. But
+// naming a project is a filing decision, not a decision to decompose — and
+// asking for the breakdown here interrupts the sheet mid-clarify, before you
+// have picked a verb, exactly the way picking an existing project used to and
+// stopped doing on 2026-08-11. So this fills the project in and returns you to
+// the sheet you were already in; nothing is filed until you exit it normally.
+// The composer is untouched and still reached the explicit way, the ⛓ pill.
 async function clarifyCreateProject(name) {
   if (!name) return;
   const areaId = clarifyView.areaId || state.activeAreaId
@@ -11166,50 +11239,32 @@ async function clarifyCreateProject(name) {
   clarifyView.projectId = p.id;
   clarifyView.projectName = p.content;
   clarifyView.projSearch = null;
-
-  // The external step has no source row to file, so it opens the composer
-  // empty — the project's first action is typed in the add field like the rest.
-  const item = clarifyView.external ? null : clarifyView.queue[0];
-  if (item) {
-    // Commit the item into the project as clarified, WITHOUT advancing the
-    // queue: fileClarify would move to the next capture and take the composer
-    // with it. Everything the main sheet had decided rides along, so opening
-    // the composer never silently drops a tag or a due date.
-    const snap = await snapshotItem(item.id);
-    const content = clarifyView.action.trim() || item.content;
-    await apiSend(`/api/inbox/${item.id}`, 'PATCH', { content, status: 'active', area_id: areaId,
-                             project_id: p.id,
-                             tags: [...clarifyView.tags].join(' '),
-                             notes: clarifyView.notes,
-                             deadline: clarifyView.due || null,
-                             defer_until: clarifyView.showDate || null });
-    item.content = content;
-    item.notes = clarifyView.notes;
-    // One undo for the whole act: the item goes back to "in" AND the project
-    // it was created for goes away. Half of it would leave an empty project.
-    pushUndo(`broke down "${content}"`, async () => {
-      if (snap) {
-        await apiSend('/api/inbox/restore', 'POST', snap);
-      }
-      await apiSend(`/api/inbox/${p.id}`, 'DELETE');
-      await refreshAfterUndo();
-    });
-    // It has left "in", so it leaves the queue — the composer is what stands
-    // in for this item's remaining clarify.
-    clarifyView.queue.shift();
-    state.inbox = state.inbox.filter(x => x.id !== item.id);
-    renderInbox();
-  }
-  await openComposeFor({ id: p.id, content: p.content, area_id: areaId }, 'new');
+  // Same reason as the pick path: filing adopts the project's area server-side
+  // unconditionally, so the Filing-to row must not show a different one.
+  clarifyView.areaId = areaId;
+  // A create inverts to a delete. The item is NOT filed here any more, so
+  // there is nothing to restore — but if the sheet is still pointing at the
+  // project when this runs, the selection has to let go of a row that is gone.
+  pushUndo(`new project "${p.content}"`, async () => {
+    await apiSend(`/api/inbox/${p.id}`, 'DELETE');
+    if (clarifyView.projectId === p.id) {
+      clarifyView.projectId = null;
+      clarifyView.projectName = '';
+    }
+    await refreshAfterUndo();
+  });
+  renderClarify();
 }
 
 // Two ways in, and the difference is whether the item has been filed yet:
-//   'new'  — clarifyCreateProject already filed it as action [1]; leaving
-//            resumes the clarify queue, because this item is done.
-//   'pick'  — you chose an existing project from the search and NOTHING has
-//            been filed; leaving goes back to the main sheet so you still pick
-//            a verb. Ordering the project's actions must not silently commit
-//            the item you were clarifying.
+//   (no origin) — the post-filing hook, or the ⛓ pill: the item is already
+//            filed, so leaving resumes the clarify queue.
+//   'pick'  — you chose a project from the search and NOTHING has been filed;
+//            leaving goes back to the main sheet so you still pick a verb.
+//            Ordering the project's actions must not silently commit the item
+//            you were clarifying.
+// (The 'new' origin is gone as of 2026-08-16: creating a project no longer
+// opens the composer at all, so there is no post-create entry to distinguish.)
 async function openComposeFor(project, origin) {
   clarifyView.compose = {
     id: project.id, name: project.content,
@@ -11507,6 +11562,7 @@ async function reloadBuckets() {
 function openAddPerson() {
   if (!peopleView.editable) return;
   peopleView.addSelectedId = null;
+  peopleView.addAllowDuplicate = false;
   const title = document.getElementById('person-add-title');
   if (title) title.textContent = 'Add interaction';
   const body = document.getElementById('person-add-body');
@@ -11556,6 +11612,35 @@ function openAddPerson() {
   // The notes-append box is a markdown field like every other notes surface.
   wireMdShortcuts(document.getElementById('pa-notes-add'));
 
+  // Typing a name in FULL is the same intent as tapping it in the suggestion
+  // list, and it is the likelier one on a phone (the list is a 36px target you
+  // have to notice). Before this, only the tap set addSelectedId, so typing
+  // "Sarah Chen" over an existing Sarah Chen minted a second row. The match is
+  // resolved here and at submit; the server 409s as the backstop.
+  const exactMatch = () => {
+    const key = nameInput.value.trim().toLowerCase();
+    if (!key) return null;
+    return peopleView.people.find(p => (p.name || '').trim().toLowerCase() === key) || null;
+  };
+
+  // Tapping a suggestion PREFILLS the form from the person, so saving it whole
+  // is safe. Typing the name does not, so the form is blank — and a blank field
+  // there means "I didn't fill this in", never "clear what's on file". Sending
+  // it whole would blank their company, birthday, cadence and buckets. Only
+  // what was actually entered travels.
+  const prunedFields = f => {
+    const out = {};
+    ['company', 'location', 'birthday', 'how_we_met', 'next_action'].forEach(k => {
+      if ((f[k] || '').trim()) out[k] = f[k];
+    });
+    if (f.cadence && f.cadence !== 'none') out.cadence = f.cadence;
+    if (f.has_contact) out.has_contact = true;
+    // Empty means "checked nothing", and update_person replaces the whole set —
+    // an empty list would unfile them from every bucket they are in.
+    if ((f.bucket_ids || []).length) out.bucket_ids = f.bucket_ids;
+    return out;
+  };
+
   const updateBanner = () => {
     const banner = document.getElementById('pa-existing');
     const submit = document.getElementById('pa-submit');
@@ -11564,10 +11649,26 @@ function openAddPerson() {
       banner.innerHTML = `Existing contact — edits save to <strong>${escHtml(p ? p.name : '')}</strong> and your interaction is logged.`;
       banner.classList.remove('hidden');
       submit.textContent = 'Save + log interaction';
-    } else {
-      banner.classList.add('hidden');
-      submit.textContent = 'Add person';
+      return;
     }
+    const m = peopleView.addAllowDuplicate ? null : exactMatch();
+    if (m) {
+      // Said before the press, not refused after it: the button already names
+      // what it will do, and the escape for two real people with one name is
+      // right here rather than being a dead end.
+      banner.innerHTML = `Already in your CRM — this logs to <strong>${escHtml(m.name)}</strong> instead of adding a second row. `
+        + `<button type="button" class="pa-dup-btn" id="pa-dup">Add as a separate person</button>`;
+      banner.classList.remove('hidden');
+      const dup = document.getElementById('pa-dup');
+      if (dup) dup.addEventListener('click', () => {
+        peopleView.addAllowDuplicate = true;
+        updateBanner();
+      });
+      submit.textContent = 'Log interaction';
+      return;
+    }
+    banner.classList.add('hidden');
+    submit.textContent = peopleView.addAllowDuplicate ? 'Add separate person' : 'Add person';
   };
 
   const selectExisting = id => {
@@ -11597,6 +11698,9 @@ function openAddPerson() {
 
   nameInput.addEventListener('input', () => {
     peopleView.addSelectedId = null;   // typing means diverging from any picked person
+    // …but a CHANGED name is a fresh question, so an earlier "separate person"
+    // decision does not carry over to whoever is being typed now.
+    peopleView.addAllowDuplicate = false;
     updateBanner();
     document.getElementById('pa-notes-current').classList.add('hidden');
     const q = nameInput.value.trim().toLowerCase();
@@ -11645,18 +11749,43 @@ function openAddPerson() {
     submit.disabled = true;
     try {
       let personId = peopleView.addSelectedId;
+      // A name typed in full names the person it matches, exactly as tapping
+      // the suggestion would have. Without this the form's own autocomplete was
+      // the only thing standing between you and a second row.
+      let adopted = null;
+      if (!personId && !peopleView.addAllowDuplicate) {
+        adopted = exactMatch();
+        if (adopted) personId = adopted.id;
+      }
       if (personId) {
         // notes_append, never notes: appending in SQL is what keeps this form
         // from overwriting notes it never showed.
-        const body = notesAdd ? { ...fields, notes_append: notesAdd } : fields;
+        const base = adopted ? prunedFields(fields) : fields;
+        const body = notesAdd ? { ...base, notes_append: notesAdd } : base;
         const res = await apiSend(`/api/people/${personId}`, 'PATCH', body);
         if (!res.ok) { errEl.textContent = `Save failed (${res.status})`; return; }
+        if (adopted) toast(`Logged to ${adopted.name} — already in your CRM`);
       } else {
         // A new person has nothing to append to, so this IS their notes.
         const body = notesAdd ? { ...fields, notes: notesAdd } : fields;
+        if (peopleView.addAllowDuplicate) body.allow_duplicate = true;
         const res = await apiSend('/api/people', 'POST', body);
-        if (!res.ok) { errEl.textContent = `Add failed (${res.status})`; return; }
-        personId = (await res.json()).id;
+        // The server's own name guard, for the case the client could not see:
+        // a people list loaded before someone else's session added them. It
+        // hands back the person, so this becomes the log it should have been.
+        if (res.status === 409) {
+          const dup = (await res.json()).person;
+          personId = dup.id;
+          const pbody = prunedFields(fields);
+          if (notesAdd) pbody.notes_append = notesAdd;
+          const pres = await apiSend(`/api/people/${personId}`, 'PATCH', pbody);
+          if (!pres.ok) { errEl.textContent = `Save failed (${pres.status})`; return; }
+          toast(`Logged to ${dup.name} — already in your CRM`);
+        } else if (!res.ok) {
+          errEl.textContent = `Add failed (${res.status})`; return;
+        } else {
+          personId = (await res.json()).id;
+        }
       }
       if (intNote && intDate) {
         const ires = await apiSend(`/api/people/${personId}/interactions`, 'POST', { date: intDate, note: intNote, source: intSource });
