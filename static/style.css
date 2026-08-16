@@ -5503,6 +5503,56 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: var(--text-secondary);
 }
 
+/* ── Self-monitoring: metrics ───────────────────────────────
+   The runner page asks a set of questions on ONE page, so each row is
+   name · optional prompt · control. Chips are finger targets (a 1-7 likert is
+   seven of them across 430px), not the 10px marks a mouse could manage. */
+.mt-list { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+
+.mt-row { display: flex; flex-direction: column; gap: 6px; }
+
+.mt-name { font-size: 14px; color: var(--text-primary); }
+.mt-unit { font: 10px var(--font-mono); color: var(--text-secondary); }
+.mt-prompt { font-size: 12px; color: var(--text-secondary); }
+
+.mt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.mt-chip {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.mt-chip:hover { color: var(--text-primary); border-color: var(--accent); }
+
+.mt-chip-on {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.mt-input {
+  min-height: 40px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--surface-low);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mt-input:focus { outline: none; border-color: var(--accent); }
+
+/* The settings row: name, shape, where it is asked, then the three verbs. */
+.mt-set-row { flex-wrap: wrap; row-gap: 6px; }
+.mt-kind, .mt-asked { font: 10px var(--font-mono); color: var(--text-secondary); }
+.mt-asked { flex: 1 1 auto; }
+
 /* ---- Light theme ---- */
 
 /* One contiguous appendix: the palette swap, then the handful of rules whose

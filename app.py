@@ -695,6 +695,71 @@ def delete_ref_item_route(id):
 
 # --- Social exposure v1 (grid, calibration, spec + dose lines; dryrun) ---
 
+# ── Self-monitoring: metrics (2026-08-16) ────────────────────
+#
+# Definitions are config; entries are the day's answers. Nothing here judges
+# anything: a metric is DISPLAY ONLY (Quentin) — no value drives money. What
+# CAN gate is the routine step that asks them, through the ordinary hard/soft
+# rule, so a gate demands that you ANSWERED, never a particular answer.
+
+@app.route('/api/metrics')
+def get_metrics_route():
+    return jsonify(storage.get_metrics())
+
+
+@app.route('/api/metrics', methods=['POST'])
+def post_metric():
+    data = request.get_json() or {}
+    if not (data.get('name') or '').strip():
+        return jsonify({'error': 'name is required'}), 400
+    return jsonify(storage.create_metric(data)), 201
+
+
+@app.route('/api/metrics/<int:id>', methods=['PATCH'])
+def patch_metric(id):
+    data = request.get_json() or {}
+    if 'name' in data and not (data.get('name') or '').strip():
+        return jsonify({'error': 'name cannot be blank'}), 400
+    return jsonify(storage.update_metric(id, data))
+
+
+@app.route('/api/metrics/<int:id>', methods=['DELETE'])
+def delete_metric_route(id):
+    storage.delete_metric(id)
+    return '', 204
+
+
+# What one step asks on one date, with whatever has been answered already.
+@app.route('/api/metrics/step/<int:step_id>')
+def get_metrics_for_step(step_id):
+    ymd = request.args.get('date') or date_cls.today().isoformat()
+    return jsonify({
+        'date': ymd,
+        'metrics': storage.metrics_for_step(step_id, ymd),
+        'complete': storage.metrics_step_complete(step_id, ymd),
+    })
+
+
+@app.route('/api/metrics/entry', methods=['PUT'])
+def put_metric_entry():
+    data = request.get_json() or {}
+    if data.get('metric_id') is None or data.get('step_id') is None:
+        return jsonify({'error': 'metric_id and step_id are required'}), 400
+    ymd = data.get('date') or date_cls.today().isoformat()
+    entry = storage.set_metric_entry(ymd, int(data['metric_id']), int(data['step_id']),
+                                     data.get('value'))
+    return jsonify({'entry': entry,
+                    'complete': storage.metrics_step_complete(int(data['step_id']), ymd)})
+
+
+@app.route('/api/metrics/<int:id>/history')
+def get_metric_history(id):
+    end = request.args.get('end') or date_cls.today().isoformat()
+    start = request.args.get('start') or (
+        date_cls.fromisoformat(end) - timedelta(days=59)).isoformat()
+    return jsonify(storage.metric_history(id, start, end))
+
+
 @app.route('/api/social')
 def get_social_route():
     levels = storage.get_social_levels()

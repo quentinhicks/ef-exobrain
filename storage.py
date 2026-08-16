@@ -794,6 +794,56 @@ def init_db():
     # the morning routine must never hide work, exactly like the other three
     # gates fail open. Only an explicit "not today" hides anything, and the pool
     # header counts what it hid.
+    # ── Self-monitoring (2026-08-16) ─────────────────────────
+    #
+    # A metric is a QUESTION you answer on a routine step, and `metric_entry` is
+    # the answers. The definition/instance split is the one flow/flow_run and
+    # ref_list/ref_item already use.
+    #
+    # `metric_step` is a JOIN, not a column on metric, because a metric may be
+    # asked TWICE A DAY (Quentin, 2026-08-16): morning AND night. That is also
+    # why an entry records the STEP that asked it — without it the night answer
+    # would land on the morning's row and silently overwrite it.
+    #
+    # There is no time-of-day column anywhere here. The routine already knows
+    # when it runs, so "morning" and "night" are WHICH ROUTINE the step is in;
+    # a `when` field would be a second grammar for what the calendar answers.
+    #
+    # NO ROW MEANS NO DATA — never zero. Same rule as tag_day above: skipping
+    # the routine must leave the series silent rather than record a false zero,
+    # which would lie in the one direction that ruins a trend.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS metric (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            name      TEXT NOT NULL,
+            kind      TEXT NOT NULL DEFAULT 'scale',
+            prompt    TEXT NOT NULL DEFAULT '',
+            scale_min INTEGER NOT NULL DEFAULT 1,
+            scale_max INTEGER NOT NULL DEFAULT 7,
+            unit      TEXT NOT NULL DEFAULT '',
+            active    INTEGER NOT NULL DEFAULT 1,
+            position  INTEGER NOT NULL DEFAULT 0
+        )''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS metric_step (
+            metric_id INTEGER NOT NULL REFERENCES metric(id),
+            step_id   INTEGER NOT NULL REFERENCES flow_step(id),
+            PRIMARY KEY (metric_id, step_id)
+        )''')
+    # value_num carries scale, count and yes/no (0/1); value_text carries text.
+    # Both nullable: an entry exists only because something was answered, and
+    # which column holds it is the metric's kind, not a guess.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS metric_entry (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT NOT NULL,
+            metric_id  INTEGER NOT NULL REFERENCES metric(id),
+            step_id    INTEGER NOT NULL,
+            value_num  REAL,
+            value_text TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (date, metric_id, step_id)
+        )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS tag_daily (
             tag TEXT PRIMARY KEY
@@ -5171,6 +5221,188 @@ def apply_people_capture(ops):
                 create_person(op)
         if op.get('date'):
             record_crm_night(op['date'], 'nothing' if kind == 'nothing' else 'entries')
+
+
+# --- Self-monitoring: metrics asked on a routine step (2026-08-16) ---
+
+METRIC_KINDS = ('scale', 'count', 'yesno', 'text')
+
+
+def _metric_row(r):
+    m = dict(r)
+    m['active'] = bool(m.get('active', 1))
+    return m
+
+
+def get_metrics(include_paused=True):
+    conn = get_conn()
+    where = '' if include_paused else 'WHERE active = 1'
+    rows = conn.execute(f'SELECT * FROM metric {where} ORDER BY position, id').fetchall()
+    out = [_metric_row(r) for r in rows]
+    # Which steps ask it, so the settings row can say where it is asked without
+    # a second request.
+    for m in out:
+        m['step_ids'] = [x['step_id'] for x in conn.execute(
+            'SELECT step_id FROM metric_step WHERE metric_id = ? ORDER BY step_id',
+            (m['id'],)).fetchall()]
+    conn.close()
+    return out
+
+
+def create_metric(data):
+    kind = data.get('kind') if data.get('kind') in METRIC_KINDS else 'scale'
+    conn = get_conn()
+    pos = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM metric').fetchone()['p']
+    cur = conn.execute(
+        '''INSERT INTO metric (name, kind, prompt, scale_min, scale_max, unit, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        ((data.get('name') or '').strip(), kind, (data.get('prompt') or '').strip(),
+         int(data.get('scale_min') or 1), int(data.get('scale_max') or 7),
+         (data.get('unit') or '').strip(), pos))
+    mid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    if 'step_ids' in data:
+        set_metric_steps(mid, data.get('step_ids') or [])
+    return get_metric(mid)
+
+
+def get_metric(id):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM metric WHERE id = ?', (id,)).fetchone()
+    out = _metric_row(row) if row else None
+    if out:
+        out['step_ids'] = [x['step_id'] for x in conn.execute(
+            'SELECT step_id FROM metric_step WHERE metric_id = ? ORDER BY step_id',
+            (id,)).fetchall()]
+    conn.close()
+    return out
+
+
+def update_metric(id, data):
+    fields = {}
+    for c in ('name', 'prompt', 'unit'):
+        if c in data:
+            fields[c] = (data[c] or '').strip()
+    if data.get('kind') in METRIC_KINDS:
+        fields['kind'] = data['kind']
+    for c in ('scale_min', 'scale_max', 'position'):
+        if c in data and data[c] is not None:
+            fields[c] = int(data[c])
+    # PAUSING never deletes and never touches entries already recorded: a paused
+    # metric stops being ASKED and stops being offered, and its history stands.
+    if 'active' in data:
+        fields['active'] = 1 if data['active'] else 0
+    conn = get_conn()
+    if fields:
+        sets = ', '.join(f'{k} = ?' for k in fields)
+        conn.execute(f'UPDATE metric SET {sets} WHERE id = ?', list(fields.values()) + [id])
+        conn.commit()
+    conn.close()
+    if 'step_ids' in data:
+        set_metric_steps(id, data.get('step_ids') or [])
+    return get_metric(id)
+
+
+def set_metric_steps(metric_id, step_ids):
+    conn = get_conn()
+    conn.execute('DELETE FROM metric_step WHERE metric_id = ?', (metric_id,))
+    for sid in step_ids or []:
+        conn.execute('INSERT OR IGNORE INTO metric_step (metric_id, step_id) VALUES (?, ?)',
+                     (metric_id, int(sid)))
+    conn.commit()
+    conn.close()
+
+
+# Deleting the QUESTION deletes its answers with it: a metric_entry whose metric
+# is gone is an unreadable number, not history — nothing can say what it meant.
+# Pausing is the verb that keeps the history.
+def delete_metric(id):
+    conn = get_conn()
+    conn.execute('DELETE FROM metric_entry WHERE metric_id = ?', (id,))
+    conn.execute('DELETE FROM metric_step WHERE metric_id = ?', (id,))
+    conn.execute('DELETE FROM metric WHERE id = ?', (id,))
+    conn.commit()
+    conn.close()
+
+
+# What a step asks, with the answers it already has for that date. PAUSED
+# metrics are not asked — but an answer already recorded for the day still
+# comes back, so pausing mid-day never blanks something you already said.
+def metrics_for_step(step_id, ymd):
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT m.* FROM metric m
+           JOIN metric_step ms ON ms.metric_id = m.id
+           WHERE ms.step_id = ? AND m.active = 1
+           ORDER BY m.position, m.id''', (step_id,)).fetchall()
+    out = [_metric_row(r) for r in rows]
+    for m in out:
+        e = conn.execute(
+            'SELECT * FROM metric_entry WHERE date = ? AND metric_id = ? AND step_id = ?',
+            (ymd, m['id'], step_id)).fetchone()
+        m['entry'] = dict(e) if e else None
+    conn.close()
+    return out
+
+
+# One answer. Upsert on (date, metric, step) — the step is in the key because a
+# metric may be asked morning AND night, and those are two different answers
+# about the same day. Passing None CLEARS it: no row means no data, which is
+# not the same as a zero.
+def set_metric_entry(ymd, metric_id, step_id, value):
+    conn = get_conn()
+    row = conn.execute('SELECT kind FROM metric WHERE id = ?', (metric_id,)).fetchone()
+    kind = row['kind'] if row else 'scale'
+    if value is None or (isinstance(value, str) and not value.strip()):
+        conn.execute('DELETE FROM metric_entry WHERE date = ? AND metric_id = ? AND step_id = ?',
+                     (ymd, metric_id, step_id))
+        conn.commit()
+        conn.close()
+        return None
+    num, text = None, None
+    if kind == 'text':
+        text = str(value)
+    elif kind == 'yesno':
+        num = 1 if value in (True, 1, '1', 'yes', 'true') else 0
+    else:
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            conn.close()
+            return None
+    conn.execute(
+        '''INSERT INTO metric_entry (date, metric_id, step_id, value_num, value_text)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(date, metric_id, step_id)
+           DO UPDATE SET value_num = excluded.value_num, value_text = excluded.value_text,
+                         created_at = datetime('now')''',
+        (ymd, metric_id, step_id, num, text))
+    conn.commit()
+    out = conn.execute(
+        'SELECT * FROM metric_entry WHERE date = ? AND metric_id = ? AND step_id = ?',
+        (ymd, metric_id, step_id)).fetchone()
+    conn.close()
+    return dict(out) if out else None
+
+
+# Is every metric this step asks answered for the date? A HARD metrics step is
+# credited on this, exactly as a hard checklist demands every item and refuses
+# to credit an empty or unlinked one. A step that asks NOTHING cannot be
+# satisfied by asking nothing — same refusal.
+def metrics_step_complete(step_id, ymd):
+    asked = metrics_for_step(step_id, ymd)
+    return bool(asked) and all(m['entry'] for m in asked)
+
+
+def metric_history(metric_id, start, end):
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT date, step_id, value_num, value_text FROM metric_entry
+           WHERE metric_id = ? AND date >= ? AND date <= ?
+           ORDER BY date, step_id''', (metric_id, start, end)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # --- Social exposure v1 (the grid, prices, spec + dose lines) ---

@@ -1781,6 +1781,10 @@ const SETTINGS_SECTIONS = [
   { key: 'calendars', name: 'Calendars', group: 'App',
     desc: 'iCal feeds drawn on the timeline.',
     summary: () => `${beCounts.calendars || 0} connected` },
+  { key: 'metrics', name: 'Metrics', group: 'Where and what',
+    desc: 'What you track about yourself. Asked on a routine step — a metric can '
+      + 'be asked by a morning step AND a night one.',
+    summary: () => plural((metricsView.all || []).filter(m => m.active).length, 'metric') },
   { key: 'config', name: 'Connections', group: 'App',
     desc: 'Accounts, keys and paths the app talks to the outside world with. '
       + 'Stored in config.json on the server, never in the database.',
@@ -1881,6 +1885,7 @@ function openSettingsSection(key) {
   // the file, and a stale "not set" next to a token is the worst thing this
   // page could say.
   if (key === 'config') { configView.status = ''; loadConfigRows(); }
+  if (key === 'metrics') loadMetrics().then(() => { renderMetricsSettings(); wireMetricAdd(); });
 }
 
 function backToSettingsIndex() {
@@ -4031,6 +4036,7 @@ function renderRef() {
 // not mistake for having done the thing.
 const FLOW_KINDS = { text: 'text', checklist: 'checklist',
                      daily_contexts: 'today’s contexts',
+                     metrics: 'metrics',
                      social_spec: 'social spec (planned)',
                      social_dose: 'social dose (done)',
                      journal_night: 'nightly journal', crm_fill: 'CRM fill' };
@@ -4221,6 +4227,19 @@ function stepsMinutes(steps) {
   return { total, unknown };
 }
 
+// The metric DEFINITIONS, held once: the step sheet needs them to say what a
+// step asks, and Settings needs them to edit. Entries are never cached here —
+// those are per day and per step, and live on flowRunView.
+const metricsView = { all: [] };
+
+async function loadMetrics() {
+  metricsView.all = await apiGet('/api/metrics', metricsView.all);
+  return metricsView.all;
+}
+
+const METRIC_KIND_LABELS = { scale: 'likert scale', count: 'count',
+                             yesno: 'yes / no', text: 'text' };
+
 const stepSheet = { id: null };
 
 // Badges say what the settings decided, in the order you scan for them. Only
@@ -4252,6 +4271,85 @@ function stepSheetFind() {
     if (s) return { f, s };
   }
   return null;
+}
+
+// Settings → Metrics. A metric is a settings item, so per the 2026-08-15 rule
+// it owes all three verbs: edit, PAUSE and delete, in the same words and the
+// same place as every other kind. Pausing stops it being ASKED and stops it
+// being offered on a step; it never touches an answer already recorded.
+function renderMetricsSettings() {
+  const el = document.getElementById('be-metrics-list');
+  if (!el) return;
+  const rows = metricsView.all || [];
+  el.innerHTML = rows.map(m => `
+    <div class="be-set-row mt-set-row${m.active ? '' : ' se-paused'}" data-metric="${m.id}">
+      <span class="be-set-name">${escHtml(m.name)}</span>
+      <span class="mt-kind">${escHtml(METRIC_KIND_LABELS[m.kind] || m.kind)}${
+        m.kind === 'scale' ? ` ${m.scale_min}–${m.scale_max}` : ''}${
+        m.unit ? ` · ${escHtml(m.unit)}` : ''}</span>
+      ${m.active ? '' : '<span class="fr-badge">paused</span>'}
+      <span class="mt-asked">${(m.step_ids || []).length
+        ? `asked on ${(m.step_ids || []).length} step${(m.step_ids || []).length === 1 ? '' : 's'}`
+        : 'not asked anywhere yet'}</span>
+      <button class="be-btn-secondary mt-pause" data-metric="${m.id}">${
+        m.active ? 'Pause' : 'Resume'}</button>
+      <button class="be-btn-secondary mt-del" data-metric="${m.id}">Delete</button>
+    </div>`).join('') || '<div class="gtd-empty">No metrics yet.</div>';
+
+  el.querySelectorAll('.mt-pause').forEach(b => b.addEventListener('click', async () => {
+    const m = metricsView.all.find(x => x.id === parseInt(b.dataset.metric));
+    await fetch(`/api/metrics/${m.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: !m.active }) }).catch(() => null);
+    await loadMetrics();
+    renderMetricsSettings();
+  }));
+  el.querySelectorAll('.mt-del').forEach(b => b.addEventListener('click', async () => {
+    const m = metricsView.all.find(x => x.id === parseInt(b.dataset.metric));
+    // Deleting the QUESTION deletes its answers — a number with no question is
+    // unreadable, not history. Pausing is the verb that keeps the history, so
+    // say which one this is before doing it.
+    if (!confirm(`Delete "${m.name}" and every answer ever recorded for it?\n\n`
+                 + 'Pause instead if you want to stop being asked but keep the history.')) return;
+    await fetch(`/api/metrics/${m.id}`, { method: 'DELETE' }).catch(() => null);
+    await loadMetrics();
+    renderMetricsSettings();
+  }));
+}
+
+// Wired once per section open, not per render — the add row is outside the
+// list that renderMetricsSettings rewrites.
+let metricAddWired = false;
+
+function wireMetricAdd() {
+  if (metricAddWired) return;
+  const btn = document.getElementById('be-metric-add');
+  const name = document.getElementById('be-metric-name');
+  const kind = document.getElementById('be-metric-kind');
+  if (!btn || !name || !kind) return;
+  metricAddWired = true;
+  const status = document.getElementById('be-metric-status');
+  const add = async () => {
+    const v = name.value.trim();
+    if (!v) { if (status) status.textContent = 'Give it a name.'; return; }
+    const res = await fetch('/api/metrics', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: v, kind: kind.value }) }).catch(() => null);
+    if (!res || !res.ok) { if (status) status.textContent = 'Could not add that.'; return; }
+    const created = await res.json();
+    name.value = '';
+    if (status) status.textContent = `"${created.name}" added — put it on a routine step to be asked.`;
+    // A create inverts to a delete, like every other create.
+    pushUndo(`added metric "${created.name}"`, async () => {
+      await fetch(`/api/metrics/${created.id}`, { method: 'DELETE' });
+      await loadMetrics();
+      renderMetricsSettings();
+    });
+    await loadMetrics();
+    renderMetricsSettings();
+  };
+  btn.addEventListener('click', add);
+  name.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
 }
 
 function openStepSheet(id) {
@@ -4356,6 +4454,18 @@ function renderStepSheet() {
         ? 'only the lit days' : 'every day'}</span>
     </div>
 
+    ${s.kind === 'metrics' ? `
+    <div class="cl-sec"><span class="cl-label">Asks</span></div>
+    <div class="cl-chips">
+      ${(metricsView.all || []).filter(m => m.active).map(m =>
+        `<button class="cl-chip${(m.step_ids || []).includes(s.id) ? ' cl-chip-on' : ''}"
+          data-askm="${m.id}">${escHtml(m.name)}</button>`).join('')
+        || '<span class="cl-hint">no metrics yet — add them in Settings → Metrics</span>'}
+      ${(metricsView.all || []).some(m => m.active) ? `<span class="cl-hint">${
+        (metricsView.all || []).filter(m => (m.step_ids || []).includes(s.id)).length
+      } asked here — a metric can be asked by a morning step AND a night one</span>` : ''}
+    </div>` : ''}
+
     <div class="cl-sec"><span class="cl-label">Takes</span></div>
     <div class="cl-chips">
       ${STEP_MINUTES.map(m => `<button class="cl-chip${s.duration_min === m ? ' cl-chip-on' : ''}"
@@ -4387,6 +4497,22 @@ function renderStepSheet() {
     </div>`;
 
   sheet.querySelector('#fr-sheet-close').addEventListener('click', closeStepSheet);
+  // Which metrics this step asks. The write is to the METRIC (its step list),
+  // because a metric is the thing that exists across routines — the step is
+  // just one of the places it gets asked.
+  sheet.querySelectorAll('[data-askm]').forEach(b => b.addEventListener('click', async () => {
+    const mid = parseInt(b.dataset.askm);
+    const m = (metricsView.all || []).find(x => x.id === mid);
+    if (!m) return;
+    const has = (m.step_ids || []).includes(s.id);
+    const next = has ? m.step_ids.filter(x => x !== s.id) : [...(m.step_ids || []), s.id];
+    await fetch(`/api/metrics/${mid}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ step_ids: next }),
+    }).catch(() => null);
+    await loadMetrics();
+    renderStepSheet();
+  }));
   sheet.querySelectorAll('[data-dur]').forEach(b => b.addEventListener('click', () => {
     const m = parseInt(b.dataset.dur);
     // Tapping the one already chosen clears it — an estimate you no longer
@@ -4904,6 +5030,14 @@ async function openFlowRun(flowId) {
     return;
   }
   flowRunView.flow = { ...flow, steps };
+  // A metrics step asks a set the SERVER decides (paused metrics drop out), so
+  // it is fetched per step rather than derived from a global list. Prefetched
+  // for today's metrics steps — usually one — so renderFlowRun stays sync.
+  flowRunView.metrics = {};
+  for (const st of steps.filter(x => x.kind === 'metrics')) {
+    flowRunView.metrics[st.id] = await apiGet(`/api/metrics/step/${st.id}?date=${today}`,
+      { date: today, metrics: [], complete: false });
+  }
   flowRunView.steps = flow.run ? JSON.parse(flow.run.steps || '{}') : {};
   // Resume at the first uncredited step.
   const idx = steps.findIndex(s => !flowRunView.steps[s.id]);
@@ -5141,6 +5275,41 @@ function renderFlowRun() {
     page = `<div class="fr-step-big">Social dose</div>
       <div class="fr-note">${day.total ?? 0} / ${day.d ?? '—'} point${(day.total ?? 0) === 1 ? '' : 's'}${
         okDose ? ' — the day is clear ✓' : ' — log what you actually did in ≡ Social'}</div>`;
+  } else if (s.kind === 'metrics') {
+    // Self-monitoring. Every metric this step asks, on one page — the runner is
+    // one step per page and these are one question each, not one step each.
+    // DISPLAY ONLY: nothing here judges, and no value drives money. What can
+    // gate is this STEP, through the ordinary hard rule below.
+    const pack = flowRunView.metrics[s.id] || { metrics: [], complete: false };
+    page = `<div class="fr-step-big">${escHtml(s.content || 'Metrics')}</div>
+      ${pack.metrics.length ? `<div class="mt-list">${pack.metrics.map(m => {
+        const e = m.entry || {};
+        const num = e.value_num;
+        return `<div class="mt-row" data-metric="${m.id}">
+          <div class="mt-name">${escHtml(m.name)}${m.unit
+            ? ` <span class="mt-unit">${escHtml(m.unit)}</span>` : ''}</div>
+          ${m.prompt ? `<div class="mt-prompt">${escHtml(m.prompt)}</div>` : ''}
+          ${m.kind === 'scale' ? `<div class="mt-chips">${
+            Array.from({ length: Math.max(1, m.scale_max - m.scale_min + 1) }, (_, i) => {
+              const v = m.scale_min + i;
+              return `<button class="mt-chip${num === v ? ' mt-chip-on' : ''}"
+                data-metric="${m.id}" data-val="${v}"
+                title="${num === v ? 'Tap again to clear' : ''}">${v}</button>`;
+            }).join('')}</div>` : ''}
+          ${m.kind === 'yesno' ? `<div class="mt-chips">
+            <button class="mt-chip${num === 1 ? ' mt-chip-on' : ''}" data-metric="${m.id}" data-val="1">yes</button>
+            <button class="mt-chip${num === 0 ? ' mt-chip-on' : ''}" data-metric="${m.id}" data-val="0">no</button>
+          </div>` : ''}
+          ${m.kind === 'count' ? `<input type="number" class="mt-input" data-metric="${m.id}"
+            inputmode="numeric" value="${num == null ? '' : num}" placeholder="how many">` : ''}
+          ${m.kind === 'text' ? `<input type="text" class="mt-input" data-metric="${m.id}"
+            value="${escHtml(e.value_text || '')}" placeholder="a line">` : ''}
+        </div>`;
+      }).join('')}</div>
+      <div class="fr-note${pack.complete ? ' fr-note-hard' : ''}">${pack.complete
+        ? 'all answered ✓'
+        : `${pack.metrics.filter(m => !m.entry).length} still unanswered`}</div>`
+      : `<div class="fr-note">No metrics on this step yet — add them in Settings → Metrics.</div>`}`;
   } else if (REVIEW_KINDS[s.kind]) {
     // A REVIEW STEP. Two of the eleven have a surface to open from here; the
     // other nine state the step and take the tick, which is what the fold-out
@@ -5197,7 +5366,12 @@ function renderFlowRun() {
       <button id="fr-done" class="cl-pill cl-pill-on"${
         s.requirement !== 'soft'
           && ((s.kind === 'social_spec' && day.specOk !== true)
-              || (s.kind === 'social_dose' && day.doseCleared !== true))
+              || (s.kind === 'social_dose' && day.doseCleared !== true)
+              // A HARD metrics step demands every metric it asks, exactly as a
+              // hard checklist demands every item and refuses to credit an
+              // empty or unlinked one. The gate behind it therefore asks
+              // whether you ANSWERED, never what you answered.
+              || (s.kind === 'metrics' && !(flowRunView.metrics[s.id] || {}).complete))
           ? ' disabled' : ''}>Done ✓</button>
     </div>`;
   el.classList.remove('hidden');
@@ -5216,6 +5390,44 @@ function renderFlowRun() {
     const id = parseInt(c.dataset.chk);
     if (marks[id]) delete marks[id]; else marks[id] = true;
     renderFlowRun();
+  }));
+  // Metric answers. Each write is its own small commit — the routine is often
+  // half-done and interrupted, so an answer given at 07:02 must survive the
+  // page never being "finished".
+  const saveMetric = async (metricId, value) => {
+    const date = (flowRunView.metrics[s.id] || {}).date || formatDateYMD(new Date());
+    const prev = ((flowRunView.metrics[s.id] || {}).metrics || [])
+      .find(m => m.id === metricId) || {};
+    const before = prev.entry
+      ? (prev.kind === 'text' ? prev.entry.value_text : prev.entry.value_num) : null;
+    const res = await fetch('/api/metrics/entry', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date, metric_id: metricId, step_id: s.id, value }),
+    }).catch(() => null);
+    if (!res || !res.ok) { toast('Could not save that answer'); return; }
+    flowRunView.metrics[s.id] = await apiGet(`/api/metrics/step/${s.id}?date=${date}`,
+      flowRunView.metrics[s.id]);
+    pushUndo(`answered "${prev.name || 'metric'}"`, async () => {
+      await fetch('/api/metrics/entry', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, metric_id: metricId, step_id: s.id, value: before }),
+      });
+      flowRunView.metrics[s.id] = await apiGet(`/api/metrics/step/${s.id}?date=${date}`,
+        flowRunView.metrics[s.id]);
+      if (flowRunView.open) renderFlowRun();
+    });
+    renderFlowRun();
+  };
+  el.querySelectorAll('.mt-chip').forEach(b => b.addEventListener('click', () => {
+    const mid = parseInt(b.dataset.metric);
+    const v = Number(b.dataset.val);
+    const m = ((flowRunView.metrics[s.id] || {}).metrics || []).find(x => x.id === mid) || {};
+    const cur = m.entry ? m.entry.value_num : null;
+    // Tapping the answer you already gave clears it — the day-context idiom.
+    saveMetric(mid, cur === v ? null : v);
+  }));
+  el.querySelectorAll('.mt-input').forEach(inp => inp.addEventListener('change', () => {
+    saveMetric(parseInt(inp.dataset.metric), inp.value.trim() === '' ? null : inp.value.trim());
   }));
   const pawn = el.querySelector('#fr-pawn');
   if (pawn) pawn.addEventListener('click', () => pawnStep(s));

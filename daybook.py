@@ -64,6 +64,11 @@ STATE = ('domain', 'area', 'qr_node', 'qr_pending_change', 'flow', 'flow_step',
          'location', 'bucket', 'person_bucket', 'calendar_source', 'deadline',
          'occasion',
          'schedule_source', 'social_action', 'social_axis_level',
+         # The metric DEFINITIONS and which step asks each one. Standing state:
+         # the answers are dated, but reading a day's numbers is meaningless
+         # without the questions that produced them beside it — the same reason
+         # social_axis_level is here.
+         'metric', 'metric_step',
          'tag_time', 'tag_device', 'tag_location', 'tag_daily', 'setting')
 
 # Both at once: dated for what came in that day, AND listed whole as standing
@@ -81,6 +86,7 @@ TITLES = {
     'flow_run': 'Routines run',
     'gtd_review': 'Weekly review',
     'journal_day': 'Journal',
+    'metric_entry': 'Metrics answered',
     'habit_day': 'Habit marks',
     'gcal_event': 'Calendar',
     'qr_scan': 'Gate scans',

@@ -347,6 +347,23 @@
           <div id="be-ics-status" class="be-push-status"></div>
         </section>
 
+        <section class="be-section" data-betab-panel="metrics">
+          <div id="be-metrics-list" class="be-list"></div>
+          <div class="be-list">
+            <div class="be-add-row">
+              <input type="text" id="be-metric-name" class="be-config-input" placeholder="What to track…" autocomplete="off">
+              <select id="be-metric-kind" class="be-config-input">
+                <option value="scale">likert scale</option>
+                <option value="count">count</option>
+                <option value="yesno">yes / no</option>
+                <option value="text">text</option>
+              </select>
+              <button id="be-metric-add" class="be-btn-secondary">Add</button>
+            </div>
+          </div>
+          <div id="be-metric-status" class="be-push-status"></div>
+        </section>
+
         <section class="be-section" data-betab-panel="config">
           <div id="be-config-list" class="be-list"></div>
           <div id="be-config-status" class="be-push-status"></div>
