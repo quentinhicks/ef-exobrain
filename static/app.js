@@ -11470,12 +11470,15 @@ function renderClarifyProjSearch(sheet, item) {
   });
 }
 
-// Creating a project IS the breakdown flow now (2026-08-07, replacing "⤷ Break
-// this down"). The old one made the CAPTURE become the project and left you in
-// the bar with an empty outcome; this one names the outcome, puts the thing you
-// were clarifying IN it as action [1], and opens the composer so the rest of
-// the decomposition — more actions, then the order they go in — happens in one
-// place, while you still have the project in your head.
+// Creating a project is now exactly PICKING one that happens not to exist yet
+// (Quentin, 2026-08-16). It used to be the breakdown flow: it filed the item as
+// action [1], took it out of the queue and opened the composer on the spot. But
+// naming a project is a filing decision, not a decision to decompose — and
+// asking for the breakdown here interrupts the sheet mid-clarify, before you
+// have picked a verb, exactly the way picking an existing project used to and
+// stopped doing on 2026-08-11. So this fills the project in and returns you to
+// the sheet you were already in; nothing is filed until you exit it normally.
+// The composer is untouched and still reached the explicit way, the ⛓ pill.
 async function clarifyCreateProject(name) {
   if (!name) return;
   const areaId = clarifyView.areaId || state.activeAreaId
@@ -11490,56 +11493,32 @@ async function clarifyCreateProject(name) {
   clarifyView.projectId = p.id;
   clarifyView.projectName = p.content;
   clarifyView.projSearch = null;
-
-  // The external step has no source row to file, so it opens the composer
-  // empty — the project's first action is typed in the add field like the rest.
-  const item = clarifyView.external ? null : clarifyView.queue[0];
-  if (item) {
-    // Commit the item into the project as clarified, WITHOUT advancing the
-    // queue: fileClarify would move to the next capture and take the composer
-    // with it. Everything the main sheet had decided rides along, so opening
-    // the composer never silently drops a tag or a due date.
-    const snap = await snapshotItem(item.id);
-    const content = clarifyView.action.trim() || item.content;
-    await fetch(`/api/inbox/${item.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, status: 'active', area_id: areaId,
-                             project_id: p.id,
-                             tags: [...clarifyView.tags].join(' '),
-                             notes: clarifyView.notes,
-                             deadline: clarifyView.due || null,
-                             defer_until: clarifyView.showDate || null }),
-    });
-    item.content = content;
-    item.notes = clarifyView.notes;
-    // One undo for the whole act: the item goes back to "in" AND the project
-    // it was created for goes away. Half of it would leave an empty project.
-    pushUndo(`broke down "${content}"`, async () => {
-      if (snap) {
-        await fetch('/api/inbox/restore', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(snap),
-        });
-      }
-      await fetch(`/api/inbox/${p.id}`, { method: 'DELETE' });
-      await refreshAfterUndo();
-    });
-    // It has left "in", so it leaves the queue — the composer is what stands
-    // in for this item's remaining clarify.
-    clarifyView.queue.shift();
-    state.inbox = state.inbox.filter(x => x.id !== item.id);
-    renderInbox();
-  }
-  await openComposeFor({ id: p.id, content: p.content, area_id: areaId }, 'new');
+  // Same reason as the pick path: filing adopts the project's area server-side
+  // unconditionally, so the Filing-to row must not show a different one.
+  clarifyView.areaId = areaId;
+  // A create inverts to a delete. The item is NOT filed here any more, so
+  // there is nothing to restore — but if the sheet is still pointing at the
+  // project when this runs, the selection has to let go of a row that is gone.
+  pushUndo(`new project "${p.content}"`, async () => {
+    await fetch(`/api/inbox/${p.id}`, { method: 'DELETE' });
+    if (clarifyView.projectId === p.id) {
+      clarifyView.projectId = null;
+      clarifyView.projectName = '';
+    }
+    await refreshAfterUndo();
+  });
+  renderClarify();
 }
 
 // Two ways in, and the difference is whether the item has been filed yet:
-//   'new'  — clarifyCreateProject already filed it as action [1]; leaving
-//            resumes the clarify queue, because this item is done.
-//   'pick'  — you chose an existing project from the search and NOTHING has
-//            been filed; leaving goes back to the main sheet so you still pick
-//            a verb. Ordering the project's actions must not silently commit
-//            the item you were clarifying.
+//   (no origin) — the post-filing hook, or the ⛓ pill: the item is already
+//            filed, so leaving resumes the clarify queue.
+//   'pick'  — you chose a project from the search and NOTHING has been filed;
+//            leaving goes back to the main sheet so you still pick a verb.
+//            Ordering the project's actions must not silently commit the item
+//            you were clarifying.
+// (The 'new' origin is gone as of 2026-08-16: creating a project no longer
+// opens the composer at all, so there is no post-create entry to distinguish.)
 async function openComposeFor(project, origin) {
   clarifyView.compose = {
     id: project.id, name: project.content,
