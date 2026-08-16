@@ -708,6 +708,8 @@ function renderGcalLayer(bodyH = 600) {
     };
     el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
     onLongPress(el, hide);   // the touch right-click
+    // Same plain-tap meaning as the event row on Engage: open its occasion.
+    el.addEventListener('click', () => openOccasionSheet(el.dataset.evLabel || ''));
   });
 }
 
@@ -3559,6 +3561,8 @@ function initHub() {
     if (evSheet.open) { closeEvSheet(); return; }
     // The entry sheet likewise peels before whatever surface opened it.
     if (entrySheet.open) { closeEntrySheet(); return; }
+    // The occasion sheet peels before the day it was opened from.
+    if (occasionView.open) { closeOccasionSheet(); return; }
     // A dangerous-writing session swallows Esc entirely — its own keydown
     // handler treats Esc as the abort, and nothing underneath may act on it.
     if (dwView.open) return;
@@ -4617,6 +4621,177 @@ function renderEvSheet() {
   }));
   back.addEventListener('click', closeEvSheet);
   sheet.querySelector('#ev-summary').focus();
+}
+
+// ── OCCASIONS: the actions a KIND of event always brings ──────
+//
+// "Every time I meet this guy I have to do X and Y." The rule is matched on the
+// event's TITLE, case-insensitively, and not on a calendar series: the same
+// meeting is often booked ad hoc — Tuesday 14:00, then Friday 17:00 — as two
+// unrelated events, and a series rule would fire on neither. The one thing both
+// bookings share is what you called them.
+//
+// Configuration happens HERE, on the event, the first time you notice you keep
+// doing the same two things — never in a Settings surface you'd have to
+// remember to visit. The event row is the only row on the day that had no sheet
+// to open, which is also why tapping one was free.
+const occasionView = { open: false, summary: '', occ: null };
+
+function occasionFor(list, summary) {
+  const s = (summary || '').toLowerCase();
+  // Paused ones match too, or the sheet couldn't offer to un-pause the very
+  // occasion you came here looking for.
+  return (list || []).find(o =>
+    (o.match_text || '').trim() && s.includes(o.match_text.trim().toLowerCase())) || null;
+}
+
+async function openOccasionSheet(summary) {
+  const list = await apiGet('/api/occasions', []);
+  occasionView.summary = summary || '';
+  occasionView.occ = occasionFor(list, summary);
+  occasionView.open = true;
+  renderOccasionSheet();
+}
+
+// Closing REFRESHES the day. Minting happens on the placements read, so an
+// occasion set up for an event that is on the screen right now produces nothing
+// visible until something re-reads — and "I just configured this and my day
+// didn't change" reads as a write that failed. Every close path lands here:
+// ✕, the backdrop, and Esc through initHub's ladder.
+function closeOccasionSheet() {
+  const was = occasionView.open;
+  occasionView.open = false;
+  occasionView.occ = null;
+  document.getElementById('oc-sheet').classList.add('hidden');
+  document.getElementById('oc-sheet-backdrop').classList.add('hidden');
+  if (was) refreshEngage();
+}
+
+// Re-read the occasion and repaint, then the day — a template that just changed
+// does not retro-mint, but adding the FIRST one to today's event should show up
+// without a reload.
+async function refreshOccasionSheet() {
+  const list = await apiGet('/api/occasions', []);
+  occasionView.occ = occasionFor(list, occasionView.summary);
+  renderOccasionSheet();
+  await refreshEngage();
+}
+
+function renderOccasionSheet() {
+  const sheet = document.getElementById('oc-sheet');
+  const back = document.getElementById('oc-sheet-backdrop');
+  sheet.classList.remove('hidden');
+  back.classList.remove('hidden');
+  const o = occasionView.occ;
+  const areaName = id => (state.areas.find(a => a.id === id) || {}).name || '';
+
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">Occasion</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="oc-close">✕</button>
+    </div>
+    <div class="oc-ev">${escHtml(occasionView.summary || 'this event')}</div>
+    ${!o ? `
+    <div class="oc-hint">Nothing is attached to events like this yet. Set one up and
+      every future event whose title contains the word you choose brings these
+      actions onto its day by itself.</div>
+    <div class="cl-row"><button class="cl-pill" id="oc-new">Set up an occasion</button></div>`
+    : `
+    <div class="cl-sec"><span class="cl-label">Called</span></div>
+    <div class="cl-action-wrap">
+      <input type="text" class="cl-action" id="oc-name" value="${escHtml(o.name)}"></div>
+    <div class="cl-sec"><span class="cl-label">Fires on</span>
+      <span class="cl-hint">any event whose title contains this</span></div>
+    <div class="cl-row">
+      <input type="text" class="oc-match" id="oc-match" value="${escHtml(o.match_text)}"
+        placeholder="e.g. dave"></div>
+    <div class="oc-hint">Case doesn't matter. Keep it short and distinctive — it
+      matches anywhere in the title, so <em>dave</em> would also catch
+      “Dave's birthday”.</div>
+    <div class="cl-sec"><span class="cl-label">State</span>
+      <span class="cl-hint">paused keeps everything, and stops it firing</span></div>
+    <div class="cl-row">
+      <button class="cl-pill${o.active ? ' cl-pill-on' : ''}" data-ocstate="1">Active</button>
+      <button class="cl-pill${o.active ? '' : ' cl-pill-on'}" data-ocstate="0">Paused</button>
+    </div>
+    <div class="cl-sec"><span class="cl-label">Every time</span>
+      <span class="cl-hint">${o.items.length} action${o.items.length === 1 ? '' : 's'}</span></div>
+    ${o.items.map(it => `
+      <div class="oc-item">
+        <span class="oc-item-text">${escHtml(it.content)}</span>
+        <span class="oc-item-meta">${escHtml(areaName(it.area_id))}</span>
+        <button class="oc-item-go" data-ocitem="${it.id}" title="Clarify this action">›</button>
+      </div>`).join('')}
+    <div class="cl-row"><button class="cl-pill" id="oc-add">+ action</button></div>
+    <div class="cl-foot">
+      <span class="cl-then">Already-placed actions stay put</span>
+      <button class="cl-pill oc-del" id="oc-delete">Delete occasion</button>
+    </div>`}`;
+
+  sheet.querySelector('#oc-close').addEventListener('click', closeOccasionSheet);
+  back.onclick = closeOccasionSheet;
+
+  const newBtn = sheet.querySelector('#oc-new');
+  if (newBtn) newBtn.addEventListener('click', async () => {
+    // Both fields default to the event's own title: the name because that IS
+    // what you call this thing, the match because the title you just booked is
+    // the best available guess at the title you'll book next time. Both are
+    // editable right below, which is the point of landing you on the full sheet
+    // rather than asking two questions first.
+    const seed = (occasionView.summary || 'Occasion').trim();
+    const created = await apiSend('/api/occasions', 'POST',
+      { name: seed, match_text: seed }).then(r => r.json());
+    occasionView.occ = created;
+    renderOccasionSheet();
+  });
+
+  const patch = async body => {
+    const updated = await apiSend(`/api/occasions/${o.id}`, 'PATCH', body).then(r => r.json());
+    occasionView.occ = updated;
+  };
+  const nameEl = sheet.querySelector('#oc-name');
+  if (nameEl) nameEl.addEventListener('change', async e => {
+    const v = e.target.value.trim();
+    if (!v) { e.target.value = o.name; return; }
+    await patch({ name: v });
+  });
+  const matchEl = sheet.querySelector('#oc-match');
+  if (matchEl) matchEl.addEventListener('change', async e => {
+    const v = e.target.value.trim();
+    if (!v) { e.target.value = o.match_text; return; }
+    await patch({ match_text: v });
+    // The new word may no longer match the event you opened this from, and the
+    // sheet must say so rather than keep showing a rule that has stopped
+    // applying here.
+    await refreshOccasionSheet();
+  });
+  sheet.querySelectorAll('[data-ocstate]').forEach(b => b.addEventListener('click', async () => {
+    await patch({ active: b.dataset.ocstate === '1' });
+    renderOccasionSheet();
+  }));
+  sheet.querySelectorAll('[data-ocitem]').forEach(b => b.addEventListener('click', () => {
+    const it = o.items.find(x => x.id === parseInt(b.dataset.ocitem));
+    if (!it) return;
+    closeOccasionSheet();
+    openClarifyForOccasion(o, it, () => openOccasionSheet(occasionView.summary));
+  }));
+  const addBtn = sheet.querySelector('#oc-add');
+  if (addBtn) addBtn.addEventListener('click', () => {
+    closeOccasionSheet();
+    openClarifyForOccasion(o, null, () => openOccasionSheet(occasionView.summary));
+  });
+  const delBtn = sheet.querySelector('#oc-delete');
+  if (delBtn) delBtn.addEventListener('click', async () => {
+    await apiSend(`/api/occasions/${o.id}`, 'DELETE');
+    closeOccasionSheet();
+    toast(`deleted the “${o.name}” occasion`);
+    await refreshEngage();
+  });
+  sheet.querySelectorAll('input').forEach(el => el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.stopPropagation(); e.target.blur(); }
+    else if (e.key === 'Escape') { e.stopPropagation(); closeOccasionSheet(); }
+  }));
 }
 
 // ── The ENTRY SHEET: one input, risen from the bottom ─────────
@@ -10180,8 +10355,11 @@ function renderEngage() {
     const hide = () => hideTimelineItem('event', el.dataset.ekey,
       el.querySelector('.eg-text')?.textContent);
     el.addEventListener('click', e => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      hide();
+      if (e.metaKey || e.ctrlKey) { hide(); return; }
+      // A plain tap opens the event's OCCASION — the actions this kind of event
+      // always brings with it. ⌘-click and the long press still hide, and
+      // onLongPress swallows the click a fired hold would otherwise send here.
+      openOccasionSheet(el.querySelector('.eg-text')?.textContent || '');
     });
     onLongPress(el, hide);
   });
@@ -10360,6 +10538,13 @@ const clarifyView = {
   // Set by `+ next action`: the project every action written in this sitting
   // is filed into. Survives clarifyResetItem, cleared when the sheet closes.
   forProject: null,
+  // TEMPLATE MODE. Non-null = this sheet is authoring one of an OCCASION's
+  // standing actions rather than deciding a real one. The occasion's actions
+  // are clarified like every other action — same sheet, same wording, same
+  // contexts and filing — but the EXITS are about today (do it, delegate it,
+  // defer it to a date, trash it) and a template has no today. So the verbs,
+  // the Or row and the show-on/due row drop out and one Save remains.
+  forOccasion: null,
   // A PROJECT is a different decision from an action, so the sheet is a
   // different sheet: an outcome has no next-physical-action, no context, no
   // parent project and nothing to place in a day. What it does have is a
@@ -10456,6 +10641,29 @@ async function openClarifyForItem(item, after) {
   clarifyView.after = after || null;
   clarifyResetItem();
   renderClarify();
+}
+
+
+// An OCCASION's standing action, written the way every action is written.
+// `item` null = a new one; otherwise the template row, edited in place.
+async function openClarifyForOccasion(occ, item, after) {
+  await clarifyLoadAux();
+  clarifyView.queue = item ? [item] : [];
+  clarifyView.total = item ? 1 : 0;
+  clarifyView.single = !!item;
+  clarifyView.external = !item;
+  clarifyView.open = true;
+  clarifyView.after = after || null;
+  clarifyView.forOccasion = { id: occ.id, name: occ.name };
+  clarifyResetItem();
+  // 'defer' is the branch that renders contexts, project and filing-to — the
+  // three things a template actually carries. It is never FILED as a defer;
+  // fileClarifyOccasion intercepts before any bucket is honoured.
+  clarifyView.verb = 'defer';
+  clarifyView.showDate = '';
+  clarifyView.showTime = '';
+  renderClarify();
+  setTimeout(() => { const el = document.getElementById('cl-action'); if (el) el.focus(); }, 30);
 }
 
 // THE LAST DOMAIN YOU FILED INTO, for the rest of the day.
@@ -10618,8 +10826,13 @@ function closeClarify() {
   // content and position stay untouched. The reworded action is deliberately
   // NOT saved the same way — a rewording is part of the filing decision, and
   // Esc declines that decision.
+  // A TEMPLATE is excluded: it has an explicit Save in the foot, it is a config
+  // surface (so nothing here belongs on the undo stack), and everything else
+  // this sheet decides about a template already discards on Esc. Saving only
+  // the notes would be the one field that leaked out of a declined edit.
   const item = clarifyView.queue[0];
-  if (item && !clarifyView.external && clarifyView.notes !== (item.notes || '')) {
+  if (item && !clarifyView.external && !clarifyView.forOccasion
+      && clarifyView.notes !== (item.notes || '')) {
     undoablePatch(item, ['notes'], `edited notes on "${item.content}"`);
     patchInboxItem(item.id, { notes: clarifyView.notes });
     item.notes = clarifyView.notes;
@@ -10629,6 +10842,7 @@ function closeClarify() {
   clarifyView.single = false;
   clarifyView.external = false;
   clarifyView.forProject = null;
+  clarifyView.forOccasion = null;
   clarifyView.after = null;
   document.getElementById('clarify-sheet').classList.add('hidden');
   document.getElementById('clarify-backdrop').classList.add('hidden');
@@ -10645,6 +10859,10 @@ async function fileClarify(bucket, refListId) {
   // "Start it now" is the ACTIVE exit with a started_at stamp — the item is
   // kept, not deleted, so it routes through the same bucket every other
   // keep-it exit uses. Only the FINISH variant of Do now marks it done.
+  // A template has no bucket — every exit on this sheet is a statement about
+  // today, and the whole point of a template is that it has no today. Caught
+  // before anything else so a stray keyboard exit (S, R, ⌫) can't file one.
+  if (clarifyView.forOccasion) { await fileClarifyOccasion(); return; }
   if (clarifyView.external) { await fileClarifyExternal(bucket, refListId); return; }
   const startNow = bucket === 'do' && clarifyView.doVariant === 'progress';
   if (startNow) { clarifyView.showDate = ''; clarifyView.showTime = ''; bucket = 'defer'; }
@@ -10772,6 +10990,45 @@ async function fileClarify(bucket, refListId) {
   }
 }
 
+// TEMPLATE mode: the row is (or becomes) one of an occasion's standing actions.
+// Status is never sent — 'occasion' is the only thing keeping the row out of the
+// pool, MAP and the review counts, and storage.update_inbox_item refuses to
+// change it anyway. Everything else the sheet decided rides along, and MINTING
+// copies exactly these fields onto the day (storage._OCC_COPIED).
+async function fileClarifyOccasion() {
+  const content = clarifyView.action.trim();
+  const item = clarifyView.queue[0];
+  if (!content && !item) return;
+  const areaId = clarifyView.areaId || state.activeAreaId
+    || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
+  const body = {
+    content: content || item.content,
+    area_id: areaId,
+    project_id: clarifyView.projectId || null,
+    tags: [...clarifyView.tags].join(' '),
+    notes: clarifyView.notes,
+  };
+  clarifyView.filing = true;
+  paintClarifyBusy(true);
+  try {
+    if (item) {
+      await apiSend(`/api/inbox/${item.id}`, 'PATCH', body);
+    } else {
+      await apiSend(`/api/occasions/${clarifyView.forOccasion.id}/items`, 'POST', body);
+    }
+  } finally {
+    clarifyView.filing = false;
+    paintClarifyBusy(false);
+  }
+  // Not on the undo stack: an occasion is a config surface, like the Settings
+  // and Block-editor sheets, and Delete in the foot is the inverse that's
+  // actually reachable from here.
+  const back = clarifyView.after;
+  closeClarify();
+  if (back) back();
+}
+
+
 // External mode: no source row — YOU hold the item (a sticky note, an email
 // thread, a pile of paper). The typed next physical action is the content;
 // filing creates the item and then routes it exactly like an inbox row.
@@ -10870,6 +11127,7 @@ function renderClarify() {
   // contexts, no parent project, nothing to drop into a day — the decision is
   // just its state, its deadline and where it belongs.
   const isProj = clarifyView.project && !clarifyView.external && !!item;
+  const tpl = !!clarifyView.forOccasion;
   // "Do now" means two different things and only one of them was buildable:
   // FINISH it (the two-minute rule — filing deletes it) or START it. Starting
   // it is the ACTIVE exit plus a started_at stamp — no new column, no new
@@ -10923,7 +11181,7 @@ function renderClarify() {
           `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
         <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
       </div>
-      <div class="cl-row">
+      ${tpl ? '' : `<div class="cl-row">
         ${doProgress ? '' : `<span class="cl-label">Show on</span>
         <input type="date" id="cl-show-date" class="cl-date"
           title="Date alone defers; adding a time places it into that day's schedule" value="${clarifyView.showDate}">
@@ -10931,7 +11189,7 @@ function renderClarify() {
         ${clarifyView.showTime ? '<button id="cl-show-time-x" class="cl-x" title="Clear the time — date alone just defers">✕</button>' : ''}`}
         <span class="cl-label">Due</span>
         <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
-      </div>
+      </div>`}
       <div class="cl-row">
         <span class="cl-label">Project</span>
         <button id="cl-proj" class="cl-pill${clarifyView.projectId ? ' cl-pill-on' : ''}">${clarifyView.projectId ? escHtml(clarifyView.projectName) : 'none'} ⌕</button>
@@ -10986,14 +11244,19 @@ function renderClarify() {
     : null;
   sheet.innerHTML = `
     <div class="cl-head">
-      <span class="cl-eyebrow">Clarify${isProj ? ' · project' : ''}</span>
-      <span class="cl-count">${ext
+      <span class="cl-eyebrow">${tpl ? 'Occasion' : `Clarify${isProj ? ' · project' : ''}`}</span>
+      <span class="cl-count">${tpl ? escHtml(clarifyView.forOccasion.name) : ext
         ? (clarifyView.forProject ? 'new action' : 'outside the app')
         : `${n} of ${clarifyView.total}`}</span>
       <span class="cl-spacer"></span>
       <span class="cl-hint">one at a time · esc / tap off</span>
     </div>
-    ${ext && clarifyView.forProject ? `
+    ${tpl ? `
+    <div class="cl-item">
+      <div class="cl-title">${item ? escHtml(item.content) : 'A standing action'}</div>
+      <div class="cl-captured">every time an event matches this occasion, a copy of
+        this lands on that day — clarified exactly as you leave it here</div>
+    </div>` : ext && clarifyView.forProject ? `
     <div class="cl-item">
       <div class="cl-title">${escHtml(clarifyView.forProject.name)}</div>
       <div class="cl-captured">a new next action, filed here as you write it</div>
@@ -11016,27 +11279,29 @@ function renderClarify() {
     <div class="cl-sec"><span class="cl-q">${isProj
       ? "What's the outcome?" : "What's the next physical action?"}</span></div>
     <div class="cl-action-wrap"><input type="text" id="cl-action" class="cl-action" value="${escHtml(clarifyView.action)}" autocomplete="off"${ext ? ' placeholder="e.g. Reply to Sam about the venue"' : ''}></div>
-    <div class="cl-verbs">${isProj
+    ${tpl ? '' : `<div class="cl-verbs">${isProj
       ? `${verbBtn('active', 'Active', 'A')}${verbBtn('defer', 'Defer', 'F')}${verbBtn('trash', 'Trash', '⌫')}`
-      : `${verbBtn('do', 'Do now', 'D')}${verbBtn('delegate', 'Delegate', 'G')}${verbBtn('defer', 'Defer', 'F')}`}</div>
+      : `${verbBtn('do', 'Do now', 'D')}${verbBtn('delegate', 'Delegate', 'G')}${verbBtn('defer', 'Defer', 'F')}`}</div>`}
     ${middle}
     ${notesHtml}
-    <div class="cl-row cl-or">
+    ${tpl ? '' : `<div class="cl-row cl-or">
       <span class="cl-label">Or</span>
       ${ext || isProj ? '' : `<button class="cl-pill" id="cl-trash">Trash <span class="cl-key">⌫</span></button>`}
       <button class="cl-pill" id="cl-someday">Someday <span class="cl-key">S</span></button>
       <button class="cl-pill${clarifyView.refOpen ? ' cl-pill-on' : ''}" id="cl-reference">Reference <span class="cl-key">R</span></button>
-    </div>
-    ${clarifyView.refOpen ? `<div class="cl-chips cl-ref-row">
+    </div>`}
+    ${clarifyView.refOpen && !tpl ? `<div class="cl-chips cl-ref-row">
       ${clarifyView.refLists.map(l => `<button class="cl-chip" data-reflist="${l.id}">${escHtml(l.name)}</button>`).join('')}
       <input type="text" id="cl-ref-new" class="cl-chip-input" placeholder="+ new list">
     </div>` : ''}
     <div class="cl-foot">
-      <span class="cl-then">${ext ? 'Repeat until your head is empty'
+      <span class="cl-then">${tpl ? `Every ${escHtml(clarifyView.forOccasion.name)}`
+        : ext ? 'Repeat until your head is empty'
         : next ? `Then: ${escHtml(next.content)}`
         : clarifyView.single ? 'Then: back to the day' : 'Then: anything outside the app'}</span>
-      ${ext ? '<button id="cl-ext-done" class="cl-pill">Done</button>' : ''}
-      <button id="cl-file">${ext ? 'Add it ⏎' : 'File it ⏎'}</button>
+      ${tpl && item ? '<button id="cl-occ-del" class="cl-pill oc-del">Delete</button>' : ''}
+      ${ext && !tpl ? '<button id="cl-ext-done" class="cl-pill">Done</button>' : ''}
+      <button id="cl-file">${tpl ? (item ? 'Save ⏎' : 'Add it ⏎') : ext ? 'Add it ⏎' : 'File it ⏎'}</button>
     </div>`;
 
   sheet.querySelectorAll('[data-dovar]').forEach(b => b.addEventListener('click', () => {
@@ -11167,13 +11432,24 @@ function renderClarify() {
   }
   const trash = sheet.querySelector('#cl-trash');
   if (trash) trash.addEventListener('click', () => fileClarify('trash'));
-  sheet.querySelector('#cl-someday').addEventListener('click', () => fileClarify('someday'));
+  // Guarded like #cl-trash above: template mode drops the whole Or row, and an
+  // unguarded querySelector here would throw before the sheet finished wiring.
+  const someday = sheet.querySelector('#cl-someday');
+  if (someday) someday.addEventListener('click', () => fileClarify('someday'));
   // Reference: the OTHER non-actionable keep. The pill reveals the list
   // chips; tapping a chip files immediately (exits are one gesture), and the
   // + input creates the list and files into it in the same stroke.
-  sheet.querySelector('#cl-reference').addEventListener('click', () => {
+  const reference = sheet.querySelector('#cl-reference');
+  if (reference) reference.addEventListener('click', () => {
     clarifyView.refOpen = !clarifyView.refOpen;
     renderClarify();
+  });
+  const occDel = sheet.querySelector('#cl-occ-del');
+  if (occDel) occDel.addEventListener('click', async () => {
+    await apiSend(`/api/occasions/items/${item.id}`, 'DELETE');
+    const back = clarifyView.after;
+    closeClarify();
+    if (back) back();
   });
   sheet.querySelectorAll('.cl-chip[data-reflist]').forEach(b => b.addEventListener('click', () => {
     fileClarify('reference', parseInt(b.dataset.reflist));
@@ -11595,6 +11871,10 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (typing) return;
+  // A template has no verbs and no exits, so it has no verb keys either —
+  // otherwise D/G/S/⌫ would silently mean Save on a sheet that shows no such
+  // button. Enter (above) is the one key it keeps, and that IS the Save.
+  if (clarifyView.forOccasion) return;
   const k = e.key.toLowerCase();
   // A project's keys mirror its verbs. Backspace SELECTS trash rather than
   // firing it: deleting a project takes its actions with it a level up, which

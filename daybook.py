@@ -42,6 +42,7 @@ OVERRIDES = {
     'gcal_event': 'start',            # the day's calendar, by prefix
     'habit_day': 'date',
     'inbox_item': 'captured_at',      # what was CAPTURED that day
+    'occasion_mint': 'date',          # the actions an event brought with it
     'routine_item': 'done_date',      # ticked that day; done_date self-resets
 }
 
@@ -61,6 +62,7 @@ SKIP = {'gcal_recurring_seen', 'sheets_inbox_item', 'todo_sync', 'qr_todo_push',
 STATE = ('domain', 'area', 'qr_node', 'qr_pending_change', 'flow', 'flow_step',
          'ref_list', 'recurring_block', 'recurring_task', 'routine_item',
          'location', 'bucket', 'person_bucket', 'calendar_source', 'deadline',
+         'occasion',
          'schedule_source', 'social_action', 'social_axis_level',
          'tag_time', 'tag_device', 'tag_location', 'tag_daily', 'setting')
 
@@ -75,6 +77,7 @@ STATE_ALSO_DATED = {'inbox_item', 'routine_item'}
 TITLES = {
     'inbox_item': 'Captured',
     'engage_placement': 'Placed on the day',
+    'occasion_mint': 'Minted by an occasion',
     'flow_run': 'Routines run',
     'gtd_review': 'Weekly review',
     'journal_day': 'Journal',

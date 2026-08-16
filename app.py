@@ -524,6 +524,10 @@ def get_engage_placements_route():
     if frm:
         return jsonify(storage.get_engage_placements_from(frm))
     date = request.args.get('date') or date_cls.today().isoformat()
+    # The day's occasions mint here, on the read that builds the day — the same
+    # place seed_recurring_tasks runs from. No scheduler, and walking to a future
+    # day mints that day rather than only today.
+    storage.mint_occasions(date)
     return jsonify(storage.get_engage_placements(date))
 
 
@@ -544,7 +548,68 @@ def delete_engage_placement_route(item_id):
 
 @app.route('/api/engage/day')
 def get_engage_day_route():
+    # The NOW panel polls this and may well be the first reader of the day.
+    storage.mint_occasions(date_cls.today().isoformat())
     return jsonify(storage.get_engage_day())
+
+
+# --- Occasions: the actions a KIND of event always brings with it ---
+
+@app.route('/api/occasions')
+def get_occasions_route():
+    return jsonify(storage.get_occasions())
+
+
+@app.route('/api/occasions', methods=['POST'])
+def post_occasion_route():
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    match_text = (data.get('match_text') or '').strip()
+    if not name or not match_text:
+        return jsonify({'error': 'an occasion needs a name and a word to match'}), 400
+    return jsonify(storage.create_occasion(name, match_text)), 201
+
+
+@app.route('/api/occasions/<int:id>', methods=['PATCH'])
+def patch_occasion_route(id):
+    data = request.get_json() or {}
+    kwargs = {}
+    for f in ('name', 'match_text'):
+        if f in data:
+            v = (data[f] or '').strip()
+            if not v:
+                return jsonify({'error': f'{f} cannot be empty'}), 400
+            kwargs[f] = v
+    if 'active' in data:
+        kwargs['active'] = data['active']
+    occ = storage.update_occasion(id, **kwargs)
+    if occ is None:
+        return jsonify({'error': 'no such occasion'}), 404
+    return jsonify(occ)
+
+
+@app.route('/api/occasions/<int:id>', methods=['DELETE'])
+def delete_occasion_route(id):
+    storage.delete_occasion(id)
+    return '', 204
+
+
+@app.route('/api/occasions/<int:id>/items', methods=['POST'])
+def post_occasion_item_route(id):
+    data = request.get_json() or {}
+    content = (data.get('content') or '').strip()
+    if not content:
+        return jsonify({'error': 'the action needs text'}), 400
+    return jsonify(storage.add_occasion_item(
+        id, content,
+        area_id=data.get('area_id'), project_id=data.get('project_id'),
+        tags=data.get('tags') or '', notes=data.get('notes') or '')), 201
+
+
+@app.route('/api/occasions/items/<int:item_id>', methods=['DELETE'])
+def delete_occasion_item_route(item_id):
+    storage.delete_occasion_item(item_id)
+    return '', 204
 
 
 # --- Routine checklists (their own datatype, attached to routine areas) ---

@@ -5199,7 +5199,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #se-sheet-backdrop,
 #sp-sheet-backdrop,
 #ev-sheet-backdrop,
-#en-sheet-backdrop {
+#en-sheet-backdrop,
+#oc-sheet-backdrop {
   position: fixed;
   inset: 0;
   z-index: 199;
@@ -5215,7 +5216,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #se-sheet,
 #sp-sheet,
 #ev-sheet,
-#en-sheet {
+#en-sheet,
+#oc-sheet {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -5609,9 +5611,56 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #ev-sheet-backdrop,
 #ev-sheet,
 #en-sheet-backdrop,
-#en-sheet {
+#en-sheet,
+#oc-sheet-backdrop,
+#oc-sheet {
   bottom: var(--gbar-h);
 }
+
+/* ── The occasion sheet's own rows ───────────────────────────
+   Reuses the clarify vocabulary (.cl-head, .cl-sec, .cl-row, .cl-pill) — this
+   is a clarify-shaped sheet, not a new grammar. Only the template list and the
+   match-word field need anything of their own. */
+.oc-ev {
+  font: 12px var(--font-mono);
+  color: var(--text-dim);
+  padding: 0 14px 8px;
+}
+.oc-match {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  color: var(--text);
+  font: 13px var(--font-mono);
+  padding: 8px 10px;
+}
+.oc-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 6px 14px 0;
+  line-height: 1.45;
+}
+.oc-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.oc-item-text { flex: 1; font-size: 13px; color: var(--text); }
+.oc-item-meta { font: 11px var(--font-mono); color: var(--text-dim); }
+/* A finger target, not a 10px edge — the whole right third of the row. */
+.oc-item-go {
+  min-width: 40px;
+  min-height: 36px;
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+}
+.oc-del { color: var(--danger); }
 
 /* ── Dangerous writing ───────────────────────────────────────
    z 240: ABOVE the global bar (170) and the clarify sheet (200), below

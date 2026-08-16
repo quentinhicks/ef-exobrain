@@ -29,6 +29,12 @@ def get_conn():
     return conn
 
 
+# "not passed" for the update_* functions, so None can mean "clear it". Defined
+# at the top because the partial-update idiom is used all over the file, not
+# only by update_inbox_item, which is where it used to sit.
+_UNSET = object()
+
+
 # `project` used to mean GTD's Horizon 2 (a standing area of responsibility);
 # it is now `area`, and `project` means Horizon 1 — an outcome that completes.
 # This has to run BEFORE the CREATE TABLE block, or `CREATE TABLE IF NOT EXISTS
@@ -599,6 +605,18 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE recurring_task ADD COLUMN project_id INTEGER')
         conn.commit()
+    # An occasion's TEMPLATE actions are ordinary inbox_item rows carrying
+    # status 'occasion'. That status is what keeps them out of the inventory
+    # with no query edits anywhere: every availability predicate wants
+    # status = 'active', MAP wants active/waiting/on_hold, the inbox wants a
+    # NULL status, and the review counts name their statuses one by one. A
+    # template matches none of them. Minting COPIES the row into a real active
+    # item; the template itself is never scheduled and never completes.
+    try:
+        conn.execute('SELECT occasion_id FROM inbox_item LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE inbox_item ADD COLUMN occasion_id INTEGER')
+        conn.commit()
     conn.execute('''
         CREATE TABLE IF NOT EXISTS gtd_review (
             week_start_date TEXT PRIMARY KEY,
@@ -616,6 +634,33 @@ def init_db():
             item_id INTEGER NOT NULL,
             minute  REAL NOT NULL,
             PRIMARY KEY (date, item_id)
+        )''')
+    # OCCASIONS: the actions a KIND of event always brings with it.
+    #
+    # An occasion is recognised by TEXT, not by a calendar series uid: the same
+    # meeting is often booked ad hoc — Tuesday 14:00, then Friday 17:00 — as two
+    # unrelated events with two different uids, so a uid rule would fire on
+    # neither. `match_text` is a case-insensitive substring of the event's
+    # summary, which is the one thing both bookings share.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS occasion (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            match_text TEXT NOT NULL,
+            active     INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )''')
+    # One row per (day, template) the moment it is minted — and it OUTLIVES the
+    # item, which is the whole point: completing a minted action DELETES the row
+    # (see delete_inbox_item), so "has this already been minted today" cannot be
+    # answered by looking for the item. Without this table the day would re-mint
+    # every action the moment you finished it.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS occasion_mint (
+            date        TEXT NOT NULL,
+            template_id INTEGER NOT NULL,
+            item_id     INTEGER,
+            PRIMARY KEY (date, template_id)
         )''')
     # Routine checklists: their OWN datatype, attached to a routine-type AREA
     # — not inbox items, not recurring-task seeds. done_date makes the check
@@ -1860,6 +1905,174 @@ def delete_engage_placement(date, item_id):
     conn.close()
 
 
+# ── OCCASIONS ────────────────────────────────────────────────────
+#
+# "Every time I meet this guy I have to do X and Y." The occasion holds the
+# TEMPLATE actions; a calendar event whose summary contains `match_text`
+# (case-insensitively) mints copies of them onto that day, placed at the
+# event's start.
+#
+# Template rows are inbox_item rows with status 'occasion' — see the migration
+# note on inbox_item.occasion_id. Keeping them in inbox_item is what lets the
+# clarify sheet author them: a template carries an area, a project, tags and
+# notes because it IS an item, not a parallel little schema that would drift.
+
+_OCC_COPIED = ('content', 'area_id', 'project_id', 'tags', 'notes')
+
+
+def get_occasions():
+    conn = get_conn()
+    occs = [dict(r) for r in conn.execute(
+        'SELECT * FROM occasion ORDER BY active DESC, name').fetchall()]
+    for o in occs:
+        o['items'] = [dict(r) for r in conn.execute(
+            """SELECT * FROM inbox_item
+               WHERE occasion_id = ? AND status = 'occasion' ORDER BY id""",
+            (o['id'],)).fetchall()]
+    conn.close()
+    return occs
+
+
+def get_occasion(id):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM occasion WHERE id = ?', (id,)).fetchone()
+    if row is None:
+        conn.close()
+        return None
+    occ = dict(row)
+    occ['items'] = [dict(r) for r in conn.execute(
+        """SELECT * FROM inbox_item
+           WHERE occasion_id = ? AND status = 'occasion' ORDER BY id""",
+        (id,)).fetchall()]
+    conn.close()
+    return occ
+
+
+def create_occasion(name, match_text):
+    conn = get_conn()
+    cur = conn.execute('INSERT INTO occasion (name, match_text) VALUES (?, ?)',
+                       (name, match_text))
+    new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return get_occasion(new_id)
+
+
+def update_occasion(id, name=_UNSET, match_text=_UNSET, active=_UNSET):
+    conn = get_conn()
+    if name is not _UNSET:
+        conn.execute('UPDATE occasion SET name = ? WHERE id = ?', (name, id))
+    if match_text is not _UNSET:
+        conn.execute('UPDATE occasion SET match_text = ? WHERE id = ?', (match_text, id))
+    if active is not _UNSET:
+        conn.execute('UPDATE occasion SET active = ? WHERE id = ?', (1 if active else 0, id))
+    conn.commit()
+    conn.close()
+    return get_occasion(id)
+
+
+def delete_occasion(id):
+    # The templates go with it — they are the occasion's own rows and belong to
+    # nothing else. Already-minted actions are ordinary items and STAY: they are
+    # on a day you may have already started, and deleting the rule is not a
+    # statement about work that has already landed.
+    conn = get_conn()
+    tpl = [r['id'] for r in conn.execute(
+        """SELECT id FROM inbox_item
+           WHERE occasion_id = ? AND status = 'occasion'""", (id,)).fetchall()]
+    for t in tpl:
+        conn.execute('DELETE FROM occasion_mint WHERE template_id = ?', (t,))
+        conn.execute('DELETE FROM inbox_item WHERE id = ?', (t,))
+    conn.execute('DELETE FROM occasion WHERE id = ?', (id,))
+    conn.commit()
+    conn.close()
+
+
+def add_occasion_item(occasion_id, content, area_id=None, project_id=None,
+                      tags='', notes=''):
+    conn = get_conn()
+    cur = conn.execute(
+        """INSERT INTO inbox_item (content, status, kind, area_id, project_id,
+                                   tags, notes, occasion_id)
+           VALUES (?, 'occasion', 'item', ?, ?, ?, ?, ?)""",
+        (content, area_id, project_id, tags, notes, occasion_id))
+    new_id = cur.lastrowid
+    conn.commit()
+    row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (new_id,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def delete_occasion_item(item_id):
+    conn = get_conn()
+    conn.execute('DELETE FROM occasion_mint WHERE template_id = ?', (item_id,))
+    conn.execute("DELETE FROM inbox_item WHERE id = ? AND status = 'occasion'", (item_id,))
+    conn.commit()
+    conn.close()
+
+
+def mint_occasions(day):
+    # Idempotent, and TODAY-FORWARD only: a past day is what it was, and minting
+    # into it would invent work that never existed (the same rule the daybook
+    # keeps). Runs off the day's calendar mirror, so an event that moved to
+    # another day takes its actions with it — that is the entire reason this is
+    # anchored to the event rather than to a weekday.
+    if day < date_cls.today().isoformat():
+        return
+    conn = get_conn()
+    # Same JOIN get_gcal_events uses: an event on a calendar you switched OFF is
+    # not on your day, so it may not bring actions onto it either.
+    events = [dict(r) for r in conn.execute(
+        """SELECT e.summary, e.start FROM gcal_event e
+           JOIN calendar_source c ON e.source_id = c.id
+           WHERE c.active = 1 AND substr(e.start, 1, 10) = ?
+           ORDER BY e.start""",
+        (day,)).fetchall()]
+    if not events:
+        conn.close()
+        return
+    occs = [dict(r) for r in conn.execute(
+        'SELECT * FROM occasion WHERE active = 1').fetchall()]
+    for o in occs:
+        needle = (o['match_text'] or '').strip().lower()
+        if not needle:
+            continue
+        hit = next((e for e in events if needle in (e['summary'] or '').lower()), None)
+        if hit is None:
+            continue
+        # The EARLIEST matching event of the day decides the slot: two bookings
+        # of the same occasion on one day are still one set of actions.
+        minute = 0
+        if 'T' in (hit['start'] or ''):
+            try:
+                minute = _hhmm_to_min(hit['start'].split('T')[1][:5])
+            except Exception:
+                minute = 0
+        for t in conn.execute(
+                """SELECT * FROM inbox_item
+                   WHERE occasion_id = ? AND status = 'occasion' ORDER BY id""",
+                (o['id'],)).fetchall():
+            done = conn.execute(
+                'SELECT 1 FROM occasion_mint WHERE date = ? AND template_id = ?',
+                (day, t['id'])).fetchone()
+            if done:
+                continue
+            cur = conn.execute(
+                """INSERT INTO inbox_item (content, status, kind, area_id, project_id,
+                                           tags, notes)
+                   VALUES (?, 'active', 'item', ?, ?, ?, ?)""",
+                tuple(t[c] for c in _OCC_COPIED))
+            item_id = cur.lastrowid
+            conn.execute(
+                'INSERT OR REPLACE INTO engage_placement (date, item_id, minute) VALUES (?, ?, ?)',
+                (day, item_id, minute))
+            conn.execute(
+                'INSERT INTO occasion_mint (date, template_id, item_id) VALUES (?, ?, ?)',
+                (day, t['id'], item_id))
+    conn.commit()
+    conn.close()
+
+
 def _hhmm_to_min(t):
     h, m = t.split(':')
     return int(h) * 60 + int(m)
@@ -2055,9 +2268,6 @@ def delete_ref_item(id):
     conn.close()
 
 
-_UNSET = object()
-
-
 def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_until=_UNSET,
                       project_id=_UNSET, tags=_UNSET, waiting_on=_UNSET, chase_on=_UNSET,
                       notes=_UNSET, pushed=_UNSET, started_at=_UNSET, deadline=_UNSET,
@@ -2075,6 +2285,17 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
         conn.close()
         if cur == id:
             project_id = _UNSET
+    # A TEMPLATE never changes status. 'occasion' is the only thing keeping it
+    # out of the pool, MAP and the review counts, so a stray status in a PATCH
+    # would spring it into the inventory as an action nobody wrote — silently,
+    # and on every lens at once. The client's template mode doesn't send one;
+    # this is the backstop, same policy as the cycle guards above.
+    if status is not _UNSET:
+        conn = get_conn()
+        row = conn.execute('SELECT status FROM inbox_item WHERE id = ?', (id,)).fetchone()
+        conn.close()
+        if row and row['status'] == 'occasion' and status != 'occasion':
+            status = _UNSET
     updates = {}
     if content is not _UNSET:
         updates['content'] = content
