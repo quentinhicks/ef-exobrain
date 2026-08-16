@@ -1779,11 +1779,82 @@ const SETTINGS_SECTIONS = [
   { key: 'calendars', name: 'Calendars', group: 'App',
     desc: 'iCal feeds drawn on the timeline.',
     summary: () => `${beCounts.calendars || 0} connected` },
+  { key: 'config', name: 'Connections', group: 'App',
+    desc: 'Accounts, keys and paths the app talks to the outside world with. '
+      + 'Stored in config.json on the server, never in the database.',
+    summary: () => `${configView.rows.filter(r => r.secret ? r.set : r.value).length}`
+      + `/${configView.rows.length || CONFIG_ROW_COUNT} set` },
   { key: 'display', name: 'Display', group: 'App',
     desc: 'Theme, timezone, and the NOW panel.',
     summary: () => `${document.documentElement.classList.contains('theme-light') ? 'Light' : 'Dark'}`
       + ` · ${currentTimezone().split('/').pop().replace(/_/g, ' ')}` },
 ];
+
+// ── Connections (config.json) ────────────────────────────────
+//
+// The server hands back VALUES for ordinary keys and, for a secret, only
+// whether one is set. So the secret field is always empty here — there is
+// nothing to put in it — and empty therefore has to mean "leave it alone",
+// or opening this page and saving anything would wipe the token that charges
+// real money. Clearing one is its own button.
+const configView = { rows: [], status: '' };
+const CONFIG_ROW_COUNT = 8;
+
+async function loadConfigRows() {
+  configView.rows = await fetch('/api/config').then(r => r.json()).catch(() => configView.rows);
+  renderConfig();
+}
+
+function renderConfig() {
+  const el = document.getElementById('be-config-list');
+  if (!el) return;
+  el.innerHTML = configView.rows.map(r => `
+    <div class="be-set-row be-config-row">
+      <span class="be-set-name">${escHtml(r.label)}</span>
+      <input type="${r.secret ? 'password' : 'text'}" class="be-config-input" data-ckey="${r.key}"
+        autocomplete="off" ${r.secret ? 'placeholder="' + (r.set ? 'set — type to replace' : 'not set') + '"'
+          : `value="${escHtml(r.value || '')}"`}>
+      <button class="be-btn-secondary be-config-save" data-ckey="${r.key}">Save</button>
+      ${(r.secret ? r.set : r.value)
+        ? `<button class="be-btn-secondary be-config-clear" data-ckey="${r.key}"
+             title="Remove this value">Clear</button>` : ''}
+      <span class="be-config-hint">${escHtml(r.hint || '')}</span>
+    </div>`).join('');
+  const status = document.getElementById('be-config-status');
+  if (status) status.textContent = configView.status;
+
+  const save = async (key, value) => {
+    configView.status = 'Saving…';
+    renderConfig();
+    const res = await fetch('/api/config', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    }).catch(() => null);
+    if (!res || !res.ok) {
+      configView.status = `Could not save (${res ? res.status : 'no connection'})`;
+      renderConfig();
+      return;
+    }
+    configView.rows = await res.json();
+    const spec = configView.rows.find(r => r.key === key) || {};
+    configView.status = `${spec.label || key} saved`;
+    renderConfig();
+    // Not undoable, like every other config surface — and a secret has no
+    // previous value to put back, since nothing ever read it out.
+    toast(`${spec.label || key} saved`);
+  };
+
+  el.querySelectorAll('.be-config-save').forEach(b => b.addEventListener('click', () => {
+    const input = el.querySelector(`.be-config-input[data-ckey="${b.dataset.ckey}"]`);
+    const row = configView.rows.find(r => r.key === b.dataset.ckey) || {};
+    const v = input.value.trim();
+    if (row.secret && !v) { configView.status = 'Nothing typed — the stored value is unchanged.'; renderConfig(); return; }
+    save(b.dataset.ckey, v);
+  }));
+  el.querySelectorAll('.be-config-clear').forEach(b => b.addEventListener('click', () => {
+    save(b.dataset.ckey, '__clear__');
+  }));
+}
 
 function renderSettingsIndex() {
   const el = document.getElementById('be-index');
@@ -1807,6 +1878,10 @@ function openSettingsSection(key) {
   settingsView.section = key;
   paintSettingsNav();
   if (key === 'times') renderSchedules();
+  // Read fresh every time: another session (or an ssh edit) may have changed
+  // the file, and a stale "not set" next to a token is the worst thing this
+  // page could say.
+  if (key === 'config') { configView.status = ''; loadConfigRows(); }
 }
 
 function backToSettingsIndex() {
