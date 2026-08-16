@@ -931,11 +931,17 @@ def init_db():
     # NAMED soft version, the checklist link, and the 24h easing gate
     # (`pending` JSON {field, value, apply_at}, applied on read — see
     # apply_due_flow_pendings).
+    # `duration_min` (2026-08-16) is how long the step TAKES — a description of
+    # the step, NULL when you have not said. Deliberately not the same field as
+    # `pawn_minutes`, which is what carrying the step COSTS the routine that
+    # receives it: that one shortens a gate on the money path, so the two stay
+    # independent and setting a duration never moves a deadline.
     for column, ddl in (('pawn_to_flow_id', 'INTEGER'),
                         ('pawn_minutes', 'INTEGER'),
                         ('pawned_date', 'TEXT'),
                         ('soft_content', 'TEXT'),
                         ('ref_list_id', 'INTEGER'),
+                        ('duration_min', 'INTEGER'),
                         ('pending', 'TEXT')):
         try:
             conn.execute(f'SELECT {column} FROM flow_step LIMIT 1')
@@ -4115,14 +4121,21 @@ def delete_flow(id):
     conn.close()
 
 
-def create_flow_step(flow_id, content, kind='text', requirement='hard', days_of_week=None):
+def create_flow_step(flow_id, content, kind='text', requirement='hard', days_of_week=None,
+                     duration_min=None):
     conn = get_conn()
     row = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM flow_step WHERE flow_id = ?',
                        (flow_id,)).fetchone()
+    try:
+        mins = int(duration_min)
+    except (TypeError, ValueError):
+        mins = None
     cur = conn.execute(
-        '''INSERT INTO flow_step (flow_id, content, kind, requirement, position, days_of_week)
-           VALUES (?, ?, ?, ?, ?, ?)''',
-        (flow_id, content, kind, requirement, row['p'], days_of_week or None))
+        '''INSERT INTO flow_step (flow_id, content, kind, requirement, position, days_of_week,
+                                  duration_min)
+           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        (flow_id, content, kind, requirement, row['p'], days_of_week or None,
+         mins if mins and mins > 0 else None))
     out = conn.execute('SELECT * FROM flow_step WHERE id = ?', (cur.lastrowid,)).fetchone()
     conn.commit()
     conn.close()
@@ -4198,8 +4211,19 @@ def apply_due_flow_pendings(conn):
 def update_flow_step(id, content=None, kind=None, requirement=None, position=None,
                      days_of_week=_UNSET, rrule=_UNSET,
                      pawn_to_flow_id=_UNSET, pawn_minutes=_UNSET,
-                     soft_content=_UNSET, ref_list_id=_UNSET):
+                     soft_content=_UNSET, ref_list_id=_UNSET, duration_min=_UNSET):
     conn = get_conn()
+    # How long the step takes. It DESCRIBES the step, it does not demand
+    # anything of it — no easing gate, so it applies at once even on a
+    # gate-linked routine, and it never touches pawn_minutes (that one moves a
+    # deadline on the money path).
+    if duration_min is not _UNSET:
+        try:
+            mins = int(duration_min)
+        except (TypeError, ValueError):
+            mins = None
+        conn.execute('UPDATE flow_step SET duration_min = ? WHERE id = ?',
+                     (mins if mins and mins > 0 else None, id))
     if soft_content is not _UNSET:
         conn.execute('UPDATE flow_step SET soft_content = ? WHERE id = ?',
                      ((soft_content or '').strip() or None, id))

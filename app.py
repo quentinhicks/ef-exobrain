@@ -1690,7 +1690,7 @@ def post_flow_step(id):
         return jsonify({'error': 'content is required'}), 400
     return jsonify(storage.create_flow_step(
         id, content, data.get('kind', 'text'), data.get('requirement', 'hard'),
-        data.get('days_of_week'))), 201
+        data.get('days_of_week'), data.get('duration_min'))), 201
 
 
 @app.route('/api/flow-steps/<int:id>', methods=['PATCH'])
@@ -1704,7 +1704,8 @@ def patch_flow_step(id):
         pawn_to_flow_id=data.get('pawn_to_flow_id', storage._UNSET),
         pawn_minutes=data.get('pawn_minutes', storage._UNSET),
         soft_content=data.get('soft_content', storage._UNSET),
-        ref_list_id=data.get('ref_list_id', storage._UNSET)))
+        ref_list_id=data.get('ref_list_id', storage._UNSET),
+        duration_min=data.get('duration_min', storage._UNSET)))
 
 
 # Pawning is a DAY-level act, not a config edit, so it is its own route rather
