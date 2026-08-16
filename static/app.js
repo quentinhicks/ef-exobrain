@@ -1769,6 +1769,9 @@ const SETTINGS_SECTIONS = [
   { key: 'recurring', name: 'Recurring', group: 'Your week',
     desc: 'Tasks that come back on a schedule.',
     summary: () => plural(beCounts.recurring, 'task') },
+  { key: 'occasions', name: 'Occasions', group: 'Your week',
+    desc: 'Actions that arrive with a kind of calendar event.',
+    summary: () => plural(beCounts.occasions, 'occasion') },
   { key: 'areas', name: 'Areas', group: 'Where and what',
     desc: 'The areas of your life, and the domains that group them.',
     summary: () => String(beCounts.areas || 0) },
@@ -2804,6 +2807,7 @@ async function openBlockEditor() {
   renderBeBlocks(blocks);
   await renderQrManager();
   renderBeRecurring(await apiGet('/api/recurring', []), projects);
+  renderBeOccasions(await apiGet('/api/occasions', []));
   renderBeCalendars(await apiGet('/api/calendars', []));
   await renderSchedules();
   settingsView.section = null;
@@ -2861,6 +2865,49 @@ async function patchCalendar(id, body) {
 }
 
 // ── Section lists ────────────────────────────────────────────
+
+// OCCASIONS ARE THE ONE SETTINGS KIND WITH NO `SETTINGS_SHEETS` ENTRY, on
+// purpose. Every other kind is reached from exactly one place, so the shared
+// se-sheet IS its editor. An occasion is reached from two — Settings, and the
+// event on the day it fires on, which is the whole point of the feature (you
+// configure it the moment you notice, not by remembering to visit a panel).
+//
+// Given two doors, the choice is one editor with two doors or two editors for
+// one thing. A se-sheet is a flat field form and cannot hold the ACTIONS list,
+// so the second option would make Settings the LESSER surface: rename, pause
+// and delete here, but edit the actions only over there. So both doors open
+// #oc-sheet, which does state the state row's own words (Active / Paused, with
+// the hint) and does keep Delete in its foot — the rule's substance, in a
+// clarify-shaped sheet rather than an se-shaped one (#fr-sheet is the
+// precedent). Do NOT "fix" this by adding an occasion entry to SETTINGS_SHEETS.
+function renderBeOccasions(occs) {
+  const list = document.getElementById('be-occasions-list');
+  if (!list) return;
+  state.occasions = Array.isArray(occs) ? occs : [];
+  beCounts.occasions = state.occasions.filter(o => o.active).length;
+  list.innerHTML = `
+    ${state.occasions.map(o => beRow({
+      id: o.id, name: o.name, dim: !o.active,
+      meta: `“${o.match_text}” · ${plural((o.items || []).length, 'action')}`,
+      badge: o.active ? '' : 'paused',
+    })).join('')}
+    ${state.occasions.length ? '' : '<div class="be-empty">No occasions yet. '
+      + 'Add one here, or tap an event on the day.</div>'}
+    ${beAddRow('Add occasion')}`;
+  // Not wireBeList: that opens the shared se-sheet, and an occasion's editor is
+  // #oc-sheet (see the note above).
+  list.querySelectorAll('[data-row]').forEach(btn => btn.addEventListener('click', () => {
+    const o = state.occasions.find(x => String(x.id) === btn.dataset.row);
+    if (o) openOccasionFor(o);
+  }));
+  const add = list.querySelector('[data-add]');
+  if (add) add.addEventListener('click', () => openOccasionNew());
+}
+
+async function refreshBeOccasions() {
+  renderBeOccasions(await apiGet('/api/occasions', state.occasions || []));
+  if (settingsView.section == null) renderSettingsIndex();
+}
 
 function renderBeCalendars(calendars) {
   const list = document.getElementById('be-calendars-list');
@@ -3543,6 +3590,10 @@ function initHub() {
     // Settings peels the way it navigates (11a): sheet, then section, then the
     // panel itself — so Esc is Back, not Close, until there is nothing left.
     if (seSheet.kind) { closeSeSheet(); return; }
+    // The occasion sheet peels before whatever it was opened from — and that is
+    // Settings as often as it is the day, so it has to sit ABOVE the overlay
+    // loop below or Esc would close Settings out from under an open sheet.
+    if (occasionView.open) { closeOccasionSheet(); return; }
     // Legacy modal overlays first (they sit above the m-overlays), innermost
     // wins; the person-detail/bucket/add trio stack over People.
     for (const id of ['person-add-overlay', 'bucket-mgr-overlay', 'person-detail-overlay',
@@ -3561,8 +3612,6 @@ function initHub() {
     if (evSheet.open) { closeEvSheet(); return; }
     // The entry sheet likewise peels before whatever surface opened it.
     if (entrySheet.open) { closeEntrySheet(); return; }
-    // The occasion sheet peels before the day it was opened from.
-    if (occasionView.open) { closeOccasionSheet(); return; }
     // A dangerous-writing session swallows Esc entirely — its own keydown
     // handler treats Esc as the abort, and nothing underneath may act on it.
     if (dwView.open) return;
@@ -4632,9 +4681,14 @@ function renderEvSheet() {
 // bookings share is what you called them.
 //
 // Configuration happens HERE, on the event, the first time you notice you keep
-// doing the same two things — never in a Settings surface you'd have to
-// remember to visit. The event row is the only row on the day that had no sheet
-// to open, which is also why tapping one was free.
+// doing the same two things. The event row is the only row on the day that had
+// no sheet to open, which is also why tapping one was free.
+//
+// This is ALSO the editor Settings → Occasions opens, so an occasion has one
+// editor and two doors rather than two editors — see renderBeOccasions for why
+// it is not a SETTINGS_SHEETS kind. `summary` is the event you came from, and
+// is empty when you came from Settings: it seeds a new occasion's fields and
+// names what the sheet is about, nothing more.
 const occasionView = { open: false, summary: '', occ: null };
 
 function occasionFor(list, summary) {
@@ -4645,10 +4699,30 @@ function occasionFor(list, summary) {
     (o.match_text || '').trim() && s.includes(o.match_text.trim().toLowerCase())) || null;
 }
 
+// Door 1: an EVENT on the day. Finds the occasion that fires on it, or offers
+// to make one seeded from its title.
 async function openOccasionSheet(summary) {
   const list = await apiGet('/api/occasions', []);
   occasionView.summary = summary || '';
   occasionView.occ = occasionFor(list, summary);
+  occasionView.open = true;
+  renderOccasionSheet();
+}
+
+// Door 2: a row in Settings → Occasions. The occasion is already known, so
+// there is no event to match against and no title to seed from.
+function openOccasionFor(occ) {
+  occasionView.summary = '';
+  occasionView.occ = occ;
+  occasionView.open = true;
+  renderOccasionSheet();
+}
+
+// Door 3: + Add occasion in Settings. Nothing to seed from, so the sheet asks
+// for the two fields it cannot guess instead of showing the event's pitch.
+function openOccasionNew() {
+  occasionView.summary = '';
+  occasionView.occ = null;
   occasionView.open = true;
   renderOccasionSheet();
 }
@@ -4664,15 +4738,30 @@ function closeOccasionSheet() {
   occasionView.occ = null;
   document.getElementById('oc-sheet').classList.add('hidden');
   document.getElementById('oc-sheet-backdrop').classList.add('hidden');
-  if (was) refreshEngage();
+  if (!was) return;
+  refreshEngage();
+  // Settings may be the surface underneath, and its list states the name, the
+  // match word, the action count and the paused badge — all four of which this
+  // sheet can have just changed.
+  if (!document.getElementById('modal-overlay').classList.contains('hidden')) {
+    refreshBeOccasions();
+  }
 }
 
 // Re-read the occasion and repaint, then the day — a template that just changed
 // does not retro-mint, but adding the FIRST one to today's event should show up
 // without a reload.
+//
+// Re-found by ID where there is one. Re-matching on the event title is only
+// right on the way IN: once the sheet is open, editing the match word must not
+// make the occasion you are editing vanish from under you — and from Settings
+// there is no title to match on at all.
 async function refreshOccasionSheet() {
   const list = await apiGet('/api/occasions', []);
-  occasionView.occ = occasionFor(list, occasionView.summary);
+  const id = occasionView.occ && occasionView.occ.id;
+  occasionView.occ = id != null
+    ? (list.find(o => o.id === id) || null)
+    : occasionFor(list, occasionView.summary);
   renderOccasionSheet();
   await refreshEngage();
 }
@@ -4691,12 +4780,23 @@ function renderOccasionSheet() {
       <span class="cl-spacer"></span>
       <button class="modal-close-btn" id="oc-close">✕</button>
     </div>
-    <div class="oc-ev">${escHtml(occasionView.summary || 'this event')}</div>
-    ${!o ? `
+    ${occasionView.summary ? `<div class="oc-ev">${escHtml(occasionView.summary)}</div>` : ''}
+    ${!o && occasionView.summary ? `
     <div class="oc-hint">Nothing is attached to events like this yet. Set one up and
       every future event whose title contains the word you choose brings these
       actions onto its day by itself.</div>
     <div class="cl-row"><button class="cl-pill" id="oc-new">Set up an occasion</button></div>`
+    : !o ? `
+    <div class="oc-hint">An occasion is a set of actions that arrive with a kind of
+      calendar event. Name it, and give it a word its title contains.</div>
+    <div class="cl-sec"><span class="cl-label">Called</span></div>
+    <div class="cl-action-wrap">
+      <input type="text" class="cl-action" id="oc-new-name" placeholder="e.g. Dave 1:1"></div>
+    <div class="cl-sec"><span class="cl-label">Fires on</span>
+      <span class="cl-hint">any event whose title contains this</span></div>
+    <div class="cl-row">
+      <input type="text" class="oc-match" id="oc-new-match" placeholder="e.g. dave"></div>
+    <div class="cl-row"><button class="cl-pill" id="oc-create">Create occasion</button></div>`
     : `
     <div class="cl-sec"><span class="cl-label">Called</span></div>
     <div class="cl-action-wrap">
@@ -4710,7 +4810,8 @@ function renderOccasionSheet() {
       matches anywhere in the title, so <em>dave</em> would also catch
       “Dave's birthday”.</div>
     <div class="cl-sec"><span class="cl-label">State</span>
-      <span class="cl-hint">paused keeps everything, and stops it firing</span></div>
+      <span class="cl-hint">paused: no new actions are minted, and ones already
+        on a day stay. Nothing is deleted.</span></div>
     <div class="cl-row">
       <button class="cl-pill${o.active ? ' cl-pill-on' : ''}" data-ocstate="1">Active</button>
       <button class="cl-pill${o.active ? '' : ' cl-pill-on'}" data-ocstate="0">Paused</button>
@@ -4745,6 +4846,28 @@ function renderOccasionSheet() {
     occasionView.occ = created;
     renderOccasionSheet();
   });
+
+  // The Settings door: nothing to seed from, so both fields are asked for.
+  const createBtn = sheet.querySelector('#oc-create');
+  if (createBtn) {
+    const create = async () => {
+      const name = sheet.querySelector('#oc-new-name').value.trim();
+      const match = sheet.querySelector('#oc-new-match').value.trim() || name;
+      // A refusal has to be visible where the thumb is, not only in a foot the
+      // keyboard covers.
+      if (!name) { toast('The occasion needs a name'); return; }
+      const res = await apiSend('/api/occasions', 'POST', { name, match_text: match });
+      const created = await res.json();
+      if (!res.ok) { toast(created.error || 'Could not create it'); return; }
+      occasionView.occ = created;
+      renderOccasionSheet();
+    };
+    createBtn.addEventListener('click', create);
+    sheet.querySelectorAll('#oc-new-name, #oc-new-match').forEach(el =>
+      el.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.stopPropagation(); create(); }
+      }));
+  }
 
   const patch = async body => {
     const updated = await apiSend(`/api/occasions/${o.id}`, 'PATCH', body).then(r => r.json());
@@ -4783,6 +4906,11 @@ function renderOccasionSheet() {
   });
   const delBtn = sheet.querySelector('#oc-delete');
   if (delBtn) delBtn.addEventListener('click', async () => {
+    // Asked, like every other settings delete: this takes the standing actions
+    // with it. What it already put on a day is not touched, and saying so is
+    // the difference between a confirm and a scare.
+    if (!confirm(`Delete "${o.name}"? Its ${plural(o.items.length, 'standing action')}`
+                 + ' go with it. Actions already on a day stay.')) return;
     await apiSend(`/api/occasions/${o.id}`, 'DELETE');
     closeOccasionSheet();
     toast(`deleted the “${o.name}” occasion`);
