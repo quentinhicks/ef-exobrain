@@ -5926,6 +5926,9 @@ function socialRepDesc(rep) {
   return parts.join(' · ') + (rep.person ? ` — ${rep.person}` : '');
 }
 
+// MIRROR of storage.social_price — see the note there. Preview only: the
+// server reprices on save and its number is the one that gets stamped, so a
+// drift here is cosmetic. It still has to be a mirror, not a variant.
 function socialFormPrice(f) {
   const axes = ((socialView.config || {}).axes || {})[f.family] || [];
   let sum = 0;
@@ -9121,22 +9124,103 @@ async function refreshEngage() {
   renderEngage();
 }
 
-function renderEngage() {
-  const header = document.getElementById('engage-header');
-  const body = document.getElementById('engage-body');
-  if (!header || !body) return;
+// THE FOUR POOL GATES, in one place.
+//
+// Location, device, time and day: each decides whether an available item is
+// shown in the POOL (never the day's commitments — that boundary is the whole
+// point), and each is FAIL-OPEN by construction. They were 80 lines in the
+// middle of renderEngage, which is where a 900-line function comes from and
+// also where four rules with one shared shape go to drift apart.
+//
+// Every count on the pool header comes from these same predicates, so a gate
+// can never hide an item without the header being able to say so.
+function engagePoolGates(nowMin, isToday) {
+  // Location gate: any bound tag on the item must be satisfied by the current
+  // fix; without a fix nothing is gated (fail-open, see initGeo).
+  const tagLoc = {};
+  (state.tagLocations || []).forEach(b => {
+    const loc = (state.locations || []).find(l => l.id === b.location_id);
+    if (loc) tagLoc[b.tag] = loc;
+  });
+  const locOk = i => !state.geo.ok || itemTags(i).every(t => {
+    const loc = tagLoc[t];
+    return !loc || geoDistM(state.geo.lat, state.geo.lng, loc.lat, loc.lng)
+      <= (loc.radius_m || 150);
+  });
 
-  const now = new Date();
-  const dateStr = egDateStr();
-  const viewDate = egViewDate();
-  const isToday = dateStr === formatDateYMD(now);
-  // "Past" dimming is a statement about the wall clock, so it only exists on
-  // today's view: a future day has no past yet, and a past day is all past.
-  const nowMin = isToday ? now.getHours() * 60 + now.getMinutes()
-    : dateStr < formatDateYMD(now) ? 5760 : -1;
-  const dow = jsDateToDayOfWeek(viewDate);
-  const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
+  // Device gate: on the pc you get the pc-tagged work plus everything carrying
+  // no device tag at all; the phone-only rows drop out (see DEVICE_TAGS). The
+  // day's fixed points are commitments and are never filtered — this is the
+  // pool, same boundary the location gate keeps.
+  const device = currentDevice();
+  // A tag is device-bound either by BEING 'pc'/'phone' or by having been bound
+  // to one in the ctx sheet — so `email → pc` gates exactly like `#pc` does,
+  // without the tag having to be named after the hardware.
+  const tagDev = {};
+  DEVICE_TAGS.forEach(t => { tagDev[t] = t; });
+  (state.tagDevices || []).forEach(b => { tagDev[b.tag] = b.device; });
+  const deviceOk = i => {
+    const devs = itemTags(i).map(t => tagDev[t]).filter(Boolean);
+    return !devs.length || devs.includes(device);
+  };
+  const otherDevice = device === 'pc' ? 'phone' : 'pc';
 
+  // TIME gate: a tag bound to a SCHEDULE SOURCE only counts while you are
+  // inside one of that source's occurrences. The server sends the intervals it
+  // covers the viewed date (schedule.py — the one occurrence source); the
+  // minute comparison is here because the wall clock is the half only the
+  // client knows.
+  //
+  // The intervals are already clipped to the day at both edges, so a window
+  // that runs past midnight arrives as a tail on one day and a head on the
+  // next — which is why this no longer has wrap-around arithmetic of its own.
+  //
+  // FAIL-OPEN off today, like the geo gate is fail-open with no fix: "in that
+  // window right now" is a statement about now, and applying it to a day you
+  // are only planning would hide work for no reason you could see.
+  const tagTime = {};
+  (state.tagTimes || []).forEach(b => {
+    const p = (state.schedules || []).find(x => x.uid === b.source_uid);
+    if (p) tagTime[b.tag] = p;
+  });
+  const inPeriod = p => (p.intervals || []).some(iv => {
+    const from = timeToMinutes(iv.start);
+    const to = iv.end === '24:00' ? 1440 : timeToMinutes(iv.end);
+    return nowMin >= from && nowMin < to;
+  });
+  const gateOn = timeGateOn();
+  const timeOk = i => !isToday || !gateOn || itemTags(i).every(t => {
+    const p = tagTime[t];
+    return !p || inPeriod(p);
+  });
+
+  // Hidden-by-location is COUNTED on the header, never silent — trust in the
+  // pool is multiplicative across 210 glances a week. Hidden-by-device is
+  // counted the same way, and among the locOk rows only, so the two exclusions
+  // can't both claim the same item.
+  // DAY gate: a tag can be asked about each morning (tag_daily) and answered for
+  // the date (tag_day). Only an explicit "not today" hides anything — an
+  // UNANSWERED day excludes nothing (Quentin), so skipping the routine leaves
+  // the pool exactly as it was. Only on TODAY: an answer is a statement about
+  // today, so applying it to a day you are merely planning would hide work for
+  // a reason that isn't true yet — the same rule the time gate follows.
+  const dayAns = (state.tagDaily || {}).answers || {};
+  const onToday = !engageView.date || engageView.date === formatDateYMD(new Date());
+  const dayOk = i => !onToday || itemTags(i).every(t => dayAns[t] !== false);
+
+  return { locOk, deviceOk, timeOk, dayOk, device, otherDevice,
+           // The context menu marks each tag with the gate that binds it.
+           tagLoc, tagDev, tagTime, gateOn };
+}
+
+// THE DAY'S FIXED POINTS — everything that already has a time on it, in one
+// list of semantic minutes: gates and the routines they gate, blocks, routine
+// areas, calendar events, and the actions placed between them.
+//
+// Assembling it was the first 110 lines of renderEngage. It is a pure
+// computation over state and the viewed day, and naming it makes the render
+// read as what it is: build the day, gate the pool, draw, wire.
+function engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin) {
   // The day's fixed points, all in semantic minutes.
   const rows = [];
 
@@ -9252,6 +9336,28 @@ function renderEngage() {
 
   rows.sort((a, b) => a.minute - b.minute || (a.kind === 'action') - (b.kind === 'action'));
 
+  return { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds };
+}
+
+function renderEngage() {
+  const header = document.getElementById('engage-header');
+  const body = document.getElementById('engage-body');
+  if (!header || !body) return;
+
+  const now = new Date();
+  const dateStr = egDateStr();
+  const viewDate = egViewDate();
+  const isToday = dateStr === formatDateYMD(now);
+  // "Past" dimming is a statement about the wall clock, so it only exists on
+  // today's view: a future day has no past yet, and a past day is all past.
+  const nowMin = isToday ? now.getHours() * 60 + now.getMinutes()
+    : dateStr < formatDateYMD(now) ? 5760 : -1;
+  const dow = jsDateToDayOfWeek(viewDate);
+  const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
+
+  const { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds } =
+    engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin);
+
   // Context filter. There are TWO AXES and they do not compose the same way:
   // a domain is WHERE the work belongs (single-valued — area.domain_id), a tag
   // is WHAT KIND of work it is (many per item). So:
@@ -9271,64 +9377,8 @@ function renderEngage() {
   const inContext = i => String(domainOf(i)) === String(ctxDomainId)
     && [...engageView.ctxTags].every(t => itemTags(i).includes(t));
 
-  // Location gate: any bound tag on the item must be satisfied by the current
-  // fix; without a fix nothing is gated (fail-open, see initGeo).
-  const tagLoc = {};
-  (state.tagLocations || []).forEach(b => {
-    const loc = (state.locations || []).find(l => l.id === b.location_id);
-    if (loc) tagLoc[b.tag] = loc;
-  });
-  const locOk = i => !state.geo.ok || itemTags(i).every(t => {
-    const loc = tagLoc[t];
-    return !loc || geoDistM(state.geo.lat, state.geo.lng, loc.lat, loc.lng)
-      <= (loc.radius_m || 150);
-  });
-
-  // Device gate: on the pc you get the pc-tagged work plus everything carrying
-  // no device tag at all; the phone-only rows drop out (see DEVICE_TAGS). The
-  // day's fixed points are commitments and are never filtered — this is the
-  // pool, same boundary the location gate keeps.
-  const device = currentDevice();
-  // A tag is device-bound either by BEING 'pc'/'phone' or by having been bound
-  // to one in the ctx sheet — so `email → pc` gates exactly like `#pc` does,
-  // without the tag having to be named after the hardware.
-  const tagDev = {};
-  DEVICE_TAGS.forEach(t => { tagDev[t] = t; });
-  (state.tagDevices || []).forEach(b => { tagDev[b.tag] = b.device; });
-  const deviceOk = i => {
-    const devs = itemTags(i).map(t => tagDev[t]).filter(Boolean);
-    return !devs.length || devs.includes(device);
-  };
-  const otherDevice = device === 'pc' ? 'phone' : 'pc';
-
-  // TIME gate: a tag bound to a SCHEDULE SOURCE only counts while you are
-  // inside one of that source's occurrences. The server sends the intervals it
-  // covers the viewed date (schedule.py — the one occurrence source); the
-  // minute comparison is here because the wall clock is the half only the
-  // client knows.
-  //
-  // The intervals are already clipped to the day at both edges, so a window
-  // that runs past midnight arrives as a tail on one day and a head on the
-  // next — which is why this no longer has wrap-around arithmetic of its own.
-  //
-  // FAIL-OPEN off today, like the geo gate is fail-open with no fix: "in that
-  // window right now" is a statement about now, and applying it to a day you
-  // are only planning would hide work for no reason you could see.
-  const tagTime = {};
-  (state.tagTimes || []).forEach(b => {
-    const p = (state.schedules || []).find(x => x.uid === b.source_uid);
-    if (p) tagTime[b.tag] = p;
-  });
-  const inPeriod = p => (p.intervals || []).some(iv => {
-    const from = timeToMinutes(iv.start);
-    const to = iv.end === '24:00' ? 1440 : timeToMinutes(iv.end);
-    return nowMin >= from && nowMin < to;
-  });
-  const gateOn = timeGateOn();
-  const timeOk = i => !isToday || !gateOn || itemTags(i).every(t => {
-    const p = tagTime[t];
-    return !p || inPeriod(p);
-  });
+  const { locOk, deviceOk, timeOk, dayOk, device, otherDevice,
+          tagLoc, tagDev, tagTime, gateOn } = engagePoolGates(nowMin, isToday);
 
   // Scheduled on/after the viewed day = it HAS a day, so it isn't "Not
   // scheduled" on this one. A placement whose day has passed is not in this
@@ -9339,20 +9389,6 @@ function renderEngage() {
     .filter(i => (i.kind || 'item') === 'item' && !placedIds.has(i.id)
                  && !scheduledIds.has(i.id)
                  && !routineAreaIds.has(i.area_id) && inContext(i));
-  // Hidden-by-location is COUNTED on the header, never silent — trust in the
-  // pool is multiplicative across 210 glances a week. Hidden-by-device is
-  // counted the same way, and among the locOk rows only, so the two exclusions
-  // can't both claim the same item.
-  // DAY gate: a tag can be asked about each morning (tag_daily) and answered for
-  // the date (tag_day). Only an explicit "not today" hides anything — an
-  // UNANSWERED day excludes nothing (Quentin), so skipping the routine leaves
-  // the pool exactly as it was. Only on TODAY: an answer is a statement about
-  // today, so applying it to a day you are merely planning would hide work for
-  // a reason that isn't true yet — the same rule the time gate follows.
-  const dayAns = (state.tagDaily || {}).answers || {};
-  const onToday = !engageView.date || engageView.date === formatDateYMD(new Date());
-  const dayOk = i => !onToday || itemTags(i).every(t => dayAns[t] !== false);
-
   const geoHidden = poolBase.filter(i => !locOk(i)).length;
   const devHidden = poolBase.filter(i => locOk(i) && !deviceOk(i)).length;
   const timeHidden = poolBase.filter(i => locOk(i) && deviceOk(i) && !timeOk(i)).length;

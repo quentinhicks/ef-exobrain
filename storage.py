@@ -4955,6 +4955,8 @@ def set_social_level_rating(id, rating):
 
 
 def social_price(family, levels):
+    # MIRRORED client-side by socialFormPrice (app.js) for the form's live
+    # preview. This is the authority: every stored price comes from here.
     # levels: {axis: level_id}. None (unpriceable) when a required axis is
     # missing or any chosen level is uncalibrated — the caller refuses the rep.
     axes = SOCIAL_FAMILY_AXES.get(family)
