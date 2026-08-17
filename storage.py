@@ -142,7 +142,7 @@ def init_db():
             content TEXT NOT NULL DEFAULT '',
             planning_started_at TEXT,
             planning_finished_at TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             updated_at TEXT
         );
 
@@ -164,7 +164,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS inbox_item (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             content TEXT NOT NULL,
-            captured_at TEXT NOT NULL DEFAULT (datetime('now')),
+            captured_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             status TEXT,
             area_id INTEGER REFERENCES area(id),
             defer_until TEXT
@@ -175,7 +175,7 @@ def init_db():
             type TEXT NOT NULL,
             date TEXT NOT NULL,
             content TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS gcal_event (
@@ -215,7 +215,7 @@ def init_db():
             file_hash TEXT NOT NULL,
             line_index INTEGER NOT NULL,
             annotation TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS sheets_inbox_item (
@@ -225,7 +225,7 @@ def init_db():
             course TEXT NOT NULL,
             due_date TEXT NOT NULL,
             due_time TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS experiment (
@@ -237,7 +237,7 @@ def init_db():
             status     TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','graduated','killed')),
             started_at TEXT NOT NULL,
             ended_at   TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS yearly_review (
@@ -246,7 +246,7 @@ def init_db():
             annual_theme     TEXT,
             major_goals      TEXT,
             paper_notes_path TEXT,
-            created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS quarterly_review (
@@ -256,7 +256,7 @@ def init_db():
             focuses          TEXT,
             hamming_insight  TEXT NOT NULL,
             paper_notes_path TEXT,
-            created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS life_area_rating (
@@ -273,7 +273,7 @@ def init_db():
             rating              INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 7),
             is_bottom_3         INTEGER NOT NULL DEFAULT 0,
             notes               TEXT,
-            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS weekly_review (
@@ -282,7 +282,7 @@ def init_db():
             learning_capture TEXT NOT NULL,
             next_focuses     TEXT,
             inbox_cleared_at TEXT,
-            created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS monthly_review (
@@ -290,7 +290,7 @@ def init_db():
             month        TEXT NOT NULL UNIQUE,
             synthesis    TEXT NOT NULL,
             next_focuses TEXT,
-            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS monthly_experiment_verdict (
@@ -299,7 +299,7 @@ def init_db():
             experiment_id     INTEGER NOT NULL REFERENCES experiment(id),
             verdict           TEXT NOT NULL CHECK(verdict IN ('graduate','redesign','drop')),
             notes             TEXT,
-            created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS monthly_project_status (
@@ -308,7 +308,7 @@ def init_db():
             area_id        INTEGER NOT NULL REFERENCES area(id),
             status            TEXT NOT NULL CHECK(status IN ('on_track','stalled','completed')),
             notes             TEXT,
-            created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS daily_review (
@@ -317,7 +317,7 @@ def init_db():
             pdsa_study     TEXT NOT NULL DEFAULT '',
             synthesis      TEXT NOT NULL DEFAULT '',
             tomorrow_focus TEXT NOT NULL DEFAULT '',
-            created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS observation (
@@ -325,7 +325,7 @@ def init_db():
             kind        TEXT NOT NULL CHECK(kind IN ('interruption','switch','note')),
             block_id    INTEGER REFERENCES recurring_block(id),
             note        TEXT NOT NULL DEFAULT '',
-            captured_at TEXT NOT NULL DEFAULT (datetime('now'))
+            captured_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS block_feedback (
@@ -341,7 +341,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS timeline_dismissal (
             type       TEXT NOT NULL,
             key        TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             PRIMARY KEY (type, key)
         );
 
@@ -357,7 +357,7 @@ def init_db():
             anchor_date TEXT NOT NULL,
             last_seeded TEXT,
             active      INTEGER NOT NULL DEFAULT 1,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS person (
@@ -375,7 +375,7 @@ def init_db():
             next_due_override TEXT,
             has_contact       INTEGER NOT NULL DEFAULT 0,
             archived          INTEGER NOT NULL DEFAULT 0,
-            created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS interaction (
@@ -384,7 +384,7 @@ def init_db():
             date       TEXT NOT NULL,
             note       TEXT NOT NULL DEFAULT '',
             source     TEXT NOT NULL DEFAULT 'desktop',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS bucket (
@@ -415,7 +415,7 @@ def init_db():
             active_experiment TEXT NOT NULL DEFAULT '',
             rating            INTEGER CHECK(rating IS NULL OR rating BETWEEN 1 AND 7),
             habit_mark        TEXT CHECK(habit_mark IS NULL OR habit_mark IN ('ehh','good','great')),
-            updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         -- One habit per week, set when the weekly review is filed; runs from
@@ -424,7 +424,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS habit_week (
             week_start_date TEXT PRIMARY KEY,
             habit           TEXT NOT NULL,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         -- Social gamification: editable point catalog + one row per logged
@@ -452,7 +452,7 @@ def init_db():
             person_id  INTEGER,
             note       TEXT NOT NULL DEFAULT '',
             source     TEXT NOT NULL DEFAULT 'desktop',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
     ''')
     conn.execute(
@@ -652,7 +652,7 @@ def init_db():
             week_start_date TEXT PRIMARY KEY,
             steps           TEXT NOT NULL DEFAULT '{}',
             note            TEXT NOT NULL DEFAULT '',
-            started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             completed_at    TEXT
         )''')
     # Engage-panel day placements: an action dropped between the day's fixed
@@ -678,7 +678,7 @@ def init_db():
             name       TEXT NOT NULL,
             match_text TEXT NOT NULL,
             active     INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
     # One row per (day, template) the moment it is minted — and it OUTLIVES the
     # item, which is the whole point: completing a minted action DELETES the row
@@ -713,7 +713,7 @@ def init_db():
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             name       TEXT NOT NULL,
             position   INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
     # Interactive routines (surface name; 'flow' because routine_item was
     # taken by the area checklists). A flow is an ORDERED list of steps run
@@ -877,7 +877,7 @@ def init_db():
             step_id    INTEGER NOT NULL,
             value_num  REAL,
             value_text TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             UNIQUE (date, metric_id, step_id)
         )''')
     # Here rather than with the other ALTERs above: those run before this block,
@@ -913,7 +913,7 @@ def init_db():
             content    TEXT NOT NULL,
             done       INTEGER NOT NULL DEFAULT 0,
             position   INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
     # Social exposure v1 (dryrun — no money path). The GRID: every social move
     # is a cell of axis levels; a rep's price is the sum of its levels' ratings
@@ -939,7 +939,7 @@ def init_db():
             planned    INTEGER NOT NULL DEFAULT 0,
             person     TEXT NOT NULL DEFAULT '',
             pre_rating INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS social_spec (
@@ -950,7 +950,7 @@ def init_db():
             person     TEXT NOT NULL DEFAULT '',
             opener     TEXT NOT NULL DEFAULT '',
             price      INTEGER NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
     # A day used to hold ONE spec (date was the primary key); a plan can be
     # several interactions now (2026-08-11), so specs are id-keyed rows. The
@@ -968,7 +968,7 @@ def init_db():
                 person     TEXT NOT NULL DEFAULT '',
                 opener     TEXT NOT NULL DEFAULT '',
                 price      INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             )''')
         conn.execute('''INSERT INTO social_spec
                         (date, family, levels, person, opener, price, created_at)
@@ -1059,7 +1059,7 @@ def init_db():
             charge_status  TEXT,
             charge_ref     TEXT,
             amount_cents   INTEGER,
-            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             UNIQUE(node_id, date)
         )''')
     # THE SCHEDULE STORE (2026-08-11) — one occurrence source, three
@@ -1081,13 +1081,14 @@ def init_db():
             entries          TEXT,
             follows          TEXT,
             ends             TEXT,
-            used_at          TEXT NOT NULL DEFAULT (datetime('now')),
-            created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            used_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
     _migrate_time_presets(conn)
     _repair_time_preset_conversion(conn)
     _adopt_gate_schedules(conn)
     _migrate_easing_pendings(conn)
+    _migrate_utc_stamps(conn)
     # Pawning a routine step onto a later routine — see pawn_flow_step. Three
     # lazy ALTERs: two settings and one per-day state — plus (2026-08-11) the
     # NAMED soft version, the checklist link, and the 24h easing gate
@@ -1202,7 +1203,7 @@ def init_db():
             resolved_on  TEXT,
             outcome      TEXT,
             evaluated_on TEXT,
-            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
         CREATE TABLE IF NOT EXISTS habit (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1212,7 +1213,7 @@ def init_db():
             verdict       TEXT,
             ended_on      TEXT,
             experiment_id INTEGER,
-            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
         CREATE TABLE IF NOT EXISTS habit_day (
             habit_id INTEGER NOT NULL,
@@ -1335,6 +1336,60 @@ def _repair_time_preset_conversion(conn):
 # picker is what would share it.
 # One-time, and idempotent: it only ever moves rows that are still in the old
 # stores, and it empties them as it goes, so a second run finds nothing.
+# THE UTC STAMPS (2026-08-17). SQLite's datetime('now') is UTC and does NOT
+# follow setting.timezone, while the whole app dates in LOCAL — so every
+# column defaulting to it was stamped hours ahead. Anything captured after
+# ~20:00 EDT carried tomorrow's date: it never appeared in its own daybook
+# file (and a past day is written once, so it could be lost outright) and
+# clarify showed it captured a day late.
+#
+# The DEFAULTs now say 'localtime'. This converts what was already written,
+# ONCE — and CLAUDE.md is right that history must not be rewritten SILENTLY,
+# so it records what it did in a setting rather than doing it quietly. The
+# alternative was worse than the bug: half a column in UTC and half in local,
+# with nothing to tell them apart.
+#
+# The SETTING is the only guard against a double shift — the conversion is not
+# idempotent by shape, because a converted stamp still looks like one. Do not
+# clear utc_stamps_localised to "re-run" it.
+#
+# It converts ONLY the shape SQLite's default produces — 'YYYY-MM-DD HH:MM:SS',
+# space-separated, no zone. Every stamp written by Python is ISO with a 'T'
+# (and often an offset), carries its own convention, and is left alone. That
+# is what keeps flow_run.completed_at, journal_day.updated_at and the scan
+# server's '...Z' out of this.
+_UTC_SHAPE = "%_-__-__ __:__:__"
+
+
+def _migrate_utc_stamps(conn):
+    if conn.execute("SELECT value FROM setting WHERE key = 'utc_stamps_localised'"
+                    ).fetchone():
+        return
+    pairs = []
+    for r in conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table'").fetchall():
+        for line in (r['sql'] or '').splitlines():
+            if 'datetime(' in line and "'now'" in line and 'DEFAULT' in line:
+                pairs.append((r['name'], line.strip().split()[0]))
+    moved = 0
+    for table, col in pairs:
+        try:
+            cur = conn.execute(
+                f'''UPDATE "{table}" SET {col} = datetime({col}, 'localtime')
+                    WHERE {col} LIKE ? AND length({col}) = 19''', (_UTC_SHAPE,))
+            moved += cur.rowcount or 0
+        except sqlite3.OperationalError:
+            continue
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('utc_stamps_localised', ?)",
+        (f'{date_cls.today().isoformat()}: {moved} stamp(s) UTC->local '
+         f'across {len(pairs)} column(s)',))
+    conn.commit()
+    if moved:
+        print(f'timezone: localised {moved} UTC stamp(s) written before the '
+              f'DEFAULTs were fixed')
+
+
 def _migrate_easing_pendings(conn):
     # `value` is JSON in the new store, always. The gate table's new_value was
     # raw TEXT NOT NULL, which quietly turned a False into 0 and None into an
@@ -1858,7 +1913,7 @@ def get_gtd_review(week_start_date=None):
 
 def finish_gtd_review(week_start_date, note=''):
     conn = get_conn()
-    conn.execute('''UPDATE gtd_review SET completed_at = datetime('now'), note = ?
+    conn.execute('''UPDATE gtd_review SET completed_at = datetime('now','localtime'), note = ?
                     WHERE week_start_date = ?''', (note, week_start_date))
     conn.commit()
     conn.close()
@@ -3548,7 +3603,7 @@ def create_weekly_review(data):
              learning_capture = excluded.learning_capture,
              next_focuses = excluded.next_focuses,
              inbox_cleared_at = excluded.inbox_cleared_at,
-             created_at = datetime('now')''',
+             created_at = datetime('now','localtime')''',
         (data['week_start_date'], data['learning_capture'], focuses,
          data.get('inbox_cleared_at'))
     )
@@ -5861,7 +5916,7 @@ def set_metric_entry(ymd, metric_id, step_id, value):
            VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(date, metric_id, step_id)
            DO UPDATE SET value_num = excluded.value_num, value_text = excluded.value_text,
-                         created_at = datetime('now')''',
+                         created_at = datetime('now','localtime')''',
         (ymd, metric_id, step_id, num, text))
     conn.commit()
     out = conn.execute(
@@ -6694,7 +6749,7 @@ def update_schedule_source(uid, **fields):
         # derived — so kind is writable, and both directions are reversible.
         conn.execute('UPDATE schedule_source SET kind = ? WHERE uid = ?',
                      (fields['kind'], uid))
-    conn.execute("UPDATE schedule_source SET used_at = datetime('now') WHERE uid = ?", (uid,))
+    conn.execute("UPDATE schedule_source SET used_at = datetime('now','localtime') WHERE uid = ?", (uid,))
     conn.commit()
     conn.close()
     _check_acyclic_or_raise(uid)
@@ -6705,7 +6760,7 @@ def touch_schedule_source(uid):
     """Most-recently-used ordering in Times, which is the only ordering five to
     fifteen entries need."""
     conn = get_conn()
-    conn.execute("UPDATE schedule_source SET used_at = datetime('now') WHERE uid = ?", (uid,))
+    conn.execute("UPDATE schedule_source SET used_at = datetime('now','localtime') WHERE uid = ?", (uid,))
     conn.commit()
     conn.close()
 

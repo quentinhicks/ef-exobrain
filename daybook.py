@@ -33,15 +33,20 @@ DAYBOOK_DIR = 'daybook'
 # Which column dates a row, in order of preference. First one present wins.
 TIME_COLS = ('date', 'captured_at', 'scanned_at', 'started_at', 'created_at')
 
-# ...and which of those are stamped in UTC, so a prefix match on them files the
-# row under the wrong day. EVERY one of these but `date` is: 35 columns default
-# to SQLite's datetime('now'), which is UTC and does not follow setting.timezone
-# (the known bug in CLAUDE.md), and qr_scan.scanned_at is UTC-with-Z BY DESIGN,
-# which no DEFAULT migration will ever change. Converted here rather than
-# assumed local, because a past day is written ONCE: everything captured or
-# scanned after ~20:00 local filed under tomorrow and was then frozen out of
-# its own file. Reading is where this can be fixed for history already written.
-UTC_COLS = {'captured_at', 'scanned_at', 'started_at', 'created_at', 'updated_at'}
+# ...and which of those are stamped in UTC, so a prefix match on them would
+# file the row under the wrong day.
+#
+# Only ONE, now. Every column that defaulted to SQLite's datetime('now') was
+# UTC — and the app dates in local, so anything captured after ~20:00 filed
+# under tomorrow and, because a past day is written once, was frozen out of
+# its own file. Those DEFAULTs say 'localtime' as of 2026-08-17 and
+# storage._migrate_utc_stamps converted what had already been written, so
+# they are local at rest and converting them here again would shift them back.
+#
+# qr_scan.scanned_at stays: the scan server writes UTC-with-Z BY DESIGN (the
+# judge matches scans against UTC window bounds), and no DEFAULT change will
+# ever alter that.
+UTC_COLS = {'scanned_at'}
 
 # Where inference is wrong or too crude. A column name, matched by DATE PREFIX
 # (which covers both a bare date and a naive local timestamp — every time column
