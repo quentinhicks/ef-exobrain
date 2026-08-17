@@ -83,6 +83,7 @@ TITLES = {
     'inbox_item': 'Captured',
     'engage_placement': 'Placed on the day',
     'occasion_mint': 'Minted by an occasion',
+    'flow_task_seed': 'Routines seeded as tasks',
     'flow_run': 'Routines run',
     'gtd_review': 'Weekly review',
     'journal_day': 'Journal',

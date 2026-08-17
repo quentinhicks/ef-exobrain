@@ -337,6 +337,10 @@ def get_inbox():
 def get_inbox_active():
     domain_id = request.args.get('domain_id', type=int)
     storage.seed_recurring_tasks()
+    # A routine marked "also a task" seeds its action from the same read, for
+    # the same reason: the pool is what asks the question, so the pool is where
+    # the answer gets made.
+    storage.seed_flow_tasks()
     # No filter = every available item across domains: the Engage context
     # picker narrows client-side so switching contexts costs no round trip.
     # (?area_id was a third branch nothing has called since the pool became
@@ -1880,6 +1884,9 @@ def patch_flow(id):
         kwargs['before_node_id'] = data['before_node_id']
     if 'source_uid' in data:
         kwargs['source_uid'] = data['source_uid']
+    for f in ('as_task', 'days_of_week', 'area_id'):
+        if f in data:
+            kwargs[f] = data[f]
     try:
         flow = storage.update_flow(id, **kwargs)
     except ValueError as e:

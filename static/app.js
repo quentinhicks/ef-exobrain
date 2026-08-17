@@ -4236,6 +4236,33 @@ function renderFlowEditor(body, title, f) {
     <div class="fr-link-hint">${f.source_uid
       ? 'Its own hours. Clear it to fall back to the gate deadline ± offset.'
       : 'No window of its own — the deadline above is the gate\'s, ± the offset.'}</div>
+    ${/* ALSO A TASK (2026-08-16). Running a routine was only reachable from
+          here or the GTD fold-out's ▶, so a routine you do weekly was invisible
+          on the day you were meant to do it. This seeds an ordinary next action
+          on the days it runs — same pool, same clarify sheet, same undo as any
+          other action — and the action's sheet has the ▶ back into the runner.
+          Being a task and gating a QR are independent: a routine can be both. */''}
+    <div class="fr-link">
+      <span class="cl-label">Also a task</span>
+      <button class="cl-pill${f.as_task ? ' cl-pill-on' : ''}" id="fr-astask">${
+        f.as_task ? 'in the pool' : 'off'}</button>
+      ${f.as_task ? `<span class="cl-label">in</span>
+      <select id="fr-task-area" class="map-area">${
+        (state.areas || []).filter(a => a.active && a.type === 'standard').map(a =>
+          `<option value="${a.id}"${a.id === f.area_id ? ' selected' : ''}>${
+            escHtml(a.name)}</option>`).join('')}</select>` : ''}
+    </div>
+    ${f.as_task ? `
+    <div class="fr-link fr-sheet-days">
+      <span class="cl-label">On</span>
+      ${DAY_LETTERS.map((d, n) => `<button class="fr-day${
+        (f.days_of_week || '').includes(String(n)) ? ' fr-day-on' : ''}"
+        data-taskdow="${n}" title="${DAY_NAMES[n]}">${d}</button>`).join('')}
+      <span class="cl-hint">${f.days_of_week ? 'only the lit days' : 'every day'}</span>
+    </div>
+    <div class="fr-link-hint">One action per ${
+      (f.period || 'day') === 'week' ? 'week' : 'day'} — ticking it off is the
+      end of it until the next one, and finishing the routine takes it away.</div>` : ''}
     <div class="ref-list">${f.steps.map((s, i) => `
       <div class="ref-row${stepDueToday(s) ? '' : ' fr-step-off'}" data-step="${s.id}">
         <span class="cl-chain-n">${i + 1}</span>
@@ -4260,6 +4287,25 @@ function renderFlowEditor(body, title, f) {
     })()}
     <button id="fr-add-step" class="map-add-btn">+ step</button></div>
     <button class="fr-play fr-play-big" data-flow="${f.id}">▶ Run</button>`;
+
+  const patchFlow = async body2 => {
+    await apiSend(`/api/flows/${f.id}`, 'PATCH', body2);
+    await refreshRef();
+    // The pool is what seeds and retires the action, so the day has to re-read
+    // or the toggle looks like it did nothing.
+    await refreshEngage();
+  };
+  body.querySelector('#fr-astask').addEventListener('click', () =>
+    patchFlow({ as_task: f.as_task ? 0 : 1 }));
+  const taskArea = body.querySelector('#fr-task-area');
+  if (taskArea) taskArea.addEventListener('change', e =>
+    patchFlow({ area_id: parseInt(e.target.value) || null }));
+  body.querySelectorAll('[data-taskdow]').forEach(b => b.addEventListener('click', () => {
+    const n = b.dataset.taskdow;
+    const cur = new Set([...(f.days_of_week || '')]);
+    if (cur.has(n)) cur.delete(n); else cur.add(n);
+    patchFlow({ days_of_week: [...cur].sort().join('') });
+  }));
 
   body.querySelector('#fr-add-step').addEventListener('click', () => openEntrySheet({
     title: `${f.name} · add step`, placeholder: 'What is the step?',
@@ -11671,6 +11717,10 @@ function renderClarify() {
                 : '<span class="cl-proj-bad">no next action</span>')
         : `captured ${(item.captured_at || '').slice(0, 10)}`}</div>
     </div>`}
+    ${item && item.flow_id ? `<div class="cl-row">
+      <button class="cl-pill cl-pill-on" id="cl-run-flow">▶ Run it</button>
+      <span class="cl-hint">this action is a routine — running it is how it gets done</span>
+    </div>` : ''}
     ${isProj ? `<div class="cl-row">
       <button class="cl-pill" id="cl-self-add">+ next action</button>
       ${acts >= 2 ? '<button class="cl-pill" id="cl-self-chain">⛓ order them</button>' : ''}
@@ -11785,6 +11835,16 @@ function renderClarify() {
   const selfAdd = sheet.querySelector('#cl-self-add');
   if (selfAdd) selfAdd.addEventListener('click', () =>
     openClarifyNewAction(item, clarifyView.after));
+
+  // The seeded action's door back into the routine that made it. Closing the
+  // sheet first: the runner is its own full-screen surface and must not open
+  // underneath a clarify sheet still sitting over the day.
+  const runFlow = sheet.querySelector('#cl-run-flow');
+  if (runFlow) runFlow.addEventListener('click', async () => {
+    const fid = item.flow_id;
+    closeClarify();
+    await openFlowRun(fid);
+  });
 
   const chainBtn = sheet.querySelector('#cl-proj-chain');
   if (chainBtn) chainBtn.addEventListener('click', async () => {

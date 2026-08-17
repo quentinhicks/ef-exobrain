@@ -1081,7 +1081,46 @@ def init_db():
         conn.execute('SELECT period FROM flow LIMIT 1')
     except Exception:
         conn.execute('ALTER TABLE flow ADD COLUMN period TEXT')
+    # A ROUTINE CAN ALSO BE A TASK (2026-08-16). Running it was only ever
+    # reachable from the Lists surface or the GTD fold-out's ▶ — so a routine
+    # you do weekly was invisible on the day you were supposed to do it. With
+    # `as_task` on, the routine seeds an ordinary next action on the days it
+    # runs, and that action is the door back into the runner.
+    #
+    # `days_of_week` is the app's one weekday grammar ('0'=Mon … '6'=Sun, NULL =
+    # every day) read by the same step_due_on predicate — on the FLOW it says
+    # which day the task appears, which is a different question from which day a
+    # STEP is due, and the two never meet.
+    try:
+        conn.execute('SELECT as_task FROM flow LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE flow ADD COLUMN as_task INTEGER NOT NULL DEFAULT 0')
+        conn.execute('ALTER TABLE flow ADD COLUMN days_of_week TEXT')
+        conn.execute('ALTER TABLE flow ADD COLUMN area_id INTEGER')
         conn.commit()
+    # The seeded action's way back to the routine that made it.
+    try:
+        conn.execute('SELECT flow_id FROM inbox_item LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE inbox_item ADD COLUMN flow_id INTEGER')
+        conn.commit()
+    # ONE row per routine per PERIOD, written the moment its task is seeded and
+    # OUTLIVING that task — the same reason occasion_mint is a table and not a
+    # lookup. Completing an action deletes the row, so "is one already out
+    # there?" cannot be answered by looking for one: without this ledger,
+    # ticking the task off would re-seed it on the very next pool read and the
+    # task could never be finished at all.
+    #
+    # Keyed by the flow's period (storage.flow_period_key), so a daily routine
+    # asks again tomorrow and a weekly one not until next week.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS flow_task_seed (
+            flow_id INTEGER NOT NULL,
+            date    TEXT NOT NULL,
+            item_id INTEGER,
+            PRIMARY KEY (flow_id, date)
+        )''')
+    conn.commit()
     _seed_review_flow(conn)
     # Reference lists NEST (2026-08-11): a list can live inside a list. The
     # split at the root is what the index shows; delete splices children up a
@@ -2521,6 +2560,55 @@ def seed_recurring_tasks():
                 (t['name'], t['area_id'], t['project_id'], t['id'])
             )
         conn.execute('UPDATE recurring_task SET last_seeded = ? WHERE id = ?', (today_str, t['id']))
+    conn.commit()
+    conn.close()
+
+
+def seed_flow_tasks():
+    # ONE action per routine per PERIOD, and once seeded that is the end of it —
+    # ticking the action off has to mean something, so flow_task_seed remembers
+    # the seeding even after the action it made is gone.
+    #
+    # The run is the other half: a routine already completed for its period has
+    # nothing left to ask, so its task is retired rather than left in the pool
+    # looking outstanding (you finished it from the Lists surface).
+    today = date_cls.today()
+    conn = get_conn()
+    flows = [dict(r) for r in conn.execute(
+        'SELECT * FROM flow WHERE COALESCE(as_task, 0) = 1').fetchall()]
+    default_area = conn.execute(
+        """SELECT id FROM area WHERE is_default = 1 AND active = 1
+           AND type = 'standard' LIMIT 1""").fetchone()
+    for f in flows:
+        key = flow_period_key(f.get('period'), today)
+        live = conn.execute(
+            "SELECT id FROM inbox_item WHERE flow_id = ? AND status = 'active'",
+            (f['id'],)).fetchone()
+        done = conn.execute(
+            'SELECT completed_at FROM flow_run WHERE flow_id = ? AND date = ?',
+            (f['id'], key)).fetchone()
+        if done and done['completed_at']:
+            if live:
+                conn.execute('DELETE FROM engage_placement WHERE item_id = ?', (live['id'],))
+                conn.execute('DELETE FROM inbox_item WHERE id = ?', (live['id'],))
+            continue
+        if live:
+            continue
+        already = conn.execute(
+            'SELECT 1 FROM flow_task_seed WHERE flow_id = ? AND date = ?',
+            (f['id'], key)).fetchone()
+        if already or not step_due_on(f, today):
+            continue
+        area_id = f['area_id'] or (default_area['id'] if default_area else None)
+        if area_id is None:
+            continue          # nothing to file it under; the pool JOINs area
+        cur = conn.execute(
+            """INSERT INTO inbox_item (content, status, kind, area_id, flow_id)
+               VALUES (?, 'active', 'item', ?, ?)""",
+            (f['name'], area_id, f['id']))
+        conn.execute(
+            'INSERT INTO flow_task_seed (flow_id, date, item_id) VALUES (?, ?, ?)',
+            (f['id'], key, cur.lastrowid))
     conn.commit()
     conn.close()
 
@@ -4347,8 +4435,29 @@ def create_flow(name, period='day'):
 
 
 def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node_id=_UNSET,
-                source_uid=_UNSET):
+                source_uid=_UNSET, as_task=_UNSET, days_of_week=_UNSET, area_id=_UNSET):
     conn = get_conn()
+    # BEING A TASK is not an easing and has no money in it: it only decides
+    # whether the routine also shows up in the pool. Applies at once, and
+    # switching it off retires the action that is already sitting there — a
+    # task whose rule you just removed is not something you still owe.
+    if as_task is not _UNSET:
+        conn.execute('UPDATE flow SET as_task = ? WHERE id = ?', (1 if as_task else 0, id))
+        if not as_task:
+            for r in conn.execute(
+                    "SELECT id FROM inbox_item WHERE flow_id = ? AND status = 'active'",
+                    (id,)).fetchall():
+                conn.execute('DELETE FROM engage_placement WHERE item_id = ?', (r['id'],))
+                conn.execute('DELETE FROM inbox_item WHERE id = ?', (r['id'],))
+        # The seeding ledger goes too, either way: switching it back on is a
+        # fresh intent, and it should ask again today rather than stay silent
+        # because a period it no longer remembers was already served.
+        conn.execute('DELETE FROM flow_task_seed WHERE flow_id = ?', (id,))
+    if days_of_week is not _UNSET:
+        conn.execute('UPDATE flow SET days_of_week = ? WHERE id = ?',
+                     (_norm_days(days_of_week), id))
+    if area_id is not _UNSET:
+        conn.execute('UPDATE flow SET area_id = ? WHERE id = ?', (area_id or None, id))
     if source_uid is not _UNSET:
         # Its own window applies at once. The 24h easing gate guards the GATE's
         # hours (the money window); a routine's deadline is the reference you
