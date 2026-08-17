@@ -227,11 +227,24 @@ fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-9', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
 storage.update_flow(flow['id'], qr_node_id=nid)
-storage.delete_flow(flow['id'])
+# DELETING a gated routine is a larger easing than unlinking it, and unlinking
+# already waits 24h. This door had no check at all — '×' at 20:55 released a
+# 21:00 deadline outright.
+check('deleting a gated routine is DEFERRED, not done', storage.delete_flow(flow['id']))
 scan(nid, YESTERDAY)
 qr_judge.judge()
-check('deleting the routine releases it too',
-      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
+check('so it does not release the gate tonight',
+      reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
+conn = sqlite3.connect(storage.DB_PATH)
+conn.execute("UPDATE flow SET pending = replace(pending, ?, ?)",
+             (str(date_cls.today().year), str(date_cls.today().year - 1)))
+conn.commit()
+conn.close()
+conn = storage.get_conn()
+storage.apply_due_flow_pendings(conn)
+conn.close()
+check('…and once the 24h is up, the routine is gone',
+      not [f for f in storage.get_flows() if f['id'] == flow['id']])
 
 # The reservation is still the lock: re-judging must not double-log.
 fresh()
@@ -244,6 +257,45 @@ qr_judge.judge()
 rows = [r for r in storage.qr_charge_rows_between(YESTERDAY, YESTERDAY) if r['node_id'] == nid]
 check('re-running the judge logs the routine failure once', len(rows) == 1, len(rows))
 
+
+# ── THE EASING REGIME IS AN ALLOWLIST (2026-08-17) ───────────────────────
+#
+# is_loosening fell through to False, so it was an opt-in BLACKLIST: any field
+# nobody had written a branch for applied instantly on the money path.
+
+fresh()
+nid = storage.qr_create_node('Sleep', 'tok-ease-1', '21:00', '23:00',
+                             lat=40.0, lng=-75.0, radius=100)
+node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
+imm, pend = qr_judge.apply_node_patch(node, {'active': False})
+check('switching a gate OFF waits 24h, like the /disable route always did',
+      pend == {'active': False} and not imm, (imm, pend))
+imm, pend = qr_judge.apply_node_patch(dict(node, active=0), {'active': True})
+check('turning one back ON is tightening and applies now',
+      imm == {'active': True} and not pend, (imm, pend))
+imm, pend = qr_judge.apply_node_patch(node, {'geofence_lat': None})
+check('CLEARING the geofence waits — it makes any scan anywhere satisfy',
+      pend == {'geofence_lat': None}, (imm, pend))
+imm, pend = qr_judge.apply_node_patch(node, {'geofence_lat': 41.0})
+check('and moving it waits too', pend == {'geofence_lat': 41.0}, (imm, pend))
+imm, pend = qr_judge.apply_node_patch(dict(node, geofence_lat=None),
+                                      {'geofence_lat': 41.0})
+check('adding a fence where there was none is tightening',
+      imm == {'geofence_lat': 41.0}, (imm, pend))
+imm, pend = qr_judge.apply_node_patch(node, {'label': 'Renamed'})
+check('a rename is not a commitment change', imm == {'label': 'Renamed'}, (imm, pend))
+
+# ── PENDINGS ARE PER FIELD ───────────────────────────────────────────────
+fresh()
+nid = storage.qr_create_node('Sleep', 'tok-ease-2', '21:00', '23:00')
+flow = storage.create_flow('Night routine')
+storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-60)
+storage.update_flow(flow['id'], qr_node_id=None)          # easing 1: unlink
+storage.update_flow(flow['id'], offset_min=30)            # easing 2: later offset
+f = [x for x in storage.get_flows() if x['id'] == flow['id']][0]
+fields = sorted(p['field'] for p in storage._pendings(f['pending']))
+check('queueing a second easing does not delete the first',
+      fields == ['offset_min', 'qr_node_id'], fields)
 
 # ── THE FREEZE (2026-08-17) ──────────────────────────────────────────────
 #

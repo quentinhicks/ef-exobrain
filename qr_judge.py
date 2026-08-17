@@ -522,7 +522,32 @@ def is_loosening(field, current, nxt, node=None):
                                     n.get('window_end_offset_days') or 0)):
                 return True
         return False
-    return False
+    if field == 'active':
+        # Switching a gate OFF is the purest loosening there is. The dedicated
+        # /disable route always queued it 24h; this predicate had no branch for
+        # it, so the generic PATCH {'active': false} went through at once —
+        # 20:55, five minutes before a 21:00 deadline, and tonight is not
+        # judged. Turning one back ON is tightening and applies immediately.
+        return _falsy(nxt) and not _falsy(current)
+    if field in ('geofence_lat', 'geofence_lng'):
+        # A fence cannot be proven tighter by comparing coordinates: moving it
+        # is loosening for the place you were meant to be, and CLEARING it
+        # makes any scan anywhere satisfy the gate. Adding one where there was
+        # none is the only direction that is unambiguously tightening.
+        if current in (None, ''):
+            return False
+        return str(nxt) != str(current)
+    # NO PREDICATE MEANS NOT PROVEN TIGHTER. The fallthrough used to be False,
+    # which made this an opt-in blacklist: any field nobody had thought about
+    # applied instantly on the money path. It is an allowlist now — a new
+    # QR_NODE_FIELDS entry waits 24h until someone writes its branch.
+    return True
+
+
+def _falsy(v):
+    # '0' is a true string in Python, and these values arrive from JSON and
+    # from the pending store as both types.
+    return v in (None, '', 0, False, '0', 'false', 'False')
 
 
 def override_locked(node, ymd, now=None):
@@ -536,6 +561,11 @@ def override_locked(node, ymd, now=None):
     return _local_dt(close_date, end) <= now + timedelta(hours=LOOSEN_DELAY_H)
 
 
+# The only fields a change to cannot make the gate easier to satisfy. Anything
+# not named here has to be PROVEN tighter by is_loosening to apply at once.
+QR_IMMEDIATE_FIELDS = ('label',)
+
+
 def apply_node_patch(node, fields, now=None):
     # Splits a patch into what applies now and what has to wait. Returns
     # (immediate, pending) as {field: value}; the caller writes them.
@@ -544,10 +574,11 @@ def apply_node_patch(node, fields, now=None):
     for field, value in fields.items():
         if field not in storage.QR_NODE_FIELDS:
             continue
-        if is_loosening(field, node.get(field), value, node):
-            pending[field] = value
-        else:
+        if field in QR_IMMEDIATE_FIELDS or not is_loosening(field, node.get(field),
+                                                            value, node):
             immediate[field] = value
+        else:
+            pending[field] = value
     return immediate, pending
 
 # ── Charging ─────────────────────────────────────────────────

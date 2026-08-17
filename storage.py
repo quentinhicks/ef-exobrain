@@ -4491,23 +4491,20 @@ def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node
         # stops judging on it entirely — so it waits 24h. Linking (or moving
         # the link) tightens and applies now, clearing any pending easing.
         if cur and cur['qr_node_id'] and not qr_node_id:
-            conn.execute('UPDATE flow SET pending = ? WHERE id = ?',
-                         (json.dumps({'field': 'qr_node_id', 'value': None,
-                                      'apply_at': apply_at}), id))
+            _pend(conn, 'flow', id, 'qr_node_id', None)
         else:
-            conn.execute('UPDATE flow SET qr_node_id = ?, pending = NULL WHERE id = ?',
-                         (qr_node_id, id))
+            conn.execute('UPDATE flow SET qr_node_id = ? WHERE id = ?', (qr_node_id, id))
+            _unpend(conn, 'flow', id, 'qr_node_id')
     if offset_min is not _UNSET:
         # A LATER offset moves the shown deadline later: easing, 24h. Earlier
         # (or clearing) applies now.
         new_off = offset_min if offset_min is not None else 0
         old_off = (cur['offset_min'] or 0) if cur else 0
         if cur and cur['qr_node_id'] and new_off > old_off:
-            conn.execute('UPDATE flow SET pending = ? WHERE id = ?',
-                         (json.dumps({'field': 'offset_min', 'value': offset_min,
-                                      'apply_at': apply_at}), id))
+            _pend(conn, 'flow', id, 'offset_min', offset_min)
         else:
             conn.execute('UPDATE flow SET offset_min = ? WHERE id = ?', (offset_min, id))
+            _unpend(conn, 'flow', id, 'offset_min')
     if before_node_id is not _UNSET:
         conn.execute('UPDATE flow SET before_node_id = ? WHERE id = ?', (before_node_id, id))
     conn.commit()
@@ -4516,13 +4513,37 @@ def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node
     return dict(row) if row else None
 
 
-def delete_flow(id):
-    conn = get_conn()
+def _delete_flow_rows(conn, id):
+    # Everything the flow seeded goes with it. flow_task_seed is a LEDGER, not
+    # a lookup — left behind, it would keep a deleted routine's action from
+    # ever being re-seeded correctly; and a step pawning INTO this flow would
+    # point at nothing.
     conn.execute('DELETE FROM flow_step WHERE flow_id = ?', (id,))
     conn.execute('DELETE FROM flow_run WHERE flow_id = ?', (id,))
+    conn.execute('DELETE FROM flow_task_seed WHERE flow_id = ?', (id,))
+    conn.execute('''UPDATE flow_step SET pawn_to_flow_id = NULL, pawned_date = NULL
+                    WHERE pawn_to_flow_id = ?''', (id,))
     conn.execute('DELETE FROM flow WHERE id = ?', (id,))
+
+
+# Deleting a GATED routine releases the gate entirely, which is the largest
+# easing there is — larger than the unlink that update_flow already delays 24h.
+# This door had no check at all: '×' at 20:55 and a 21:00 deadline is never
+# judged. It now queues like every other easing. Returns the apply_at when it
+# was deferred, None when it deleted.
+def delete_flow(id):
+    conn = get_conn()
+    row = conn.execute('SELECT qr_node_id FROM flow WHERE id = ?', (id,)).fetchone()
+    if row and row['qr_node_id']:
+        apply_at = (datetime.now() + timedelta(hours=24)).isoformat()
+        _pend(conn, 'flow', id, 'delete', None)
+        conn.commit()
+        conn.close()
+        return apply_at
+    _delete_flow_rows(conn, id)
     conn.commit()
     conn.close()
+    return None
 
 
 def create_flow_step(flow_id, content, kind='text', requirement='hard', days_of_week=None,
@@ -4557,58 +4578,104 @@ def create_flow_step(flow_id, content, kind='text', requirement='hard', days_of_
 # on-read is the choke point and no scheduler exists to miss.
 # Tightening the same field applies immediately AND cancels the pending: the
 # way back is always instant.
-def _pend_step(conn, id, field, value):
+# PENDINGS ARE PER FIELD. This column held ONE {field, value, apply_at}, so
+# queueing a second easing silently deleted the first: queue an unlink, queue
+# an offset 20h later, and the unlink evaporates — while the UI had already
+# said when it would land. Stored as a LIST now; the old one-slot shape still
+# reads, so nothing needs converting.
+def _pendings(raw):
+    if not raw:
+        return []
+    try:
+        p = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if isinstance(p, dict) and p.get('field'):
+        return [p]
+    if isinstance(p, list):
+        return [x for x in p if isinstance(x, dict) and x.get('field')]
+    return []
+
+
+def _pendings_json(lst):
+    return json.dumps(lst) if lst else None
+
+
+def _merge_pending(raw, field, value, apply_at):
+    out = [p for p in _pendings(raw) if p.get('field') != field]
+    out.append({'field': field, 'value': value, 'apply_at': apply_at})
+    return _pendings_json(out)
+
+
+def _drop_pending(raw, field):
+    return _pendings_json([p for p in _pendings(raw) if p.get('field') != field])
+
+
+def _pend(conn, table, id, field, value):
     apply_at = (datetime.now() + timedelta(hours=24)).isoformat()
-    conn.execute('UPDATE flow_step SET pending = ? WHERE id = ?',
-                 (json.dumps({'field': field, 'value': value, 'apply_at': apply_at}), id))
+    row = conn.execute(f'SELECT pending FROM {table} WHERE id = ?', (id,)).fetchone()
+    conn.execute(f'UPDATE {table} SET pending = ? WHERE id = ?',
+                 (_merge_pending(row['pending'] if row else None, field, value, apply_at), id))
+
+
+def _unpend(conn, table, id, field):
+    # Only THIS field's easing. Tightening one field must not cancel another
+    # field's countdown, which a blanket `pending = NULL` did.
+    row = conn.execute(f'SELECT pending FROM {table} WHERE id = ?', (id,)).fetchone()
+    if not row or not row['pending']:
+        return
+    conn.execute(f'UPDATE {table} SET pending = ? WHERE id = ?',
+                 (_drop_pending(row['pending'], field), id))
+
+
+def _pend_step(conn, id, field, value):
+    _pend(conn, 'flow_step', id, field, value)
 
 
 def _clear_step_pending(conn, id, field):
-    row = conn.execute('SELECT pending FROM flow_step WHERE id = ?', (id,)).fetchone()
-    if not row or not row['pending']:
-        return
-    try:
-        if json.loads(row['pending']).get('field') != field:
-            return
-    except ValueError:
-        pass
-    conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (id,))
+    _unpend(conn, 'flow_step', id, field)
 
 
 def apply_due_flow_pendings(conn):
+    # Each field lands on its OWN clock: the ones that have come due are
+    # applied and dropped, the rest keep counting.
     now = datetime.now().isoformat()
     for row in conn.execute(
             'SELECT id, pending FROM flow_step WHERE pending IS NOT NULL').fetchall():
-        try:
-            p = json.loads(row['pending'])
-        except ValueError:
-            conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (row['id'],))
-            continue
-        if (p.get('apply_at') or '') > now:
-            continue
-        field = p.get('field')
-        if field == 'delete':
-            conn.execute('DELETE FROM flow_step WHERE id = ?', (row['id'],))
-        elif field in ('requirement', 'days_of_week'):
-            conn.execute(f'UPDATE flow_step SET {field} = ?, pending = NULL WHERE id = ?',
-                         (p.get('value'), row['id']))
-        else:
-            conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (row['id'],))
+        keep, deleted = [], False
+        for p in _pendings(row['pending']):
+            if (p.get('apply_at') or '') > now:
+                keep.append(p)
+                continue
+            field = p.get('field')
+            if field == 'delete':
+                conn.execute('DELETE FROM flow_step WHERE id = ?', (row['id'],))
+                deleted = True
+                break
+            if field in ('requirement', 'days_of_week'):
+                conn.execute(f'UPDATE flow_step SET {field} = ? WHERE id = ?',
+                             (p.get('value'), row['id']))
+        if not deleted:
+            conn.execute('UPDATE flow_step SET pending = ? WHERE id = ?',
+                         (_pendings_json(keep), row['id']))
     for row in conn.execute(
             'SELECT id, pending FROM flow WHERE pending IS NOT NULL').fetchall():
-        try:
-            p = json.loads(row['pending'])
-        except ValueError:
-            conn.execute('UPDATE flow SET pending = NULL WHERE id = ?', (row['id'],))
-            continue
-        if (p.get('apply_at') or '') > now:
-            continue
-        field = p.get('field')
-        if field in ('qr_node_id', 'offset_min'):
-            conn.execute(f'UPDATE flow SET {field} = ?, pending = NULL WHERE id = ?',
-                         (p.get('value'), row['id']))
-        else:
-            conn.execute('UPDATE flow SET pending = NULL WHERE id = ?', (row['id'],))
+        keep, deleted = [], False
+        for p in _pendings(row['pending']):
+            if (p.get('apply_at') or '') > now:
+                keep.append(p)
+                continue
+            field = p.get('field')
+            if field == 'delete':
+                _delete_flow_rows(conn, row['id'])
+                deleted = True
+                break
+            if field in ('qr_node_id', 'offset_min'):
+                conn.execute(f'UPDATE flow SET {field} = ? WHERE id = ?',
+                             (p.get('value'), row['id']))
+        if not deleted:
+            conn.execute('UPDATE flow SET pending = ? WHERE id = ?',
+                         (_pendings_json(keep), row['id']))
     conn.commit()
 
 
@@ -4723,6 +4790,20 @@ def cancel_flow_step_pending(id):
     conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (id,))
     conn.commit()
     row = conn.execute('SELECT * FROM flow_step WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# Cancelling a queued easing is TIGHTENING — keeping the commitment — so it
+# applies at once, exactly like /activate calling off a queued gate deletion.
+def cancel_flow_pending(id, field=None):
+    conn = get_conn()
+    if field:
+        _unpend(conn, 'flow', id, field)
+    else:
+        conn.execute('UPDATE flow SET pending = NULL WHERE id = ?', (id,))
+    conn.commit()
+    row = conn.execute('SELECT * FROM flow WHERE id = ?', (id,)).fetchone()
     conn.close()
     return dict(row) if row else None
 

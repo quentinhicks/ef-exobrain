@@ -1879,7 +1879,11 @@ def patch_flow(id):
 
 @app.route('/api/flows/<int:id>', methods=['DELETE'])
 def delete_flow_route(id):
-    storage.delete_flow(id)
+    # A gated routine's deletion is an easing and comes back deferred, in the
+    # same shape the step-delete route uses.
+    apply_at = storage.delete_flow(id)
+    if apply_at:
+        return jsonify({'pending': True, 'apply_at': apply_at})
     return '', 204
 
 
@@ -1932,6 +1936,11 @@ def delete_flow_step_route(id):
 @app.route('/api/flow-steps/<int:id>/pending', methods=['DELETE'])
 def cancel_flow_step_pending_route(id):
     return jsonify(storage.cancel_flow_step_pending(id) or {})
+
+
+@app.route('/api/flows/<int:id>/pending', methods=['DELETE'])
+def cancel_flow_pending_route(id):
+    return jsonify(storage.cancel_flow_pending(id, request.args.get('field')) or {})
 
 
 @app.route('/api/flows/<int:id>/run', methods=['PUT'])

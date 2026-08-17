@@ -4026,14 +4026,26 @@ function renderRef() {
     body.querySelectorAll('[data-flow-del]').forEach(b => b.addEventListener('click', async () => {
       const id = parseInt(b.dataset.flowDel);
       const f = refView.flows.find(x => x.id === id);
-      await apiSend(`/api/flows/${id}`, 'DELETE');
-      pushUndo(`deleted routine "${f.name}"`, async () => {
-        const nf = await apiSend('/api/flows', 'POST', { name: f.name }).then(r => r.json());
-        for (const s of f.steps) {
-          await apiSend(`/api/flows/${nf.id}/steps`, 'POST', { content: s.content, kind: s.kind, requirement: s.requirement });
-        }
-        await refreshAfterUndo();
-      });
+      const res = await apiSend(`/api/flows/${id}`, 'DELETE')
+        .then(r => (r.status === 204 ? {} : r.json())).catch(() => ({}));
+      if (res.pending) {
+        // A GATED routine eases on the 24h delay, so the row is still there
+        // and the undo is the CANCEL — not a re-create, which would come back
+        // without the gate link, the period or its steps' days.
+        pushUndo(`scheduled removal of routine "${f.name}"`, async () => {
+          await apiSend(`/api/flows/${id}/pending?field=delete`, 'DELETE');
+          await refreshAfterUndo();
+        });
+        toast('A gated routine eases on a 24h delay — removal is scheduled');
+      } else {
+        pushUndo(`deleted routine "${f.name}"`, async () => {
+          const nf = await apiSend('/api/flows', 'POST', { name: f.name }).then(r => r.json());
+          for (const s of f.steps) {
+            await apiSend(`/api/flows/${nf.id}/steps`, 'POST', { content: s.content, kind: s.kind, requirement: s.requirement });
+          }
+          await refreshAfterUndo();
+        });
+      }
       await refreshRef();
     }));
 
@@ -4220,10 +4232,21 @@ function pendingHours(p) {
   return Math.max(0, Math.ceil((new Date(p.apply_at) - Date.now()) / 3600000));
 }
 
-function stepPending(s) {
-  if (!s.pending) return null;
-  try { return typeof s.pending === 'string' ? JSON.parse(s.pending) : s.pending; }
-  catch { return null; }
+// Pendings are PER FIELD and there can be several counting down at once, so
+// the store is a list. The one-slot object still reads — old rows keep working.
+function stepPendings(s) {
+  if (!s || !s.pending) return [];
+  let p;
+  try { p = typeof s.pending === 'string' ? JSON.parse(s.pending) : s.pending; }
+  catch { return []; }
+  if (Array.isArray(p)) return p.filter(x => x && x.field);
+  return p && p.field ? [p] : [];
+}
+
+// The soonest one, for the surfaces that state a single line.
+function stepPending(s, field) {
+  const all = stepPendings(s).filter(p => !field || p.field === field);
+  return all.sort((a, b) => String(a.apply_at).localeCompare(String(b.apply_at)))[0] || null;
 }
 
 function renderFlowEditor(body, title, f) {
@@ -4472,9 +4495,12 @@ function stepBadges(s) {
       flowName(s.pawn_to_flow_id))} for today only — the routine is unchanged"
       >→ ${escHtml(flowName(s.pawn_to_flow_id))} today</span>`);
   }
-  const p = stepPending(s);
-  if (p) out.push(`<span class="fr-badge fr-badge-pending" title="A gated routine eases on a 24h delay">${
-    p.field === 'delete' ? 'removes' : p.field === 'requirement' ? 'soft' : 'days'} in ${pendingHours(p)}h</span>`);
+  // One badge PER queued easing — several can be counting down at once, and a
+  // single badge would say one of them was the only thing coming.
+  for (const p of stepPendings(s)) {
+    out.push(`<span class="fr-badge fr-badge-pending" title="A gated routine eases on a 24h delay">${
+      p.field === 'delete' ? 'removes' : p.field === 'requirement' ? 'soft' : 'days'} in ${pendingHours(p)}h</span>`);
+  }
   return out.join('');
 }
 
@@ -4614,18 +4640,19 @@ function renderStepSheet() {
       <span class="cl-hint">${s.requirement === 'soft'
         ? 'a smaller version still credits' : 'the real thing, or it does not count'}</span>
     </div>
-    ${s.requirement === 'soft' || (stepPending(s) || {}).field === 'requirement' ? `
+    ${s.requirement === 'soft' || stepPending(s, 'requirement') ? `
     <div class="cl-row">
       <input type="text" class="cl-action" id="fr-sheet-soft"
         placeholder="Name the smaller version (optional)"
         value="${escHtml(s.soft_content || '')}"
         title="Shown on the runner's soft button, so 'a smaller version' is a decision made now, not at 11pm">
     </div>` : ''}
-    ${stepPending(s) ? `
+    ${stepPendings(s).length ? `
     <div class="cl-row fr-pending-row">
-      <span class="cl-hint">⏳ ${stepPending(s).field === 'delete' ? 'removal lands'
-        : stepPending(s).field === 'requirement' ? 'goes soft'
-        : 'day change lands'} in ${pendingHours(stepPending(s))}h — a gated routine eases on a 24h delay</span>
+      <span class="cl-hint">⏳ ${stepPendings(s).map(p => `${
+        p.field === 'delete' ? 'removal lands' : p.field === 'requirement' ? 'goes soft'
+          : 'day change lands'} in ${pendingHours(p)}h`).join(', ')
+        } — a gated routine eases on a 24h delay</span>
       <button class="cl-pill" id="fr-sheet-unpend">Cancel</button>
     </div>` : ''}
 
