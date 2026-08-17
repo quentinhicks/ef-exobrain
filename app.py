@@ -1845,6 +1845,9 @@ CONFIG_KEYS = [
     {'key': 'gcal_write_source_id', 'label': 'Write-back source',
      'hint': 'which local calendar those events belong to'},
     {'key': 'autohotkey_path', 'label': 'AutoHotkey', 'hint': 'path to AutoHotkey.exe (Windows)'},
+    {'key': 'geocode_user_agent', 'label': 'Geocoder contact',
+     'hint': 'OpenStreetMap requires a real contact, e.g. "qpa (you@example.com)" '
+             '— address search is off until it is set'},
 ]
 _CONFIG_BY_KEY = {c['key']: c for c in CONFIG_KEYS}
 
@@ -2048,9 +2051,31 @@ def locations():
     if request.method == 'POST':
         data = request.get_json()
         result = storage.create_location(
-            data['name'], data['lat'], data['lng'], data.get('radius_m') or 150)
+            data['name'], data['lat'], data['lng'], data.get('radius_m') or 150,
+            active=0 if data.get('active') == 0 else 1)
         return jsonify(result), 201
     return jsonify(storage.get_locations())
+
+
+# ADDRESS IN, COORDINATES OUT. Typing a latitude by hand is the friction that
+# kept one-off places out of the system entirely, so the geocoder exists to
+# make creating a location cost one search instead of a map lookup.
+#
+# READ-ONLY: it returns candidates and writes nothing. Picking one is a
+# separate POST, because deciding a place exists is a decision.
+@app.route('/api/geocode')
+def get_geocode():
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return jsonify([])
+    try:
+        return jsonify(aggregator.geocode(q, config.get('geocode_user_agent', '')))
+    except ValueError as e:
+        # Not set up yet — a 400 the UI can SAY, rather than an empty list that
+        # would read as "no such address".
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'lookup failed: {e}'}), 502
 
 
 # --- Interactive routines (flows) ---

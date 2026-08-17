@@ -595,10 +595,16 @@ select option {
    Colours are vars only — the light appendix swaps them and nothing here needs
    a second entry. Hit targets are full-width rows: on a phone there is no
    hover to find a small one with. */
-.se-geo-row { display: flex; gap: 8px; align-items: center; }
-.se-geo-q { flex: 1; min-width: 0; }
+/* The whole chain needs min-width:0. The control is a FLEX ITEM in .se-frow,
+   so without it the item sizes to max-content — and one nowrap address label
+   is enough max-content to push the search buttons off a 430px screen. The
+   ellipsis only clips once every ancestor can shrink. */
+.se-geocode { flex: 1 1 auto; min-width: 0; }
+.se-geo-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.se-geo-q { flex: 1 1 auto; min-width: 0; }
+.se-geo-out { min-width: 0; }
 .se-geo-out:not(:empty) { margin-top: 8px; }
-.se-geo-list { display: flex; flex-direction: column; gap: 2px; }
+.se-geo-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 
 .se-geo-hit {
   display: flex;
@@ -606,6 +612,9 @@ select option {
   gap: 1px;
   text-align: left;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 7px 8px;
   border: 1px solid var(--border-soft);
   border-radius: 4px;
@@ -613,15 +622,17 @@ select option {
   cursor: pointer;
 }
 .se-geo-hit:hover { border-color: var(--accent); }
-.se-geo-name { font-size: 13px; color: var(--text-primary); }
+.se-geo-name,
 .se-geo-label {
-  font-size: 11px;
-  color: var(--text-secondary);
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.se-geo-picked { font-size: 13px; color: var(--accent); }
+.se-geo-name { font-size: 13px; color: var(--text-primary); }
+.se-geo-label { font-size: 11px; color: var(--text-secondary); }
+.se-geo-picked { font-size: 13px; color: var(--accent); overflow-wrap: anywhere; }
 .se-geo-coords { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
 
 /* Pawning: the step's own setting, and the note the receiving routine shows. */
@@ -4497,8 +4508,6 @@ body.map-over-runner #map-overlay { z-index: 170; }
 
 .eg-empty { font-size: 12px; color: var(--text-secondary); padding: 8px 14px; }
 /* Items hidden by a location-bound tag — counted, never silent. */
-.eg-geo-hidden,
-.eg-dev-hidden { font: 10px var(--font-mono); color: var(--text-secondary); margin-left: 8px; }
 
 /* THE global bar — one context bar for the whole app, fixed under everything.
    --gbar-h is the layout contract: every overlay (and the clarify sheet)

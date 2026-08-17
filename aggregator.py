@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import re
 import urllib.parse
 import urllib.request
@@ -197,3 +198,58 @@ def fetch_sheets(url):
             'due_yes': _parse_bool(row.get('due_yes', 'false')),
         })
     return rows
+
+
+# --- Geocoding: an address instead of typed coordinates ------
+#
+# Nominatim (OpenStreetMap): no API key, no billing, no account — which is why
+# it is the one that fits. Plain urllib, like every other fetch in this file.
+#
+# Its usage policy asks two things and BOTH are load-bearing: a descriptive
+# User-Agent (the stdlib default is blocked outright, which is the same lesson
+# the QR admin API taught) and roughly one request a second, which is why the
+# caller debounces rather than searching per keystroke.
+#
+# This READS ONLY. It returns candidates and writes nothing — picking one is a
+# separate, deliberate act that creates the location row.
+NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
+GEOCODE_LIMIT = 6
+
+
+def geocode(query, user_agent, limit=GEOCODE_LIMIT):
+    query = (query or '').strip()
+    if not query:
+        return []
+    if not (user_agent or '').strip():
+        # Refused rather than sent with the default UA: Nominatim would block
+        # it, and a 403 read as "no results for that address" would be a lie.
+        raise ValueError('geocode_user_agent is not set')
+    url = NOMINATIM_URL + '?' + urllib.parse.urlencode({
+        'q': query, 'format': 'jsonv2', 'limit': max(1, min(int(limit), 20)),
+        'addressdetails': 0,
+    })
+    req = urllib.request.Request(url, headers={
+        'User-Agent': user_agent.strip(),
+        'Accept': 'application/json',
+        'Accept-Language': 'en',
+    })
+    with urllib.request.urlopen(req, timeout=15) as response:
+        rows = json.loads(response.read().decode('utf-8'))
+    out = []
+    for r in rows:
+        try:
+            lat, lng = float(r['lat']), float(r['lon'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        label = (r.get('display_name') or '').strip()
+        out.append({
+            'label': label,
+            # The first comma-separated part is what a human would call it, and
+            # it is only a SUGGESTED name — the field stays editable, because
+            # "Anamika's" is not what OSM will ever call her building.
+            'name': label.split(',')[0].strip(),
+            'lat': lat,
+            'lng': lng,
+            'kind': r.get('type') or r.get('category') or '',
+        })
+    return out

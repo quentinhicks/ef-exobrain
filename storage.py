@@ -5701,11 +5701,18 @@ def delete_tag_location(tag):
     conn.close()
 
 
-def create_location(name, lat, lng, radius_m):
+def create_location(name, lat, lng, radius_m, active=1):
+    # `active = 0` at CREATION is the one-off place (2026-08-17): an address you
+    # geocoded for a single errand still needs a row, because coordinates live
+    # nowhere else, but it should never join the picker. That is exactly what
+    # pausing already means here — "stop offering it", never a deletion and
+    # never a change to anything already pointing at it — so a one-off is a
+    # paused location rather than a second concept, and un-pausing later
+    # promotes it into a real preset.
     conn = get_conn()
     cur = conn.execute(
-        'INSERT INTO location (name, lat, lng, radius_m) VALUES (?, ?, ?, ?)',
-        (name, lat, lng, radius_m)
+        'INSERT INTO location (name, lat, lng, radius_m, active) VALUES (?, ?, ?, ?, ?)',
+        (name, lat, lng, radius_m, 1 if active else 0)
     )
     conn.commit()
     row = conn.execute('SELECT * FROM location WHERE id = ?', (cur.lastrowid,)).fetchone()

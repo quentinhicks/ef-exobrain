@@ -2286,7 +2286,9 @@ function wireSeSheet(fields) {
         setField('lng', lng);
         const nameInput = el.querySelector('input[data-f="name"]');
         if (nameInput && !nameInput.value.trim()) setField('name', name);
-        say(`<div class="se-geo-picked">✓ ${escHtml(label || name)}
+        // The SHORT name, with the full address as the tooltip: a whole OSM
+        // display_name is three lines of county and postcode on a phone.
+        say(`<div class="se-geo-picked" title="${escHtml(label || name)}">✓ ${escHtml(name)}
           <span class="se-geo-coords">${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}</span></div>
           <div class="se-hint">The name is yours to rewrite — it is only a suggestion.</div>`);
       };
@@ -11265,7 +11267,6 @@ function engagePoolGates(nowMin, isToday) {
     const devs = itemTags(i).map(t => tagDev[t]).filter(Boolean);
     return !devs.length || devs.includes(device);
   };
-  const otherDevice = device === 'pc' ? 'phone' : 'pc';
 
   // TIME gate: a tag bound to a SCHEDULE SOURCE only counts while you are
   // inside one of that source's occurrences. The server sends the intervals it
@@ -11310,7 +11311,7 @@ function engagePoolGates(nowMin, isToday) {
   const onToday = !engageView.date || engageView.date === wallDay();
   const dayOk = i => !onToday || itemTags(i).every(t => dayAns[t] !== false);
 
-  return { locOk, deviceOk, timeOk, dayOk, device, otherDevice,
+  return { locOk, deviceOk, timeOk, dayOk, device,
            // The context menu marks each tag with the gate that binds it.
            tagLoc, tagDev, tagTime, gateOn };
 }
@@ -11487,7 +11488,7 @@ function renderEngage() {
   const inContext = i => String(domainOf(i)) === String(ctxDomainId)
     && [...engageView.ctxTags].every(t => itemTags(i).includes(t));
 
-  const { locOk, deviceOk, timeOk, dayOk, device, otherDevice,
+  const { locOk, deviceOk, timeOk, dayOk, device,
           tagLoc, tagDev, tagTime, gateOn } = engagePoolGates(nowMin, isToday);
 
   // Scheduled on/after the viewed day = it HAS a day, so it isn't "Not
@@ -11499,11 +11500,12 @@ function renderEngage() {
     .filter(i => (i.kind || 'item') === 'item' && !placedIds.has(i.id)
                  && !scheduledIds.has(i.id)
                  && !routineAreaIds.has(i.area_id) && inContext(i));
-  const geoHidden = poolBase.filter(i => !locOk(i)).length;
-  const devHidden = poolBase.filter(i => locOk(i) && !deviceOk(i)).length;
-  const timeHidden = poolBase.filter(i => locOk(i) && deviceOk(i) && !timeOk(i)).length;
-  const dayHidden = poolBase.filter(i =>
-    locOk(i) && deviceOk(i) && timeOk(i) && !dayOk(i)).length;
+  // The four HIDDEN-BY-CONTEXT tallies used to be counted here and printed
+  // above the list ("4 out of window", "6 not today"). Removed 2026-08-17 at
+  // Quentin's request: it was a band of chrome over the one list read dozens
+  // of times a day, saying what is NOT there. The gates themselves are
+  // unchanged — the pool still hides those rows, and the context pills in the
+  // header are still where you see and change what is gating.
   const pool = poolBase
     .filter(i => locOk(i) && deviceOk(i) && timeOk(i) && dayOk(i))
     // In-progress floats first — "what am I on" is the glance the ◐ exists
@@ -11761,11 +11763,6 @@ function renderEngage() {
 
   body.innerHTML = `
     <div class="eg-day">${parts.join('')}</div>
-    <div class="eg-pool-head">Not scheduled${geoHidden
-      ? ` <span class="eg-geo-hidden" title="Hidden by location-bound tags — they return when you're there">⌖ ${geoHidden} elsewhere</span>` : ''}${devHidden
-      ? ` <span class="eg-dev-hidden" title="Tagged #${otherDevice} — they show up on the ${otherDevice}">▭ ${devHidden} ${otherDevice}-only</span>` : ''}${timeHidden
-      ? ` <span class="eg-dev-hidden" title="Their context is bound to a time period you are not in — they come back when you are">◷ ${timeHidden} out of window</span>` : ''}${dayHidden
-      ? ` <span class="eg-dev-hidden" title="You said these contexts don't apply today — the morning routine is where that is answered">👤 ${dayHidden} not today</span>` : ''}</div>
     ${deferHtml}
     <div class="eg-pool">
       ${pool.map(i => `
