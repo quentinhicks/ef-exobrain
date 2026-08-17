@@ -1,3 +1,8 @@
+// Minutes in a day. The one spelling of the wrap — see the semantic
+// minutes block further down for spanEndMin / windowEndMin / clockHHMM.
+// Declared HERE because `const` has no hoisting and state.view uses it.
+const DAY_MIN = 1440;
+
 // ── Theme ─────────────────────────────────────────────────────
 // The setting table is the source of truth (it lands in state.settings with
 // everything else), but it arrives a fetch late — long enough to paint the
@@ -160,7 +165,7 @@ const state = {
   allSources: [],
   geo: { ok: false },
   settings: {},
-  view: { start: 0, end: 1440 },
+  view: { start: 0, end: DAY_MIN },
   // Right-click day-level view dismissals: blocks/qr keyed `id:date`, events
   // keyed `uid|start`. Undo lives on the global stack (see pushUndo).
   tlHidden: { block: {}, event: {}, qr: {} },
@@ -427,7 +432,7 @@ function computeViewWindow() {
   const nodes = state.accountabilityNodes || [];
   const wake = nodes.find(n => String(n.id) === String(state.settings.qr_wake_node_id));
   const sleep = nodes.find(n => String(n.id) === String(state.settings.qr_sleep_node_id));
-  if (!wake || !sleep) return { start: 0, end: 1440 };
+  if (!wake || !sleep) return { start: 0, end: DAY_MIN };
   const pageDate = viewDay();
   const viewingToday = isToday(state.currentDate);
   const pageDow = jsDateToDayOfWeek(state.currentDate);
@@ -436,12 +441,12 @@ function computeViewWindow() {
     const def = nodeWindowForDate(node, pageDate);
     const end = ov ? ov.window_end : def.window_end;
     const offset = ov ? ov.window_end_offset_days : def.window_end_offset_days;
-    return timeToMinutes(end) + (offset ? 1440 : 0);
+    return windowEndMin(end, offset);
   };
   const start = deadlineMin(wake);
   let end = deadlineMin(sleep);
   // A sleep deadline at/before wake means past midnight, offset flag or not
-  if (end <= start) end += 1440;
+  if (end <= start) end += DAY_MIN;
   return { start, end };
 }
 
@@ -507,7 +512,7 @@ function renderBlocksLayer(bodyH = 600) {
     const startT = (override && override.start_time) || b.start_time;
     const endT = (override && override.end_time) || b.end_time;
     const startMin = timeToMinutes(startT);
-    const endMin = timeToMinutes(endT) + (endT < startT ? 1440 : 0);
+    const endMin = spanEndMin(startT, endT);
     const cancelled = override ? override.cancelled === 1 : false;
     segments.push({ b, startMin, endMin, cancelled, label: b.label, cont: false });
   }
@@ -646,8 +651,8 @@ function initBlockBarDrag(layer, dateStr) {
         if (!moved || (curS === origStart && curE === origEnd)) { renderTimeline(); return; }
         const res = await apiSend('/api/overrides', 'POST', {
             block_id: blockId, date: dateStr, cancelled: false,
-            start_time: minutesToHHMM(curS % 1440),
-            end_time: minutesToHHMM(curE % 1440),
+            start_time: clockHHMM(curS),
+            end_time: clockHHMM(curE),
           });
         if (res.ok) {
           const data = await res.json();
@@ -682,12 +687,12 @@ function renderGcalLayer(bodyH = 600) {
   // Next-day events count when the view runs past midnight (sleep +1d)
   const dayEvents = state.gcalEvents.filter(e => !e.allday &&
     !state.tlHidden.event[`${e.uid}|${e.start}`] &&
-    (sameDay(state.currentDate, e.start) || (state.view.end > 1440 && sameDay(nextDate, e.start))));
+    (sameDay(state.currentDate, e.start) || (state.view.end > DAY_MIN && sameDay(nextDate, e.start))));
   layer.innerHTML = dayEvents.map(e => {
-    const base = sameDay(nextDate, e.start) ? 1440 : 0;
+    const base = sameDay(nextDate, e.start) ? DAY_MIN : 0;
     const startMin = base + isoMin(e.start);
     let endMin = base + isoMin(e.end);
-    if (endMin <= startMin) endMin += 1440;
+    if (endMin <= startMin) endMin += DAY_MIN;
     const top = Math.max(0, minutesToViewPercent(startMin));
     const bottom = Math.min(100, minutesToViewPercent(endMin));
     if (bottom - top <= 0) return '';
@@ -3930,7 +3935,7 @@ function flowWindow(f) {
 function flowWindowLabel(f) {
   const w = flowWindow(f);
   if (!w) return null;
-  return `${minutesToHHMM(w.open % 1440)}–${minutesToHHMM(Math.round(w.due) % 1440)}`;
+  return `${clockHHMM(w.open)}–${clockHHMM(w.due)}`;
 }
 
 // Its own window where set, else the gate it is anchored to plus offset_min —
@@ -3985,7 +3990,7 @@ function renderRef() {
       return `<div class="ref-row" data-flow="${f.id}">
         <span class="ref-name" title="Tap to edit steps · double-click to rename">${escHtml(f.name)}</span>
         ${due != null ? `<span class="fr-due">${done ? '✓ done'
-          : (flowWindowLabel(f) || 'due ' + minutesToHHMM(Math.round(due) % 1440))}</span>`
+          : (flowWindowLabel(f) || 'due ' + clockHHMM(due))}</span>`
           : done ? '<span class="fr-due">✓ done</span>' : ''}
         <span class="map-count" title="${todaySteps} of ${f.steps.length} steps run today">${todaySteps}${
           todaySteps === f.steps.length ? '' : `<span class="fr-of">/${f.steps.length}</span>`}</span>
@@ -5690,7 +5695,7 @@ function renderFlowRun() {
       <span class="fr-title">${escHtml(f.name)}</span>
       <span class="fr-meta">${flowRunView.idx + 1}/${f.steps.length}${left.total
         ? ` · ${humanMinutes(left.total)} left${left.unknown ? ` +${left.unknown}?` : ''}` : ''}${
-        due != null ? ` · due ${minutesToHHMM(Math.round(due) % 1440)}` : ''}</span>
+        due != null ? ` · due ${clockHHMM(due)}` : ''}</span>
       <button class="modal-close-btn" id="fr-close">✕</button>
     </div>
     <div class="fr-page">${page}${credited ? '<div class="fr-note">✓ already credited</div>' : ''}
@@ -7193,7 +7198,7 @@ function renderQrLayer() {
 
     // ±12h drag bounds in semantic minutes: a +1d deadline counts as end + 1440,
     // so dragging preserves the offset and can cross midnight in either direction
-    const originalMinutes = timeToMinutes(windowEnd) + (offsetDays ? 1440 : 0);
+    const originalMinutes = windowEndMin(windowEnd, offsetDays);
     // Never above the window's OPENING: a deadline before its own start is an
     // empty window, which judges absent every day. The server refuses it too.
     const minMinutes = Math.max(timeToMinutes(windowStart), originalMinutes - 720);
@@ -7280,8 +7285,8 @@ function renderQrLayer() {
       const displayPct = Math.min(100, Math.max(0, minutesToViewPercent(mins)));
       line.style.top = `${displayPct}%`;
       setLabelEdge(displayPct);
-      const nextDay = mins >= 1440;
-      labelText.textContent = `${node.label} ${minutesToHHMM(mins % 1440)}${nextDay ? ' +1d' : ''}`;
+      const nextDay = mins >= DAY_MIN;
+      labelText.textContent = `${node.label} ${clockHHMM(mins)}${nextDay ? ' +1d' : ''}`;
     }
 
     async function onUp(clientY, e) {
@@ -7308,8 +7313,8 @@ function renderQrLayer() {
       }
 
       const mins = calcMinutes(clientY);
-      const newOffsetDays = mins >= 1440 ? 1 : 0;
-      const newEnd = minutesToHHMM(mins % 1440);
+      const newOffsetDays = mins >= DAY_MIN ? 1 : 0;
+      const newEnd = clockHHMM(mins);
 
       if (newEnd === windowEnd && newOffsetDays === offsetDays) return;
 
@@ -7346,6 +7351,45 @@ function renderQrLayer() {
 function timeToMinutes(timeStr) {
   const [h, m] = timeStr.split(':').map(Number);
   return h * 60 + m;
+}
+
+// ── SEMANTIC MINUTES (2026-08-17) ────────────────────────────
+//
+// A clock face is 0..1440, but a SPAN can run past midnight and a previous
+// day's span reaches back BELOW zero. Those are semantic minutes, and every
+// wrap bug came from re-deciding the wrap by hand at a call site:
+// detectCurrentStandardBlock compared '23:00' < '01:00' as STRINGS (false, so
+// a 22:00–01:00 block was never active and the derived domain was wrong for
+// its whole span), flowDueMin added 1440 to the wrong interval, and a gate's
+// +1d was read as `off ? 1440 : 0` in three places and `offset == 1` in three
+// others.
+//
+// THE RULE: HH:MM is a BOUNDARY FORMAT. Parse it once, through these, and
+// compare minutes from then on. Do not order or compare HH:MM strings outside
+// this block — lexicographic order is right only within one day, which is
+// exactly the assumption that keeps breaking.
+// (DAY_MIN itself is declared at the TOP of this file: `const` does not hoist,
+// and state's view window uses it long before this point.)
+
+// End of a span that may cross midnight: an end at or before the start IS the
+// wrap. Takes the two clock times, so the comparison happens in one place.
+function spanEndMin(startHHMM, endHHMM) {
+  const s = timeToMinutes(startHHMM);
+  const e = timeToMinutes(endHHMM);
+  return e < s ? e + DAY_MIN : e;
+}
+
+// A window whose end carries an explicit +1 day (a gate's offset_days, and the
+// day-window payload's window_end_offset_days).
+function windowEndMin(endHHMM, offsetDays) {
+  return timeToMinutes(endHHMM) + (offsetDays ? DAY_MIN : 0);
+}
+
+// A semantic minute rendered back to a clock face. NEGATIVE-SAFE, which the
+// bare `m % 1440` was not: a previous-day block continuation starts below zero
+// and rendered as '-2:00'.
+function clockHHMM(minutes) {
+  return minutesToHHMM(((Math.round(minutes) % DAY_MIN) + DAY_MIN) % DAY_MIN);
 }
 
 // Effective default window for a weekday (0=Mon..6=Sun): the node's
@@ -10172,7 +10216,7 @@ function engagePoolGates(nowMin, isToday) {
   });
   const inPeriod = p => (p.intervals || []).some(iv => {
     const from = timeToMinutes(iv.start);
-    const to = iv.end === '24:00' ? 1440 : timeToMinutes(iv.end);
+    const to = iv.end === '24:00' ? DAY_MIN : timeToMinutes(iv.end);
     return nowMin >= from && nowMin < to;
   });
   const gateOn = timeGateOn();
@@ -10224,7 +10268,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin) {
       const end = ov ? ov.window_end : def.window_end;
       const off = ov ? (ov.window_end_offset_days || 0) : (def.window_end_offset_days || 0);
       const outcome = state.qrOutcomes[`${n.id}:${dateStr}`];
-      const minute = timeToMinutes(end) + (off ? 1440 : 0);
+      const minute = windowEndMin(end, off);
       qrMinutes[n.id] = minute;
       // The routines that GATE this node (qr_node_id = anchored to its
       // deadline, before_node_id = must be done before it). The link decides
@@ -10261,7 +10305,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin) {
     const startT = (ov && ov.start_time) || b.start_time;
     const endT = (ov && ov.end_time) || b.end_time;
     const seg = { minute: timeToMinutes(startT),
-                  endMin: timeToMinutes(endT) + (endT < startT ? 1440 : 0),
+                  endMin: spanEndMin(startT, endT),
                   id: b.id, label: b.label, cancelled: !!(ov && ov.cancelled === 1) };
     if (routineAreaIds.has(b.area_id)) {
       (routineGroups[b.area_id] = routineGroups[b.area_id] || []).push(seg);
@@ -10415,7 +10459,7 @@ function renderEngage() {
         </div>`).join('')}
     </div>` : '';
 
-  const hhmm = m => minutesToHHMM(Math.round(m) % 1440);
+  const hhmm = clockHHMM;
 
   const rowHtml = r => {
     if (r.kind === 'qr') {
@@ -11067,7 +11111,7 @@ async function renderNowFull() {
     .filter(r => r.start <= m && m < r.end)
     .sort((a, b) => (b.start - a.start) || (PRIO[b.kind] - PRIO[a.kind]))[0] || null;
   const next = day.rows.filter(r => r.start > m).sort((a, b) => a.start - b.start)[0] || null;
-  const hhmm = x => minutesToHHMM(((Math.round(x) % 1440) + 1440) % 1440);
+  const hhmm = clockHHMM;
 
   let checklist = [];
   if (active && active.kind === 'routine') {

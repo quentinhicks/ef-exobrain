@@ -46,6 +46,15 @@ def _date_plus(ymd, days):
     return (datetime.strptime(ymd, '%Y-%m-%d').date() + timedelta(days=days)).isoformat()
 
 
+# THE DAY A WINDOW CLOSES ON. One spelling: this was `if offset` in one place
+# and `offset == 1` in three others, which agree only while the offset is
+# exactly 0 or 1 — and window_end_offset_days is an INTEGER column. The client
+# had a third spelling (`off ? 1440 : 0`). A window's close date is not a
+# question three functions should each answer.
+def close_date_of(ymd, offset):
+    return _date_plus(ymd, int(offset or 0))
+
+
 def haversine_m(lat1, lng1, lat2, lng2):
     r = 6371000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -247,7 +256,7 @@ def routine_deadline(node, flow, ymd, resolve=None):
     if not anchor:
         return None
     _, end, offset = resolve_window(anchor, ymd)
-    due = _local_dt(_date_plus(ymd, 1) if offset else ymd, end)
+    due = _local_dt(close_date_of(ymd, offset), end)
     # A "before X" routine is due when X closes, full stop; the offset belongs
     # to the gate it gates, not to a deadline it merely points at.
     if not flow.get('before_node_id') and flow.get('offset_min'):
@@ -360,7 +369,7 @@ def judge(now=None, verbose=False):
                 continue
             money_reach = ymd >= _date_plus(today, -1)
             start, end, offset = resolve_window(node, ymd)
-            close_date = _date_plus(ymd, 1) if offset == 1 else ymd
+            close_date = close_date_of(ymd, offset)
             scan_close = _local_dt(close_date, end)
 
             # The routine's own clock, which can run out well before the scan
@@ -462,7 +471,7 @@ def outcomes(from_date, to_date, now=None):
                 continue
             start, end, offset = resolve_window(
                 node, ymd, overrides.get((node['id'], ymd)))
-            close_date = _date_plus(ymd, 1) if offset == 1 else ymd
+            close_date = close_date_of(ymd, offset)
             open_iso = _utc_iso(ymd, start)
             close_iso = _utc_iso(close_date, end)
             j = judged.get((node['id'], ymd))
@@ -593,7 +602,7 @@ def override_locked(node, ymd, now=None):
     # be a loophole straight back to the slacker default.
     now = now or datetime.now()
     start, end, offset = resolve_window(node, ymd)
-    close_date = _date_plus(ymd, 1) if offset == 1 else ymd
+    close_date = close_date_of(ymd, offset)
     return _local_dt(close_date, end) <= now + timedelta(hours=LOOSEN_DELAY_H)
 
 
