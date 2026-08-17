@@ -3436,6 +3436,11 @@ const REVIEW_KINDS = {
     hint: 'Activate what\'s ripe, delete what\'s outlived your interest, add new.' },
   review_creative: { phase: 'Get Creative',
     hint: 'Anything new worth capturing into the system.' },
+  // The habit/experiment tally used to render BELOW the steps, so it was read
+  // but never ticked and never counted toward the review's completion — and
+  // the runner, which walks steps, never showed it at all. It is a step now.
+  review_habits: { phase: 'Get Creative', habits: true,
+    hint: 'Graduate what stuck, drop what didn\'t, judge resolved experiments.' },
 };
 
 // A step added to the review flow by hand is not in the registry and has no
@@ -3693,6 +3698,7 @@ function renderGtdReview() {
           ${s.stalled ? stalledList : ''}
           ${s.waiting ? waitingList : ''}
           ${s.pushed ? pushedList : ''}
+          ${s.habits ? habitReviewHtml(gtdReview.habits) : ''}
         </span>
       </label>`;
   });
@@ -3711,7 +3717,7 @@ function renderGtdReview() {
     </div>
     <div class="gr-criterion">Done when you can say: “I know right now everything I'm not doing but could be doing if I decided to.”</div>
     ${html}
-    ${habitReviewHtml(gtdReview.habits)}
+    ${steps.some(st => reviewKind(st).habits) ? '' : habitReviewHtml(gtdReview.habits)}
     <div class="gr-footer">
       <label class="gr-field"><span>New habit (free text — experiments are the usual way in)</span>
         <input type="text" id="gr-habit" value="" placeholder="optional — starts forming this week, rated nightly"></label>
@@ -3739,12 +3745,19 @@ function renderGtdReview() {
     });
   });
 
-  panel.querySelectorAll('[data-hbverb]').forEach(b => b.addEventListener('click', () => {
+  // The tally renders INSIDE the review_habits step's <label> now, so a verb
+  // click would also toggle that step's checkbox — judging a habit is not
+  // saying the step is done. Same reason .gr-act stops the event.
+  panel.querySelectorAll('[data-hbverb]').forEach(b => b.addEventListener('click', e_ => {
+    e_.preventDefault();
+    e_.stopPropagation();
     const row = b.closest('[data-hbid]');
     const h = gtdReview.habits.forming.find(x => x.id === parseInt(row.dataset.hbid));
     habitVerb(h.id, b.dataset.hbverb, h.content);
   }));
-  panel.querySelectorAll('[data-exverb]').forEach(b => b.addEventListener('click', () => {
+  panel.querySelectorAll('[data-exverb]').forEach(b => b.addEventListener('click', e_ => {
+    e_.preventDefault();
+    e_.stopPropagation();
     const row = b.closest('[data-exid]');
     const e = gtdReview.habits.experiments.awaiting.find(x => x.id === parseInt(row.dataset.exid));
     experimentVerb(e.id, b.dataset.exverb, e.content);
@@ -3836,6 +3849,7 @@ function initHub() {
     // MAP overlay in the loop below, the way every sheet peels before what
     // opened it.
     if (closeMapFilter()) return;
+    if (closeLogsFilter()) return;
     // The occasion sheet peels before whatever it was opened from — and that is
     // Settings as often as it is the day, so it has to sit ABOVE the overlay
     // loop below or Esc would close Settings out from under an open sheet.
@@ -3933,19 +3947,106 @@ function initHub() {
 
 // ── Logs ─────────────────────────────────────────────────────
 
-const logsView = { logs: [], open: null, content: '', dirty: false, saveTimer: null, desc: false };
+const logsView = { logs: [], open: null, content: '', dirty: false, saveTimer: null,
+                   // Newest first: a log list is read from the top, and the
+                   // one you want is nearly always the one you just wrote.
+                   desc: true, tags: new Set(), menuOpen: false };
 
-// Logs are named "YY-M-D topic", so name order IS date order — one direction
-// toggle covers both "oldest first" and "newest first". Session-local, like
-// the other view filters.
+// CHRONOLOGICAL, by the date parsed out of the filename — not by the filename.
+// Sorting the name as text put November before August and 26-8-11 before
+// 26-8-2, because the old names are unpadded, and the comment here used to
+// claim name order WAS date order. It never was.
+//
+// An undated file (hand-made, or named something else entirely) sorts by when
+// it was last touched, which is the only date it has.
+function logDate(l) {
+  return l.created || (l.updated_at || '').slice(0, 10);
+}
+
 function sortedLogs() {
-  const rows = logsView.logs.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const rows = logsView.logs.filter(l =>
+    [...logsView.tags].every(t => (l.tags || []).includes(t)));
+  rows.sort((a, b) => logDate(a).localeCompare(logDate(b))
+    || a.title.localeCompare(b.title));
   return logsView.desc ? rows.reverse() : rows;
+}
+
+// The vocabulary is whatever the corpus actually carries, plus anything already
+// required — narrowing to a tag must never make its own chip vanish.
+function logTagVocab() {
+  return [...new Set([...logsView.logs.flatMap(l => l.tags || []), ...logsView.tags])].sort();
+}
+
+function closeLogsFilter() {
+  if (!logsView.menuOpen) return false;
+  logsView.menuOpen = false;
+  renderLogsFilter();
+  return true;
+}
+
+// Mirrors renderMapFilter: the pill NAMES what is showing, the menu is one tap
+// away and shows exactly what is on.
+function renderLogsFilter() {
+  const pill = document.getElementById('logs-filter');
+  const menu = document.getElementById('logs-filter-menu');
+  if (!pill || !menu) return;
+  const on = logsView.tags.size;
+  pill.classList.toggle('hidden', !!logsView.open);
+  pill.textContent = `${on ? `${on} tag${on === 1 ? '' : 's'}` : 'All logs'} ▾`;
+  pill.classList.toggle('map-filter-on', !!on);
+  pill.title = 'What the list is showing';
+
+  menu.classList.toggle('hidden', !logsView.menuOpen);
+  if (!logsView.menuOpen) { menu.innerHTML = ''; return; }
+  const vocab = logTagVocab();
+  menu.innerHTML = `
+    <div class="map-filter-sec">Tags — every selected one required</div>
+    <div class="map-filter-chips">
+      ${vocab.length ? vocab.map(t => {
+        const sel = logsView.tags.has(t);
+        return `<button class="ctx-chip ${sel ? 'ctx-req' : 'ctx-off'}" data-logtag="${escHtml(t)}"
+          title="${sel ? 'required — click to clear' : 'click to require'}"
+          >${sel ? '∧' : ''}${escHtml(t)}</button>`;
+      }).join('') : '<span class="cl-hint">no tags on any log yet</span>'}
+    </div>
+    <div class="map-filter-sec">Order</div>
+    <div class="map-filter-chips">
+      <button class="ctx-chip ${logsView.desc ? 'ctx-req' : 'ctx-off'}" data-logdesc="1">newest first</button>
+      <button class="ctx-chip ${logsView.desc ? 'ctx-off' : 'ctx-req'}" data-logdesc="">oldest first</button>
+    </div>
+    ${on ? `<div class="map-filter-foot">
+      <button class="ctx-chip" id="logs-filter-clear">⟳ show everything</button>
+    </div>` : ''}`;
+  // stopPropagation for the same reason MAP's menu does it: these handlers
+  // re-render the menu, so the click would bubble to a target that no longer
+  // exists and the menu would put itself away on its own chips.
+  const stay = (el, fn) => el.addEventListener('click', e => {
+    e.stopPropagation();
+    fn();
+    renderLogs();
+  });
+  menu.querySelectorAll('[data-logtag]').forEach(b => stay(b, () => {
+    const t = b.dataset.logtag;
+    if (logsView.tags.has(t)) logsView.tags.delete(t);
+    else logsView.tags.add(t);
+  }));
+  menu.querySelectorAll('[data-logdesc]').forEach(b =>
+    stay(b, () => { logsView.desc = !!b.dataset.logdesc; }));
+  const clear = menu.querySelector('#logs-filter-clear');
+  if (clear) stay(clear, () => logsView.tags.clear());
 }
 
 function initLogsView() {
   const overlay = document.getElementById('logs-overlay');
   document.getElementById('logs-close').addEventListener('click', closeLogsView);
+  document.getElementById('logs-filter').addEventListener('click', e => {
+    e.stopPropagation();
+    logsView.menuOpen = !logsView.menuOpen;
+    renderLogsFilter();
+  });
+  document.getElementById('logs-modal').addEventListener('click', e => {
+    if (!e.target.closest('#logs-filter-menu, #logs-filter')) closeLogsFilter();
+  });
   // A rotation or window resize changes the textarea's content width, which
   // would desync the highlight until the next keystroke. Registered once —
   // updateLogHighlight no-ops when the editor isn't open.
@@ -5351,11 +5452,12 @@ function renderOccasionSheet() {
 // same peel rules, one input. Rapid entry survives — Enter adds and the sheet
 // stays open (unless the spec says adding OPENS the thing, e.g. a new log) —
 // and Enter on an empty input is Done, the bar's old rhythm.
-const entrySheet = { open: false, spec: null };
+const entrySheet = { open: false, spec: null, tags: new Set() };
 
 function openEntrySheet(spec) {
   entrySheet.open = true;
   entrySheet.spec = spec;
+  entrySheet.tags = new Set(spec.initialTags || []);
   renderEntrySheet();
 }
 
@@ -5383,17 +5485,58 @@ function renderEntrySheet() {
         placeholder="${escHtml(spec.placeholder || '')}" autocomplete="off">
     </div>
     ${spec.hint ? `<div class="cl-donow">${escHtml(spec.hint)}</div>` : ''}
+    ${spec.tags ? `
+    <div class="cl-sec"><span class="cl-label">Tags</span></div>
+    <div class="cl-chips" id="en-tag-chips">
+      ${[...new Set([...(spec.tagVocab || []), ...entrySheet.tags])].sort().map(t => {
+        const on = entrySheet.tags.has(t);
+        return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-entag="${escHtml(t)}"
+          >${on ? '∧' : ''}${escHtml(t)}</button>`;
+      }).join('')}
+      <input type="text" class="cl-action en-tag-new" id="en-tag-new"
+        placeholder="+ tag" autocomplete="off">
+    </div>` : ''}
     <div class="cl-row">
       <button class="cl-pill" id="en-add">${escHtml(spec.button || 'Add')}</button>
       <button class="cl-pill" id="en-done">Done</button>
     </div>`;
 
   const input = sheet.querySelector('#en-input');
+  if (spec.tags) {
+    // A chip toggles; the field mints. Re-render keeps the NAME you have
+    // already typed — half-typed text is data (renderBar's rule).
+    sheet.querySelectorAll('[data-entag]').forEach(b =>
+      b.addEventListener('click', () => {
+        const t = b.dataset.entag;
+        if (entrySheet.tags.has(t)) entrySheet.tags.delete(t);
+        else entrySheet.tags.add(t);
+        const typed = input.value;
+        renderEntrySheet();
+        const again = document.getElementById('en-input');
+        if (again) { again.value = typed; again.focus(); }
+      }));
+    const tagNew = sheet.querySelector('#en-tag-new');
+    tagNew.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const t = (tagNew.value || '').trim().toLowerCase().replace(/^#/, '')
+        .replace(/[^a-z0-9_-]/g, '');
+      if (!t) return;
+      entrySheet.tags.add(t);
+      const typed = input.value;
+      renderEntrySheet();
+      const again = document.getElementById('en-input');
+      if (again) { again.value = typed; }
+      const field = document.getElementById('en-tag-new');
+      if (field) field.focus();
+    });
+  }
   const add = async () => {
     const raw = input.value.trim();
     if (!raw) { closeEntrySheet(); return; }   // empty Enter = done
     input.value = '';
-    await spec.add(raw);
+    await spec.add(raw, [...entrySheet.tags]);
     if (spec.closeOnAdd) { closeEntrySheet(); return; }
     input.focus();
   };
@@ -6778,21 +6921,27 @@ function renderLogs() {
   const body = document.getElementById('logs-body');
   const title = document.getElementById('logs-title');
   if (!body) return;
+  renderLogsFilter();
   if (!logsView.open) {
     title.textContent = 'Logs';
+    // The DATE is a column, not part of the name. It still lives in the
+    // filename (it is what keeps two logs on one topic from being one file),
+    // but nothing here shows it inside the title any more.
     const rows = sortedLogs().map(l => `
       <button class="log-row" data-name="${escHtml(l.name)}">
-        <span class="log-row-name">${escHtml(l.name)}</span>
-        <span class="log-row-date">${new Date(l.updated_at).toLocaleDateString()}</span>
+        <span class="log-row-name">${escHtml(l.title)}${(l.tags || []).map(t =>
+          `<span class="log-tag">#${escHtml(t)}</span>`).join('')}</span>
+        <span class="log-row-date">${l.created
+          ? new Date(l.created + 'T12:00:00').toLocaleDateString(undefined,
+              { month: 'short', day: 'numeric' })
+          : new Date(l.updated_at).toLocaleDateString(undefined,
+              { month: 'short', day: 'numeric' })}</span>
       </button>`).join('');
+    const hidden = logsView.logs.length - sortedLogs().length;
     body.innerHTML = `
-      <div class="log-list-bar">
-        <button id="log-sort" class="log-sort-btn"
-          title="Sorted by name — for the YY-M-D logs that is ${logsView.desc ? 'newest' : 'oldest'} first">
-          ${logsView.desc ? 'Z → A ↓' : 'A → Z ↑'}
-        </button>
-      </div>
-      <div class="log-list">${rows || '<div class="log-empty">No logs yet</div>'}</div>
+      <div class="log-list">${rows || `<div class="log-empty">${
+        logsView.logs.length ? 'No log carries every tag you asked for' : 'No logs yet'}</div>`}</div>
+      ${hidden > 0 ? `<div class="log-hidden-note">${hidden} more behind the filter</div>` : ''}
       <button id="log-new" class="map-add-btn">+ log</button>
       <button id="log-dangerous" class="dw-entry" title="Stop typing and the draft is destroyed">⚡ Dangerous writing</button>`;
     body.querySelectorAll('.log-row').forEach(row => {
@@ -6800,28 +6949,31 @@ function renderLogs() {
     });
     document.getElementById('log-dangerous')
       .addEventListener('click', openDangerousWriting);
-    const d = new Date();
+    // Name and tags, and NO date to type — the server stamps today. Typing
+    // '26-8-17' in front of every log was a filing convention the app can keep
+    // for you, and getting it subtly wrong is what made the list unsortable.
     document.getElementById('log-new').addEventListener('click', () => openEntrySheet({
       title: 'New log',
-      placeholder: `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()} topic…`,
-      button: 'Create', closeOnAdd: true,
-      add: async raw => {
-        const log = await apiSend('/api/logs', 'POST', { name: raw }).then(r => r.json());
+      placeholder: 'what is this log about…',
+      hint: 'Dated today. Tags are optional, and live in the file itself.',
+      button: 'Create', closeOnAdd: true, tags: true, tagVocab: logTagVocab(),
+      add: async (raw, tags) => {
+        const log = await apiSend('/api/logs', 'POST',
+          { name: raw, tags }).then(r => r.json());
+        logsView.logs = await apiGet('/api/logs', logsView.logs);
         logsView.open = log.name;
         logsView.content = log.content;
         logsView.dirty = false;
         renderLogs();
       },
     }));
-    document.getElementById('log-sort').addEventListener('click', () => {
-      logsView.desc = !logsView.desc;
-      renderLogs();
-      document.getElementById('logs-body').scrollTop = 0;
-    });
     return;
   }
 
-  title.textContent = logsView.open;
+  // The header names the log, not the file: the date prefix is identity on
+  // disk and noise on screen.
+  const openMeta = logsView.logs.find(l => l.name === logsView.open);
+  title.textContent = (openMeta && openMeta.title) || logsView.open;
   body.innerHTML = `
     <div class="log-editor-bar">
       <button id="log-back" class="log-back-btn">‹ All logs</button>

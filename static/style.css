@@ -5905,6 +5905,21 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .be-section .cl-hint { display: block; padding: 6px 20px 12px; line-height: 1.6; }
 .be-about-row { border-bottom: none; }
 
+/* A log row's tags, inline after the title. Named vars only, so the light
+   appendix needs no entry of its own. */
+.log-tag {
+  font: 10px var(--font-mono);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.log-hidden-note { font: 11px var(--font-mono); color: var(--text-secondary); padding: 6px 20px; }
+/* The new-tag field sits in the chip row and must not stretch it. */
+.en-tag-new { flex: 0 0 90px; min-width: 90px; font: 12px var(--font-mono); padding: 2px 8px; }
+
 /* The health spectrum: inline hsl (computed red->green), grey under 5 marks. */
 .gr-hb-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; align-self: center; }
 .jh-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font: 13px/1.7 var(--font-sans); }

@@ -1092,7 +1092,7 @@ def get_logs():
 @app.route('/api/logs', methods=['POST'])
 def post_log():
     data = request.get_json()
-    return jsonify(storage.create_log(data['name'])), 201
+    return jsonify(storage.create_log(data['name'], data.get('tags'))), 201
 
 
 @app.route('/api/logs/<name>')

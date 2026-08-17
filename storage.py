@@ -1177,6 +1177,7 @@ def init_db():
         )''')
     conn.commit()
     _seed_review_flow(conn)
+    _backfill_review_steps(conn)
     # Reference lists NEST (2026-08-11): a list can live inside a list. The
     # split at the root is what the index shows; delete splices children up a
     # level, the same rule projects follow.
@@ -3279,13 +3280,69 @@ def _log_name(name):
     return re.sub(r'[^A-Za-z0-9 _\-]', '', name).strip()
 
 
+# A log's FILENAME keeps its date; its title never shows one (2026-08-17).
+#
+# The date stays on disk because it is the file's IDENTITY, not decoration: two
+# logs on the same topic a month apart would otherwise be one filename and one
+# would silently overwrite the other. It also keeps `ls` and restic in date
+# order, which is most of why logs are files at all.
+#
+# Both spellings parse. Old logs are 'YY-M-D topic', unpadded, which sorts
+# WRONG as text ('26-8-11' before '26-8-2', November before August) — the
+# reason the list order was nonsense. New ones are written zero-padded, so the
+# directory sorts right too, and nothing has to be renamed.
+_LOG_DATE = re.compile(r'^(\d{2})-(\d{1,2})-(\d{1,2})[ _-]+(.*)$')
+
+
+# -> (created ISO date or None, title without the date)
+def _split_log_name(name):
+    m = _LOG_DATE.match(name)
+    if not m:
+        return None, name
+    yy, mm, dd, rest = m.groups()
+    try:
+        d = date_cls(2000 + int(yy), int(mm), int(dd))
+    except ValueError:
+        return None, name
+    return d.isoformat(), (rest.strip() or name)
+
+
+# Tags live in the FILE, as a first line of #tokens — not in a table. A log is
+# a markdown file whose point is being readable in ten years with no app and no
+# sqlite, and `grep -l '#meeting' logs/` has to keep working. Same token
+# grammar as the inventory's inert tags.
+_LOG_TAG_LINE = re.compile(r'^\s*(#[a-z0-9_-]+[ \t]*)+$', re.I)
+
+
+def _log_tags(content):
+    first = (content or '').split('\n', 1)[0]
+    if not first.strip() or not _LOG_TAG_LINE.match(first):
+        return []
+    return sorted({t.lower() for t in re.findall(r'#([a-z0-9_-]+)', first, re.I)})
+
+
+def _log_meta(name, content, mtime):
+    created, title = _split_log_name(name)
+    return {'name': name, 'title': title, 'created': created,
+            'tags': _log_tags(content),
+            'updated_at': datetime.fromtimestamp(mtime).isoformat()}
+
+
 def list_logs():
     os.makedirs(LOGS_DIR, exist_ok=True)
     logs = []
     for f in sorted(os.listdir(LOGS_DIR)):
-        if f.endswith('.md'):
-            mtime = os.path.getmtime(os.path.join(LOGS_DIR, f))
-            logs.append({'name': f[:-3], 'updated_at': datetime.fromtimestamp(mtime).isoformat()})
+        if not f.endswith('.md'):
+            continue
+        path = os.path.join(LOGS_DIR, f)
+        # Only the first line is needed for tags; reading whole files to find it
+        # would make listing cost the size of the corpus.
+        try:
+            with open(path, encoding='utf-8') as fh:
+                head = fh.readline()
+        except OSError:
+            head = ''
+        logs.append(_log_meta(f[:-3], head, os.path.getmtime(path)))
     return logs
 
 
@@ -3307,11 +3364,21 @@ def write_log(name, content):
     return name
 
 
-def create_log(name):
+def create_log(name, tags=None, created=None):
+    # The DATE is stamped here, not typed. It used to be part of what you had
+    # to write in the name; the name is just the topic now.
     name = _log_name(name)
+    if not _LOG_DATE.match(name):
+        try:
+            d = date_cls.fromisoformat(created or date_cls.today().isoformat())
+        except ValueError:
+            d = date_cls.today()
+        name = ('%s %s' % (d.strftime('%y-%m-%d'), name)).strip()
     path = os.path.join(LOGS_DIR, name + '.md')
     if not os.path.exists(path):
-        write_log(name, '')
+        clean = sorted({re.sub(r'[^a-z0-9_-]', '', str(t).lower().lstrip('#'))
+                        for t in (tags or [])} - {''})
+        write_log(name, (' '.join('#' + t for t in clean) + '\n\n') if clean else '')
     return read_log(name)
 
 
@@ -4464,6 +4531,7 @@ REVIEW_FLOW_STEPS = (
     ('review_checklists', 'Review any relevant checklists'),
     ('review_someday', 'Review someday/maybe'),
     ('review_creative', 'Be creative and courageous'),
+    ('review_habits', 'Judge habits and experiments'),
 )
 
 
@@ -4518,6 +4586,48 @@ def _seed_review_flow(conn):
                         ON CONFLICT(flow_id, date) DO NOTHING''',
                      (flow_id, row['week_start_date'], json.dumps(moved), row['completed_at']))
     conn.commit()
+
+
+def _backfill_review_steps(conn):
+    # _seed_review_flow only fires on a db with NO review flow, so a step added
+    # to REVIEW_FLOW_STEPS later would never reach a review that already
+    # exists. Append the missing kinds rather than reseeding: the existing
+    # steps keep their ids, and flow_run.steps is keyed BY step id, so
+    # renumbering would blank every tick ever recorded.
+    #
+    # `review_steps_offered` is what makes this safe to run at every start. A
+    # review step is an ordinary editable row, so without the ledger a step the
+    # user deliberately DELETED would grow back on the next launch and could
+    # never be removed. Each kind is offered exactly ONCE. A db seeded before
+    # this ledger existed has no setting — what it currently holds is what it
+    # was offered.
+    flow_id = _review_flow_id(conn)
+    if not flow_id:
+        return
+    have = [r['kind'] for r in conn.execute(
+        'SELECT kind FROM flow_step WHERE flow_id = ? ORDER BY position, id',
+        (flow_id,)).fetchall()]
+    row = conn.execute(
+        "SELECT value FROM setting WHERE key = 'review_steps_offered'").fetchone()
+    offered = set((row['value'] if row else ','.join(have)).split(','))
+    pos = conn.execute(
+        'SELECT COALESCE(MAX(position), 0) AS p FROM flow_step WHERE flow_id = ?',
+        (flow_id,)).fetchone()['p']
+    added = []
+    for kind, content in REVIEW_FLOW_STEPS:
+        if kind in offered or kind in have:
+            continue
+        pos += 1
+        conn.execute(
+            '''INSERT INTO flow_step (flow_id, position, kind, content, requirement)
+               VALUES (?, ?, ?, ?, 'hard')''', (flow_id, pos, kind, content))
+        added.append(kind)
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('review_steps_offered', ?)",
+        (','.join(sorted(offered | set(have) | set(added))),))
+    conn.commit()
+    if added:
+        print('weekly review: added step(s) ' + ', '.join(added))
 
 
 def get_flows(date=None):

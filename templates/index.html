@@ -212,10 +212,15 @@
   <!-- Logs modal -->
   <div id="logs-overlay" class="hidden">
     <div id="logs-modal">
+      <!-- One filter menu behind one pill, same shape as MAP's (23a): the pill
+           names what the list is showing, the menu is transient chrome and
+           peels before the overlay. -->
       <div class="modal-header">
         <span class="modal-title" id="logs-title">Logs</span>
+        <button id="logs-filter" class="map-filter-pill"></button>
         <button id="logs-close" class="modal-close-btn">✕</button>
       </div>
+      <div id="logs-filter-menu" class="hidden"></div>
       <div id="logs-body"></div>
     </div>
   </div>
