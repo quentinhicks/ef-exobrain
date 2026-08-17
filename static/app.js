@@ -3924,7 +3924,9 @@ function renderRef() {
       // The count is TODAY's steps, not the routine's whole length — it is
       // read as "how much is left tonight", and a Sunday-only step would
       // otherwise inflate every other day of the week.
-      const todaySteps = f.steps.filter(s => stepDueToday(s)).length;
+      // `day_steps` is the server's one composition of today's run (pawns
+      // included); the fallback is for a flow fetched without a date.
+      const todaySteps = (f.day_steps || f.steps.filter(s => stepDueToday(s))).length;
       return `<div class="ref-row" data-flow="${f.id}">
         <span class="ref-name" title="Tap to edit steps · double-click to rename">${escHtml(f.name)}</span>
         ${due != null ? `<span class="fr-due">${done ? '✓ done'
@@ -4276,11 +4278,12 @@ function renderFlowEditor(body, title, f) {
       </div>`).join('')
       || '<div class="gtd-empty">No steps yet.</div>'}
     ${(() => {
-      // What the routine adds up to, over the steps that RUN TODAY — a total
+      // What the routine adds up to TODAY — `day_steps`, so a step pawned away
+      // stops counting against this routine and one pawned in starts. A total
       // across every step would be wrong for anything with per-weekday steps.
       // NOT `.filter(stepDueToday)`: filter passes the INDEX as the second
       // argument, which stepDueToday reads as a Date and blows up on.
-      const t = stepsMinutes(f.steps.filter(s => stepDueToday(s)));
+      const t = stepsMinutes(f.day_steps || f.steps.filter(s => stepDueToday(s)));
       if (!t.total) return '';
       return `<div class="fr-total">${humanMinutes(t.total)} today${
         t.unknown ? ` · ${t.unknown} step${t.unknown === 1 ? '' : 's'} unestimated` : ''}</div>`;
@@ -4443,6 +4446,13 @@ function stepBadges(s) {
   }
   if (s.requirement === 'soft') out.push('<span class="fr-badge">soft</span>');
   if (s.kind === 'checklist') out.push('<span class="fr-badge">☰</span>');
+  // A pawn is TODAY only. On the routine list — which is the global thing — it
+  // is a badge saying where the step went, never a change to the list itself.
+  if (s.pawned_out) {
+    out.push(`<span class="fr-badge" title="Pawned onto ${escHtml(
+      flowName(s.pawn_to_flow_id))} for today only — the routine is unchanged"
+      >→ ${escHtml(flowName(s.pawn_to_flow_id))} today</span>`);
+  }
   const p = stepPending(s);
   if (p) out.push(`<span class="fr-badge fr-badge-pending" title="A gated routine eases on a 24h delay">${
     p.field === 'delete' ? 'removes' : p.field === 'requirement' ? 'soft' : 'days'} in ${pendingHours(p)}h</span>`);
@@ -5253,11 +5263,16 @@ async function openFlowRun(flowId) {
   flowRunView.checks = {};
   const flow = flows.find(f => f.id === flowId);
   if (!flow) return;
-  // THE RUN IS TODAY'S STEPS. `due` is the server's answer (storage.step_due_on
-  // — one weekday convention for the whole app), and narrowing the flow here
-  // rather than at each use means resume, progress and above all COMPLETION
-  // are all about today: a Sunday-only step must not hold a Tuesday's gate open.
-  const steps = flow.steps.filter(s => s.due);
+  // THE RUN IS TODAY'S STEPS, and the server composed that list once
+  // (storage.get_flows: `day_steps` — due today, minus what was pawned away,
+  // plus what was pawned in, carried debt first). Reading the field rather than
+  // re-deriving the rule is what stops the runner and the routine editor
+  // disagreeing about what a pawn did.
+  //
+  // Narrowing the flow HERE rather than at each use means resume, progress and
+  // above all COMPLETION are about today: a Sunday-only step must not hold a
+  // Tuesday's gate open.
+  const steps = flow.day_steps || flow.steps.filter(s => s.due);
   if (!steps.length) {
     toast(flow.steps.length ? 'Nothing in this routine today' : 'No steps in this routine');
     return;

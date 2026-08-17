@@ -4328,27 +4328,43 @@ def get_flows(date=None):
             # which weekday a review step falls on would be asking the wrong
             # question, so the weekday grammar is simply not consulted.
             s['due'] = True if f['period'] == 'week' else (step_due_on(s, day) if day else True)
-            # Pawned today: it is not this routine's problem any more. `due` is
-            # what the runner filters on and what COMPLETION is measured against,
-            # so clearing it here is the whole mechanic — no runner change needed.
+            # Pawned today. `due` is NOT cleared: the step still belongs to this
+            # routine and still runs today — it is being done somewhere else, and
+            # that is a fact about the DAY, not an edit to the routine.
             if date and s.get('pawned_date') == date:
-                s['due'] = False
                 s['pawned_out'] = True
         if date:
-            # …and it joins the destination for the day, marked so the runner
-            # can say where it came from. PREPENDED (2026-08-15): a pawned step
-            # is debt carried over, so it is the first thing you do, not the
-            # last — the receiving gate is already shorter for it, and leaving
-            # it at the end puts the borrowed time against the deadline. Within
-            # the group they keep their own order (steps_pawned_into sorts by
-            # position), so a pawned routine arrives intact.
+            # TWO SHAPES, ONE FETCH (2026-08-16). `steps` is the ROUTINE — its
+            # own steps, in its own order, the thing the editor edits and the
+            # thing that is true every day. `day_steps` is TODAY'S RUN, which is
+            # a different question: it drops what was pawned away, adds what was
+            # pawned in, and is what the runner and completion are measured
+            # against.
+            #
+            # They used to be one list: get_flows spliced the carried steps into
+            # `steps` and cleared `due` on the pawned-out ones, so the routine
+            # EDITOR showed a step that belongs to another routine, numbered it,
+            # and offered ↑↓ that would have reordered around it. A pawn is
+            # local to one day; the routine list is global; a local act may not
+            # rewrite a global surface.
+            #
+            # Composed HERE and nowhere else — the client reads the field rather
+            # than re-deriving the rule, which is what keeps the two from
+            # drifting the way they did.
+            #
+            # Carried steps are PREPENDED (2026-08-15): a pawned step is debt
+            # carried over, so it is the first thing you do, not the last — the
+            # receiving gate is already shorter for it, and leaving it at the end
+            # puts the borrowed time against the deadline. Within the group they
+            # keep their own order (steps_pawned_into sorts by position).
             carried = []
             for s in steps_pawned_into(f['id'], date):
                 s['due'] = True
                 s['pawned_in'] = True
                 s['from_flow_id'] = s['flow_id']
                 carried.append(s)
-            f['steps'] = carried + f['steps']
+            f['day_steps'] = carried + [s for s in f['steps']
+                                        if s['due'] and not s.get('pawned_out')]
             run = conn.execute('SELECT * FROM flow_run WHERE flow_id = ? AND date = ?',
                                (f['id'], f['period_key'])).fetchone()
             f['run'] = dict(run) if run else None

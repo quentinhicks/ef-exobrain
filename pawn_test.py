@@ -60,9 +60,17 @@ NODE = storage.qr_get_nodes()[0]
 
 
 def due(date=TODAY):
-    # This fixture's two routines only — every database also carries the seeded
-    # weekly review, which has nothing to do with pawning.
-    return {f['name']: [s['content'] for s in f['steps'] if s['due']]
+    # TODAY'S RUN — `day_steps`, which the server composes once. This fixture's
+    # two routines only; every database also carries the seeded weekly review,
+    # which has nothing to do with pawning.
+    return {f['name']: [s['content'] for s in f['day_steps']]
+            for f in storage.get_flows(date) if f['name'] in ('Morning', 'Night')}
+
+
+def routine(date=TODAY):
+    # THE ROUTINE ITSELF — what the editor shows. A pawn is local to one day and
+    # must never appear here as a change to the list.
+    return {f['name']: [s['content'] for s in f['steps']]
             for f in storage.get_flows(date) if f['name'] in ('Morning', 'Night')}
 
 
@@ -90,8 +98,32 @@ eq('pawned: the receiving gate closes 10 minutes earlier',
 eq('pawned: it is marked so the runner can say where it came from',
    [(s.get('pawned_in'), s.get('from_flow_id'))
     for f in storage.get_flows(TODAY) if f['name'] == 'Night'
-    for s in f['steps'] if s['content'] == 'Tidy desk'],
+    for s in f['day_steps'] if s['content'] == 'Tidy desk'],
    [(True, 101)])
+
+# THE ROUTINE IS GLOBAL, THE PAWN IS LOCAL. This is the whole reason the two
+# lists are separate fields: the editor edits the routine, and a step being
+# carried elsewhere for one day may not add, remove or reorder anything there.
+eq('pawned: the ROUTINE list is untouched — the step is still Morning\'s',
+   routine(), {'Morning': ['Tidy desk', 'Meditate'], 'Night': ['Journal']})
+eq('pawned: and nothing foreign is spliced into the receiving routine',
+   [s['content'] for f in storage.get_flows(TODAY) if f['name'] == 'Night'
+    for s in f['steps']],
+   ['Journal'])
+eq('pawned: the step says where it went, as a badge on its own row',
+   [(s['content'], s.get('pawned_out'))
+    for f in storage.get_flows(TODAY) if f['name'] == 'Morning'
+    for s in f['steps']],
+   [('Tidy desk', True), ('Meditate', None)])
+eq('pawned: it is still DUE — it runs today, just somewhere else',
+   [s['due'] for f in storage.get_flows(TODAY) if f['name'] == 'Morning'
+    for s in f['steps'] if s['content'] == 'Tidy desk'],
+   [True])
+
+# With no date there is no day at all, so there is no day list to read.
+eq('undated: the routine has no day_steps to confuse it with',
+   [f.get('day_steps') for f in storage.get_flows() if f['name'] == 'Morning'],
+   [None])
 
 # A pawn is LOCAL to one day — that is the whole point of it being per-day state
 # next to done_date rather than a setting.
