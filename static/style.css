@@ -4926,11 +4926,16 @@ button.eg-domain { cursor: pointer; }
    end of the row and the chevron follows it. */
 .gr-run {
   margin-left: auto;
-  color: var(--accent);
-  font-size: 13px;
+  /* The same ink as the label it sits beside, not the accent: running the
+     review is the row's own verb, not a second thing competing with it. */
+  color: var(--text-primary);
   padding: 4px 8px;
+  /* Centres the mark against the text rather than against a line box that a
+     glyph's own metrics were deciding. */
+  display: flex;
+  align-items: center;
 }
-.gr-run:hover { color: var(--text-primary); }
+.gr-run:hover { color: var(--text-secondary); }
 .gtd-review-chevron { margin-left: 4px; color: var(--text-secondary); }
 #review-panel {
   flex: none;
