@@ -1845,7 +1845,8 @@ const SETTINGS_SECTIONS = [
       + `/${configView.rows.length || CONFIG_ROW_COUNT} set` },
   { key: 'about', name: 'About', group: 'App',
     desc: 'What this is, and the link that reaches it.',
-    summary: () => (state.settings.app_url || '').replace(/^https?:\/\//, '') || 'no link set' },
+    summary: () => (aboutView.url || state.settings.app_url || '')
+      .replace(/^https?:\/\//, '') || 'not known yet' },
   { key: 'display', name: 'Display', group: 'App',
     desc: 'Theme, timezone, and the NOW panel.',
     summary: () => `${document.documentElement.classList.contains('theme-light') ? 'Light' : 'Dark'}`
@@ -1863,23 +1864,34 @@ const SETTINGS_SECTIONS = [
 //
 // Read-only, so no SETTINGS_SHEETS entry and none of the three verbs. Tapping
 // copies, because selecting text on a phone to copy a URL is not a gesture.
+const aboutView = { url: '', source: '' };
+
+async function loadAbout() {
+  renderAbout();                          // paint what is already known
+  const a = await apiGet('/api/about', null);
+  if (a) { aboutView.url = a.url || ''; aboutView.source = a.source || ''; }
+  renderAbout();
+}
+
 function renderAbout() {
   const el = document.getElementById('be-about');
   if (!el) return;
-  const link = state.settings.app_url || '';
+  const link = aboutView.url || state.settings.app_url || '';
   const here = location.origin;
   const sameAsHere = link && link.replace(/\/$/, '') === here.replace(/\/$/, '');
   el.innerHTML = `
     <div class="be-set-row be-about-row">
       <span class="be-set-name">App link</span>
       ${link
-        ? `<button class="be-btn-secondary" id="be-about-copy">Copy</button>`
-        : `<span class="be-nav-value">not set</span>`}
+        ? `<span class="be-nav-value">${escHtml(aboutView.source || '')}</span>
+           <button class="be-btn-secondary" id="be-about-copy">Copy</button>`
+        : `<span class="be-nav-value">not known yet</span>`}
     </div>
     <div class="cl-hint be-about-link">${link
       ? escHtml(link)
-      : 'Set <strong>App URL</strong> in Connections — the tailnet address, '
-        + 'e.g. https://your-vm.your-tailnet.ts.net'}</div>
+      : 'Found by itself once you open the app over the tailnet, or from '
+        + '<code>tailscale</code> on the server. Until then you can set '
+        + '<strong>App URL</strong> in Connections.'}</div>
     <div class="be-set-row be-about-row">
       <span class="be-set-name">Reached now at</span>
       <span class="be-nav-value">${escHtml(here.replace(/^https?:\/\//, ''))}</span>
@@ -1890,6 +1902,11 @@ function renderAbout() {
       : link ? 'Same as the link above.'
       : 'This is the address this window happens to be on, not necessarily one '
         + 'another device can reach.'}</div>
+    ${aboutView.source === 'from tailscale' ? `
+    <div class="cl-hint">Read from <code>tailscale</code> on the machine running
+      this — right if that machine is the one serving the app, worth checking if
+      you are running a local copy. It corrects itself the first time you open
+      the app over the tailnet.</div>` : ''}
     <div class="be-set-row be-about-row">
       <span class="be-set-name">Data lives on</span>
       <span class="be-nav-value">the server, not this device</span>
@@ -1995,7 +2012,7 @@ function openSettingsSection(key) {
   // page could say.
   if (key === 'config') { configView.status = ''; loadConfigRows(); }
   if (key === 'metrics') loadMetrics().then(renderMetricsSettings);
-  if (key === 'about') renderAbout();
+  if (key === 'about') loadAbout();
 }
 
 function backToSettingsIndex() {

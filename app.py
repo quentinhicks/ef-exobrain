@@ -3,6 +3,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -109,12 +110,87 @@ def _gate_scan_url():
     return config.get('gate_scan_url') or config.get('qr_worker_url', '')
 
 
-# The address the app is REACHED at, as opposed to whatever host this request
-# happened to arrive on. Config, because the two differ exactly when you need
-# it: the desktop window is on 127.0.0.1 and cannot know the tailnet name, and
-# that is the moment you want to send the link to a phone or an iPad.
+# THE STABLE LINK, and nobody should have to type it.
+#
+# The address the app is REACHED at is not the one this request arrived on:
+# the desktop window is 127.0.0.1 and cannot know the tailnet name, which is
+# exactly the moment you want to send the link to a phone or an iPad. Three
+# sources, most-authoritative first:
+#
+#   1. config app_url  — an explicit override, for when the other two are
+#                        wrong (a custom domain, a reverse proxy).
+#   2. LEARNED         — any request that actually arrived on a *.ts.net host
+#                        proves that host reaches this app. Free, and correct
+#                        by construction. Recorded the first time it differs.
+#   3. DETECTED        — `tailscale status --json` on the box. Cached in the
+#                        settings table once it answers, so the subprocess
+#                        runs at most once per install rather than per read.
+_TAILNET_HOST = re.compile(r'^[A-Za-z0-9._-]+\.ts\.net$')
+
+
+def _app_url_ranked():
+    """(url, source), best first. HTTPS beats detection beats plain http.
+
+    A learned https URL is the `tailscale serve` address — the good one, and a
+    SECURE CONTEXT, which the service worker needs. A learned http one is
+    real too (the app also answers on :5000 over the tailnet) but it is the
+    lesser link, so detection outranks it.
+    """
+    explicit = (config.get('app_url') or '').strip().rstrip('/')
+    if explicit:
+        return explicit, 'set in Connections'
+    known = storage.get_settings()
+    seen = (known.get('app_url_seen') or '').rstrip('/')
+    found = (known.get('app_url_detected') or '').rstrip('/')
+    if seen.startswith('https://'):
+        return seen, 'seen in use'
+    if found:
+        return found, 'from tailscale'
+    if seen:
+        return seen, 'seen in use'
+    return '', ''
+
+
 def _app_url():
-    return (config.get('app_url') or '').rstrip('/')
+    return _app_url_ranked()[0]
+
+
+def _app_url_source():
+    return _app_url_ranked()[1]
+
+
+@app.before_request
+def _learn_app_url():
+    # A request that ARRIVED here proves its host reaches this app. Only a
+    # tailnet name is worth keeping — 127.0.0.1 and a bare LAN IP are not
+    # links another device can use — and only when it changes, so this is a
+    # read of already-cached settings on the hot path and nothing more.
+    host = (request.host or '').split(':')[0]
+    if not _TAILNET_HOST.match(host):
+        return
+    url = f'{request.scheme}://{request.host}'.rstrip('/')
+    if storage.get_settings().get('app_url_seen') != url:
+        storage.set_setting('app_url_seen', url)
+
+
+def _detect_app_url():
+    """Ask tailscale for this machine's name. Cached once it answers."""
+    if storage.get_settings().get('app_url_detected'):
+        return
+    exe = shutil.which('tailscale')
+    if not exe:
+        return
+    try:
+        out = subprocess.run([exe, 'status', '--json'], capture_output=True,
+                             text=True, timeout=5)
+        name = (json.loads(out.stdout).get('Self') or {}).get('DNSName') or ''
+    except Exception:
+        return                      # not installed, not up, not our problem
+    name = name.strip().rstrip('.')
+    if _TAILNET_HOST.match(name):
+        # https, because that is what `tailscale serve` publishes and what the
+        # service worker needs — a secure context.
+        storage.set_setting('app_url_detected', f'https://{name}')
 # qr_todo_node_ids is retired: QR judgment is presence-only since the daily
 # to-do list was removed (2026-08). Left unread so old config.json files with
 # the key still load.
@@ -556,6 +632,16 @@ def delete_engage_placement_route(item_id):
     date = request.args.get('date') or date_cls.today().isoformat()
     storage.delete_engage_placement(date, item_id)
     return '', 204
+
+
+@app.route('/api/about')
+def get_about():
+    # Detection lives HERE and not on /api/settings: this is opened by hand,
+    # once in a while, and /api/settings is read on every load. A subprocess
+    # on the hot path to answer a question nobody asked is how a settings
+    # page ends up owning the startup time.
+    _detect_app_url()
+    return jsonify({'url': _app_url(), 'source': _app_url_source()})
 
 
 @app.route('/api/blocks/day')
