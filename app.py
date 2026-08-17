@@ -2128,8 +2128,21 @@ def post_arrival():
     want = (config.get('arrival_token') or '').strip()
     if not want:
         return jsonify({'error': 'arrival_token is not set'}), 503
-    if (data.get('token') or '').strip() != want:
+    # The token may ride the QUERY STRING as well as the body: OwnTracks posts
+    # a payload shape it owns, so the only place to add ours is the URL.
+    sent = (data.get('token') or request.args.get('token') or '').strip()
+    if sent != want:
         return jsonify({'error': 'bad token'}), 403
+    # ONLY A TRANSITION IS AN ARRIVAL. OwnTracks HTTP mode posts EVERY location
+    # update to this one URL — `_type: location` pings, several a minute while
+    # moving — and those carry a lat/lon that would resolve to whatever region
+    # you are standing in. Without this guard the fix that told us you arrived
+    # would keep telling us, and the dedup memo would be the only thing between
+    # you and a notification per ping. A payload that names its type must say
+    # `transition`; one that names none is a hand-made call and is trusted.
+    kind = (data.get('_type') or '').strip().lower()
+    if kind and kind != 'transition':
+        return '', 204
     # A geofence app sends enter AND leave. Only arriving is a cue; leaving is
     # accepted so the phone need not be taught to withhold it.
     if (data.get('event') or 'enter').strip().lower() != 'enter':
@@ -2180,6 +2193,44 @@ def post_arrival():
         print(f'arrival: send failed for {loc["name"]}: {e}')
         return jsonify({'error': f'send failed: {e}'}), 502
     return '', 204
+
+
+# THE REGIONS, SERVED. This is what stops the phone being hand-wired: adding a
+# location in Settings makes it live everywhere, instead of one geofence typed
+# into the device per place.
+#
+# OwnTracks' waypoint shape. `tst` is the waypoint's IDENTITY on import — reuse
+# it and the app updates that region, change it and you get a duplicate — so it
+# has to be stable per location and cannot be "now". The location id is the
+# stable identity we have, offset into plausible-timestamp range; nothing reads
+# the date back, only the sameness.
+#
+# PAUSED LOCATIONS ARE INCLUDED, deliberately. "Just this once" pauses a place
+# so the pickers stop offering it, never so its geofence stops working — that
+# distinction is the whole point of a one-off address, and dropping them here
+# would silently break exactly the errands this feature exists for.
+WAYPOINT_TST_BASE = 1750000000
+
+
+@app.route('/api/locations/waypoints')
+def get_location_waypoints():
+    want = (config.get('arrival_token') or '').strip()
+    if not want:
+        return jsonify({'error': 'arrival_token is not set'}), 503
+    if (request.args.get('token') or '').strip() != want:
+        # These are home addresses. Same secret as the arrivals they enable.
+        return jsonify({'error': 'bad token'}), 403
+    return jsonify({
+        '_type': 'waypoints',
+        'waypoints': [{
+            '_type': 'waypoint',
+            'desc': l['name'],
+            'lat': l['lat'],
+            'lon': l['lng'],
+            'rad': l['radius_m'] or 150,
+            'tst': WAYPOINT_TST_BASE + l['id'],
+        } for l in storage.get_locations()],
+    })
 
 
 @app.route('/api/locations/<int:id>/items')
