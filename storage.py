@@ -1178,6 +1178,7 @@ def init_db():
     conn.commit()
     _seed_review_flow(conn)
     _backfill_review_steps(conn)
+    _merge_review_next_actions(conn)
     # Reference lists NEST (2026-08-11): a list can live inside a list. The
     # split at the root is what the index shows; delete splices children up a
     # level, the same rule projects follow.
@@ -1951,27 +1952,50 @@ def get_gtd_review_counts():
            FROM inbox_item i LEFT JOIN area a ON a.id = i.area_id
            WHERE i.status = 'active' AND i.pushed >= 3
            ORDER BY i.pushed DESC, i.content''').fetchall()]
-    # Predicate in lockstep with get_all_projects' action_count: waiting AND
-    # future-deferred children both count as live — parked-on-a-date is not
-    # stalled, it just isn't startable today.
-    stalled = [dict(r) for r in conn.execute(
+    # EVERY active project WITH its next actions, and `stalled` DERIVED from it
+    # (2026-08-17). The review used to ask two questions — "review your
+    # next-action lists" and "every project has a next action" — and answer the
+    # second with its own query. They are one question: per project, is there a
+    # next action? Deriving the stalled set from the same rows is what keeps the
+    # list you read and the verdict you are given from ever disagreeing.
+    #
+    # A someday/maybe project is EXCLUDED: it is not expected to have a next
+    # action, so counting it as stalled was noise in the one check GTD leans on
+    # hardest. Predicate otherwise in lockstep with get_all_projects'
+    # action_count — waiting AND future-deferred children both count as live,
+    # because parked-on-a-date is not stalled, it just isn't startable today.
+    # Actions are gathered over the whole SUBTREE, so a project whose only live
+    # work sits in a sub-project is not stalled either.
+    project_rows = [dict(r) for r in conn.execute(
+        '''SELECT pr.id, pr.content, a.name AS area_name FROM inbox_item pr
+           LEFT JOIN area a ON a.id = pr.area_id
+           WHERE pr.kind = 'project' AND COALESCE(pr.status, 'active') <> 'on_hold'
+           ORDER BY a.name, pr.content''').fetchall()]
+    action_rows = conn.execute(
         '''WITH RECURSIVE tree(root, id) AS (
                SELECT id, id FROM inbox_item WHERE kind = 'project'
                UNION
                SELECT t.root, i.id FROM inbox_item i JOIN tree t ON i.project_id = t.id
            )
-           SELECT pr.id, pr.content, a.name AS area_name FROM inbox_item pr
-           LEFT JOIN area a ON a.id = pr.area_id
-           WHERE pr.kind = 'project'
-             AND NOT EXISTS (SELECT 1 FROM tree t JOIN inbox_item c ON c.id = t.id
-                             WHERE t.root = pr.id AND c.kind = 'item'
-                               AND c.status IN ('active', 'waiting'))
-           ORDER BY a.name, pr.content''').fetchall()]
+           SELECT t.root AS root_id, c.id, c.content, c.status, c.defer_until,
+                  c.deadline, c.pushed
+           FROM tree t JOIN inbox_item c ON c.id = t.id
+           WHERE c.kind = 'item' AND c.status IN ('active', 'waiting')
+           ORDER BY c.content''').fetchall()
+    by_project = {}
+    for r in action_rows:
+        by_project.setdefault(r['root_id'], []).append(
+            {k: r[k] for k in ('id', 'content', 'status', 'defer_until', 'deadline', 'pushed')})
+    for p in project_rows:
+        p['actions'] = by_project.get(p['id'], [])
+    stalled = [{'id': p['id'], 'content': p['content'], 'area_name': p['area_name']}
+               for p in project_rows if not p['actions']]
     projects = conn.execute(
         "SELECT COUNT(*) n FROM inbox_item WHERE kind = 'project'").fetchone()['n']
     conn.close()
     return {'inbox': inbox, 'someday': someday, 'deferred': deferred,
             'projects': projects, 'stalled': stalled,
+            'project_list': project_rows,
             'waiting': len(waiting_list), 'waiting_list': waiting_list,
             'pushed_list': pushed_list}
 
@@ -4564,11 +4588,10 @@ REVIEW_FLOW_STEPS = (
     ('review_collect', 'Collect loose papers and materials'),
     ('review_in_zero', 'Get "in" to empty'),
     ('review_sweep', 'Empty your head'),
-    ('review_next_actions', 'Review next-action lists'),
     ('review_cal_back', 'Review previous calendar, 2–3 weeks back'),
     ('review_cal_fwd', 'Review upcoming calendar'),
     ('review_waiting', 'Review waiting-for and deferred'),
-    ('review_projects', 'Every active project has a next action'),
+    ('review_projects', 'Every active project and its next actions'),
     ('review_checklists', 'Review any relevant checklists'),
     ('review_someday', 'Review someday/maybe'),
     ('review_creative', 'Be creative and courageous'),
@@ -4669,6 +4692,37 @@ def _backfill_review_steps(conn):
     conn.commit()
     if added:
         print('weekly review: added step(s) ' + ', '.join(added))
+
+
+def _merge_review_next_actions(conn):
+    # 'Review next-action lists' and 'Every active project has a next action'
+    # were ONE question asked twice — per project, is there a next action? — so
+    # they are one step now (2026-08-17), showing every active project with the
+    # actions under it.
+    #
+    # Done ONCE and recorded, for the same reason _backfill_review_steps has a
+    # ledger: the steps are ordinary editable rows, so re-running this would
+    # delete a step the user had since re-added on purpose. Ticks left behind in
+    # flow_run.steps are harmless — the runner only ever reads steps[step.id]
+    # for a step that still exists, and an orphan key is never looked up.
+    if conn.execute(
+            "SELECT value FROM setting WHERE key = 'review_next_actions_merged'").fetchone():
+        return
+    flow_id = _review_flow_id(conn)
+    if flow_id:
+        conn.execute("DELETE FROM flow_step WHERE flow_id = ? AND kind = 'review_next_actions'",
+                     (flow_id,))
+        # The wording is the USER'S to rewrite, so only the untouched default is
+        # renamed. A step he had already reworded keeps his words.
+        conn.execute(
+            """UPDATE flow_step SET content = ?
+               WHERE flow_id = ? AND kind = 'review_projects'
+                 AND content = 'Every active project has a next action'""",
+            ('Every active project and its next actions', flow_id))
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('review_next_actions_merged', ?)",
+        (date_cls.today().isoformat(),))
+    conn.commit()
 
 
 def get_flows(date=None):

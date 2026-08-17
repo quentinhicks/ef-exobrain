@@ -3420,16 +3420,21 @@ const REVIEW_KINDS = {
   review_sweep: { phase: 'Get Clear', act: 'sweep',
     hint: 'Five minutes, no stopping. Anything still in your head that isn\'t written down.' },
 
-  review_next_actions: { phase: 'Get Current', pushed: true,
-    hint: 'Mark off completed; add follow-on steps.' },
   review_cal_back: { phase: 'Get Current', act: 'pass_back',
     hint: 'Uncaptured follow-ups. Archive the past with nothing left in it.' },
   review_cal_fwd: { phase: 'Get Current', act: 'pass_fwd',
     hint: 'Anything needing preparation that starts now.' },
   review_waiting: { phase: 'Get Current', waiting: true,
     hint: 'What\'s owed to you? What needs chasing?' },
-  review_projects: { phase: 'Get Current', stalled: true,
-    hint: 'Anything with none is stalled or dead — decide which.' },
+  // MERGED (2026-08-17). 'Review next-action lists' and 'Every active project
+  // has a next action' were one question asked twice, and the first was vague
+  // enough to be ticked without doing anything. One step, one list: every
+  // active project with the actions under it, the empty ones called out. It
+  // keeps `pushed` because the repeatedly-deferred items are next-action
+  // information and had nowhere else to go.
+  review_projects: { phase: 'Get Current', projects: true, pushed: true,
+    act: 'map_projects',
+    hint: 'Every project needs one. Anything with none is stalled or dead — decide which.' },
   review_checklists: { phase: 'Get Current' },
 
   review_someday: { phase: 'Get Creative', count: 'someday',
@@ -3442,6 +3447,51 @@ const REVIEW_KINDS = {
   review_habits: { phase: 'Get Creative', habits: true,
     hint: 'Graduate what stuck, drop what didn\'t, judge resolved experiments.' },
 };
+
+// The runner's wording for the "go and do it" button, per act. The fold-out
+// writes its own inline; both open the same surface, so only the phrasing
+// differs — the runner is one step per page and can afford the full sentence.
+const FR_ACT_LABELS = {
+  map_projects: '▶ Open MAP · Projects',
+  map_someday: '▶ Open MAP · Someday',
+  map_waiting: '▶ Open MAP · Waiting',
+  pass_back: '▶ Walk it back 14 days',
+  pass_fwd: '▶ Walk the next 14 days',
+  lists: '▶ Open Lists',
+};
+
+// EVERY active project with the actions under it — the surface of the merged
+// step. SERVER-COMPOSED (`counts.project_list`, actions gathered over the whole
+// subtree, someday projects excluded); the client only renders it, so "does
+// this project have a next action?" is answered in exactly one place and the
+// list you read cannot disagree with the verdict you are given.
+//
+// One function, used by BOTH the fold-out and the runner page — the same reason
+// the ticks are one store: two renderings of one question drift.
+function reviewProjectsHtml(counts) {
+  const ps = (counts && counts.project_list) || [];
+  if (!ps.length) return '<div class="gr-proj-sum">No active projects.</div>';
+  const stalled = ps.filter(p => !(p.actions || []).length).length;
+  return `<div class="gr-projects">
+    <div class="gr-proj-sum">${ps.length} active project${ps.length === 1 ? '' : 's'} · ${
+      stalled ? `<b>${stalled} with no next action</b>` : 'all covered'}</div>
+    ${ps.map(p => `
+      <div class="gr-proj${(p.actions || []).length ? '' : ' gr-proj-stalled'}">
+        <div class="gr-proj-head">
+          <span class="gr-proj-name">${escHtml(p.content)}</span>
+          <span class="gr-list-meta">${escHtml(p.area_name || '—')}</span>
+        </div>
+        ${(p.actions || []).length
+          ? `<ul class="gr-list gr-proj-acts">${p.actions.map(a =>
+              `<li><span>${escHtml(a.content)}</span><span class="gr-list-meta">${
+                [a.status === 'waiting' ? 'waiting' : '',
+                 a.defer_until ? 'from ' + a.defer_until : '',
+                 a.pushed >= 3 ? 'pushed ' + a.pushed + 'x' : '']
+                  .filter(Boolean).join(' · ')}</span></li>`).join('')}</ul>`
+          : '<div class="gr-proj-none">no next action — decide: a next step, someday, or done</div>'}
+      </div>`).join('')}
+  </div>`;
+}
 
 // A step added to the review flow by hand is not in the registry and has no
 // surface to bind — it still renders, under its own heading, and still ticks.
@@ -3655,11 +3705,6 @@ function renderGtdReview() {
     </div>`;
   };
 
-  const stalledList = counts.stalled.length
-    ? `<ul class="gr-stalled">${counts.stalled.map(p =>
-        `<li>${escHtml(p.content)}<span class="gr-stalled-area">${escHtml(p.area_name || '—')}</span></li>`).join('')}</ul>`
-    : '';
-
   const rowList = (rows, meta) => (rows || []).length
     ? `<ul class="gr-list">${rows.map(r =>
         `<li><span>${escHtml(r.content)}</span><span class="gr-list-meta">${escHtml(meta(r))}</span></li>`
@@ -3695,7 +3740,9 @@ function renderGtdReview() {
           ${s.act === 'sweep' ? `<button class="gr-act" data-act="sweep">▶ 5-minute sweep</button>` : ''}
           ${s.act === 'pass_back' ? '<button class="gr-act" data-act="pass_back">▶ Walk it back 14 days</button>' : ''}
           ${s.act === 'pass_fwd' ? '<button class="gr-act" data-act="pass_fwd">▶ Walk the next 14 days</button>' : ''}
-          ${s.stalled ? stalledList : ''}
+          ${s.act === 'map_projects'
+            ? '<button class="gr-act" data-act="map_projects">▶ Open MAP · Projects</button>' : ''}
+          ${s.projects ? reviewProjectsHtml(counts) : ''}
           ${s.waiting ? waitingList : ''}
           ${s.pushed ? pushedList : ''}
           ${s.habits ? habitReviewHtml(gtdReview.habits) : ''}
@@ -3737,6 +3784,7 @@ function renderGtdReview() {
       if (btn.dataset.act === 'clarify') { openClarify(); return; }
       if (btn.dataset.act === 'pass_back') { startReviewPass('cal_back'); return; }
       if (btn.dataset.act === 'pass_fwd') { startReviewPass('cal_fwd'); return; }
+      if (btn.dataset.act === 'map_projects') { openMapAtLens('projects'); return; }
       const d = new Date();
       const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${
         String(d.getDate()).padStart(2, '0')}`;
@@ -5663,6 +5711,12 @@ async function openFlowRun(flowId) {
     flowRunView.metrics[st.id] = await apiGet(`/api/metrics/step/${st.id}?date=${today}`,
       { date: today, metrics: [], complete: false });
   }
+  // The review steps read the SAME live counts the fold-out reads — one
+  // endpoint that already exists, prefetched like the metrics above so
+  // renderFlowRun stays sync. Fetched only when a review step is actually in
+  // today's run, so an ordinary routine pays nothing for it.
+  flowRunView.review = steps.some(x => REVIEW_KINDS[x.kind])
+    ? await apiGet('/api/gtd-review', null) : null;
   flowRunView.steps = flow.run ? JSON.parse(flow.run.steps || '{}') : {};
   // Resume at the first uncredited step.
   const idx = steps.findIndex(s => !flowRunView.steps[s.id]);
@@ -5937,11 +5991,15 @@ function renderFlowRun() {
         : `${pack.metrics.filter(m => !m.entry).length} still unanswered`}</div>`
       : `<div class="fr-note">No metrics on this step yet — add them in Settings → Metrics.</div>`}`;
   } else if (REVIEW_KINDS[s.kind]) {
-    // A REVIEW STEP. Two of the eleven have a surface to open from here; the
-    // other nine state the step and take the tick, which is what the fold-out
-    // gave them and no less. They get their pages one at a time, deliberately —
-    // a page that only repeats its own label is not worth an endpoint.
+    // A REVIEW STEP, with the surface it needs to be DONE from here rather than
+    // only stated and ticked (2026-08-17). The bindings are the fold-out's own
+    // — same `REVIEW_KINDS` entry, same `/api/gtd-review` counts, same
+    // renderers — so the two views cannot tell you different things. Nothing
+    // new is invented: `act` opens a surface the app already has (MAP at one of
+    // its own lenses, the calendar pass, clarify, the sweep).
     const meta = REVIEW_KINDS[s.kind];
+    const rv = flowRunView.review || {};
+    const counts = rv.counts || {};
     const n = state.inbox.length;
     page = `<div class="fr-step-big">${escHtml(s.content)}</div>
       ${meta.hint ? `<div class="fr-note">${escHtml(meta.hint)}</div>` : ''}
@@ -5953,7 +6011,29 @@ function renderFlowRun() {
         : ''}
       ${s.kind === 'review_sweep'
         ? '<button id="fr-rv-sweep" class="cl-pill">▶ 5-minute sweep</button>'
-        : ''}`;
+        : ''}
+      ${meta.projects ? reviewProjectsHtml(counts) : ''}
+      ${meta.waiting && (counts.waiting_list || []).length
+        ? `<ul class="gr-list">${counts.waiting_list.map(r =>
+            `<li><span>${escHtml(r.content)}</span><span class="gr-list-meta">${
+              escHtml(r.area_name || '—')} · since ${
+              escHtml((r.captured_at || '').slice(0, 10))}</span></li>`).join('')}</ul>`
+        : ''}
+      ${meta.pushed && (counts.pushed_list || []).length
+        ? `<ul class="gr-list">${counts.pushed_list.map(r =>
+            `<li><span>${escHtml(r.content)}</span><span class="gr-list-meta">${
+              escHtml(r.area_name || '—')} · pushed ${r.pushed}x</span></li>`).join('')}</ul>`
+        : ''}
+      ${meta.count === 'someday'
+        ? `<div class="fr-note">${counts.someday || 0} in someday / maybe</div>` : ''}
+      ${meta.habits ? habitReviewHtml(flowRunView.habits || {}) : ''}
+      ${meta.act && meta.act !== 'clarify' && meta.act !== 'sweep'
+        ? `<button class="fr-rv-act cl-pill" data-act="${meta.act}">${
+            FR_ACT_LABELS[meta.act] || 'Open'}</button>` : ''}
+      ${s.kind === 'review_someday'
+        ? '<button class="fr-rv-act cl-pill" data-act="map_someday">▶ Open MAP · Someday</button>' : ''}
+      ${s.kind === 'review_waiting'
+        ? '<button class="fr-rv-act cl-pill" data-act="map_waiting">▶ Open MAP · Waiting</button>' : ''}`;
   } else {
     // An unknown kind must still be a page you can get past — a blank one would
     // strand the run (and, on a gated routine, the gate).
@@ -6059,6 +6139,26 @@ function renderFlowRun() {
   if (pawn) pawn.addEventListener('click', () => pawnStep(s));
   const unpawn = el.querySelector('#fr-unpawn');
   if (unpawn) unpawn.addEventListener('click', () => unpawnStep(s));
+  // MAP OVER THE RUN (2026-08-17). Clarify and the sweep below still close the
+  // runner first — each takes the whole screen and owns the keyboard — but a
+  // lens of MAP is a place you LOOK, and the point of running the review is to
+  // fix what you find without losing your place in it. crm_fill already proved
+  // the idiom: raise the surface above #flow-run, drop the class when it
+  // closes, and you land back on the step. That IS the way back the note on the
+  // two acts below said did not exist; it just had to be built.
+  //
+  // The calendar pass and Lists are NOT here yet on purpose. `cal-overlay` has
+  // its own return path (returnToReview) written for the fold-out, and pointing
+  // it at the runner as an afterthought is how two surfaces start disagreeing
+  // about where "back" is. It gets its own pass.
+  el.querySelectorAll('.fr-rv-act').forEach(b => b.addEventListener('click', () => {
+    const act = b.dataset.act;
+    if (act === 'map_projects') { openMapAtLens('projects', true); return; }
+    if (act === 'map_someday') { openMapAtLens('someday', true); return; }
+    if (act === 'map_waiting') { openMapAtLens('waiting', true); return; }
+    if (act === 'pass_back') { closeFlowRun(); startReviewPass('cal_back'); return; }
+    if (act === 'pass_fwd') { closeFlowRun(); startReviewPass('cal_fwd'); return; }
+  }));
   // The two review steps that are a DOING, not a ticking — the same two acts
   // the GTD fold-out offers, from the same registry. The runner closes first:
   // both open a full-screen surface of their own, and one over the other would
@@ -8786,10 +8886,28 @@ function mapVisibleItems(items, today) {
     && [...mapView.tags].every(t => itemTags(i).includes(t)));
 }
 
+// MAP at a NAMED LENS, for the review steps that are really "go look at this
+// slice and fix it". The lens is the one MAP already has (MAP_LENSES) — the
+// review does not get a second projects list with its own rules.
+//
+// `overRunner` is the crm_fill idiom: MAP is z-150 and the runner z-165, so
+// without the class it would open BEHIND the run you launched it from. The
+// class comes off when MAP closes, which puts you back on the step.
+async function openMapAtLens(lens, overRunner) {
+  mapView.lens = lens;
+  mapView.q = '';
+  if (overRunner) document.body.classList.add('map-over-runner');
+  await openMap();
+}
+
 async function openMap() {
   if (!mapWired) {
     const overlay = document.getElementById('map-overlay');
-    const shut = () => { flushOpenNotes(); overlay.classList.add('hidden'); };
+    const shut = () => {
+      flushOpenNotes();
+      overlay.classList.add('hidden');
+      document.body.classList.remove('map-over-runner');
+    };
     document.getElementById('map-close').addEventListener('click', shut);
     overlay.addEventListener('click', e => { if (e.target === overlay) shut(); });
     // Wired once, outside renderMap: re-rendering the body on every keystroke
