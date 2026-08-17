@@ -6024,7 +6024,13 @@ def qr_ensure_charge_columns():
     # id; charge_cents on the NODE is the per-gate stake, NULL meaning "use the
     # global default" so an unset value can never mean "free".
     conn = get_conn()
+    # window_start/end/offset_days are the FREEZE (2026-08-17): the judgment
+    # stamps the window it was made against, so a closed day can be read back
+    # instead of re-resolved under whatever the config says later.
     for table, col, decl in (('qr_charge_log', 'charge_id', 'TEXT'),
+                             ('qr_charge_log', 'window_start', 'TEXT'),
+                             ('qr_charge_log', 'window_end', 'TEXT'),
+                             ('qr_charge_log', 'offset_days', 'INTEGER'),
                              ('qr_node', 'charge_cents', 'INTEGER')):
         try:
             conn.execute(f'SELECT {col} FROM {table} LIMIT 1')
@@ -6034,20 +6040,43 @@ def qr_ensure_charge_columns():
     conn.close()
 
 
-def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cents=None):
+def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cents=None,
+                        window=None):
     # Returns True only if THIS call created the row. The insert is the
     # reservation: it happens before anything acts on the judgment, so a
     # concurrent or repeated tick backs off here instead of duplicating.
+    #
+    # A row NO LONGER MEANS FAILED (2026-08-17). failure_reason NULL with
+    # charge_status 'ok' is a judged SUCCESS — the freeze. Everything that used
+    # to read mere presence as a failure now asks for failure_reason: this
+    # function's callers, qr_charges_between, qr_charge_rows_between and the
+    # charge-log surface. `window` is (start, end, offset) as resolved at
+    # judgment time, so the day can be read back rather than re-resolved.
+    qr_ensure_charge_columns()
+    ws, we, off = window or (None, None, None)
     conn = get_conn()
     cur = conn.execute(
         '''INSERT OR IGNORE INTO qr_charge_log
-             (node_id, date, failure_reason, charge_status, amount_cents)
-           VALUES (?,?,?,?,?)''',
-        (node_id, date, failure_reason, charge_status, amount_cents))
+             (node_id, date, failure_reason, charge_status, amount_cents,
+              window_start, window_end, offset_days)
+           VALUES (?,?,?,?,?,?,?,?)''',
+        (node_id, date, failure_reason, charge_status, amount_cents, ws, we, off))
     conn.commit()
     won = cur.rowcount > 0
     conn.close()
     return won
+
+
+# The last day this gate was judged at all — success or failure. The judge
+# walks back from here so a tick missed for three days still judges those days
+# (bounded, and beyond the normal reach it judges without money; see judge()).
+def qr_last_judged_date(node_id):
+    conn = get_conn()
+    row = conn.execute(
+        'SELECT MAX(date) d FROM qr_charge_log WHERE node_id = ?',
+        (node_id,)).fetchone()
+    conn.close()
+    return row['d'] if row and row['d'] else None
 
 
 # ── Gate charging: the money half, ported from the Worker 2026-08-11 ─────
@@ -6095,6 +6124,7 @@ def qr_charge_rows_between(from_date, to_date):
     rows = conn.execute(
         '''SELECT node_id, date, failure_reason, charge_status, amount_cents, charge_id
            FROM qr_charge_log WHERE date >= ? AND date <= ?
+             AND failure_reason IS NOT NULL
            ORDER BY date DESC, node_id''',
         (from_date, to_date)).fetchall()
     conn.close()
@@ -6106,15 +6136,31 @@ def qr_get_charge_log(limit=200):
     rows = conn.execute(
         '''SELECT c.*, n.label FROM qr_charge_log c
            JOIN qr_node n ON n.id = c.node_id
+           WHERE c.failure_reason IS NOT NULL
            ORDER BY c.date DESC, c.id DESC LIMIT ?''', (limit,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def qr_charges_between(from_date, to_date):
+    # FAILURES only — success rows live in the same table now.
     conn = get_conn()
     rows = conn.execute(
-        'SELECT node_id, date FROM qr_charge_log WHERE date >= ? AND date <= ?',
+        '''SELECT node_id, date FROM qr_charge_log
+           WHERE date >= ? AND date <= ? AND failure_reason IS NOT NULL''',
+        (from_date, to_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# Every judgment in the range, success included — what outcomes() reads a
+# CLOSED day back from instead of re-deriving it under today's configuration.
+def qr_judgments_between(from_date, to_date):
+    qr_ensure_charge_columns()
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT node_id, date, failure_reason, charge_status
+           FROM qr_charge_log WHERE date >= ? AND date <= ?''',
         (from_date, to_date)).fetchall()
     conn.close()
     return [dict(r) for r in rows]

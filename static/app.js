@@ -2636,7 +2636,8 @@ const SETTINGS_SHEETS = {
             it.geofence_lat != null ? `within ${it.geofence_radius_m}m of the pinned place` : null,
             it.routine ? `“${it.routine}” is done first` : null,
           ].filter(Boolean).join(', and ') }] : []),
-        ...(it && it.today_state && it.today_state.judged ? [{ key: 'todayres', label: 'Today',
+        ...(it && it.today_state && it.today_state.judged
+            && it.today_state.judged.failure_reason ? [{ key: 'todayres', label: 'Today',
           kind: 'static',
           text: `✗ ${gateReason(it.today_state.judged.failure_reason)} · `
             + gateStatus(it.today_state.judged.charge_status) }]
@@ -7706,9 +7707,11 @@ function gateRowOpts(n) {
 
   // Today's ANSWER where there is one — scanned, or judged and why. A row that
   // only restates its own settings can't tell you the gate is broken.
+  // A judgment row no longer means FAILED (2026-08-17): the judge freezes the
+  // day it closes, success included, so it is failure_reason that decides.
   const st = n.today_state || {};
   let today = '';
-  if (st.judged) {
+  if (st.judged && st.judged.failure_reason) {
     today = `✗ ${gateReason(st.judged.failure_reason)} · ${gateStatus(st.judged.charge_status)}`;
   } else if (st.scan) {
     today = `✓ scanned ${st.scan.scanned_at.slice(11, 16)}`

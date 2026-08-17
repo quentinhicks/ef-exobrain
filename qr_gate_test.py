@@ -244,5 +244,60 @@ qr_judge.judge()
 rows = [r for r in storage.qr_charge_rows_between(YESTERDAY, YESTERDAY) if r['node_id'] == nid]
 check('re-running the judge logs the routine failure once', len(rows) == 1, len(rows))
 
+
+# ── THE FREEZE (2026-08-17) ──────────────────────────────────────────────
+#
+# A closed day is decided when it closes. It used to stay derived from its
+# scans, so it was re-resolved every tick under whatever the configuration
+# said by then — and tightenings apply immediately, so a rule written today
+# reached back and charged for a day that was never a commitment.
+
+fresh()
+DOW_YDAY = str(date_cls.fromisoformat(YESTERDAY).weekday())
+OTHER = ''.join(d for d in '0123456' if d != DOW_YDAY)
+nid = storage.qr_create_node('Weekday only', 'tok-freeze-1', '06:00', '08:00',
+                             days=OTHER)
+qr_judge.judge()
+check('a day the gate did not apply to is not judged',
+      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
+# Adding a day is a TIGHTENING, so it applies at once — and used to reach back.
+storage.qr_update_node(nid, {'days_of_week': '0123456'})
+qr_judge.judge()
+check('adding a run-day today does not charge for yesterday',
+      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
+
+fresh()
+nid = storage.qr_create_node('Sleep', 'tok-freeze-2', '21:00', '23:00')
+scan(nid, YESTERDAY, '22:00')
+qr_judge.judge()
+check('a satisfied day is judged, not merely left alone',
+      storage.qr_judgment_exists(nid, YESTERDAY))
+check('and it stays out of the FAILURE log',
+      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
+check('outcomes reads it back as success',
+      [o['outcome'] for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)
+       if o['node_id'] == nid] == ['success'])
+# The window that judged it is stamped, so narrowing the gate now cannot
+# re-resolve a closed day into a failure.
+storage.qr_update_node(nid, {'window_start': '06:00', 'window_end': '07:00'})
+qr_judge.judge()
+check('narrowing the window afterwards does not re-judge a closed day',
+      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
+check('and the day still reads success',
+      [o['outcome'] for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)
+       if o['node_id'] == nid] == ['success'])
+
+# The backfill reaches further than the two-day window, but never with money.
+fresh()
+FOUR = (date_cls.today() - timedelta(days=4)).isoformat()
+nid = storage.qr_create_node('Down', 'tok-freeze-3', '06:00', '08:00')
+qr_judge.judge()
+rows = [r for r in storage.qr_charge_rows_between(FOUR, FOUR) if r['node_id'] == nid]
+check('a day older than the money reach is judged',
+      len(rows) == 1, rows)
+check('and is logged stale, so the cap and the card never see it',
+      rows and rows[0]['charge_status'] == 'stale' and rows[0]['amount_cents'] is None,
+      rows)
+
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

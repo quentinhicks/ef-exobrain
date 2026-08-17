@@ -266,6 +266,27 @@ def _completed_local(iso):
     return datetime.fromtimestamp(dt.timestamp()) if dt.tzinfo else dt
 
 
+# How far back a judge that has been down will reach. Bounded so a database
+# restored from an old backup, or a gate created long ago, cannot walk a month.
+BACKFILL_MAX_DAYS = 14
+
+
+def _days_to_judge(node, today):
+    # Always the normal two; further back only to the day after the last one
+    # judged, so a running judge does exactly what it always did.
+    yesterday = _date_plus(today, -1)
+    last = storage.qr_last_judged_date(node['id'])
+    first = _date_plus(today, -BACKFILL_MAX_DAYS)
+    if last and last >= first:
+        first = _date_plus(last, 1)
+    older = []
+    ymd = first
+    while ymd < yesterday:
+        older.append(ymd)
+        ymd = _date_plus(ymd, 1)
+    return older + [yesterday, today]
+
+
 def judge(now=None, verbose=False):
     now = now or datetime.now()
     today = now.date().isoformat()
@@ -279,9 +300,29 @@ def judge(now=None, verbose=False):
         # Yesterday as well as today: a window with offset_days=1 closes on the
         # day AFTER its date, so it can only be judged on the following tick-day.
         # This also backfills one missed day if the timer was down at close time.
-        for ymd in (_date_plus(today, -1), today):
+        #
+        # BEYOND those two the judge still walks back to the last day it judged
+        # (bounded at BACKFILL_MAX_DAYS), so a timer down for three days does
+        # not leave three days permanently underivable once the freeze means a
+        # day is read from its row. Those older days are judged WITHOUT MONEY:
+        # charging for a day you could not have known was being judged is the
+        # thing every rail in this file exists to prevent. They land as
+        # 'stale', which the cap ignores exactly like 'would_fire'.
+        for ymd in _days_to_judge(node, today):
             if not applies_on(node, ymd):
+                # A PAST day the gate did not run on is frozen too, as 'n/a'.
+                # Freezing only the days that were judged left the retroactive
+                # hole wide open: a skipped day has no row, so adding a run-day
+                # later (a tightening, immediate) made the next tick judge a
+                # day that was never a commitment and charge for it. Today is
+                # NOT frozen this way — the day is still running, and tightening
+                # onto it mid-day is exactly what tightening is allowed to do.
+                if ymd < today:
+                    storage.qr_reserve_judgment(node['id'], ymd, None, 'n/a', None)
                 continue
+            if storage.qr_judgment_exists(node['id'], ymd):
+                continue
+            money_reach = ymd >= _date_plus(today, -1)
             start, end, offset = resolve_window(node, ymd)
             close_date = _date_plus(ymd, 1) if offset == 1 else ymd
             scan_close = _local_dt(close_date, end)
@@ -321,16 +362,31 @@ def judge(now=None, verbose=False):
                 reason = 'routine_incomplete'
             tag = '' if ymd == today else ' (%s)' % ymd
             if reason is None:
-                # NO ROW ON SUCCESS — qr_charge_log is a FAILURE log, and
-                # outcomes() treats the presence of a row as 'failed'. It also
-                # means a satisfied day stays DERIVED from its scans, so a scan
-                # logged late still flips the day to success. Writing a row
-                # here would freeze the wrong answer and paint every good day
-                # red. The cost is re-evaluating closed-and-satisfied windows
-                # each tick, which is what the Worker did too.
+                # A ROW ON SUCCESS TOO (2026-08-17) — the FREEZE, reversing
+                # "NO ROW ON SUCCESS". A satisfied day used to stay DERIVED
+                # from its scans, which meant a closed day was re-resolved
+                # under whatever the configuration said later: add a weekend
+                # day to a weekday gate on Sunday (a tightening, so immediate)
+                # and the next tick judged Saturday — a day that was never a
+                # commitment when it closed — and charged for it. Stamping the
+                # resolved window makes the judgment answerable on its own
+                # terms. What this costs is what the old comment defended: a
+                # scan that lands AFTER its window was judged no longer flips
+                # the day back to success. Presence is a deadline; late proof
+                # is not proof.
+                storage.qr_reserve_judgment(node['id'], ymd, None, 'ok', None,
+                                            window=(start, end, offset))
                 continue
 
-            status = charge_for_failure(node, ymd, reason)
+            if not money_reach:
+                # Judged, frozen, never charged — see _days_to_judge.
+                if storage.qr_reserve_judgment(node['id'], ymd, reason, 'stale', None,
+                                               window=(start, end, offset)):
+                    lines.append('X   %s (%s): %s -> stale (backfill)'
+                                 % (node['label'], ymd, reason))
+                continue
+
+            status = charge_for_failure(node, ymd, reason, window=(start, end, offset))
             if status is None:
                 continue          # another tick reserved it first
             lines.append('X   %s%s: %s -> %s' % (node['label'], tag, reason, status))
@@ -342,13 +398,16 @@ def judge(now=None, verbose=False):
 
 
 def outcomes(from_date, to_date, now=None):
-    # The ✓/✗ the app paints on QR hairlines. DERIVED, not stored: a
-    # qr_charge_log row means failed, otherwise the window is recomputed from
-    # its scans. Windows that have not closed yet are omitted entirely —
-    # neutral, not failed, which is why an un-judged QR renders plain.
+    # The ✓/✗ the app paints on QR hairlines. READ from the judgment where one
+    # exists — the day was decided when it closed and does not get a second
+    # opinion from a config that has moved since (2026-08-17). Only a closed
+    # day the judge never reached is still derived from its scans, which is
+    # what history written before the freeze is. Windows that have not closed
+    # yet are omitted entirely — neutral, not failed, which is why an un-judged
+    # QR renders plain.
     now = now or datetime.now()
-    charged = {(c['node_id'], c['date'])
-               for c in storage.qr_charges_between(from_date, to_date)}
+    judged = {(j['node_id'], j['date']): j
+              for j in storage.qr_judgments_between(from_date, to_date)}
     overrides = {(o['node_id'], o['date']): o
                  for o in storage.qr_overrides_between(from_date, to_date)}
     # A +1d window opening on to_date can close as late as the end of to+1.
@@ -370,16 +429,22 @@ def outcomes(from_date, to_date, now=None):
             close_date = _date_plus(ymd, 1) if offset == 1 else ymd
             open_iso = _utc_iso(ymd, start)
             close_iso = _utc_iso(close_date, end)
-            if now >= _local_dt(close_date, end):
-                if (node['id'], ymd) in charged:
-                    out.append({'node_id': node['id'], 'date': ymd, 'outcome': 'failed'})
-                else:
-                    ok = any(
-                        open_iso <= s['scanned_at'] <= close_iso
-                        and (node.get('geofence_lat') is None or s.get('geofence_pass') == 1)
-                        for s in by_node.get(node['id'], []))
-                    out.append({'node_id': node['id'], 'date': ymd,
-                                'outcome': 'success' if ok else 'failed'})
+            j = judged.get((node['id'], ymd))
+            if j and j['charge_status'] == 'n/a':
+                # Frozen as "the gate did not run that day" — neutral, exactly
+                # as an applies_on miss is, even if it would apply now.
+                ymd = _date_plus(ymd, 1)
+                continue
+            if j:
+                out.append({'node_id': node['id'], 'date': ymd,
+                            'outcome': 'failed' if j['failure_reason'] else 'success'})
+            elif now >= _local_dt(close_date, end):
+                ok = any(
+                    open_iso <= s['scanned_at'] <= close_iso
+                    and (node.get('geofence_lat') is None or s.get('geofence_pass') == 1)
+                    for s in by_node.get(node['id'], []))
+                out.append({'node_id': node['id'], 'date': ymd,
+                            'outcome': 'success' if ok else 'failed'})
             ymd = _date_plus(ymd, 1)
     return out
 
@@ -610,7 +675,7 @@ def _http_get(url):
         return 200 <= r.status < 300, json.loads(r.read() or b'{}')
 
 
-def charge_for_failure(node, ymd, reason, sender=None):
+def charge_for_failure(node, ymd, reason, sender=None, window=None):
     """The whole money path for one judged failure. Returns the status stored.
 
     Reserve BEFORE charging, and only the tick that won the reservation may
@@ -626,7 +691,8 @@ def charge_for_failure(node, ymd, reason, sender=None):
 
     status = 'capped' if capped else ('charging' if will_charge else 'would_fire')
     won = storage.qr_reserve_judgment(
-        node['id'], ymd, reason, status, amount if will_charge else None)
+        node['id'], ymd, reason, status, amount if will_charge else None,
+        window=window)
     if not won:
         return None          # another tick owns this day; do not touch money
 
