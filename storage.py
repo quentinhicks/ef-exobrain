@@ -1724,41 +1724,6 @@ def get_all_projects():
     return out
 
 
-def get_gtd_lists():
-    # The four GTD lists the tab renders in one payload. Predicates mirror
-    # get_gtd_review_counts exactly, so the tab and the review badges can
-    # never disagree about a count.
-    today = date_cls.today().isoformat()
-    conn = get_conn()
-    waiting = [dict(r) for r in conn.execute(
-        '''SELECT i.*, a.name AS area_name, p.content AS project_name
-           FROM inbox_item i LEFT JOIN area a ON a.id = i.area_id
-           LEFT JOIN inbox_item p ON p.id = i.project_id
-           WHERE i.status = 'waiting'
-           ORDER BY i.captured_at''').fetchall()]
-    someday = [dict(r) for r in conn.execute(
-        '''SELECT i.*, a.name AS area_name, p.content AS project_name
-           FROM inbox_item i LEFT JOIN area a ON a.id = i.area_id
-           LEFT JOIN inbox_item p ON p.id = i.project_id
-           WHERE i.kind = 'item' AND i.status = 'on_hold'
-           ORDER BY i.captured_at''').fetchall()]
-    deferred = [dict(r) for r in conn.execute(
-        '''SELECT i.*, a.name AS area_name, p.content AS project_name
-           FROM inbox_item i LEFT JOIN area a ON a.id = i.area_id
-           LEFT JOIN inbox_item p ON p.id = i.project_id
-           WHERE i.kind = 'item' AND i.defer_until IS NOT NULL AND i.defer_until > ?
-           ORDER BY i.defer_until, i.captured_at''', (today,)).fetchall()]
-    for rows in (waiting, someday, deferred):
-        _apply_inherited_deadlines(conn, rows)
-    conn.close()
-    return {'projects': get_all_projects(), 'waiting': waiting,
-            'someday': someday, 'deferred': deferred}
-
-
-# --- GTD weekly review -------------------------------------------------
-# Step progress is a {stepKey: iso-timestamp} blob so steps can be added or
-# reordered later without a migration. Weeks start Monday.
-
 def _week_start(d=None):
     d = d or date_cls.today()
     return (d - timedelta(days=d.weekday())).isoformat()

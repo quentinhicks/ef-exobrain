@@ -43,15 +43,11 @@
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span>Calendar</span>
       </button>
-      <button class="hub-btn review-nav-item" data-hub="gtd" id="hub-gtd-btn">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 20 6"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/></svg>
-        <span>GTD</span>
-      </button>
       <button class="hub-btn" data-hub="map">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>
         <span>MAP</span>
       </button>
-      <button class="hub-btn" data-hub="lists">
+      <button class="hub-btn review-nav-item" data-hub="lists" id="hub-lists-btn">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
         <span>Lists</span>
       </button>
@@ -170,6 +166,19 @@
       <span class="m-title" id="ref-title">Lists</span>
       <button class="modal-close-btn m-close" data-close="tab-lists">✕</button>
     </div>
+    <!-- THE WEEKLY REVIEW LIVES HERE (2026-08-16). The GTD tab is gone: its
+         four lists were MAP's lenses said twice, and the review is a ROUTINE,
+         so it belongs where the routines are. The fold-out keeps the live
+         counts paper cannot compute — chiefly the projects with no next
+         action — and ▶ runs the same flow_run the fold-out ticks into.
+         Hidden while a list or routine is open (renderRef owns that). -->
+    <button id="gtd-review-head" class="review-nav-item hidden">
+      <span>Weekly review</span>
+      <span id="gtd-review-prog" class="map-count"></span>
+      <span id="gtd-review-run" class="gr-run" title="Run it as a routine — one step per page">▶</span>
+      <span class="gtd-review-chevron">⌄</span>
+    </button>
+    <div id="review-panel" class="hidden"></div>
     <div id="ref-body"></div>
   </div>
 
@@ -193,24 +202,6 @@
       </div>
       <div id="journal-grid"></div>
     </div>
-  </div>
-
-  <div id="tab-gtd" class="m-overlay hidden">
-    <div class="m-head">
-      <span class="m-title">GTD</span>
-      <button class="modal-close-btn m-close" data-close="tab-gtd">✕</button>
-    </div>
-    <button id="gtd-review-head" class="review-nav-item">
-      <span>Weekly review</span>
-      <span id="gtd-review-prog" class="map-count"></span>
-      <span id="gtd-review-run" class="gr-run" title="Run it as a routine — one step per page">▶</span>
-      <span class="gtd-review-chevron">⌄</span>
-    </button>
-    <div id="review-panel" class="hidden"></div>
-    <!-- ONE body on ONE ground (2026-08-10). It was two halves with two
-         different backgrounds, which is what made the tab read as a different
-         app from MAP and the day. -->
-    <div id="gtd-body"></div>
   </div>
 
   <!-- Dangerous writing: stop typing and the draft is destroyed. The ONE

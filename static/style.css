@@ -4502,61 +4502,12 @@ button.eg-domain { cursor: pointer; }
   outline-offset: -4px;
 }
 
-/* ── GTD overlay — the four lists, one column ───────────────── */
-
-/* The overlay is ONE scroll column: the split-pane scrolling (#gtd-left
-   flex:none made its overflow rule inert, and a tall left list crushed
-   #gtd-right to nothing inside the overlay's overflow:hidden) never worked
-   on the phone. The ID selector out-specifies .m-overlay's hidden. */
-#tab-gtd { overflow-y: auto; }
-#tab-gtd > .m-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--surface-mid);
-}
-
-/* One ground, the same --surface-mid MAP and the day sit on. The two halves
-   used to be --surface and --surface-mid, which is what made this tab look
-   like a different app. */
-#gtd-body { padding: 16px 20px; }
-
-.gtd-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 8px;
-  margin-bottom: 10px;
-}
-
-.gtd-title {
-  font: 600 12px var(--font-ui);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--accent);
-}
-
-.gtd-counts { font-size: 11px; color: var(--text-secondary); }
-
-#gtd-review-btn { margin-left: auto; position: relative; }
-
-#gtd-review-btn.has-due::after {
-  content: '';
-  position: absolute;
-  top: -3px;
-  right: -3px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--gold);
-}
-
+/* ── Lists: the review fold-out and the section heads ───────
+   The GTD overlay is gone (2026-08-16) — its four lists were MAP's
+   lenses said twice, and the weekly review moved into Lists. These
+   three survive: Lists uses them for its Routines / Reference heads
+   and its empty states. */
 .gtd-section { margin-bottom: 18px; }
-
-/* The list head is the collapse control — the whole row is the target, so it
-   works on a phone without hunting for a chevron. */
 .gtd-section-head {
   display: flex;
   align-items: center;
@@ -4572,84 +4523,8 @@ button.eg-domain { cursor: pointer; }
   cursor: pointer;
   text-align: left;
 }
+
 .gtd-section-head:hover { color: var(--text-primary); }
-.gtd-chev { margin-left: auto; font-size: 11px; color: var(--text-secondary); }
-/* Domain groups, the same shape MAP uses. */
-.gtd-domain-head {
-  font: 10px var(--font-mono);
-  letter-spacing: 0.06em;
-  color: var(--accent);
-  margin: 8px 0 2px;
-}
-
-.gtd-stalled-n { font-size: 10px; color: var(--danger); margin-left: 8px; }
-
-.gtd-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.gtd-text { flex: 1; font-size: 13px; color: var(--text-primary); min-width: 0; }
-.gtd-row-project > .gtd-text { color: var(--accent); font-weight: 500; }
-
-.gtd-crumb {
-  flex: none;
-  font-size: 10px;
-  color: var(--text-secondary);
-  max-width: 30%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gtd-age {
-  flex: none;
-  font-size: 10px;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 0 4px;
-  white-space: nowrap;
-}
-
-.gtd-acts { display: flex; align-items: center; gap: 3px; flex: none; opacity: 0.35; }
-.gtd-row:hover .gtd-acts { opacity: 1; }
-
-.gtd-acts button {
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1;
-  padding: 0 3px;
-  white-space: nowrap;
-}
-
-.gtd-acts button:hover { color: var(--accent); }
-.gtd-del:hover { color: var(--danger); }
-
-.gtd-tag-edit {
-  flex: none;
-  color: var(--text-secondary);
-  font-size: 11px;
-  padding: 0 3px;
-  opacity: 0.35;
-}
-.gtd-row:hover .gtd-tag-edit { opacity: 1; }
-.gtd-tag-edit:hover { color: var(--accent); }
-
-.gtd-tags-input {
-  flex: none;
-  width: 110px;
-  font: 10px var(--font-ui);
-  background: var(--surface);
-  border: 1px solid var(--accent);
-  border-radius: 3px;
-  color: var(--text-primary);
-  padding: 1px 4px;
-}
-
 .gtd-empty { font-size: 12px; color: var(--text-secondary); padding: 6px 0; }
 
 /* ── Reference lists (tab-lists) — GTD's non-actionable keeps ── */
@@ -4857,12 +4732,9 @@ button.eg-domain { cursor: pointer; }
                margin-left: auto; line-height: 1; }
 .cl-chain-go:hover { color: var(--text); }
 
-.gtd-chips,
 .now-chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 
-.gtd-tag,
 .now-tag,
-.gtd-chip,
 .now-chip {
   flex: none;
   font-size: 10px;
@@ -4873,10 +4745,8 @@ button.eg-domain { cursor: pointer; }
   white-space: nowrap;
 }
 
-.gtd-chip:hover,
 .now-chip:hover { color: var(--accent); border-color: var(--accent); }
 
-.gtd-chip-on,
 .now-chip-on {
   color: var(--accent);
   border-color: var(--accent);
@@ -5192,35 +5062,7 @@ button.eg-domain { cursor: pointer; }
    the footer off the bottom. */
 body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 
-/* ── Project notes (Allen's support material) ───────────────── */
-.gtd-notes-btn {
-  flex: none;
-  font-size: 12px;
-  color: var(--text-secondary);
-  padding: 0 4px;
-  opacity: 0.35;
-}
-.gtd-row:hover .gtd-notes-btn { opacity: 1; }
-.gtd-notes-btn:hover { color: var(--accent); }
-/* A project that HAS notes shows it at rest — that's the point of support
-   material you're meant to re-read in the weekly review. */
-.gtd-notes-on { opacity: 1; color: var(--accent); }
 
-.gtd-notes {
-  display: block;
-  width: 100%;
-  font: 12px var(--font-ui);
-  line-height: 1.45;
-  background: var(--surface-low);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin: 2px 0 6px;
-  resize: vertical;
-  outline: none;
-}
-.gtd-notes:focus { border-color: var(--accent); }
 
 /* Rendered-markdown notes (GTD + MAP): the read view; tap to edit raw text. */
 .md-body {
@@ -5693,7 +5535,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 :root.theme-light .pd-delete { color: #c0392b; border-color: rgba(192, 57, 43, 0.40); }
 :root.theme-light .pd-delete:hover:not(:disabled) { background: rgba(192, 57, 43, 0.10); }
 :root.theme-light .map-badge-push { color: #8a6a12; border-color: #c9b978; }
-:root.theme-light .gtd-chip-on,
 :root.theme-light .now-chip-on { background: rgba(47, 111, 181, 0.10); }
 
 /* The gate pill is a tan chip with dark text — it reads on either theme; only

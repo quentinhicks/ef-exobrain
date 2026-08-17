@@ -265,8 +265,9 @@ function renderAll() {
 }
 
 function updateReviewNavDot() {
-  // The due dot rides on the hub's GTD icon and the review fold-out header.
-  ['hub-gtd-btn', 'gtd-review-head'].forEach(id => {
+  // The due dot rides on the hub's LISTS icon and the review fold-out header —
+  // the review moved into Lists when the GTD tab went (2026-08-16).
+  ['hub-lists-btn', 'gtd-review-head'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.classList.toggle('has-due', !!state.review.due);
   });
@@ -805,8 +806,10 @@ function startReviewPass(step) {
 
 async function returnToReview() {
   closeM('cal-overlay');
-  openM('tab-gtd');
-  await refreshGtd();
+  openM('tab-lists');
+  refView.open = null;
+  refView.openFlow = null;
+  await refreshRef();
   await openGtdReview();
 }
 
@@ -1333,7 +1336,6 @@ async function runUndo() {
 // the original action came from.
 async function refreshAfterUndo() {
   await refreshEngage();
-  if (!document.getElementById('tab-gtd').classList.contains('hidden')) await refreshGtd();
   if (!document.getElementById('map-overlay').classList.contains('hidden')) await refreshMap();
   if (!document.getElementById('tab-people').classList.contains('hidden')) await loadPeopleData();
   if (!document.getElementById('tab-lists').classList.contains('hidden')) await refreshRef();
@@ -3313,8 +3315,10 @@ function reviewTicks() {
   try { return JSON.parse(gtdReview.flow.run.steps || '{}'); } catch (e) { return {}; }
 }
 
-// The weekly review lives INSIDE the GTD overlay now: a fold-out section at
-// the top, toggled by #gtd-review-head. No modal.
+// The weekly review is a fold-out at the top of LISTS, toggled by
+// #gtd-review-head. No modal. It moved there when the GTD tab was removed
+// (2026-08-16): the tab's four lists were MAP's lenses said twice, and the
+// review is a ROUTINE, so it belongs where the routines are.
 async function openGtdReview() {
   const today = formatDateYMD(new Date());
   const [review, habits, flows] = await Promise.all([
@@ -3759,7 +3763,6 @@ function initHub() {
       hub.classList.add('hidden');
       const dest = btn.dataset.hub;
       if (dest === 'calendar') { openM('cal-overlay'); renderTimeline(); renderSheetsInbox(); }
-      else if (dest === 'gtd') { openM('tab-gtd'); refreshGtd(); }
       else if (dest === 'lists') {
         refView.open = null;
         refView.openFlow = null;
@@ -3918,6 +3921,14 @@ function renderRef() {
   const body = document.getElementById('ref-body');
   const title = document.getElementById('ref-title');
   if (!body) return;
+
+  // The weekly review sits at the INDEX only — drilling into a list or a
+  // routine is a different job, and the fold-out would be a second thing
+  // competing for the top of a surface you came to read one list on.
+  const atIndex = refView.openFlow == null && refView.open == null;
+  const head = document.getElementById('gtd-review-head');
+  if (head) head.classList.toggle('hidden', !atIndex);
+  if (!atIndex) document.getElementById('review-panel').classList.add('hidden');
 
   const openFlow = refView.flows.find(f => f.id === refView.openFlow);
   if (openFlow) { renderFlowEditor(body, title, openFlow); return; }
@@ -8842,159 +8853,6 @@ function renderMap() {
 // next-actions lens, so "refresh the active items" means re-render the day.
 async function refreshActiveItems() {
   await refreshEngage();
-}
-
-// ── GTD tab — the four lists with no other surface ────────────
-// Projects, Waiting For, Someday/Maybe, Deferred: all inbox_item rows, all
-// already computable, none with a home until now. Flat on purpose (no domain
-// or area grouping — the breadcrumb rides on the row), and weekly-cadence, so
-// density is cheap here in a way it never is on NOW.
-// notesFor = which project's notes are open; notesEdit = raw-markdown editing
-// (false shows the rendered view — notes are read far more than written).
-// chainFor/chainArm/chainItems: the ⛓ dependency editor, which lives HERE on
-// the Projects list (2026-08-07, moved out of the clarify sheet
-// deliberately — ordering a project's actions is a structure decision, and this is
-// the projects surface). chainItems is fetched from /api/map on open because
-// the GTD lists payload carries no plain actions.
-// Notes, dependency ordering and the per-list verbs all moved to the clarify
-// sheet (2026-08-10), so this view holds nothing but its data.
-const gtdView = { lists: null };
-let gtdTagFilter = null;
-
-
-async function refreshGtd() {
-  gtdView.lists = await fetch('/api/gtd/lists').then(r => r.json());
-  renderGtd();
-}
-
-// The four canonical GTD lists, rendered exactly like MAP: one ground, MAP's
-// row (text + badges + a single `›` into the clarify sheet), and grouped by
-// DOMAIN. Rewritten 2026-08-10 — it used to be two columns on two different
-// backgrounds, with a different bespoke control set per list (✎ ⛓ # + →active
-// ✓ × now), which is the "second grammar" problem MAP already solved.
-//
-// Every decision is the sheet's now. A project row opens the PROJECT clarify
-// sheet (kind === 'project' routes it), and someday/deferred/waiting rows open
-// the action sheet — so re-activating, parking, re-dating and deleting are all
-// the same gesture they are everywhere else in the app.
-function gtdCollapsed(key) {
-  return (localStorage.getItem('gtdCollapsed') || '').split(',').includes(key);
-}
-
-function gtdToggleSection(key) {
-  const open = new Set((localStorage.getItem('gtdCollapsed') || '').split(',').filter(Boolean));
-  if (open.has(key)) open.delete(key); else open.add(key);
-  localStorage.setItem('gtdCollapsed', [...open].join(','));
-}
-
-function renderGtd() {
-  const body = document.getElementById('gtd-body');
-  if (!body || !gtdView.lists) return;
-  const { projects, waiting, someday, deferred } = gtdView.lists;
-  const all = [...projects, ...waiting, ...someday, ...deferred];
-  const allTags = [...new Set(all.flatMap(itemTags))].sort();
-  if (gtdTagFilter && !allTags.includes(gtdTagFilter)) gtdTagFilter = null;
-  const byTag = list => gtdTagFilter
-    ? list.filter(i => itemTags(i).includes(gtdTagFilter)) : list;
-  const todayStr = formatDateYMD(new Date());
-  const stalled = new Set(projects.filter(p => !p.action_count).map(p => p.id));
-  const byId = {};
-  all.forEach(i => { byId[i.id] = i; });
-
-  // captured_at is SQLite UTC with a space — normalize before parsing or ages
-  // drift by the timezone offset.
-  const ageDays = i => Math.max(0, Math.floor(
-    (Date.now() - new Date((i.captured_at || '').replace(' ', 'T') + 'Z')) / 86400000));
-
-  // MAP's row, verbatim in shape: the text, whatever is worth SCANNING, and
-  // one control. `extra` is the per-list badge set.
-  const rowHtml = (item, extra) => {
-    const isProject = item.kind === 'project';
-    return `<div class="map-row${isProject ? ' map-row-project' : ''}${
-        isProject && stalled.has(item.id) ? ' map-row-stalled' : ''}" data-id="${item.id}">
-      <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
-      ${isProject ? '' : itemTags(item).map(t =>
-        `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
-      ${dueChip(item, 'map-badge')}
-      ${extra || ''}
-      <span class="map-crumb">${escHtml(item.project_name || item.area_name || '—')}</span>
-      <span class="map-acts">
-        <button class="map-open" data-id="${item.id}"
-          title="${isProject ? 'Clarify this project' : 'Clarify this item'}">›</button>
-      </span>
-    </div>`;
-  };
-
-  // Domain groups, the level above areas — same cut MAP makes, so the two
-  // surfaces describe the inventory the same way. The area rides on the row as
-  // a breadcrumb rather than becoming a second nesting level: these lists are
-  // flat by design (see the GTD tab notes).
-  const groupByDomain = (list, extraFn) => {
-    const groups = {};
-    list.forEach(i => {
-      const did = i.domain_id || domainIdForArea(i.area_id);
-      (groups[did] = groups[did] || []).push(i);
-    });
-    const keys = Object.keys(groups).sort((a, b) =>
-      (domainName(a) || '').localeCompare(domainName(b) || ''));
-    // One domain in play needs no header — a heading that never varies is noise.
-    const showHeads = keys.length > 1;
-    return keys.map(did => `
-      ${showHeads ? `<div class="gtd-domain-head">${escHtml(domainName(did))}<span class="map-count">${groups[did].length}</span></div>` : ''}
-      ${groups[did].map(i => rowHtml(i, extraFn ? extraFn(i) : '')).join('')}`).join('');
-  };
-
-  const section = (key, title, list, extraFn, empty, headExtra) => {
-    const shown = byTag(list);
-    const closed = gtdCollapsed(key);
-    return `<div class="gtd-section">
-      <button class="gtd-section-head" data-section="${key}">
-        <span>${title}</span><span class="map-count">${shown.length}</span>
-        ${headExtra || ''}<span class="gtd-chev">${closed ? '›' : '⌄'}</span>
-      </button>
-      ${closed ? '' : (shown.length ? groupByDomain(shown, extraFn)
-        : `<div class="gtd-empty">${empty}</div>`)}
-    </div>`;
-  };
-
-  const chips = allTags.map(t =>
-    `<button class="gtd-chip${t === gtdTagFilter ? ' gtd-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`
-  ).join('');
-  const stalledN = projects.filter(p => !p.action_count).length;
-
-  body.innerHTML = `
-    <div class="gtd-header">
-      <span class="gtd-counts">${projects.length} projects · ${waiting.length} waiting · ${someday.length} someday · ${deferred.length} deferred</span>
-      ${allTags.length ? `<span class="gtd-chips">${chips}</span>` : ''}
-    </div>
-    ${section('projects', 'Projects', projects,
-      p => `<span class="map-badge">${p.action_count} action${p.action_count === 1 ? '' : 's'}</span>`,
-      'No projects — nothing multi-step is on the books.',
-      stalledN ? `<span class="gtd-stalled-n">${stalledN} stalled</span>` : '')}
-    ${section('waiting', 'Waiting for', waiting,
-      w => (w.waiting_on ? `<span class="map-badge map-badge-wait">${escHtml(w.waiting_on)}</span>` : '')
-        + `<span class="map-badge" title="Waiting since ${escHtml(w.captured_at || '')}">${ageDays(w)}d</span>`
-        + (w.chase_on ? `<span class="map-badge">chase ${escHtml(w.chase_on)}</span>` : ''),
-      'Nothing handed off.')}
-    ${section('someday', 'Someday / maybe', someday, null, 'Nothing parked.')}
-    ${section('deferred', 'Deferred', deferred,
-      d => `<span class="map-badge">→ ${escHtml(d.defer_until)}</span>`
-        + (d.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${d.pushed} times — too big, not real, or being avoided">pushed ${d.pushed}x</span>` : ''),
-      'Nothing deferred — the tickler is empty.')}`;
-
-  const after = async () => { await refreshGtd(); await refreshActiveItems(); };
-  // The SAME gestures MAP's rows carry — click to clarify, double-click to
-  // rename, `›` for the sheet. One implementation, two surfaces.
-  wireMapRows(body, byId, after);
-
-  body.querySelectorAll('.gtd-section-head').forEach(h => h.addEventListener('click', () => {
-    gtdToggleSection(h.dataset.section);
-    renderGtd();
-  }));
-  body.querySelectorAll('.gtd-chip').forEach(c => c.addEventListener('click', () => {
-    gtdTagFilter = gtdTagFilter === c.dataset.tag ? null : c.dataset.tag;
-    renderGtd();
-  }));
 }
 // ── Settings → Times, and the Schedule Picker ────────────────
 //

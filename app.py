@@ -515,11 +515,6 @@ def get_deferred_route():
     return jsonify(storage.get_deferred_items())
 
 
-@app.route('/api/gtd/lists')
-def get_gtd_lists_route():
-    return jsonify(storage.get_gtd_lists())
-
-
 # --- Engage panel day placements ---
 
 @app.route('/api/engage/placements')
