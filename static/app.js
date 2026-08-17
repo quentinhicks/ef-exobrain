@@ -175,7 +175,7 @@ const state = {
 // the CURRENT state rather than [] so a drop mid-session doesn't blank a day
 // that is already on screen; on first load the initialiser makes that [].
 async function loadAll() {
-  const dateStr = formatDateYMD(state.currentDate);
+  const dateStr = viewDay();
   const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily] = await Promise.all([
     apiGet('/api/blocks', state.blocks),
     apiGet('/api/areas', state.areas),
@@ -428,7 +428,7 @@ function computeViewWindow() {
   const wake = nodes.find(n => String(n.id) === String(state.settings.qr_wake_node_id));
   const sleep = nodes.find(n => String(n.id) === String(state.settings.qr_sleep_node_id));
   if (!wake || !sleep) return { start: 0, end: 1440 };
-  const pageDate = formatDateYMD(state.currentDate);
+  const pageDate = viewDay();
   const viewingToday = isToday(state.currentDate);
   const pageDow = jsDateToDayOfWeek(state.currentDate);
   const deadlineMin = (node) => {
@@ -491,7 +491,7 @@ function renderBlocksLayer(bodyH = 600) {
   if (!layer) return;
   const dow = jsDateToDayOfWeek(state.currentDate);
   const projectsById = Object.fromEntries(state.areas.map(p => [p.id, p]));
-  const dateStr = formatDateYMD(state.currentDate);
+  const dateStr = viewDay();
   const prevDate = new Date(state.currentDate.getTime() - 86400000);
   const prevDow = jsDateToDayOfWeek(prevDate);
   const prevDateStr = formatDateYMD(prevDate);
@@ -754,7 +754,7 @@ function startCurrentTimeTick() {
 
 async function refreshExternal() {
   fetchFailed = false;
-  const todayStr = formatDateYMD(new Date());
+  const todayStr = wallDay();
   const [gcalResult, sheetsResult, outcomesResult] = await Promise.allSettled([
     apiSend('/api/gcal/refresh', 'POST').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     apiSend('/api/sheets/refresh', 'POST').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
@@ -841,7 +841,7 @@ function renderReviewPassBar() {
   const total = b.max - b.min + 1;
   const nth = off - b.min + 1;
   const atEnd = off >= b.max;
-  const dateStr = formatDateYMD(state.currentDate);
+  const dateStr = viewDay();
   // What you captured that day. captured_at is SQLite UTC with a space.
   const captured = (engageView.allItems || []).filter(i =>
     ((i.captured_at || '').replace(' ', 'T')).slice(0, 10) === dateStr).length;
@@ -922,7 +922,7 @@ async function fetchOverridesForDate(date) {
 }
 
 async function toggleBlockOverride(blockId) {
-  const dateStr = formatDateYMD(state.currentDate);
+  const dateStr = viewDay();
   const existing = state.overrides.find(o => o.block_id === blockId && o.date === dateStr);
   const hasTimes = existing && (existing.start_time || existing.end_time);
 
@@ -999,7 +999,7 @@ function focusRefresh() {
 let todaySegments = { date: null, segments: [] };
 
 async function refreshTodaySegments() {
-  const date = formatDateYMD(new Date());
+  const date = wallDay();
   todaySegments = { date, segments: await apiGet(`/api/blocks/day?date=${date}`, []) };
 }
 
@@ -1464,7 +1464,7 @@ function dueOf(item) {
 function dueChip(item, cls) {
   const due = dueOf(item);
   if (!due) return '';
-  const today = formatDateYMD(new Date());
+  const today = wallDay();
   const d = new Date(due + 'T12:00:00');
   const label = due === today ? 'due today'
     : `due ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
@@ -1708,6 +1708,37 @@ function formatDateLabel(date) {
 
 function formatDateYMD(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+// ── WHICH DAY (2026-08-17) ───────────────────────────────────
+//
+// "Today" is three different questions with three different right answers,
+// and they were all written `formatDateYMD(new Date())`, so the call site
+// could not show which one was meant. That is not a naming nicety: it is the
+// single confusion behind the pawn filed under tomorrow, the habit marks that
+// landed on the wrong day, the tag answers, and the night run that restarted
+// at 00:05. In ONE handler the journal PATCH was right and the habit marks
+// six lines above were wrong, because both read identically.
+//
+//   wallDay()  what time is it NOW — clock ticks, rollover, salience, and
+//              "is the thing I'm looking at today?" comparisons.
+//   viewDay()  what the user is LOOKING AT — the timeline's day. Never the
+//              day a write is filed under; you can browse to next Tuesday.
+//   runDay()   what this work BELONGS TO — pinned when a runner opened, and
+//              it survives midnight. Every write from inside a runner.
+//
+// The rule: a write picks the day deliberately. If a new write reaches for
+// wallDay(), that has to be because the fact really is about the clock.
+function wallDay() {
+  return formatDateYMD(new Date());
+}
+
+function viewDay() {
+  return formatDateYMD(state.currentDate);
+}
+
+function runDay() {
+  return flowRunView.date || wallDay();
 }
 
 function formatTodoDate(date) {
@@ -2269,7 +2300,7 @@ const SETTINGS_SHEETS = {
     confirm: () => 'Delete this recurring task? Occurrences already filed stay.',
     blank: () => ({
       name: '', area: '', kind: 'weekly', days: [], interval: 1,
-      nth: 1, weekday: 0, anchor: formatDateYMD(new Date()),
+      nth: 1, weekday: 0, anchor: wallDay(),
     }),
     load: t => ({ project: t.project_id || '', active: !!t.active }),
     fields: (v, it) => {
@@ -3196,7 +3227,7 @@ async function checkActiveBlock() {
 // The RUNNER is the deliberate exception, see creditFlowStep: a run credits
 // the day it was OPENED on, so a night routine finished at 00:05 files against
 // the night it started and the new day does not begin already ticked.
-let dayStamp = formatDateYMD(new Date());
+let dayStamp = wallDay();
 
 // The now-highlight has to move with the clock, and re-rendering the day every
 // minute to move one class is both wasteful and the kind of repaint that
@@ -3220,11 +3251,11 @@ function paintNowRows() {
 }
 
 async function checkDayRollover() {
-  const now = formatDateYMD(new Date());
+  const now = wallDay();
   if (now === dayStamp) return;
   // Only follow the timeline forward if it was sitting on the old today; a day
   // deliberately navigated to stays where it was put.
-  const follow = formatDateYMD(state.currentDate) === dayStamp;
+  const follow = viewDay() === dayStamp;
   dayStamp = now;
   if (follow) {
     state.currentDate = new Date();
@@ -3337,7 +3368,7 @@ function reviewTicks() {
 // (2026-08-16): the tab's four lists were MAP's lenses said twice, and the
 // review is a ROUTINE, so it belongs where the routines are.
 async function openGtdReview() {
-  const today = formatDateYMD(new Date());
+  const today = wallDay();
   const [review, habits, flows] = await Promise.all([
     fetch('/api/gtd-review').then(r => r.json()),
     apiGet('/api/habits', null),
@@ -3359,7 +3390,7 @@ async function setReviewTick(key, done) {
   const ticks = reviewTicks();
   if (done) ticks[key] = 'done'; else delete ticks[key];
   const complete = reviewSteps().every(s => ticks[s.id]);
-  const run = await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: formatDateYMD(new Date()), steps: ticks, completed: complete }).then(r => r.json()).catch(() => null);
+  const run = await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: wallDay(), steps: ticks, completed: complete }).then(r => r.json()).catch(() => null);
   if (run) gtdReview.flow.run = run;
   renderGtdReview();
   updateReviewNavDot();
@@ -3644,7 +3675,7 @@ function renderGtdReview() {
       // the same act whichever surface you say it on, so the run is completed
       // here too — otherwise the runner would still show the week as open.
       if (gtdReview.flow) {
-        await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: formatDateYMD(new Date()),
+        await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: wallDay(),
                                  steps: reviewTicks(), completed: true });
       }
       state.review.due = false;
@@ -3680,7 +3711,7 @@ function closeM(id) {
 
 async function refreshCrmNight() {
   const night = await apiGet(`/api/people/night?date=${flowRunView.date
-    || formatDateYMD(new Date())}`, null);
+    || wallDay()}`, null);
   flowRunView.crmFilled = !!(night && night.satisfied_at);
   flowRunView.crmKind = night ? night.kind : null;
   renderFlowRun();
@@ -3864,7 +3895,7 @@ function stepDueToday(s, d) {
 }
 
 async function refreshRef() {
-  const today = formatDateYMD(new Date());
+  const today = wallDay();
   const [lists, flows, schedules] = await Promise.all([
     apiGet('/api/ref', refView.lists),
     apiGet(`/api/flows?date=${today}`, refView.flows),
@@ -4908,7 +4939,7 @@ function renderEvSheet() {
     <div class="cl-sec"><span class="cl-label">When</span></div>
     <div class="cl-row ev-when">
       <input type="date" class="cl-date" id="ev-date"
-        value="${escHtml(formatDateYMD(state.currentDate))}">
+        value="${escHtml(viewDay())}">
       <input type="time" class="cl-date" id="ev-start">
       <span class="ev-dash">–</span>
       <input type="time" class="cl-date" id="ev-end" title="Blank = one hour">
@@ -5321,7 +5352,7 @@ async function flowRunDate(flowId, today) {
 }
 
 async function openFlowRun(flowId) {
-  const today = await flowRunDate(flowId, formatDateYMD(new Date()));
+  const today = await flowRunDate(flowId, wallDay());
   const [flows, day, journal, habits, refLists, crmNight] = await Promise.all([
     apiGet(`/api/flows?date=${today}`, []),
     apiGet(`/api/social/day?date=${today}`, null),
@@ -5388,7 +5419,7 @@ async function creditFlowStep(step, how) {
   // would both lose the night's completion (the gate it holds open judges that
   // day) and hand the new day a routine already half done. checkDayRollover
   // starts the NEXT day's routines over; this keeps this one whole.
-  const today = flowRunView.date || formatDateYMD(new Date());
+  const today = runDay();
   flowRunView.steps[step.id] = how;
   const complete = flowRunView.flow.steps.every(s => flowRunView.steps[s.id]);
   await apiSend(`/api/flows/${flowRunView.flow.id}/run`, 'PUT', { date: today, steps: flowRunView.steps, completed: complete });
@@ -5715,7 +5746,7 @@ function renderFlowRun() {
   // half-done and interrupted, so an answer given at 07:02 must survive the
   // page never being "finished".
   const saveMetric = async (metricId, value) => {
-    const date = (flowRunView.metrics[s.id] || {}).date || formatDateYMD(new Date());
+    const date = (flowRunView.metrics[s.id] || {}).date || runDay();
     const prev = ((flowRunView.metrics[s.id] || {}).metrics || [])
       .find(m => m.id === metricId) || {};
     const before = prev.entry
@@ -5761,7 +5792,7 @@ function renderFlowRun() {
   if (rvClarify) rvClarify.addEventListener('click', () => { closeFlowRun(); openClarify(); });
   const rvSweep = el.querySelector('#fr-rv-sweep');
   if (rvSweep) rvSweep.addEventListener('click', () => {
-    const iso = formatDateYMD(new Date());
+    const iso = runDay();
     closeFlowRun();
     openDangerousWriting({ goalKind: 'time', goalTime: 5, hardcore: false,
                            logName: `${iso} emptied`, autostart: true });
@@ -5809,7 +5840,7 @@ function renderFlowRun() {
         // The RUN's day. Marked after midnight, these used to land on the new
         // day: yesterday's habits stayed unmarked forever (the daybook writes a
         // past day once) and today started pre-marked.
-        const body = { date: flowRunView.date || formatDateYMD(new Date()) };
+        const body = { date: runDay() };
         if (mark) body.mark = mark.dataset.mark;
         if (eff) body.effort = eff.dataset.effort;
         await apiSend(`/api/habits/${r.dataset.habit}/mark`, 'POST', body);
@@ -5818,7 +5849,7 @@ function renderFlowRun() {
     if (s.kind === 'journal_night') {
       // The run's day, not the clock's — the night's entry belongs to the night
       // even when it is written after midnight (same rule as creditFlowStep).
-      const today = flowRunView.date || formatDateYMD(new Date());
+      const today = runDay();
       const rate = el.querySelector('.fr-rate-on');
       await apiSend(`/api/journal/${today}`, 'PATCH', {
           bottleneck: el.querySelector('#fr-jn-bottleneck').value,
@@ -5909,7 +5940,7 @@ function renderFlowRun() {
     // Tapping the answer you already gave clears it — back to unanswered, which
     // excludes nothing. That is the only way to undo a "not today" in place.
     const applies = prev === want ? null : want;
-    const date = flowRunView.date || formatDateYMD(new Date());
+    const date = runDay();
     const answers = await apiSend('/api/tag-daily/answer', 'POST', { tag, applies, date }).then(r => r.json()).catch(() => null);
     if (answers) state.tagDaily = { ...state.tagDaily, answers };
     pushUndo(`set ${tag} ${applies === null ? 'unanswered' : applies ? 'today' : 'not today'}`,
@@ -5936,7 +5967,7 @@ function renderFlowRun() {
 
   const crm = el.querySelector('#fr-crm-fill');
   if (crm) crm.addEventListener('click', async () => {
-    const today = flowRunView.date || formatDateYMD(new Date());
+    const today = runDay();
     await apiSend('/api/people/night', 'POST', { kind: 'entries', date: today });
     flowRunView.crmFilled = true;
     renderFlowRun();
@@ -7144,7 +7175,7 @@ function renderQrLayer() {
   if (!nodes.length) return;
 
   const body = document.getElementById('tl-body');
-  const pageDate = formatDateYMD(state.currentDate);
+  const pageDate = viewDay();
   const viewingToday = isToday(state.currentDate);
   const pageDow = String(jsDateToDayOfWeek(state.currentDate));
 
@@ -8048,7 +8079,7 @@ function endPeopleSession() {
 }
 
 async function peopleSatisfy(kind) {
-  const today = formatDateYMD(new Date());
+  const today = wallDay();
   if (kind === 'entries' && peopleView.satisfiedDate === today) return;
   peopleView.satisfiedDate = today;
   await apiSend('/api/people/night', 'POST', { kind, date: today }).catch(() => {});
@@ -8165,7 +8196,7 @@ function renderPeopleList() {
 function renderDueStrip() {
   const strip = document.getElementById('people-due-strip');
   if (!strip) return;
-  const today = formatDateYMD(new Date());
+  const today = wallDay();
   const due = peopleView.people
     .filter(p => p.next_due && p.next_due <= today)
     .sort((a, b) => a.next_due.localeCompare(b.next_due))
@@ -8240,7 +8271,7 @@ function renderPersonDetail(p) {
     <textarea id="pd-notes" class="pd-notes" placeholder="Notes…">${escHtml(p.notes || '')}</textarea>
     <div class="pd-log-heading">Interactions</div>
     <form id="pd-add-form" class="pd-add-form">
-      <input type="date" id="pd-int-date" value="${escHtml(formatDateYMD(new Date()))}">
+      <input type="date" id="pd-int-date" value="${escHtml(wallDay())}">
       <input type="text" id="pd-int-note" placeholder="What happened?" autocomplete="off">
       <select id="pd-int-source">
         <option value="desktop">desktop</option>
@@ -8654,7 +8685,7 @@ function wireMapRows(body, byId, afterFn) {
 function renderMap() {
   const body = document.getElementById('map-body');
   if (!body) return;
-  const todayStr = formatDateYMD(new Date());
+  const todayStr = wallDay();
   renderMapFilter();
   // Everything below reads the NARROWED set, search included — a search inside
   // "Waiting & deferred" must not turn up an action you are not asking about.
@@ -9162,7 +9193,7 @@ function blankRule() {
     monthMode: 'date', monthDay: new Date().getDate(), nth: 1, nthDay: 'mo',
     skip: 'omit', firstDayOfWeek: 'mo',
     at: '09:00', duration: 'PT1H',
-    anchor: formatDateYMD(new Date()),
+    anchor: wallDay(),
   };
 }
 
@@ -9189,7 +9220,7 @@ function draftFromSource(src) {
       firstDayOfWeek: r.firstDayOfWeek || 'mo',
       at,
       duration: s.duration || '',
-      anchor: (s.start || '').slice(0, 10) || formatDateYMD(new Date()),
+      anchor: (s.start || '').slice(0, 10) || wallDay(),
     };
   };
   const members = src.kind === 'schedule'
@@ -10037,7 +10068,7 @@ async function openEngage() {
 }
 
 // The viewed day as YMD; parse at noon so DST shifts can't slide the date.
-function egDateStr() { return engageView.date || formatDateYMD(new Date()); }
+function egDateStr() { return engageView.date || wallDay(); }
 function egViewDate() { return new Date(egDateStr() + 'T12:00:00'); }
 
 async function refreshEngage() {
@@ -10161,7 +10192,7 @@ function engagePoolGates(nowMin, isToday) {
   // today, so applying it to a day you are merely planning would hide work for
   // a reason that isn't true yet — the same rule the time gate follows.
   const dayAns = (state.tagDaily || {}).answers || {};
-  const onToday = !engageView.date || engageView.date === formatDateYMD(new Date());
+  const onToday = !engageView.date || engageView.date === wallDay();
   const dayOk = i => !onToday || itemTags(i).every(t => dayAns[t] !== false);
 
   return { locOk, deviceOk, timeOk, dayOk, device, otherDevice,
@@ -10645,7 +10676,7 @@ function renderEngage() {
     const d = egViewDate();
     d.setDate(d.getDate() + delta);
     const s = formatDateYMD(d);
-    engageView.date = s === formatDateYMD(new Date()) ? null : s;
+    engageView.date = s === wallDay() ? null : s;
     refreshEngage();
   };
   header.querySelector('#eg-prev').addEventListener('click', () => shiftDay(-1));
@@ -11260,7 +11291,7 @@ async function openClarifyForOccasion(occ, item, after) {
 function lastFiledDomain() {
   try {
     const raw = JSON.parse(localStorage.getItem('lastFiled') || 'null');
-    if (raw && raw.date === formatDateYMD(new Date())) return raw.domainId;
+    if (raw && raw.date === wallDay()) return raw.domainId;
   } catch (e) { /* unparseable = no memory, which is the safe answer */ }
   return null;
 }
@@ -11268,7 +11299,7 @@ function lastFiledDomain() {
 function rememberFiledDomain(areaId) {
   if (!areaId) return;
   localStorage.setItem('lastFiled', JSON.stringify({
-    domainId: domainIdForArea(areaId), date: formatDateYMD(new Date()),
+    domainId: domainIdForArea(areaId), date: wallDay(),
   }));
 }
 
@@ -11317,7 +11348,7 @@ function clarifyResetItem() {
   // unlike an action's it is PREFILLED — "Active" is then the explicit act of
   // clearing it, and re-filing a parked project can't silently un-park it.
   if (clarifyView.project) {
-    const parked = item.defer_until && item.defer_until > formatDateYMD(new Date());
+    const parked = item.defer_until && item.defer_until > wallDay();
     clarifyView.verb = parked ? 'defer' : 'active';
     clarifyView.showDate = parked ? item.defer_until : '';
   }
@@ -11945,7 +11976,7 @@ function renderClarify() {
   const showTime = sheet.querySelector('#cl-show-time');
   if (showTime) showTime.addEventListener('change', e => {
     clarifyView.showTime = e.target.value;
-    if (e.target.value && !clarifyView.showDate) clarifyView.showDate = formatDateYMD(new Date());
+    if (e.target.value && !clarifyView.showDate) clarifyView.showDate = wallDay();
     renderClarify();  // date autofill + the clear ✕ appearing/going
   });
   const showTimeX = sheet.querySelector('#cl-show-time-x');
@@ -12607,7 +12638,7 @@ function openAddPerson() {
       </div>
       <div class="pa-int">
         <div class="pd-log-heading">Interaction (optional)</div>
-        <div class="pa-row"><label>Date</label><input type="date" id="pa-int-date" value="${escHtml(formatDateYMD(new Date()))}"></div>
+        <div class="pa-row"><label>Date</label><input type="date" id="pa-int-date" value="${escHtml(wallDay())}"></div>
         <div class="pa-row"><label>What happened</label><input type="text" id="pa-int-note" autocomplete="off"></div>
         <div class="pa-row"><label>Source</label>
           <select id="pa-int-source"><option value="desktop">desktop</option><option value="phone">phone</option></select>
