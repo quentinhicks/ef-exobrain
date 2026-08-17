@@ -107,6 +107,14 @@ def _update_config(values):
 # until the next restart — the exact confusion the panel is meant to remove.
 def _gate_scan_url():
     return config.get('gate_scan_url') or config.get('qr_worker_url', '')
+
+
+# The address the app is REACHED at, as opposed to whatever host this request
+# happened to arrive on. Config, because the two differ exactly when you need
+# it: the desktop window is on 127.0.0.1 and cannot know the tailnet name, and
+# that is the moment you want to send the link to a phone or an iPad.
+def _app_url():
+    return (config.get('app_url') or '').rstrip('/')
 # qr_todo_node_ids is retired: QR judgment is presence-only since the daily
 # to-do list was removed (2026-08). Left unread so old config.json files with
 # the key still load.
@@ -1018,7 +1026,8 @@ def get_settings():
     # needs it to build scan URLs. Serving it here keeps ONE source of truth —
     # it used to be hardcoded separately in app.js, so changing the Worker
     # meant changing two files and finding out later if you missed one.
-    return jsonify(dict(storage.get_settings(), gate_scan_url=_gate_scan_url()))
+    return jsonify(dict(storage.get_settings(), gate_scan_url=_gate_scan_url(),
+                        app_url=_app_url()))
 
 
 VALID_TIMEZONES = [
@@ -1045,7 +1054,8 @@ def patch_settings():
         threading.Thread(target=_refresh_all_calendars, daemon=True).start()
     # Same shape as GET — a client that assigns this response over its settings
     # state would otherwise lose qr_worker_url until the next full load.
-    return jsonify(dict(storage.get_settings(), gate_scan_url=_gate_scan_url()))
+    return jsonify(dict(storage.get_settings(), gate_scan_url=_gate_scan_url(),
+                        app_url=_app_url()))
 
 
 @app.route('/api/timezones')
@@ -1670,6 +1680,8 @@ CONFIG_KEYS = [
      'hint': 'moves real money — write-only, never shown again'},
     {'key': 'gate_scan_url', 'label': 'Scan URL',
      'hint': 'where a gate\'s QR link points'},
+    {'key': 'app_url', 'label': 'App URL',
+     'hint': 'the stable link to this app, shown in Settings -> About'},
     {'key': 'sheets_url', 'label': 'Sheets URL',
      'hint': 'the spreadsheet the aggregator reads'},
     {'key': 'gcal_credentials_path', 'label': 'Google credentials',

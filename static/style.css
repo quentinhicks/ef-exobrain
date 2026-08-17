@@ -5893,6 +5893,18 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .gr-ht-suggest { font: 12px var(--font-sans); color: var(--success); }
 .gr-ht-verbs { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .gr-ht-input { flex: 1; min-width: 160px; font: 12px var(--font-sans); }
+/* About: the app link. Wraps, because a tailnet host is long and the column is
+   430px — truncating the one thing this pane exists to hand over would be
+   absurd. Uses named vars only, so the light appendix needs no entry. */
+.be-about-link {
+  padding: 0 20px 10px;
+  word-break: break-all;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.be-section .cl-hint { display: block; padding: 6px 20px 12px; line-height: 1.6; }
+.be-about-row { border-bottom: none; }
+
 /* The health spectrum: inline hsl (computed red->green), grey under 5 marks. */
 .gr-hb-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; align-self: center; }
 .jh-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font: 13px/1.7 var(--font-sans); }

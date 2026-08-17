@@ -1843,11 +1843,67 @@ const SETTINGS_SECTIONS = [
       + 'Stored in config.json on the server, never in the database.',
     summary: () => `${configView.rows.filter(r => r.secret ? r.set : r.value).length}`
       + `/${configView.rows.length || CONFIG_ROW_COUNT} set` },
+  { key: 'about', name: 'About', group: 'App',
+    desc: 'What this is, and the link that reaches it.',
+    summary: () => (state.settings.app_url || '').replace(/^https?:\/\//, '') || 'no link set' },
   { key: 'display', name: 'Display', group: 'App',
     desc: 'Theme, timezone, and the NOW panel.',
     summary: () => `${document.documentElement.classList.contains('theme-light') ? 'Light' : 'Dark'}`
       + ` · ${currentTimezone().split('/').pop().replace(/_/g, ' ')}` },
 ];
+
+// ── About ────────────────────────────────────────────────────
+//
+// One job: hand over the stable link. The desktop window runs on 127.0.0.1 and
+// the phone reaches the tailnet name, so the address you are ON is usually not
+// the address to SEND — which is why the link is config (`app_url`) and not
+// location.origin. Both are shown: a mismatch is the normal case, and seeing
+// them side by side is how you tell "I'm on the local window" from "the link
+// is wrong".
+//
+// Read-only, so no SETTINGS_SHEETS entry and none of the three verbs. Tapping
+// copies, because selecting text on a phone to copy a URL is not a gesture.
+function renderAbout() {
+  const el = document.getElementById('be-about');
+  if (!el) return;
+  const link = state.settings.app_url || '';
+  const here = location.origin;
+  const sameAsHere = link && link.replace(/\/$/, '') === here.replace(/\/$/, '');
+  el.innerHTML = `
+    <div class="be-set-row be-about-row">
+      <span class="be-set-name">App link</span>
+      ${link
+        ? `<button class="be-btn-secondary" id="be-about-copy">Copy</button>`
+        : `<span class="be-nav-value">not set</span>`}
+    </div>
+    <div class="cl-hint be-about-link">${link
+      ? escHtml(link)
+      : 'Set <strong>App URL</strong> in Connections — the tailnet address, '
+        + 'e.g. https://your-vm.your-tailnet.ts.net'}</div>
+    <div class="be-set-row be-about-row">
+      <span class="be-set-name">Reached now at</span>
+      <span class="be-nav-value">${escHtml(here.replace(/^https?:\/\//, ''))}</span>
+    </div>
+    <div class="cl-hint">${link && !sameAsHere
+      ? 'Different from the link above, which is normal on the desktop window — '
+        + 'the link is what you send to a phone or an iPad.'
+      : link ? 'Same as the link above.'
+      : 'This is the address this window happens to be on, not necessarily one '
+        + 'another device can reach.'}</div>
+    <div class="be-set-row be-about-row">
+      <span class="be-set-name">Data lives on</span>
+      <span class="be-nav-value">the server, not this device</span>
+    </div>
+    <div class="cl-hint">Any device on the tailnet reaches the same day. There is
+      no login: being on the tailnet IS the access.</div>`;
+  const copy = el.querySelector('#be-about-copy');
+  if (copy) {
+    copy.addEventListener('click', () => {
+      navigator.clipboard?.writeText(link);
+      toast('App link copied');
+    });
+  }
+}
 
 // ── Connections (config.json) ────────────────────────────────
 //
@@ -1857,7 +1913,7 @@ const SETTINGS_SECTIONS = [
 // or opening this page and saving anything would wipe the token that charges
 // real money. Clearing one is its own button.
 const configView = { rows: [], status: '' };
-const CONFIG_ROW_COUNT = 8;
+const CONFIG_ROW_COUNT = 9;
 
 async function loadConfigRows() {
   configView.rows = await apiGet('/api/config', configView.rows);
@@ -1939,6 +1995,7 @@ function openSettingsSection(key) {
   // page could say.
   if (key === 'config') { configView.status = ''; loadConfigRows(); }
   if (key === 'metrics') loadMetrics().then(renderMetricsSettings);
+  if (key === 'about') renderAbout();
 }
 
 function backToSettingsIndex() {
