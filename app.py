@@ -2057,6 +2057,14 @@ def locations():
     return jsonify(storage.get_locations())
 
 
+@app.route('/api/locations/<int:id>/items')
+def get_location_items(id):
+    # What is live AT a place. Read-only, and the answer an arrival will be
+    # composed from — so the notification never restates a copy held anywhere
+    # else, it asks this.
+    return jsonify(storage.items_at_location(id, request.args.get('date')))
+
+
 # ADDRESS IN, COORDINATES OUT. Typing a latitude by hand is the friction that
 # kept one-off places out of the system entirely, so the geocoder exists to
 # make creating a location cost one search instead of a map lookup.

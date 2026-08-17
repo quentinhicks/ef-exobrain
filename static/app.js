@@ -11241,6 +11241,13 @@ async function refreshEngage() {
 function engagePoolGates(nowMin, isToday) {
   // Location gate: any bound tag on the item must be satisfied by the current
   // fix; without a fix nothing is gated (fail-open, see initGeo).
+  //
+  // PAIRED WITH storage.items_at_location, which answers the same membership
+  // question for a place the device is not at (an arrival). The DISTANCE test
+  // lives here because the fix does; the "every bound tag must be satisfied"
+  // rule below is the half both share, and changing it here means changing it
+  // there. No tripwire ties them — resolution_test covers day-projecting
+  // columns and this is not one — so the pairing rests on this comment.
   const tagLoc = {};
   (state.tagLocations || []).forEach(b => {
     const loc = (state.locations || []).find(l => l.id === b.location_id);

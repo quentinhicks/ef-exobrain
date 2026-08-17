@@ -1818,6 +1818,47 @@ def get_active_items_for_domain(domain_id):
     return out
 
 
+def items_at_location(location_id, day=None):
+    # WHAT IS LIVE AT A PLACE — the question an arrival asks, and the first
+    # time the server has been asked it. Until now the location gate has only
+    # ever run in app.js (engagePoolGates' locOk, geoDistM against the live
+    # fix), and the DISTANCE half stays there: the fix is known on the device
+    # and nowhere else. This is the other half — membership, not proximity.
+    #
+    # Two rules are borrowed rather than restated:
+    #   * AVAILABILITY is `_AVAILABLE`, the same fragment get_active_items_all
+    #     and the review counts already share. Not a fourth copy.
+    #   * BINDING mirrors locOk exactly: an item shows at L when at least one
+    #     of its tags is bound to L and none of its tags is bound anywhere
+    #     ELSE. locOk demands EVERY bound tag be satisfied, and one fix cannot
+    #     satisfy two places, so an item pinned to two locations shows at
+    #     neither — here or there.
+    #
+    # If locOk's rule ever changes, this changes with it. There is no mechanical
+    # check tying them together (resolution_test covers day-projecting COLUMNS,
+    # which this adds none of), so the pairing rests on these comments and the
+    # one in app.js pointing back.
+    today = day or date_cls.today().isoformat()
+    conn = get_conn()
+    binds = {r['tag']: r['location_id'] for r in conn.execute(
+        'SELECT tag, location_id FROM tag_location').fetchall()}
+    rows = conn.execute(
+        f'''SELECT i.*, a.name AS area_name, a.domain_id AS domain_id
+            FROM inbox_item i JOIN area a ON a.id = i.area_id
+            WHERE {_AVAILABLE}
+            ORDER BY i.captured_at DESC''',
+        (today,)
+    ).fetchall()
+    out = []
+    for r in rows:
+        bound = {binds[t] for t in (r['tags'] or '').split() if t in binds}
+        if len(bound) == 1 and location_id in bound:
+            out.append(dict(r))
+    out = _apply_inherited_deadlines(conn, out)
+    conn.close()
+    return out
+
+
 def get_map_items():
     # MAP is the whole inventory in one tree: every triaged item, regardless of
     # whether it is available today. Untriaged rows (status NULL) are still "in"
