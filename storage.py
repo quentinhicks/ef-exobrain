@@ -1023,6 +1023,29 @@ def init_db():
             new_value TEXT NOT NULL,
             apply_at  TEXT NOT NULL
         )''')
+    # ONE EASING STORE (2026-08-17). The 24h delay had two implementations
+    # wearing one name: this qr_pending_change table for gates, and a JSON blob
+    # on flow / flow_step for routines. Two stores, two appliers, two cancel
+    # paths — and the doors that bypassed both (delete_flow, update_schedule_
+    # source) were not bypassing anything in particular, because there was no
+    # single thing to bypass. "Every door owes the rule" is only enforceable
+    # when there is one door.
+    #
+    # kind is the owning table ('gate' for qr_node, 'flow', 'flow_step'), and
+    # the PRIMARY KEY is the per-field guarantee: queueing a second easing can
+    # never silently delete another field's countdown, which the one-slot blob
+    # did. qr_pending_change and the two `pending` columns are kept as the
+    # MIGRATION SOURCE and never written again — the same reason
+    # gtd_review.steps and time_preset are still there.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS easing_pending (
+            kind     TEXT NOT NULL,
+            row_id   INTEGER NOT NULL,
+            field    TEXT NOT NULL,
+            value    TEXT,
+            apply_at TEXT NOT NULL,
+            PRIMARY KEY (kind, row_id, field)
+        )''')
     # UNIQUE(node_id, date) is the reservation that stops a re-judge — the
     # judge INSERTs before acting, so a second tick is a no-op rather than a
     # duplicate. Kept from the Worker verbatim; it was the anti-double-charge
@@ -1064,6 +1087,7 @@ def init_db():
     _migrate_time_presets(conn)
     _repair_time_preset_conversion(conn)
     _adopt_gate_schedules(conn)
+    _migrate_easing_pendings(conn)
     # Pawning a routine step onto a later routine — see pawn_flow_step. Three
     # lazy ALTERs: two settings and one per-day state — plus (2026-08-11) the
     # NAMED soft version, the checklist link, and the 24h easing gate
@@ -1309,6 +1333,43 @@ def _repair_time_preset_conversion(conn):
 # shorter"). The source is UNNAMED, so a gate's hours stay private to it and
 # Settings → Times is not filled with one entry per gate; naming one in the
 # picker is what would share it.
+# One-time, and idempotent: it only ever moves rows that are still in the old
+# stores, and it empties them as it goes, so a second run finds nothing.
+def _migrate_easing_pendings(conn):
+    # `value` is JSON in the new store, always. The gate table's new_value was
+    # raw TEXT NOT NULL, which quietly turned a False into 0 and None into an
+    # error; the flow blob already held native JSON. One encoding, decoded in
+    # one place (_pending_value).
+    try:
+        rows = conn.execute('SELECT * FROM qr_pending_change').fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    for r in rows:
+        conn.execute(
+            '''INSERT OR IGNORE INTO easing_pending (kind, row_id, field, value, apply_at)
+               VALUES (?,?,?,?,?)''',
+            ('gate', r['node_id'], r['field'], json.dumps(r['new_value']),
+             r['apply_at']))
+    if rows:
+        conn.execute('DELETE FROM qr_pending_change')
+    for table in ('flow', 'flow_step'):
+        try:
+            live = conn.execute(
+                f'SELECT id, pending FROM {table} WHERE pending IS NOT NULL').fetchall()
+        except sqlite3.OperationalError:
+            continue
+        for r in live:
+            for pnd in _pendings(r['pending']):
+                conn.execute(
+                    '''INSERT OR IGNORE INTO easing_pending
+                         (kind, row_id, field, value, apply_at)
+                       VALUES (?,?,?,?,?)''',
+                    (table, r['id'], pnd.get('field'),
+                     json.dumps(pnd.get('value')), pnd.get('apply_at')))
+            conn.execute(f'UPDATE {table} SET pending = NULL WHERE id = ?', (r['id'],))
+    conn.commit()
+
+
 def _adopt_gate_schedules(conn):
     cols = [r[1] for r in conn.execute('PRAGMA table_info(qr_node)').fetchall()]
     if not cols:
@@ -4418,6 +4479,11 @@ def get_flows(date=None):
         f['steps'] = [dict(r) for r in conn.execute(
             'SELECT * FROM flow_step WHERE flow_id = ? ORDER BY position, id',
             (f['id'],)).fetchall()]
+        # Served, not carried: pendings live in easing_pending now, and the
+        # client reads the same list shape it always did (stepPendings).
+        f['pending'] = _pendings_for(conn, 'flow', f['id']) or None
+        for s_ in f['steps']:
+            s_['pending'] = _pendings_for(conn, 'flow_step', s_['id']) or None
         for s in f['steps']:
             # A weekly routine's steps are due for the WHOLE period: asking
             # which weekday a review step falls on would be asking the wrong
@@ -4698,6 +4764,9 @@ def create_flow_step(flow_id, content, kind='text', requirement='hard', days_of_
 # an offset 20h later, and the unlink evaporates — while the UI had already
 # said when it would land. Stored as a LIST now; the old one-slot shape still
 # reads, so nothing needs converting.
+# MIGRATION ONLY. The one-slot/list blob that flow.pending and
+# flow_step.pending used to hold; _migrate_easing_pendings reads it once and
+# empties the columns. Nothing writes this shape any more.
 def _pendings(raw):
     if not raw:
         return []
@@ -4712,35 +4781,53 @@ def _pendings(raw):
     return []
 
 
-def _pendings_json(lst):
-    return json.dumps(lst) if lst else None
+# ── The one easing store ─────────────────────────────────────
+#
+# Every queued easing goes through these, whatever it is easing. The PRIMARY
+# KEY (kind, row_id, field) is what makes "per field" structural rather than a
+# convention someone has to remember — the one-slot blob it replaced deleted
+# whatever was already queued.
+def _pending_value(raw):
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw            # a pre-migration raw string
 
 
-def _merge_pending(raw, field, value, apply_at):
-    out = [p for p in _pendings(raw) if p.get('field') != field]
-    out.append({'field': field, 'value': value, 'apply_at': apply_at})
-    return _pendings_json(out)
+def _pend_row(conn, kind, row_id, field, value, apply_at=None):
+    apply_at = apply_at or (datetime.now() + timedelta(hours=24)).isoformat()
+    conn.execute(
+        '''INSERT INTO easing_pending (kind, row_id, field, value, apply_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(kind, row_id, field) DO UPDATE
+             SET value = excluded.value, apply_at = excluded.apply_at''',
+        (kind, row_id, field, json.dumps(value), apply_at))
 
 
-def _drop_pending(raw, field):
-    return _pendings_json([p for p in _pendings(raw) if p.get('field') != field])
+def _unpend_row(conn, kind, row_id, field):
+    # Only THIS field's easing. Tightening one field must not cancel another
+    # field's countdown, which a blanket `pending = NULL` did.
+    conn.execute(
+        'DELETE FROM easing_pending WHERE kind = ? AND row_id = ? AND field = ?',
+        (kind, row_id, field))
+
+
+def _pendings_for(conn, kind, row_id):
+    return [{'field': r['field'], 'value': _pending_value(r['value']),
+             'apply_at': r['apply_at']}
+            for r in conn.execute(
+                '''SELECT * FROM easing_pending WHERE kind = ? AND row_id = ?
+                   ORDER BY apply_at''', (kind, row_id)).fetchall()]
 
 
 def _pend(conn, table, id, field, value):
-    apply_at = (datetime.now() + timedelta(hours=24)).isoformat()
-    row = conn.execute(f'SELECT pending FROM {table} WHERE id = ?', (id,)).fetchone()
-    conn.execute(f'UPDATE {table} SET pending = ? WHERE id = ?',
-                 (_merge_pending(row['pending'] if row else None, field, value, apply_at), id))
+    _pend_row(conn, table, id, field, value)
 
 
 def _unpend(conn, table, id, field):
-    # Only THIS field's easing. Tightening one field must not cancel another
-    # field's countdown, which a blanket `pending = NULL` did.
-    row = conn.execute(f'SELECT pending FROM {table} WHERE id = ?', (id,)).fetchone()
-    if not row or not row['pending']:
-        return
-    conn.execute(f'UPDATE {table} SET pending = ? WHERE id = ?',
-                 (_drop_pending(row['pending'], field), id))
+    _unpend_row(conn, table, id, field)
 
 
 def _pend_step(conn, id, field, value):
@@ -4753,44 +4840,33 @@ def _clear_step_pending(conn, id, field):
 
 def apply_due_flow_pendings(conn):
     # Each field lands on its OWN clock: the ones that have come due are
-    # applied and dropped, the rest keep counting.
+    # applied and dropped, the rest keep counting. One store, one loop —
+    # a delete short-circuits the rest of that row's queue because there is
+    # no longer a row to apply them to.
     now = datetime.now().isoformat()
-    for row in conn.execute(
-            'SELECT id, pending FROM flow_step WHERE pending IS NOT NULL').fetchall():
-        keep, deleted = [], False
-        for p in _pendings(row['pending']):
-            if (p.get('apply_at') or '') > now:
-                keep.append(p)
-                continue
-            field = p.get('field')
-            if field == 'delete':
-                conn.execute('DELETE FROM flow_step WHERE id = ?', (row['id'],))
-                deleted = True
-                break
-            if field in ('requirement', 'days_of_week'):
-                conn.execute(f'UPDATE flow_step SET {field} = ? WHERE id = ?',
-                             (p.get('value'), row['id']))
-        if not deleted:
-            conn.execute('UPDATE flow_step SET pending = ? WHERE id = ?',
-                         (_pendings_json(keep), row['id']))
-    for row in conn.execute(
-            'SELECT id, pending FROM flow WHERE pending IS NOT NULL').fetchall():
-        keep, deleted = [], False
-        for p in _pendings(row['pending']):
-            if (p.get('apply_at') or '') > now:
-                keep.append(p)
-                continue
-            field = p.get('field')
-            if field == 'delete':
-                _delete_flow_rows(conn, row['id'])
-                deleted = True
-                break
-            if field in ('qr_node_id', 'offset_min'):
-                conn.execute(f'UPDATE flow SET {field} = ? WHERE id = ?',
-                             (p.get('value'), row['id']))
-        if not deleted:
-            conn.execute('UPDATE flow SET pending = ? WHERE id = ?',
-                         (_pendings_json(keep), row['id']))
+    rows = conn.execute(
+        '''SELECT * FROM easing_pending WHERE kind IN ('flow', 'flow_step')
+             AND apply_at <= ? ORDER BY kind, row_id, apply_at''', (now,)).fetchall()
+    gone = set()
+    for r in rows:
+        kind, row_id, field = r['kind'], r['row_id'], r['field']
+        if (kind, row_id) in gone:
+            continue
+        value = _pending_value(r['value'])
+        if field == 'delete':
+            if kind == 'flow':
+                _delete_flow_rows(conn, row_id)
+            else:
+                conn.execute('DELETE FROM flow_step WHERE id = ?', (row_id,))
+            conn.execute('DELETE FROM easing_pending WHERE kind = ? AND row_id = ?',
+                         (kind, row_id))
+            gone.add((kind, row_id))
+            continue
+        allowed = (('qr_node_id', 'offset_min') if kind == 'flow'
+                   else ('requirement', 'days_of_week'))
+        if field in allowed:
+            conn.execute(f'UPDATE {kind} SET {field} = ? WHERE id = ?', (value, row_id))
+        _unpend_row(conn, kind, row_id, field)
     conn.commit()
 
 
@@ -4902,7 +4978,8 @@ def delete_flow_step(id):
 
 def cancel_flow_step_pending(id):
     conn = get_conn()
-    conn.execute('UPDATE flow_step SET pending = NULL WHERE id = ?', (id,))
+    conn.execute("DELETE FROM easing_pending WHERE kind = 'flow_step' AND row_id = ?",
+                 (id,))
     conn.commit()
     row = conn.execute('SELECT * FROM flow_step WHERE id = ?', (id,)).fetchone()
     conn.close()
@@ -4914,9 +4991,10 @@ def cancel_flow_step_pending(id):
 def cancel_flow_pending(id, field=None):
     conn = get_conn()
     if field:
-        _unpend(conn, 'flow', id, field)
+        _unpend_row(conn, 'flow', id, field)
     else:
-        conn.execute('UPDATE flow SET pending = NULL WHERE id = ?', (id,))
+        conn.execute("DELETE FROM easing_pending WHERE kind = 'flow' AND row_id = ?",
+                     (id,))
     conn.commit()
     row = conn.execute('SELECT * FROM flow WHERE id = ?', (id,)).fetchone()
     conn.close()
@@ -6085,8 +6163,10 @@ def qr_update_node(node_id, fields):
 
 def qr_delete_node(node_id):
     conn = get_conn()
-    for t in ('qr_scan', 'qr_override', 'qr_pending_change', 'qr_charge_log'):
+    for t in ('qr_scan', 'qr_override', 'qr_charge_log'):
         conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (node_id,))
+    conn.execute("DELETE FROM easing_pending WHERE kind = 'gate' AND row_id = ?",
+                 (node_id,))
     conn.execute('DELETE FROM qr_node WHERE id = ?', (node_id,))
     conn.commit()
     conn.close()
@@ -6175,31 +6255,37 @@ def qr_delete_override(node_id, date):
     conn.close()
 
 
+# The gate half of easing_pending. The response shape is unchanged
+# (node_id / field / new_value / apply_at) because the Gates panel and the
+# timeline pill are built around it.
 def qr_add_pending_change(node_id, field, new_value, apply_at):
     conn = get_conn()
-    conn.execute(
-        '''INSERT INTO qr_pending_change (node_id, field, new_value, apply_at)
-           VALUES (?,?,?,?)''', (node_id, field, new_value, apply_at))
+    _pend_row(conn, 'gate', node_id, field, new_value, apply_at)
     conn.commit()
     conn.close()
+
+
+def _gate_pending_shape(r):
+    return {'node_id': r['row_id'], 'field': r['field'],
+            'new_value': _pending_value(r['value']), 'apply_at': r['apply_at']}
 
 
 def qr_get_pending_changes(node_id=None):
     conn = get_conn()
     if node_id is None:
-        rows = conn.execute('SELECT * FROM qr_pending_change ORDER BY apply_at').fetchall()
+        rows = conn.execute(
+            "SELECT * FROM easing_pending WHERE kind = 'gate' ORDER BY apply_at").fetchall()
     else:
         rows = conn.execute(
-            'SELECT * FROM qr_pending_change WHERE node_id = ? ORDER BY apply_at',
-            (node_id,)).fetchall()
+            """SELECT * FROM easing_pending WHERE kind = 'gate' AND row_id = ?
+               ORDER BY apply_at""", (node_id,)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_gate_pending_shape(r) for r in rows]
 
 
 def qr_cancel_pending_change(node_id, field):
     conn = get_conn()
-    conn.execute('DELETE FROM qr_pending_change WHERE node_id = ? AND field = ?',
-                 (node_id, field))
+    _unpend_row(conn, 'gate', node_id, field)
     conn.commit()
     conn.close()
 
@@ -6207,26 +6293,32 @@ def qr_cancel_pending_change(node_id, field):
 def qr_apply_due_pending_changes(now_iso):
     # Loosening a constraint is 24h-gated; this is where the delay elapses.
     conn = get_conn()
-    rows = conn.execute('SELECT * FROM qr_pending_change WHERE apply_at <= ?',
-                        (now_iso,)).fetchall()
+    rows = conn.execute(
+        "SELECT * FROM easing_pending WHERE kind = 'gate' AND apply_at <= ?",
+        (now_iso,)).fetchall()
     applied = []
     for r in rows:
+        value = _pending_value(r['value'])
         # QR_DELETE_FIELD is not a column — it is the whole gate going away, the
         # loosest change there is, so it takes the same 24h road as every other
         # easing rather than a separate one. Rows for the node are cleared here
         # rather than through qr_delete_node because that opens its own
         # connection and this one is mid-transaction.
         if r['field'] == QR_DELETE_FIELD:
-            for t in ('qr_scan', 'qr_override', 'qr_pending_change', 'qr_charge_log'):
-                conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (r['node_id'],))
-            conn.execute('DELETE FROM qr_node WHERE id = ?', (r['node_id'],))
-            applied.append(dict(r))
+            for t in ('qr_scan', 'qr_override', 'qr_charge_log'):
+                conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (r['row_id'],))
+            conn.execute("DELETE FROM easing_pending WHERE kind = 'gate' AND row_id = ?",
+                         (r['row_id'],))
+            conn.execute('DELETE FROM qr_node WHERE id = ?', (r['row_id'],))
+            applied.append(_gate_pending_shape(r))
             continue
         if r['field'] in QR_NODE_FIELDS:
             conn.execute('UPDATE qr_node SET ' + r['field'] + ' = ? WHERE id = ?',
-                         (r['new_value'], r['node_id']))
-            applied.append(dict(r))
-        conn.execute('DELETE FROM qr_pending_change WHERE id = ?', (r['id'],))
+                         (value, r['row_id']))
+            applied.append(_gate_pending_shape(r))
+        conn.execute(
+            "DELETE FROM easing_pending WHERE kind = 'gate' AND row_id = ? AND field = ?",
+            (r['row_id'], r['field']))
     conn.commit()
     conn.close()
     return applied

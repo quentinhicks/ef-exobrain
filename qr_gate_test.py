@@ -69,6 +69,16 @@ def complete(flow_id, ymd, hhmm):
     conn.close()
 
 
+def elapse(flow_id, kind='flow'):
+    """Run the 24h clock out on every easing queued for a row."""
+    conn = sqlite3.connect(storage.DB_PATH)
+    conn.execute(
+        'UPDATE easing_pending SET apply_at = ? WHERE kind = ? AND row_id = ?',
+        ('2000-01-01T00:00:00', kind, flow_id))
+    conn.commit()
+    conn.close()
+
+
 def _date_plus_day(ymd):
     return (date_cls.fromisoformat(ymd) + timedelta(days=1)).isoformat()
 
@@ -215,12 +225,7 @@ nid = storage.qr_create_node('Wake', 'tok-wake-8b', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
 storage.update_flow(flow['id'], qr_node_id=nid)
 storage.update_flow(flow['id'], qr_node_id=None)
-conn = sqlite3.connect(storage.DB_PATH)          # the 24h elapses
-conn.execute("""UPDATE flow SET pending = replace(pending, substr(pending,
-                instr(pending, '"apply_at": "') + 13, 26), '2000-01-01T00:00:00')
-                WHERE id = ?""", (flow['id'],))
-conn.commit()
-conn.close()
+elapse(flow['id'])                               # the 24h elapses
 scan(nid, YESTERDAY)
 qr_judge.judge()
 check('…and once the 24h is up, it does',
@@ -239,11 +244,7 @@ scan(nid, YESTERDAY)
 qr_judge.judge()
 check('so it does not release the gate tonight',
       reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
-conn = sqlite3.connect(storage.DB_PATH)
-conn.execute("UPDATE flow SET pending = replace(pending, ?, ?)",
-             (str(date_cls.today().year), str(date_cls.today().year - 1)))
-conn.commit()
-conn.close()
+elapse(flow['id'])
 conn = storage.get_conn()
 storage.apply_due_flow_pendings(conn)
 conn.close()
@@ -296,8 +297,8 @@ flow = storage.create_flow('Night routine')
 storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-60)
 storage.update_flow(flow['id'], qr_node_id=None)          # easing 1: unlink
 storage.update_flow(flow['id'], offset_min=30)            # easing 2: later offset
-f = [x for x in storage.get_flows() if x['id'] == flow['id']][0]
-fields = sorted(p['field'] for p in storage._pendings(f['pending']))
+f = [x for x in storage.get_flows(TODAY) if x['id'] == flow['id']][0]
+fields = sorted(p['field'] for p in (f['pending'] or []))
 check('queueing a second easing does not delete the first',
       fields == ['offset_min', 'qr_node_id'], fields)
 

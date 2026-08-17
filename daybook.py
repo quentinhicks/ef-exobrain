@@ -69,7 +69,8 @@ SKIP = {'gcal_recurring_seen', 'sheets_inbox_item', 'todo_sync', 'qr_todo_push',
 # social_action and social_axis_level earn their place because a rep's price is
 # STAMPED at log time — without the grid beside it, a later recalibration makes
 # the day's numbers unreadable.
-STATE = ('domain', 'area', 'qr_node', 'qr_pending_change', 'flow', 'flow_step',
+STATE = ('domain', 'area', 'qr_node', 'qr_pending_change', 'easing_pending',
+         'flow', 'flow_step',
          'ref_list', 'recurring_block', 'recurring_task', 'routine_item',
          'location', 'bucket', 'person_bucket', 'calendar_source', 'deadline',
          'occasion',
@@ -90,6 +91,7 @@ STATE_ALSO_DATED = {'inbox_item', 'routine_item'}
 # A heading a human wrote beats a table name. Anything absent falls back to the
 # table name, which is the whole point of not requiring an entry.
 TITLES = {
+    'easing_pending': 'Easings waiting out their 24h',
     'inbox_item': 'Captured',
     'engage_placement': 'Placed on the day',
     'occasion_mint': 'Minted by an occasion',
