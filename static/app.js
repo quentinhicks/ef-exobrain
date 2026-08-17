@@ -9083,7 +9083,7 @@ function renderPersonDetail(p) {
         peopleView.buckets.filter(b => b.active || (p.buckets || []).some(x => x.id === b.id)).map(b => {
           const on = (p.buckets || []).some(x => x.id === b.id);
           return `<button class="pd-bucket-chip${on ? ' pd-bucket-on' : ''}" data-bucket="${b.id}">${escHtml(b.name)}</button>`;
-        }).join('')}</span></div>`
+        }).join('')}<button class="pd-bucket-chip pd-bucket-new" id="pd-bucket-new">+ bucket</button></span></div>`
     : [
       p.birthday && `<div class="pd-meta"><span>Birthday</span>${escHtml(p.birthday)}</div>`,
       p.how_we_met && `<div class="pd-meta"><span>How we met</span>${escHtml(p.how_we_met)}</div>`,
@@ -9131,7 +9131,7 @@ function renderPersonDetail(p) {
       }
     });
   });
-  body.querySelectorAll('.pd-bucket-chip').forEach(el => {
+  body.querySelectorAll('.pd-bucket-chip[data-bucket]').forEach(el => {
     el.addEventListener('click', async () => {
       const bid = parseInt(el.dataset.bucket);
       const ids = (p.buckets || []).map(b => b.id);
@@ -9140,6 +9140,35 @@ function renderPersonDetail(p) {
       if (person) renderPersonDetail(person);
     });
   });
+  // A BUCKET CAN BE MINTED HERE (2026-08-17). The fill is where you find out a
+  // bucket is missing — you are looking at the person who does not fit any of
+  // them — and the only way to add one was to leave the person, open the
+  // bucket manager, add it, and come back to a 10-minute session you had just
+  // spent. It mints AND files in one go, because naming it while looking at
+  // the person is what makes it the right bucket.
+  //
+  // The ENTRY SHEET, like every other list datatype's add: one add grammar,
+  // and at z-200 it opens above the person modal (175 over the runner).
+  const newBucket = document.getElementById('pd-bucket-new');
+  if (newBucket) {
+    newBucket.addEventListener('click', () => openEntrySheet({
+      title: 'New bucket',
+      placeholder: 'e.g. Climbing',
+      hint: `Added to ${p.name || 'this person'} as well.`,
+      button: 'Add', closeOnAdd: true,
+      add: async raw => {
+        const name = raw.trim();
+        if (!name) return;
+        const res = await apiSend('/api/buckets', 'POST', { name });
+        if (!res.ok) { toast('Could not add that bucket'); return; }
+        const bucket = await res.json();
+        peopleView.buckets = await apiGet('/api/buckets', peopleView.buckets);
+        const person = await pdPatch({
+          bucket_ids: [...(p.buckets || []).map(b => b.id), bucket.id] });
+        if (person) renderPersonDetail(person);
+      },
+    }));
+  }
 
   const pdNotes = document.getElementById('pd-notes');
   pdNotes.readOnly = !peopleView.editable;

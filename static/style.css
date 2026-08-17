@@ -5011,15 +5011,23 @@ button.eg-domain { cursor: pointer; }
   color: var(--text-primary);
   padding: 4px 6px;
 }
-.pd-bucket-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pd-bucket-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Filing someone into a bucket is a TAP, on a phone, inside a 10-minute
+   session — so the chip is a finger target rather than an 11px label. */
 .pd-bucket-chip {
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 12px;
+  font-size: 12px;
+  padding: 7px 12px;
+  min-height: 32px;
+  border-radius: 16px;
   background: var(--surface-2);
   color: var(--text-secondary);
 }
 .pd-bucket-on { background: var(--accent); color: var(--on-accent); }
+/* Dashed: it does not name a bucket, it makes one. */
+.pd-bucket-new {
+  background: transparent;
+  border: 1px dashed var(--border);
+}
 
 /* Full-screen NOW view (phone) */
 #now-full-body {
