@@ -3893,6 +3893,130 @@ async function experimentVerb(id, verb, name) {
   await openGtdReview();
 }
 
+// ── Reordering the phases ────────────────────────────────────
+//
+// A phase is not a row: it is a RUN of consecutive steps that share a
+// `REVIEW_KINDS[kind].phase`, and the header appears wherever that value
+// changes as the steps are walked in `position` order. So dragging a header
+// moves the steps under it — the only thing the store knows — and the header
+// follows because it was never anything but a label on the order.
+//
+// Clear → Current → Creative is Allen's sequence, not a law: what has to stay
+// true is that the steps of one phase remain CONTIGUOUS, or the fold-out would
+// print the same header twice. Moving whole runs is what guarantees that.
+function reviewPhaseOrder(panel) {
+  return [...panel.querySelectorAll('.gr-phase[data-phase]')].map(el => el.dataset.phase);
+}
+
+// The steps of every phase, in their own order, concatenated in the order the
+// phases are given — then renumbered from 1. Only the steps that actually
+// moved are written.
+async function saveReviewPhaseOrder(order) {
+  const steps = reviewSteps();
+  const next = [];
+  order.forEach(p => steps.forEach(s => {
+    if (reviewKind(s).phase === p) next.push(s);
+  }));
+  // A step whose phase is not in the list (a kind added since, or one of your
+  // own) keeps its place at the end rather than being dropped from the write.
+  steps.forEach(s => { if (!next.includes(s)) next.push(s); });
+  const moved = next.filter((s, i) => s.position !== i + 1);
+  await Promise.all(next.map((s, i) => s.position === i + 1 ? null
+    : apiSend(`/api/flow-steps/${s.id}`, 'PATCH', { position: i + 1 })).filter(Boolean));
+  return moved.length;
+}
+
+// The nearest ancestor that actually scrolls. Needed because a drag takes
+// pointer capture and `touch-action: none`, so the page cannot scroll itself
+// while one is live — and the three phases are ~1400px on a 930px screen, which
+// would make "move Get Creative to the top" a gesture that cannot be performed
+// on the phone this app is shaped for.
+// Starts at the element ITSELF: the review fold-out is its own scroller
+// (#review-panel is overflow-y:auto inside a fixed-height overlay), so walking
+// straight to the parent found the document, which does not scroll here — and
+// the auto-scroll silently did nothing.
+function scrollParentOf(el) {
+  for (let p = el; p; p = p.parentElement) {
+    const s = getComputedStyle(p);
+    if (/(auto|scroll)/.test(s.overflowY) && p.scrollHeight > p.clientHeight) return p;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+// Hold the pointer near an edge and the list keeps coming, the way a drag
+// against the edge behaves everywhere else. A rAF loop rather than a reaction
+// to pointermove, because a finger held STILL at the edge fires no events and
+// would otherwise stall an inch from the target.
+function edgeAutoScroll(scroller) {
+  const ZONE = 64, STEP = 14;
+  let y = null, raf = null;
+  const tick = () => {
+    raf = null;
+    if (y == null) return;
+    const r = scroller === document.scrollingElement
+      ? { top: 0, bottom: window.innerHeight } : scroller.getBoundingClientRect();
+    let d = 0;
+    if (y < r.top + ZONE) d = -STEP;
+    else if (y > r.bottom - ZONE) d = STEP;
+    if (d) {
+      scroller.scrollTop += d;
+      raf = requestAnimationFrame(tick);
+    }
+  };
+  return {
+    at(clientY) { y = clientY; if (!raf) raf = requestAnimationFrame(tick); },
+    stop() { y = null; if (raf) cancelAnimationFrame(raf); raf = null; },
+  };
+}
+
+function wireReviewPhaseDrag(panel) {
+  const heads = panel.querySelectorAll('.gr-phase[data-phase] > .gr-phase-name');
+  if (heads.length < 2) return;               // nothing to reorder against
+  heads.forEach(head => {
+    const box = head.parentElement;
+    let scroll = null;
+    onPointerDrag(head, { start(e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return null;
+      const before = reviewPhaseOrder(panel);
+      box.classList.add('gr-phase-dragging');
+      document.body.style.cursor = 'grabbing';
+      scroll = edgeAutoScroll(scrollParentOf(panel));
+      // A long press that becomes a drag must not also fire the click.
+      if (e.pointerType !== 'mouse') head.dataset.lpDragged = '1';
+      return {
+        // Reordered live in the DOM, so the drop lands where you saw it —
+        // there is no separate preview to keep in step with the real thing.
+        move(clientY) {
+          scroll.at(clientY);
+          for (const other of panel.querySelectorAll('.gr-phase[data-phase]')) {
+            if (other === box) continue;
+            const r = other.getBoundingClientRect();
+            if (clientY < r.top || clientY > r.bottom) continue;
+            const above = clientY < r.top + r.height / 2;
+            other.parentNode.insertBefore(box, above ? other : other.nextSibling);
+            break;
+          }
+        },
+        async end() {
+          scroll.stop();
+          box.classList.remove('gr-phase-dragging');
+          document.body.style.cursor = '';
+          const after = reviewPhaseOrder(panel);
+          if (after.join('|') === before.join('|')) return;
+          const moved = await saveReviewPhaseOrder(after);
+          if (!moved) return;
+          // Every data-changing gesture ships its inverse, drags included.
+          pushUndo(`moved "${box.dataset.phase}"`, async () => {
+            await saveReviewPhaseOrder(before);
+            await openGtdReview();
+          });
+          await openGtdReview();
+        },
+      };
+    } });
+  });
+}
+
 function renderGtdReview() {
   const panel = document.getElementById('review-panel');
   if (!panel || !gtdReview) return;
@@ -3959,7 +4083,8 @@ function renderGtdReview() {
     if (s.phase !== phase) {
       if (phase) html += '</div>';
       phase = s.phase;
-      html += `<div class="gr-phase"><div class="gr-phase-name">${escHtml(phase)}</div>`;
+      html += `<div class="gr-phase" data-phase="${escHtml(phase)}">`
+        + `<div class="gr-phase-name" title="Drag to reorder the phases">${escHtml(phase)}</div>`;
     }
     const isDone = !!ticks[step.id];
     html += `
@@ -4047,6 +4172,7 @@ function renderGtdReview() {
   panel.querySelectorAll('.gr-cb').forEach(cb => {
     cb.addEventListener('change', () => setReviewTick(cb.dataset.step, cb.checked));
   });
+  wireReviewPhaseDrag(panel);
 
   const finish = document.getElementById('gr-finish');
   if (finish) {

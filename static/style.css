@@ -2549,13 +2549,33 @@ body.calendar-minimized #review-modal {
 
 .gr-phase { margin-bottom: 22px; }
 
+/* The header is the phase's HANDLE: dragging it moves the run of steps under
+   it (wireReviewPhaseDrag). Padded to a finger target — the label itself is
+   11px, which is a size to read, not a size to grab. */
 .gr-phase-name {
   font: 11px var(--font-ui);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-secondary);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
+  padding: 8px 0;
+  cursor: grab;
+  user-select: none;
 }
+
+.gr-phase-name::before {
+  content: '⠿ ';
+  letter-spacing: 0;
+  opacity: 0.45;
+}
+
+.gr-phase-dragging {
+  opacity: 0.65;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+
+.gr-phase-dragging .gr-phase-name { cursor: grabbing; }
 
 .gr-step {
   display: flex;
