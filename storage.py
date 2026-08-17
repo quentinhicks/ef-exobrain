@@ -3294,8 +3294,9 @@ def backup_db():
     set_setting('last_backup_date', today)
 
 
-# Log docs: long-term markdown files in logs/, git-tracked, edited from the
-# Logs view. Names are sanitized to a safe charset; content is the raw file.
+# Log docs: long-term markdown files in logs/, gitignored and carried by restic
+# with the rest of the data dir, edited from the Logs view. Names are sanitized
+# to a safe charset; content is the raw file.
 
 LOGS_DIR = 'logs'
 
@@ -3445,6 +3446,41 @@ def create_log(name, tags=None, created=None):
                         for t in (tags or [])} - {''})
         write_log(name, (' '.join('#' + t for t in clean) + '\n\n') if clean else '')
     return read_log(name)
+
+
+# A photo is a FILE beside the log and a markdown link inside it — no table, no
+# blob column. A log is a markdown file whose point is being readable in ten
+# years with no app and no sqlite, and `![](media/x.jpg)` is still readable
+# there; a row in a database it outlives is not. The bytes ride restic with the
+# rest of the data dir, and logs/ is gitignored, so a phone photo can't reach
+# the repo.
+LOGS_MEDIA_DIR = os.path.join(LOGS_DIR, 'media')
+
+# An extension ALLOWLIST, not a content sniff. The extension is what any viewer
+# will decide by, so an unlisted one is refused rather than guessed at.
+LOG_PHOTO_EXTS = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'}
+
+
+# -> the log-relative path to write into the markdown, or None if refused
+def save_log_photo(name, filename, data):
+    name = _log_name(name)
+    ext = (filename or '').rsplit('.', 1)[-1].lower()
+    if not name or ext not in LOG_PHOTO_EXTS:
+        return None
+    os.makedirs(LOGS_MEDIA_DIR, exist_ok=True)
+    # The log's own name is the prefix, so `ls logs/media` reads in the same
+    # order the corpus does and a photo is never orphaned from the log holding
+    # it. Spaces become dashes because the link has to survive a markdown
+    # parser. The counter never reuses a number: overwriting a file some older
+    # revision of the log still points at would break that link silently.
+    slug = re.sub(r'\s+', '-', name).strip('-')
+    n = 1
+    while os.path.exists(os.path.join(LOGS_MEDIA_DIR, '%s-%d.%s' % (slug, n, ext))):
+        n += 1
+    rel = 'media/%s-%d.%s' % (slug, n, ext)
+    with open(os.path.join(LOGS_DIR, rel), 'wb') as f:
+        f.write(data)
+    return rel
 
 
 def get_settings():

@@ -2397,6 +2397,21 @@ body.calendar-minimized #review-modal {
   color: var(--text-primary);
 }
 
+/* A finger target, not a 12px word: this is the one control in the bar that
+   opens the camera, and there is no hover to find it with. */
+.log-photo-btn {
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 8px 12px;
+  min-height: 36px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+}
+
+.log-photo-btn:hover {
+  color: var(--text-primary);
+}
+
 .log-save-status {
   color: var(--text-secondary);
   font-size: 11px;
@@ -4183,6 +4198,35 @@ body.map-over-runner #map-overlay { z-index: 170; }
   touch-action: manipulation;
 }
 .eg-check:hover { border-color: var(--accent); background: var(--tint); }
+
+/* ▶ INSTEAD OF THE TICK on a row a routine seeded (flow.as_task). Same 14px
+   box the checkbox occupies so the column of controls stays a column, but it
+   is outlined in accent and carries the glyph: the row's one control is "run
+   it", not "call it done". Ticking such a row off would retire the seed with
+   the routine never run. The finger target is padded past the 14px box —
+   below ~36px a sub-target cannot be hit on a phone. */
+.eg-run {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 1.5px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 8px;
+  line-height: 11px;
+  text-align: center;
+  cursor: pointer;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+.eg-run:hover { background: var(--tint); }
+
+/* The routine's length, derived from its steps rather than stored as a tag —
+   it sits with the estimate tags and reads as one, in accent so it is legible
+   as "this came with the routine". */
+.eg-tag-len { color: var(--accent); border-color: var(--accent); }
 /* ◐ in progress (press-and-hold): accent, half-filled, floats first in the
    pool. A glance state only — nothing else reads it. */
 .eg-check-started {

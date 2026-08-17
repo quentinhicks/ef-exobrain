@@ -5768,6 +5768,48 @@ function flowName(flowId) {
   return f ? f.name : 'the later routine';
 }
 
+// A pool/day row seeded by a ROUTINE (flow.as_task). Its one control is ▶, not
+// a tick: ticking it off would retire the seed without the routine ever having
+// been run, which is the one thing the seed exists to prevent. Clarify has said
+// "▶ Run it" since the seed was built; this is the same door on the row itself.
+function itemFlow(i) {
+  return i && i.flow_id
+    ? (engageView.flows || []).find(f => f.id === i.flow_id) || null : null;
+}
+
+// How long the routine is ON THE DAY BEING LOOKED AT. `day_steps` is the
+// server's composition for that date (due today, pawns applied), so this only
+// SUMS a list someone else decided — it does not re-derive which steps count.
+// Unestimated steps contribute nothing, so the chip under-promises rather than
+// inventing a number.
+function flowTaskMinutes(i) {
+  const f = itemFlow(i);
+  return f ? stepsMinutes(f.day_steps || f.steps || []).total : 0;
+}
+
+// The row's control, for the two Engage row shapes. One place, so the pool and
+// the day cannot offer different verbs for the same item.
+function egRowControl(i, started, title) {
+  if (i && i.flow_id) {
+    return `<span class="eg-run" data-run="${i.flow_id}" data-id="${i.id}"
+      title="Run this routine — ticking it off is not how it gets done">▶</span>`;
+  }
+  return `<span class="eg-check${started ? ' eg-check-started' : ''}" data-id="${i.id}"
+    title="${title}">${started ? '◐' : ''}</span>`;
+}
+
+// The length chip. It rides where the estimate tags ride and looks like them,
+// but it is DERIVED, never stored: EST_TAGS is a closed vocabulary (5m/15m/30m/
+// 90m) and a routine's real length is whatever its steps add up to. Writing it
+// as a tag would either lie or break that vocabulary.
+function flowLenChip(i) {
+  const m = flowTaskMinutes(i);
+  return m
+    ? `<span class="eg-tag eg-tag-len" title="What this routine's steps add up to today">${
+        escHtml(humanMinutes(m))}</span>`
+    : '';
+}
+
 // Pawning is a DAY-level act: the step leaves today's routine, joins the later
 // one, and takes its minutes with it — so that routine's gate closes earlier. It
 // is deliberately not undoable through the undo stack (the config surfaces are
@@ -7053,6 +7095,42 @@ function logPaste(e) {
   logEdit(ta, s, en, out, s + out.length);
 }
 
+// A photo is stored BESIDE the log and referenced from it — the file lands in
+// logs/media/ and the markdown link is the whole feature. The app never renders
+// it: the editor is raw markdown, and the log is meant to be read by anything
+// that can read markdown, which is where the picture shows up.
+//
+// The insertion goes through logEdit like every other mutation, so the
+// browser's Ctrl+Z takes the link back. That undoes the TEXT only; the file
+// stays in media/. An unreferenced photo on disk is cheaper than a link with
+// no file behind it, and cheaper than breaking the native undo stack.
+async function uploadLogPhoto(file) {
+  const ta = document.getElementById('log-editor');
+  if (!file || !ta || !logsView.open) return;
+  const status = document.getElementById('log-save-status');
+  if (status) status.textContent = 'Uploading…';
+  let path = null;
+  try {
+    const fd = new FormData();
+    fd.append('photo', file);
+    const r = await fetch(`/api/logs/${encodeURIComponent(logsView.open)}/photo`,
+                          { method: 'POST', body: fd });
+    if (r.ok) path = (await r.json()).path;
+  } catch (e) { /* offline: mutations are deliberately not queued, so it fails */ }
+  if (!path) {
+    if (status) status.textContent = '';
+    // A refusal has to be visible on a phone — the bar's status line is a
+    // whisper next to the keyboard covering half the screen.
+    toast('Photo did not upload');
+    return;
+  }
+  ta.focus();
+  const s = ta.selectionStart, e = ta.selectionEnd;
+  const out = (s === logLineStart(ta.value, s) ? '' : '\n') + `![](${path})\n`;
+  logEdit(ta, s, e, out, s + out.length);
+  await flushLogSave();
+}
+
 // Marks the matched run inside a hit line, the way MAP's search does for a
 // title — reading the hit is the point, and an unmarked line makes you find
 // the word again by eye.
@@ -7157,6 +7235,8 @@ function renderLogs() {
   body.innerHTML = `
     <div class="log-editor-bar">
       <button id="log-back" class="log-back-btn">‹ All logs</button>
+      <button id="log-photo" class="log-photo-btn">+ photo</button>
+      <input type="file" id="log-photo-input" accept="image/*" hidden>
       <span id="log-save-status" class="log-save-status"></span>
     </div>
     <div class="log-editor-wrap">
@@ -7181,6 +7261,15 @@ function renderLogs() {
   ta.addEventListener('keydown', logKeydown);
   ta.addEventListener('paste', logPaste);
   ta.addEventListener('blur', flushLogSave);
+  const photoInput = document.getElementById('log-photo-input');
+  document.getElementById('log-photo').addEventListener('click', () => photoInput.click());
+  photoInput.addEventListener('change', () => {
+    const f = photoInput.files[0];
+    // Cleared BEFORE the upload: picking the same photo twice fires no change
+    // event while the input still holds it, which reads as a dead button.
+    photoInput.value = '';
+    uploadLogPhoto(f);
+  });
   document.getElementById('log-back').addEventListener('click', async () => {
     await flushLogSave();
     logsView.open = null;
@@ -10803,7 +10892,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin) {
     if (!item || item.status !== 'active') return;
     placedIds.add(item.id);
     rows.push({ kind: 'action', minute: p.minute, id: item.id, label: item.content,
-                started: !!item.started_at });
+                started: !!item.started_at, flow_id: item.flow_id || null });
   });
 
   rows.sort((a, b) => a.minute - b.minute || (a.kind === 'action') - (b.kind === 'action'));
@@ -10965,9 +11054,11 @@ function renderEngage() {
     // block; blocks/events/gates above still show their real times.
     return `<div class="eg-row eg-action${r.started ? ' eg-inprog' : ''}" draggable="true" data-id="${r.id}">
       <span class="eg-time"></span>
-      <span class="eg-check${r.started ? ' eg-check-started' : ''}" data-id="${r.id}"
-        title="${r.started ? 'In progress — tap for done, hold to clear' : 'Tap = done · hold = in progress'}">${r.started ? '◐' : ''}</span>
+      ${egRowControl(r, r.started, r.started
+        ? 'In progress — tap for done, hold to clear'
+        : 'Tap = done · hold = in progress')}
       <span class="eg-text">${escHtml(r.label)}</span>
+      <span class="eg-tags">${flowLenChip(r)}</span>
       <button class="eg-unplace" data-id="${r.id}" title="Back to Not scheduled">↩︎</button>
     </div>`;
   };
@@ -11137,10 +11228,9 @@ function renderEngage() {
     <div class="eg-pool">
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
-          <span class="eg-check${i.started_at ? ' eg-check-started' : ''}" data-id="${i.id}"
-            title="Done">${i.started_at ? '◐' : ''}</span>
+          ${egRowControl(i, i.started_at, 'Done')}
           <span class="eg-text">${escHtml(i.content)}</span>
-          <span class="eg-tags">${itemTags(i).filter(t => EST_TAGS.includes(t))
+          <span class="eg-tags">${flowLenChip(i)}${itemTags(i).filter(t => EST_TAGS.includes(t))
             .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}${dueChip(i, 'eg-tag')}${
             itemTags(i).filter(t => !EST_TAGS.includes(t))
             .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}</span>
@@ -11323,6 +11413,21 @@ function renderEngage() {
 
   // The pool's per-row exit glyphs are gone (2026-08): a pool row is text and
   // a checkbox now, and push/waiting/someday are taken in the clarify sheet.
+
+  // ▶ in place of the tick, on a row a ROUTINE seeded. It runs the routine
+  // rather than completing the action, because completing it directly would
+  // retire the seed with the routine never run — the exact hole flow_task_seed
+  // exists to close. The run retires it by itself. stopPropagation because the
+  // row is draggable and opens clarify on click, and justLongPressed for the
+  // same reason .eg-check checks it: this sits inside the row's long press.
+  body.querySelectorAll('.eg-run[data-run]').forEach(el => {
+    el.addEventListener('click', async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (justLongPressed()) return;
+      await openFlowRun(parseInt(el.dataset.run));
+    });
+  });
 
   body.querySelectorAll('.eg-routine-btn').forEach(el => {
     el.addEventListener('click', () => {

@@ -1114,6 +1114,35 @@ def put_log(name):
     return '', 204
 
 
+# Multipart, not JSON: base64 in a JSON body would be a third of the phone's
+# photo again, held whole in memory on both ends, for nothing. The cap is here
+# rather than app.MAX_CONTENT_LENGTH so it applies to THIS route only — every
+# other write is small and a global cap would silently police them too.
+LOG_PHOTO_MAX = 25 * 1024 * 1024
+
+
+@app.route('/api/logs/<name>/photo', methods=['POST'])
+def post_log_photo(name):
+    f = request.files.get('photo')
+    if not f:
+        return jsonify({'error': 'no file'}), 400
+    data = f.read(LOG_PHOTO_MAX + 1)
+    if len(data) > LOG_PHOTO_MAX:
+        return jsonify({'error': 'too big'}), 413
+    rel = storage.save_log_photo(name, f.filename, data)
+    if not rel:
+        return jsonify({'error': 'not an image'}), 415
+    return jsonify({'path': rel}), 201
+
+
+# Serves what the link points at. The markdown link is RELATIVE, so any viewer
+# reading logs/ off disk resolves it without this; the route exists so the same
+# photo is reachable over HTTP from the phone that took it.
+@app.route('/api/logs/media/<path:fname>')
+def get_log_media(fname):
+    return send_from_directory(os.path.abspath(storage.LOGS_MEDIA_DIR), fname)
+
+
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
     # qr_worker_url lives in config.json, not the setting table, but the client
