@@ -1584,6 +1584,18 @@ _AVAILABLE = """i.status = 'active'
                   OR NOT EXISTS (SELECT 1 FROM inbox_item p WHERE p.id = i.after_id))"""
 
 
+# DEFERRED is the same kind of shared predicate, and for the same reason: the
+# calendar's "what comes back that day" list required status = 'active' and the
+# review's count did not, so a waiting or someday item with a future date was
+# COUNTED as deferred and then never appeared on the day it was said to return.
+# (It was also counted twice — once as deferred, once as someday.) Active is
+# the right half: a deferred item is a live thing parked until a date; one that
+# is waiting or on hold is already on another list. Callers alias inbox_item as
+# `i` and bind today where the ? sits.
+_DEFERRED = """i.kind = 'item' AND i.status = 'active'
+             AND i.defer_until IS NOT NULL AND i.defer_until > ?"""
+
+
 # A PROJECT'S DEADLINE BINDS EVERYTHING UNDER IT. If the outcome is due today
 # then so is every next action that serves it — an action can't be later than
 # the thing it is for. So `effective_deadline` is the EARLIEST deadline on the
@@ -1689,14 +1701,13 @@ def get_deferred_items():
     today = date_cls.today().isoformat()
     conn = get_conn()
     rows = conn.execute(
-        '''SELECT i.*, a.name AS area_name, a.domain_id AS domain_id,
-                  p.content AS project_name
-           FROM inbox_item i
-           LEFT JOIN area a ON a.id = i.area_id
-           LEFT JOIN inbox_item p ON p.id = i.project_id
-           WHERE i.kind = 'item' AND i.status = 'active'
-             AND i.defer_until IS NOT NULL AND i.defer_until > ?
-           ORDER BY i.defer_until, i.captured_at''',
+        f'''SELECT i.*, a.name AS area_name, a.domain_id AS domain_id,
+                   p.content AS project_name
+            FROM inbox_item i
+            LEFT JOIN area a ON a.id = i.area_id
+            LEFT JOIN inbox_item p ON p.id = i.project_id
+            WHERE {_DEFERRED}
+            ORDER BY i.defer_until, i.captured_at''',
         (today,)
     ).fetchall()
     out = _apply_inherited_deadlines(conn, [dict(r) for r in rows])
@@ -1807,8 +1818,7 @@ def get_gtd_review_counts():
     someday = conn.execute(
         "SELECT COUNT(*) n FROM inbox_item WHERE kind = 'item' AND status = 'on_hold'").fetchone()['n']
     deferred = conn.execute(
-        '''SELECT COUNT(*) n FROM inbox_item
-           WHERE kind = 'item' AND defer_until IS NOT NULL AND defer_until > ?''',
+        f'''SELECT COUNT(*) n FROM inbox_item i WHERE {_DEFERRED}''',
         (today,)).fetchone()['n']
     # Waiting-for is what the review step of that name has always asked for and
     # never had: the things handed off, with how long they have been out.
@@ -2113,15 +2123,57 @@ def delete_occasion_item(item_id):
     conn.close()
 
 
+# The reconciliation the mint comment always claimed: "an event that moved to
+# another day takes its actions with it". The ledger was insert-only, so it did
+# not — the old day kept orphaned actions and the new day minted a SECOND set,
+# and the prep for one meeting existed twice.
+#
+# Only what is still OUTSTANDING is retracted. A mint whose item is already
+# gone was completed or deleted by hand, and its ledger row stays exactly where
+# it is: that row is what stops a finished action being minted again. A mint
+# still sitting in the pool for an event that is no longer on the day is work
+# that was never owed, so it goes — ledger row included, so the event coming
+# back mints it afresh.
+def _retract_stale_mints(conn, day):
+    summaries = [(r['summary'] or '').lower() for r in conn.execute(
+        """SELECT e.summary FROM gcal_event e
+           JOIN calendar_source c ON e.source_id = c.id
+           WHERE c.active = 1 AND substr(e.start, 1, 10) = ?""", (day,)).fetchall()]
+    rows = conn.execute(
+        """SELECT m.template_id, m.item_id, o.match_text
+           FROM occasion_mint m
+           JOIN inbox_item t ON t.id = m.template_id
+           JOIN occasion o ON o.id = t.occasion_id
+           WHERE m.date = ?""", (day,)).fetchall()
+    for m in rows:
+        needle = (m['match_text'] or '').strip().lower()
+        if needle and any(needle in s for s in summaries):
+            continue                       # still on the day; nothing to do
+        live = conn.execute('SELECT 1 FROM inbox_item WHERE id = ?',
+                            (m['item_id'],)).fetchone()
+        if not live:
+            continue                       # already finished — the ledger stands
+        conn.execute('DELETE FROM engage_placement WHERE item_id = ?', (m['item_id'],))
+        conn.execute('DELETE FROM inbox_item WHERE id = ?', (m['item_id'],))
+        conn.execute('DELETE FROM occasion_mint WHERE date = ? AND template_id = ?',
+                     (day, m['template_id']))
+
+
 def mint_occasions(day):
     # Idempotent, and TODAY-FORWARD only: a past day is what it was, and minting
     # into it would invent work that never existed (the same rule the daybook
     # keeps). Runs off the day's calendar mirror, so an event that moved to
     # another day takes its actions with it — that is the entire reason this is
     # anchored to the event rather than to a weekday.
-    if day < date_cls.today().isoformat():
+    today = date_cls.today().isoformat()
+    if day < today:
         return
     conn = get_conn()
+    # Committed here on purpose: the no-events path below returns early, and an
+    # uncommitted retraction would be rolled back by the close — which is
+    # exactly the case that matters, a day whose event has GONE.
+    _retract_stale_mints(conn, day)
+    conn.commit()
     # Same JOIN get_gcal_events uses: an event on a calendar you switched OFF is
     # not on your day, so it may not bring actions onto it either.
     events = [dict(r) for r in conn.execute(
@@ -2159,11 +2211,25 @@ def mint_occasions(day):
                 (day, t['id'])).fetchone()
             if done:
                 continue
+            # FILING UNDER A PROJECT ADOPTS ITS AREA, unconditionally — the
+            # inventory's rule, and a raw INSERT was the one path that skipped
+            # it, minting children into a split no interactive path can create.
+            area_id = t['area_id']
+            if t['project_id']:
+                parent = conn.execute('SELECT area_id FROM inbox_item WHERE id = ?',
+                                      (t['project_id'],)).fetchone()
+                if parent:
+                    area_id = parent['area_id']
+            # A mint for a FUTURE day is deferred to it. Without this, walking
+            # the timeline to Friday put Friday's prep in TODAY's pool, MAP and
+            # review counts — the pool's availability predicate reads
+            # defer_until and knows nothing about placements.
             cur = conn.execute(
                 """INSERT INTO inbox_item (content, status, kind, area_id, project_id,
-                                           tags, notes)
-                   VALUES (?, 'active', 'item', ?, ?, ?, ?)""",
-                tuple(t[c] for c in _OCC_COPIED))
+                                           tags, notes, occasion_id, defer_until)
+                   VALUES (?, 'active', 'item', ?, ?, ?, ?, ?, ?)""",
+                (t['content'], area_id, t['project_id'], t['tags'], t['notes'],
+                 o['id'], day if day > today else None))
             item_id = cur.lastrowid
             conn.execute(
                 'INSERT OR REPLACE INTO engage_placement (date, item_id, minute) VALUES (?, ?, ?)',

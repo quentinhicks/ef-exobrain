@@ -375,5 +375,33 @@ eq('describe: the last Friday of the month',
 eq('describe: an ending is stated',
    S.describe(STORE['rule-daily-13'], resolve), 'Every day at 09:00 for 1 hr, 13 times')
 
+
+# ── OCCURRENCES LONGER THAN A DAY (2026-08-17) ───────────────────────────
+#
+# Occurrences are enumerated by the day they START on, and day_intervals looked
+# back exactly one day — so a multi-day window covered days nothing could see.
+STORE['rule-p3d'] = rule('rule-p3d', '2026-08-14T20:00:00', 'P3D', freq='weekly',
+                         days=['fr'])
+eq('a P3D window covers its own start day',
+   bool(S.day_intervals(STORE['rule-p3d'], resolve, '2026-08-14')), True)
+eq('and the day after', bool(S.day_intervals(STORE['rule-p3d'], resolve, '2026-08-15')), True)
+eq('and the day after THAT, which one day of lookback could not reach',
+   bool(S.day_intervals(STORE['rule-p3d'], resolve, '2026-08-16')), True)
+eq('a whole covered day is 00:00-24:00',
+   S.day_intervals(STORE['rule-p3d'], resolve, '2026-08-15')[0]['end'], '24:00')
+eq('and it stops covering once it has ended',
+   S.day_intervals(STORE['rule-p3d'], resolve, '2026-08-18'), [])
+
+# THE MONEY HALF: shortening a multi-day window must be provably looser, or the
+# 24h lock never engages and the easing applies at once.
+STORE['rule-p2d'] = rule('rule-p2d', '2026-08-14T20:00:00', 'P2D', freq='weekly',
+                         days=['fr'])
+eq('demands_less: shortening P3D to P2D IS looser',
+   S.demands_less(STORE['rule-p3d'], STORE['rule-p2d'], resolve,
+                  D.fromisoformat('2026-08-14')), True)
+eq('demands_less: lengthening it is not',
+   S.demands_less(STORE['rule-p2d'], STORE['rule-p3d'], resolve,
+                  D.fromisoformat('2026-08-14')), False)
+
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

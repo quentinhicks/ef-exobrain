@@ -442,7 +442,10 @@ def day_intervals(src, resolve, day):
     """
     day = _as_date(day)
     out = []
-    for s, e in occurrences(src, resolve, day - timedelta(days=1), day):
+    # Back far enough for the LONGEST occurrence this source can produce, not a
+    # fixed one day — see max_span_days.
+    back = max(1, max_span_days(src, resolve))
+    for s, e in occurrences(src, resolve, day - timedelta(days=back), day):
         if s.date() > day or e.date() < day:
             continue
         # An occurrence that ended the instant this day began is yesterday's,
@@ -460,6 +463,40 @@ def day_intervals(src, resolve, day):
 
 def occurs_on(src, resolve, day):
     return bool(day_intervals(src, resolve, day))
+
+
+# How far back day_intervals has to look. Occurrences are enumerated by the day
+# they START on, so a source whose occurrences last longer than a day covers
+# days its own start never appears in — and looking back exactly one day lost
+# every one of them. That was not only a display gap: covered_minutes and so
+# demands_less are built on day_intervals, so shortening a P3D window to P2D
+# removed coverage NEITHER side could see, demands_less returned False, and the
+# easing of a money-backed gate applied immediately instead of waiting 24h.
+def max_span_days(src, resolve, _seen=None):
+    if not src:
+        return 1
+    seen = set(_seen or ())
+    uid = src.get('uid')
+    if uid:
+        if uid in seen:
+            return 1                      # a cycle is caught by occurrences()
+        seen.add(uid)
+    longest = parse_duration(src.get('duration')) or timedelta(0)
+    for ov in (src.get('recurrenceOverrides') or {}).values():
+        d = parse_duration((ov or {}).get('duration'))
+        if d and d > longest:
+            longest = d
+    days = int(longest.total_seconds() // 86400) + 1
+    for entry in src.get('entries') or []:
+        member = resolve(entry)
+        if member:
+            days = max(days, max_span_days(member, resolve, seen))
+    follows = src.get('sf:follows')
+    if follows and follows.get('source'):
+        base = resolve(follows['source'])
+        if base:
+            days = max(days, max_span_days(base, resolve, seen))
+    return days
 
 
 # ── Comparing two schedules ──────────────────────────────────

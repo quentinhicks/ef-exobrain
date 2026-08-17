@@ -119,8 +119,15 @@ eq('and lands at that booking own time', [1020, 1020],
    [int(p['minute']) for p in storage.get_engage_placements(TOMORROW)])
 
 # 'Standup' matches nothing, and 'dave' must not match it.
-eq('a non-matching event mints nothing extra', 3,
+# TOMORROW's mints are DEFERRED to tomorrow, so browsing ahead does not drop
+# next week's prep into today's pool, MAP and review counts: only today's
+# minted action is available. The placements above prove they were still minted.
+eq('a non-matching event mints nothing extra', 1,
    len(storage.get_active_items_all()))
+eq('a future mint is deferred to its own day, not available now',
+   [TOMORROW, TOMORROW],
+   sorted(i['defer_until'] for i in storage.get_deferred_items()
+          if i['defer_until'] == TOMORROW))
 
 add_event('Lunch with DAVE', YESTERDAY, '12:00')
 storage.mint_occasions(YESTERDAY)
@@ -159,6 +166,37 @@ storage.delete_occasion(occ['id'])
 eq('deleting an occasion takes its templates', [], storage.get_occasions())
 eq('but leaves the actions it already minted', live_before,
    len(storage.get_active_items_all()))
+
+
+# ── A MOVED EVENT TAKES ITS ACTIONS WITH IT (2026-08-17) ──────────
+#
+# The ledger was insert-only, so it did not: the old day kept orphaned actions
+# and the new day minted a SECOND set — the prep for one meeting, twice.
+DAY4 = (date_cls.today() + timedelta(days=4)).isoformat()
+DAY5 = (date_cls.today() + timedelta(days=5)).isoformat()
+occ2 = storage.create_occasion('Board meeting', 'board')
+storage.add_occasion_item(occ2['id'], 'Print the deck', area_id=7)
+storage.add_occasion_item(occ2['id'], 'Read last minutes', area_id=7)
+add_event('Board meeting', DAY4, '10:00')
+storage.mint_occasions(DAY4)
+eq('a booking on a future day mints', 2, len(storage.get_engage_placements(DAY4)))
+
+# The meeting is rebooked: it leaves DAY4 and appears on DAY5.
+conn.execute("DELETE FROM gcal_event WHERE start LIKE ?", (DAY4 + '%',))
+conn.commit()
+add_event('Board meeting', DAY5, '10:00')
+storage.mint_occasions(DAY5)
+eq('the new day mints it', 2, len(storage.get_engage_placements(DAY5)))
+storage.mint_occasions(DAY4)
+eq('and the day it left keeps nothing', [], storage.get_engage_placements(DAY4))
+
+# What was already FINISHED is not retracted, and not minted again either: the
+# ledger row outlives the item, which is the whole reason it exists.
+storage.mint_occasions(TODAY)
+before = len(storage.get_engage_placements(TODAY))
+storage.mint_occasions(TODAY)
+eq('re-minting the same day is still idempotent', before,
+   len(storage.get_engage_placements(TODAY)))
 
 print()
 if fails:

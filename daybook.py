@@ -33,6 +33,16 @@ DAYBOOK_DIR = 'daybook'
 # Which column dates a row, in order of preference. First one present wins.
 TIME_COLS = ('date', 'captured_at', 'scanned_at', 'started_at', 'created_at')
 
+# ...and which of those are stamped in UTC, so a prefix match on them files the
+# row under the wrong day. EVERY one of these but `date` is: 35 columns default
+# to SQLite's datetime('now'), which is UTC and does not follow setting.timezone
+# (the known bug in CLAUDE.md), and qr_scan.scanned_at is UTC-with-Z BY DESIGN,
+# which no DEFAULT migration will ever change. Converted here rather than
+# assumed local, because a past day is written ONCE: everything captured or
+# scanned after ~20:00 local filed under tomorrow and was then frozen out of
+# its own file. Reading is where this can be fixed for history already written.
+UTC_COLS = {'captured_at', 'scanned_at', 'started_at', 'created_at', 'updated_at'}
+
 # Where inference is wrong or too crude. A column name, matched by DATE PREFIX
 # (which covers both a bare date and a naive local timestamp — every time column
 # in this schema is one or the other).
@@ -150,8 +160,14 @@ def _rows_for(conn, table, cols, col, day):
     if table == 'gtd_review':
         return conn.execute('SELECT * FROM gtd_review WHERE week_start_date = ?',
                             (storage._week_start(date_cls.fromisoformat(day)),)).fetchall()
-    # Prefix match covers both a bare date and a naive local timestamp, which is
-    # every time column in this schema.
+    # A UTC column is converted to local first; SQLite reads both shapes the
+    # schema produces (naive 'YYYY-MM-DD HH:MM:SS' from datetime('now'), and
+    # the scan server's '...Z'). Everything else is a bare local date or a
+    # naive local timestamp, where the prefix IS the day.
+    if col in UTC_COLS:
+        return conn.execute(
+            f'''SELECT * FROM "{table}" WHERE date(datetime({col}, 'localtime')) = ?
+                ORDER BY {col}''', (day,)).fetchall()
     return conn.execute(
         f'SELECT * FROM "{table}" WHERE {col} LIKE ? ORDER BY {col}', (day + '%',)).fetchall()
 
@@ -295,8 +311,9 @@ def _earliest_day(conn):
         col = _time_col(cols, t)
         if col is None or t == 'gcal_event':      # gcal reaches into the future
             continue
+        expr = f"date(datetime({col}, 'localtime'))" if col in UTC_COLS else col
         try:
-            row = conn.execute(f'SELECT MIN({col}) AS m FROM "{t}"').fetchone()
+            row = conn.execute(f'SELECT MIN({expr}) AS m FROM "{t}"').fetchone()
         except sqlite3.Error:
             continue
         m = row['m'] if row else None
