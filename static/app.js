@@ -433,7 +433,7 @@ function computeViewWindow() {
   const pageDow = jsDateToDayOfWeek(state.currentDate);
   const deadlineMin = (node) => {
     const ov = viewingToday ? node.today_override : (state.qrPageOverrides[`${node.id}:${pageDate}`] || null);
-    const def = nodeWindowForDow(node, pageDow);
+    const def = nodeWindowForDate(node, pageDate);
     const end = ov ? ov.window_end : def.window_end;
     const offset = ov ? ov.window_end_offset_days : def.window_end_offset_days;
     return timeToMinutes(end) + (offset ? 1440 : 0);
@@ -7149,13 +7149,13 @@ function renderQrLayer() {
   const pageDow = String(jsDateToDayOfWeek(state.currentDate));
 
   nodes.forEach(node => {
-    if (!gateAppliesOnDow(node, pageDow)) return;
+    if (!gateAppliesOnDate(node, pageDate)) return;
     // today_override from the API is only for the Worker's local today.
     // For other dates, use the client-side cache populated by drag saves.
     const cacheKey = `${node.id}:${pageDate}`;
     if (state.tlHidden.qr[cacheKey]) return;
     const ov = viewingToday ? node.today_override : (state.qrPageOverrides[cacheKey] || null);
-    const def = nodeWindowForDow(node, pageDow);
+    const def = nodeWindowForDate(node, pageDate);
     const windowStart = ov ? ov.window_start : def.window_start;
     const windowEnd = ov ? ov.window_end : def.window_end;
     const offsetDays = ov ? ov.window_end_offset_days : def.window_end_offset_days;
@@ -7352,6 +7352,19 @@ function gateAppliesOnDow(node, dow) {
   return node.days_of_week == null || String(node.days_of_week).includes(String(dow));
 }
 
+// EXACT DATE. day_windows is keyed by date because the judge resolves a DATE —
+// a monthly rule, a schedule source or an end date can give two Tuesdays two
+// different windows. Scanning for the first date matching a weekday flattened
+// that back into a rule and answered for the wrong day.
+function nodeSourceWindowForDate(node, dateStr) {
+  const days = node.day_windows;
+  if (!days || !dateStr) return null;
+  return days[dateStr] || null;
+}
+
+// Only for a date OUTSIDE the served range (the map covers the ±3 nav clamp
+// and a fortnight ahead). Beyond it the weekday shape is the honest guess, and
+// nothing outside the clamp is reachable without a review pass anyway.
 function nodeSourceWindowForDow(node, dow) {
   const days = node.day_windows;
   if (!days) return null;
@@ -7360,6 +7373,32 @@ function nodeSourceWindowForDow(node, dow) {
     if (jsDateToDayOfWeek(new Date(date + 'T12:00:00')) === Number(dow)) return days[date];
   }
   return null;
+}
+
+// The pair every render should use: ask about the DATE, fall back to its
+// weekday only when the date is past the end of the served map.
+function nodeWindowForDate(node, dateStr) {
+  const days = node.day_windows;
+  if (days && dateStr && Object.keys(days).length) {
+    const exact = days[dateStr];
+    if (exact) return exact;
+    // In range but absent = the gate does not run that day; out of range = we
+    // simply were not told, so fall back rather than inventing a window.
+    const known = Object.keys(days).sort();
+    if (dateStr >= known[0] && dateStr <= known[known.length - 1]) {
+      return nodeWindowForDow(node, jsDateToDayOfWeek(new Date(dateStr + 'T12:00:00')));
+    }
+  }
+  return nodeWindowForDow(node, jsDateToDayOfWeek(new Date(dateStr + 'T12:00:00')));
+}
+
+function gateAppliesOnDate(node, dateStr) {
+  const days = node.day_windows;
+  if (days && dateStr && Object.keys(days).length) {
+    const known = Object.keys(days).sort();
+    if (dateStr >= known[0] && dateStr <= known[known.length - 1]) return !!days[dateStr];
+  }
+  return gateAppliesOnDow(node, String(jsDateToDayOfWeek(new Date(dateStr + 'T12:00:00'))));
 }
 
 function localDatePlusDays(dateStr, days) {
@@ -10143,14 +10182,14 @@ function engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin) {
 
   const qrMinutes = {};
   (state.accountabilityNodes || []).filter(n => n.active)
-    .filter(n => gateAppliesOnDow(n, dow))
+    .filter(n => gateAppliesOnDate(n, dateStr))
     .forEach(n => {
       // today_override is the Worker's resolution FOR TODAY — on any other
       // viewed day fall back to weekly window > defaults. (Date overrides for
       // other days stay the timeline's business; Engage shows the default
       // shape of a day it can't yet know overrides for.)
       const ov = isToday ? n.today_override : null;
-      const def = nodeWindowForDow(n, dow);
+      const def = nodeWindowForDate(n, dateStr);
       const end = ov ? ov.window_end : def.window_end;
       const off = ov ? (ov.window_end_offset_days || 0) : (def.window_end_offset_days || 0);
       const outcome = state.qrOutcomes[`${n.id}:${dateStr}`];

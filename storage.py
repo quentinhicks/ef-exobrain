@@ -1371,13 +1371,18 @@ def qr_windows_from_source(uid, days=21):
     }
 
 
-def qr_gate_day_windows(node, days=14, start=None):
-    """The gate's effective window for each of the next `days` dates, as the
-    JUDGE resolves it (qr_judge.resolve_window). The client is given this rather
+def qr_gate_day_windows(node, days=17, start=None):
+    """The gate's effective window for each of `days` dates, as the JUDGE
+    resolves it (qr_judge.resolve_window). The client is given this rather
     than a rule, so the timeline, the engage day and the panel cannot disagree
-    with what will actually be judged."""
+    with what will actually be judged.
+
+    Starts THREE DAYS BACK by default, matching navBounds()' clamp: the client
+    looks a date up exactly, so a past day inside the nav range must be in the
+    map or it falls back to scanning for a weekday — which is the flattening
+    this map exists to replace."""
     import qr_judge
-    start = start or date_cls.today()
+    start = start or (date_cls.today() - timedelta(days=3))
     resolve, _ = schedule_resolver()
     out = {}
     for i in range(days):
