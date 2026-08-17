@@ -1919,7 +1919,14 @@ def patch_flow_step(id):
 @app.route('/api/flow-steps/<int:id>/pawn', methods=['POST', 'DELETE'])
 def pawn_flow_step_route(id):
     try:
-        step = storage.pawn_flow_step(id, on=request.method == 'POST')
+        # The DAY comes from the runner's pinned run-day, not this process's
+        # wall clock: a run opened at 23:50 and continued past midnight would
+        # otherwise stamp pawned_date with the NEW day — the step never arrives
+        # in tonight's receiving routine, tonight's gate is not shortened, and
+        # TOMORROW's deadline silently moves earlier for debt incurred tonight.
+        body = request.get_json(silent=True) or {}
+        step = storage.pawn_flow_step(id, on=request.method == 'POST',
+                                      date=body.get('date') or request.args.get('date'))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     if step is None:

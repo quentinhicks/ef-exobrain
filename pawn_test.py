@@ -189,5 +189,22 @@ storage.pawn_flow_step(112)
 eq('two pawned steps keep their own order, together at the front',
    due()['Night'], ['Tidy desk', 'Meditate', 'Journal'])
 
+
+# THE PAWN'S DAY IS THE RUN'S DAY (2026-08-17). The route dropped the date
+# parameter pawn_flow_step already took, so a run opened at 23:50 and continued
+# past midnight stamped pawned_date with the NEW day: the step never arrived in
+# tonight's receiving routine, tonight's gate was not shortened, and TOMORROW's
+# deadline moved earlier for debt incurred tonight — a real-money shortening
+# applied to the wrong day.
+YDAY = (date_cls.fromisoformat(TODAY) - timedelta(days=1)).isoformat()
+storage.pawn_flow_step(111, on=False)
+storage.pawn_flow_step(112, on=False)
+storage.pawn_flow_step(111, date=YDAY)
+eq('a pawn filed under yesterday does not shorten TODAY\'s gate',
+   window(), ('21:00', '21:30', 0))
+eq('and the step is carried on the day it was pawned, not today',
+   [s['content'] for s in storage.steps_pawned_into(102, YDAY)], ['Tidy desk'])
+eq('…not on today', [s['content'] for s in storage.steps_pawned_into(102, TODAY)], [])
+
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

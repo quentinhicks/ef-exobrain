@@ -5284,8 +5284,28 @@ const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
                       // template and its own done flags stay untouched.
                       refLists: [], checks: {} };
 
+// MIDNIGHT RESUME. The run-day pin lived only in the memory of the session
+// that opened it, so a night routine half-done at 23:58 and reopened at 00:05
+// came back as a NEW day: every step uncredited, every metric unanswered
+// (their entries are dated yesterday), credits filed under the new date — and
+// yesterday's run never completed, so the judge charged 'routine_incomplete'
+// for a routine actually finished at 00:07.
+//
+// Yesterday's run is resumed when it was started, is unfinished, and its
+// DEADLINE has not passed — the served one (due_min), not a re-derived guess.
+// A routine due 23:00 is not resumed after midnight: that night is already
+// judged and lost. One with a 07:00 deadline is, which is the whole case.
+async function flowRunDate(flowId, today) {
+  const yday = formatDateYMD(new Date(new Date(`${today}T00:00`).getTime() - 86400000));
+  const yflows = await apiGet(`/api/flows?date=${yday}`, []);
+  const yf = yflows.find(f => f.id === flowId);
+  if (!yf || !yf.run || yf.run.completed_at || yf.due_min == null) return today;
+  const deadline = new Date(`${yday}T00:00`).getTime() + yf.due_min * 60000;
+  return Date.now() < deadline ? yday : today;
+}
+
 async function openFlowRun(flowId) {
-  const today = formatDateYMD(new Date());
+  const today = await flowRunDate(flowId, formatDateYMD(new Date()));
   const [flows, day, journal, habits, refLists, crmNight] = await Promise.all([
     apiGet(`/api/flows?date=${today}`, []),
     apiGet(`/api/social/day?date=${today}`, null),
@@ -5377,7 +5397,8 @@ function flowName(flowId) {
 // is deliberately not undoable through the undo stack (the config surfaces are
 // not either); taking it back is the same button on the other side.
 async function pawnStep(step) {
-  const res = await apiSend(`/api/flow-steps/${step.id}/pawn`, 'POST');
+  const res = await apiSend(`/api/flow-steps/${step.id}/pawn`, 'POST',
+                            { date: flowRunView.date });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     toast(err.error || 'Could not pawn that step');
@@ -5391,7 +5412,7 @@ async function pawnStep(step) {
 }
 
 async function unpawnStep(step) {
-  await apiSend(`/api/flow-steps/${step.id}/pawn`, 'DELETE');
+  await apiSend(`/api/flow-steps/${step.id}/pawn?date=${flowRunView.date || ''}`, 'DELETE');
   toast('Taken back — the gate is its full length again');
   await afterPawnChange();
 }
@@ -5769,7 +5790,10 @@ function renderFlowRun() {
         const mark = r.querySelector('.fr-hb-mark .fr-rate-on');
         const eff = r.querySelector('.fr-hb-effort .fr-rate-on');
         if (!mark && !eff) continue;
-        const body = { date: formatDateYMD(new Date()) };
+        // The RUN's day. Marked after midnight, these used to land on the new
+        // day: yesterday's habits stayed unmarked forever (the daybook writes a
+        // past day once) and today started pre-marked.
+        const body = { date: flowRunView.date || formatDateYMD(new Date()) };
         if (mark) body.mark = mark.dataset.mark;
         if (eff) body.effort = eff.dataset.effort;
         await apiSend(`/api/habits/${r.dataset.habit}/mark`, 'POST', body);
@@ -5869,11 +5893,12 @@ function renderFlowRun() {
     // Tapping the answer you already gave clears it — back to unanswered, which
     // excludes nothing. That is the only way to undo a "not today" in place.
     const applies = prev === want ? null : want;
-    const answers = await apiSend('/api/tag-daily/answer', 'POST', { tag, applies }).then(r => r.json()).catch(() => null);
+    const date = flowRunView.date || formatDateYMD(new Date());
+    const answers = await apiSend('/api/tag-daily/answer', 'POST', { tag, applies, date }).then(r => r.json()).catch(() => null);
     if (answers) state.tagDaily = { ...state.tagDaily, answers };
     pushUndo(`set ${tag} ${applies === null ? 'unanswered' : applies ? 'today' : 'not today'}`,
       async () => {
-        const back = await apiSend('/api/tag-daily/answer', 'POST', { tag, applies: prev === undefined ? null : prev }).then(r => r.json()).catch(() => null);
+        const back = await apiSend('/api/tag-daily/answer', 'POST', { tag, applies: prev === undefined ? null : prev, date }).then(r => r.json()).catch(() => null);
         if (back) state.tagDaily = { ...state.tagDaily, answers: back };
         renderFlowRun();
         renderEngage();
@@ -5895,7 +5920,7 @@ function renderFlowRun() {
 
   const crm = el.querySelector('#fr-crm-fill');
   if (crm) crm.addEventListener('click', async () => {
-    const today = formatDateYMD(new Date());
+    const today = flowRunView.date || formatDateYMD(new Date());
     await apiSend('/api/people/night', 'POST', { kind: 'entries', date: today });
     flowRunView.crmFilled = true;
     renderFlowRun();
