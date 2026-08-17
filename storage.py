@@ -1089,6 +1089,17 @@ def init_db():
     _adopt_gate_schedules(conn)
     _migrate_easing_pendings(conn)
     _migrate_utc_stamps(conn)
+    # A CHANGE CAN BE DATED (2026-08-17). The store already held changes that
+    # had not landed yet; the only thing it could not say was WHICH DAY one
+    # starts counting from, so every pending was "24h from now" and nothing
+    # could be moved to a date on purpose. `effective_date` is that day, and
+    # it is what the future timeline resolves against — see effective_date_for
+    # for why it is a stored column and not date(apply_at) read twice.
+    try:
+        conn.execute('SELECT effective_date FROM easing_pending LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE easing_pending ADD COLUMN effective_date TEXT')
+        conn.commit()
     # Pawning a routine step onto a later routine — see pawn_flow_step. Three
     # lazy ALTERs: two settings and one per-day state — plus (2026-08-11) the
     # NAMED soft version, the checklist link, and the 24h easing gate
@@ -1959,8 +1970,10 @@ def get_gtd_review_counts():
     # next action? Deriving the stalled set from the same rows is what keeps the
     # list you read and the verdict you are given from ever disagreeing.
     #
-    # A someday/maybe project is EXCLUDED: it is not expected to have a next
-    # action, so counting it as stalled was noise in the one check GTD leans on
+    # ONLY ACTIVE projects. The step says "every ACTIVE project", so anything
+    # not active is not being asked the question: a someday/maybe project is not
+    # expected to have a next action, and neither is one handed off and waiting.
+    # Counting either as stalled was noise in the one check GTD leans on
     # hardest. Predicate otherwise in lockstep with get_all_projects'
     # action_count — waiting AND future-deferred children both count as live,
     # because parked-on-a-date is not stalled, it just isn't startable today.
@@ -1969,7 +1982,7 @@ def get_gtd_review_counts():
     project_rows = [dict(r) for r in conn.execute(
         '''SELECT pr.id, pr.content, a.name AS area_name FROM inbox_item pr
            LEFT JOIN area a ON a.id = pr.area_id
-           WHERE pr.kind = 'project' AND COALESCE(pr.status, 'active') <> 'on_hold'
+           WHERE pr.kind = 'project' AND COALESCE(pr.status, 'active') = 'active'
            ORDER BY a.name, pr.content''').fetchall()]
     action_rows = conn.execute(
         '''WITH RECURSIVE tree(root, id) AS (
@@ -5100,14 +5113,36 @@ def _pending_value(raw):
         return raw            # a pre-migration raw string
 
 
-def _pend_row(conn, kind, row_id, field, value, apply_at=None):
+# THE DAY A PENDING CHANGE STARTS COUNTING, from the moment it lands.
+#
+# A change that lands at 16:24 has NOT been in force for that day's 07:00
+# window, so the first day it can be said to govern is the next one — unless it
+# lands exactly at midnight, which is what a change dated to a day does. The
+# rule rounds UP for that reason: overstating a loosening would show a gate as
+# already relaxed on a day it will still be judged on, which is the one error
+# on this path that costs money.
+#
+# Stored rather than re-derived at read time: "is this a dated change or a 24h
+# easing" would otherwise be answered by inspecting whether apply_at happens to
+# be midnight, which is a rule two places would have to agree about forever.
+def effective_date_for(apply_at):
+    dt = datetime.fromisoformat(apply_at) if isinstance(apply_at, str) else apply_at
+    day = dt.date()
+    if dt.hour or dt.minute or dt.second or dt.microsecond:
+        day = day + timedelta(days=1)
+    return day.isoformat()
+
+
+def _pend_row(conn, kind, row_id, field, value, apply_at=None, effective_date=None):
     apply_at = apply_at or (datetime.now() + timedelta(hours=24)).isoformat()
+    effective_date = effective_date or effective_date_for(apply_at)
     conn.execute(
-        '''INSERT INTO easing_pending (kind, row_id, field, value, apply_at)
-           VALUES (?,?,?,?,?)
+        '''INSERT INTO easing_pending (kind, row_id, field, value, apply_at, effective_date)
+           VALUES (?,?,?,?,?,?)
            ON CONFLICT(kind, row_id, field) DO UPDATE
-             SET value = excluded.value, apply_at = excluded.apply_at''',
-        (kind, row_id, field, json.dumps(value), apply_at))
+             SET value = excluded.value, apply_at = excluded.apply_at,
+                 effective_date = excluded.effective_date''',
+        (kind, row_id, field, json.dumps(value), apply_at, effective_date))
 
 
 def _unpend_row(conn, kind, row_id, field):
@@ -5124,6 +5159,58 @@ def _pendings_for(conn, kind, row_id):
             for r in conn.execute(
                 '''SELECT * FROM easing_pending WHERE kind = ? AND row_id = ?
                    ORDER BY apply_at''', (kind, row_id)).fetchall()]
+
+
+# ── The row as it will be on a day ────────────────────────────
+#
+# ONE ANSWER to "what does this gate/block look like on Wednesday", used by
+# every surface that draws a future day. Without it a scheduled change was
+# invisible until the moment it landed: the calendar for Wednesday drew
+# Tuesday's rules and then silently redrew itself, which is the same shape as
+# every bug the abstractions exist to prevent — a rule held in one place and
+# re-derived (here, ignored) in another.
+#
+# PAST AND TODAY ARE UNCHANGED BY CONSTRUCTION, which is why this is safe on
+# the money path: anything effective on or before today has an apply_at that
+# has already passed, so it is already written into the row and there is
+# nothing left to layer. The projection only ever differs for days that have
+# not happened.
+#
+# `revisions` is passed in rather than read here so a 17-day loop is one query.
+def revisions_for(kind, row_id, conn=None):
+    own = conn is None
+    conn = conn or get_conn()
+    rows = conn.execute(
+        '''SELECT field, value, apply_at, effective_date FROM easing_pending
+           WHERE kind = ? AND row_id = ? ORDER BY effective_date, apply_at''',
+        (kind, row_id)).fetchall()
+    if own:
+        conn.close()
+    return [{'field': r['field'], 'value': _pending_value(r['value']),
+             'apply_at': r['apply_at'],
+             # Legacy rows (written before the column existed) date themselves
+             # from when they land, by the same rounding rule.
+             'effective_date': r['effective_date'] or effective_date_for(r['apply_at'])}
+            for r in rows]
+
+
+# The deletion pseudo-fields, per kind. A row that is scheduled to GO does not
+# resolve to a modified row on that day — it resolves to nothing, and the
+# caller draws no gate and no block.
+_DELETE_FIELDS = ('__delete__', 'delete')
+
+
+def row_as_of(row, revisions, ymd):
+    if not row:
+        return None
+    out = dict(row)
+    for r in revisions:
+        if r['effective_date'] > ymd:
+            continue
+        if r['field'] in _DELETE_FIELDS:
+            return None
+        out[r['field']] = r['value']
+    return out
 
 
 def _pend(conn, table, id, field, value):
@@ -6562,16 +6649,23 @@ def qr_delete_override(node_id, date):
 # The gate half of easing_pending. The response shape is unchanged
 # (node_id / field / new_value / apply_at) because the Gates panel and the
 # timeline pill are built around it.
-def qr_add_pending_change(node_id, field, new_value, apply_at):
+def qr_add_pending_change(node_id, field, new_value, apply_at, effective_date=None):
     conn = get_conn()
-    _pend_row(conn, 'gate', node_id, field, new_value, apply_at)
+    _pend_row(conn, 'gate', node_id, field, new_value, apply_at, effective_date)
     conn.commit()
     conn.close()
 
 
 def _gate_pending_shape(r):
+    # effective_date is the DAY the change governs; apply_at is the moment the
+    # row itself is rewritten. They differ for a plain 24h easing, and the
+    # sheet says the day — "from Wednesday" is what a person schedules.
+    apply_at = r['apply_at']
+    keys = r.keys() if hasattr(r, 'keys') else r
+    effective = r['effective_date'] if 'effective_date' in keys else None
     return {'node_id': r['row_id'], 'field': r['field'],
-            'new_value': _pending_value(r['value']), 'apply_at': r['apply_at']}
+            'new_value': _pending_value(r['value']), 'apply_at': apply_at,
+            'effective_date': effective or effective_date_for(apply_at)}
 
 
 def qr_get_pending_changes(node_id=None):

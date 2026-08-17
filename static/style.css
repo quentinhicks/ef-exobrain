@@ -3,7 +3,11 @@
   --surface: #161616;
   --border: #2a2a2a;
   --text-primary: #e8e8e8;
-  --text-secondary: #666666;
+  /* #666666 was 3.21:1 on the row surfaces — under 4.5:1, so every muted label
+     (tags, list meta, hints) failed as text. Measured, not eyeballed: #8a8a8a
+     is 5.4:1 on #141414 and still clearly secondary next to #e8e8e8. The light
+     half already passed at 5.84:1 and is unchanged. */
+  --text-secondary: #8a8a8a;
   --accent: #98b9dd;
   --danger: #d9a3a8;
   --on-hold: #a0a0a0;
@@ -4184,11 +4188,17 @@ body.map-over-runner #map-overlay { z-index: 170; }
 .eg-qr-failed .eg-time,
 .eg-qr-failed .eg-qr-label { color: var(--danger); }
 
+/* The box is an INTERACTIVE control, so its outline owes 3:1 against what it
+   sits on — --border is 1.28:1 on dark and 1.38:1 on light, which drew a
+   checkbox you could barely find. --text-secondary carries it in both themes
+   (5.4:1 / 5.8:1) and needs no light-appendix entry, being a var the appendix
+   already swaps. Panel edges keep --border: an edge is decoration, a control
+   is not. */
 .eg-check {
   width: 14px;
   height: 14px;
   flex: none;
-  border: 1.5px solid var(--border);
+  border: 1.5px solid var(--text-secondary);
   border-radius: 4px;
   cursor: pointer;
   /* Long-press = in progress; keep iOS from selecting/calling out instead. */
@@ -4225,8 +4235,9 @@ body.map-over-runner #map-overlay { z-index: 170; }
 
 /* The routine's length, derived from its steps rather than stored as a tag —
    it sits with the estimate tags and reads as one, in accent so it is legible
-   as "this came with the routine". */
-.eg-tag-len { color: var(--accent); border-color: var(--accent); }
+   as "this came with the routine". Two classes, because .eg-tag is defined
+   further down the file and a single-class rule here would simply lose to it. */
+.eg-tag.eg-tag-len { color: var(--accent); border-color: var(--accent); }
 /* ◐ in progress (press-and-hold): accent, half-filled, floats first in the
    pool. A glance state only — nothing else reads it. */
 .eg-check-started {
