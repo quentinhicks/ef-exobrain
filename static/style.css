@@ -1228,14 +1228,16 @@ body.calendar-minimized #review-modal {
 .tl-gcal-event {
   --ev-ink: #ffffff;
   background: color-mix(in srgb, var(--ev-color, var(--accent)) 14%, transparent);
-  border-left-color: var(--ev-color, var(--accent));
   color: color-mix(in srgb, var(--ev-color, var(--accent)) 50%, var(--ev-ink));
 }
 
 .tl-allday-event {
   height: 26px;
   padding: 0 10px;
-  border-left: 5px solid var(--accent);
+  /* The chip keeps its edge — it is a chip, not a column of them — but in the
+     calendar's own colour. A bare `var(--accent)` here reset the colour the
+     shared rule above sets, which is why every event's bar was the same blue. */
+  border-left: 5px solid var(--ev-color, var(--accent));
   border-radius: 3px;
   font-size: 12px;
   font-weight: 700;
@@ -1396,11 +1398,15 @@ body.calendar-minimized #review-modal {
   color: var(--danger);
 }
 
+/* NO LEFT RULE. Every event carried a 5px bar, so a morning of back-to-back
+   events drew one unbroken vertical line down the column — a divider between
+   nothing and nothing, since the events are already told apart by their fills
+   and their rows. (It was also painting accent rather than the event's own
+   colour: the shorthand here reset the border-left-color set above it.) */
 .tl-gcal-event {
   position: absolute;
   left: 35%;
   right: 4px;
-  border-left: 5px solid var(--accent);
   border-radius: 3px;
   padding: 4px 10px;
   overflow: hidden;
