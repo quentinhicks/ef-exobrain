@@ -4659,14 +4659,23 @@ button.eg-domain { cursor: pointer; }
 
 /* ── Routines (flows): index rows, step editor, the runner ──── */
 .fr-due { font: 10px var(--font-mono); color: var(--gold); flex: none; }
+/* Running a routine is that row's own verb, so the mark takes the row's ink
+   rather than the accent — the same call as the review fold-out's. 32px
+   because it is the control you tap to start a routine on a phone. */
 .fr-play {
-  color: var(--accent);
+  color: var(--text-primary);
   font-size: 13px;
-  padding: 2px 8px;
+  padding: 6px 8px;
+  min-height: 32px;
 }
+
+/* The drawn ▶ (playMark). Inline beside a label it needs the optical nudge a
+   text glyph would have carried; on its own it is centred by its button. */
+.play-mark { vertical-align: -1px; }
+
 .fr-play-big {
   margin: 12px 0 0;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 16px;
   align-self: flex-start;

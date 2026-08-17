@@ -679,7 +679,11 @@ function renderAlldayStrip() {
   const dayEvents = state.gcalEvents.filter(e => e.allday && sameDay(state.currentDate, e.start));
   strip.innerHTML = dayEvents.map(e => {
     const col = e.color || '#888888';
-    return `<div class="tl-allday-event" style="background:${rgbaColor(col, 0.14)};border-left-color:${col};color:color-mix(in srgb, ${col} 50%, #fff)">${escHtml(e.summary || '')}</div>`;
+    // The calendar's hue is handed to CSS as a variable; what is DONE with it
+    // — the fill, the rule, and how far the text is pulled toward legibility —
+    // belongs to the theme. It used to be mixed 50% with a hardcoded #fff
+    // here, which reads on the dark surface and is invisible on the light one.
+    return `<div class="tl-allday-event" style="--ev-color:${col}">${escHtml(e.summary || '')}</div>`;
   }).join('');
 }
 
@@ -707,7 +711,7 @@ function renderGcalLayer(bodyH = 600) {
     const inner = `<div class="tl-event-row"><span class="tl-event-summary">${escHtml(e.summary || '')}</span><span class="tl-event-time">${escHtml(timeStr)}</span></div>`;
     const col = e.color || '#888888';
     const key = `${e.uid}|${e.start}`;
-    return `<div class="tl-gcal-event${tight ? ' tl-event-tight' : ''}" data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}" style="pointer-events:auto;top:${top}%;height:${height}%;background:${rgbaColor(col, 0.14)};border-left-color:${col};color:color-mix(in srgb, ${col} 50%, #fff)">${inner}</div>`;
+    return `<div class="tl-gcal-event${tight ? ' tl-event-tight' : ''}" data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}" style="pointer-events:auto;top:${top}%;height:${height}%;--ev-color:${col}">${inner}</div>`;
   }).join('');
 
   // Read-only iCal events can't be deleted at source — right-click hides them
@@ -3682,16 +3686,25 @@ const REVIEW_KINDS = {
     hint: 'Graduate what stuck, drop what didn\'t, judge resolved experiments.' },
 };
 
+// ▶ IS A DRAWING, NOT A CHARACTER (2026-08-17). U+25B6 gets claimed by the
+// emoji font on Windows: it paints blue whatever `color` says, and its glyph
+// metrics sit it off the baseline of the text beside it. One helper, so every
+// run affordance says it the same way and inherits the ink around it.
+function playMark(size = 11) {
+  return `<svg class="play-mark" viewBox="0 0 12 12" width="${size}" height="${size}"`
+    + ` fill="currentColor" aria-hidden="true"><path d="M2.5 1.2 L10.2 6 L2.5 10.8 Z"/></svg>`;
+}
+
 // The runner's wording for the "go and do it" button, per act. The fold-out
 // writes its own inline; both open the same surface, so only the phrasing
 // differs — the runner is one step per page and can afford the full sentence.
 const FR_ACT_LABELS = {
-  map_projects: '▶ Open MAP · Projects',
-  map_someday: '▶ Open MAP · Someday',
-  map_waiting: '▶ Open MAP · Waiting',
-  pass_back: '▶ Walk it back 14 days',
-  pass_fwd: '▶ Walk the next 14 days',
-  lists: '▶ Open Lists',
+  map_projects: 'Open MAP · Projects',
+  map_someday: 'Open MAP · Someday',
+  map_waiting: 'Open MAP · Waiting',
+  pass_back: 'Walk it back 14 days',
+  pass_fwd: 'Walk the next 14 days',
+  lists: 'Open Lists',
 };
 
 // EVERY active project with the actions under it — the surface of the merged
@@ -4096,11 +4109,11 @@ function renderGtdReview() {
           ${s.collect ? collectList(step) : ''}
           ${s.act === 'clarify' ? `<button class="gr-act" data-act="clarify">Clarify ${
             counts.inbox} →</button>` : ''}
-          ${s.act === 'sweep' ? `<button class="gr-act" data-act="sweep">▶ 5-minute sweep</button>` : ''}
-          ${s.act === 'pass_back' ? '<button class="gr-act" data-act="pass_back">▶ Walk it back 14 days</button>' : ''}
-          ${s.act === 'pass_fwd' ? '<button class="gr-act" data-act="pass_fwd">▶ Walk the next 14 days</button>' : ''}
+          ${s.act === 'sweep' ? `<button class="gr-act" data-act="sweep">${playMark(9)} 5-minute sweep</button>` : ''}
+          ${s.act === 'pass_back' ? '<button class="gr-act" data-act="pass_back">' + playMark(9) + ' Walk it back 14 days</button>' : ''}
+          ${s.act === 'pass_fwd' ? '<button class="gr-act" data-act="pass_fwd">' + playMark(9) + ' Walk the next 14 days</button>' : ''}
           ${s.act === 'map_projects'
-            ? '<button class="gr-act" data-act="map_projects">▶ Open MAP · Projects</button>' : ''}
+            ? '<button class="gr-act" data-act="map_projects">' + playMark(9) + ' Open MAP · Projects</button>' : ''}
           ${s.projects ? reviewProjectsHtml(counts) : ''}
           ${s.waiting ? waitingList : ''}
           ${s.pushed ? pushedList : ''}
@@ -4595,7 +4608,7 @@ function renderRef() {
           : done ? '<span class="fr-due">✓ done</span>' : ''}
         <span class="map-count" title="${todaySteps} of ${f.steps.length} steps run today">${todaySteps}${
           todaySteps === f.steps.length ? '' : `<span class="fr-of">/${f.steps.length}</span>`}</span>
-        <button class="fr-play" data-flow="${f.id}" title="Run this routine">▶</button>
+        <button class="fr-play" data-flow="${f.id}" title="Run this routine">${playMark()}</button>
         <button class="ref-del" data-flow-del="${f.id}" title="Delete routine">×</button>
       </div>`;
     };
@@ -4992,7 +5005,7 @@ function renderFlowEditor(body, title, f) {
     })()}
     <button id="fr-add-step" class="map-add-btn">+ step</button>
     <button id="fr-add-header" class="map-add-btn">+ header</button></div>
-    <button class="fr-play fr-play-big" data-flow="${f.id}">▶ Run</button>`;
+    <button class="fr-play fr-play-big" data-flow="${f.id}">${playMark()} Run</button>`;
 
   const patchFlow = async body2 => {
     await apiSend(`/api/flows/${f.id}`, 'PATCH', body2);
@@ -6152,7 +6165,7 @@ function flowTaskMinutes(i) {
 function egRowControl(i, started, title) {
   if (i && i.flow_id) {
     return `<span class="eg-run" data-run="${i.flow_id}" data-id="${i.id}"
-      title="Run this routine — ticking it off is not how it gets done">▶</span>`;
+      title="Run this routine — ticking it off is not how it gets done">${playMark()}</span>`;
   }
   return `<span class="eg-check${started ? ' eg-check-started' : ''}" data-id="${i.id}"
     title="${title}">${started ? '◐' : ''}</span>`;
@@ -6412,7 +6425,7 @@ function renderFlowRun() {
            ${n ? '<button id="fr-rv-clarify" class="cl-pill">Clarify ' + n + ' →</button>' : ''}`
         : ''}
       ${s.kind === 'review_sweep'
-        ? '<button id="fr-rv-sweep" class="cl-pill">▶ 5-minute sweep</button>'
+        ? '<button id="fr-rv-sweep" class="cl-pill">' + playMark(9) + ' 5-minute sweep</button>'
         : ''}
       ${meta.projects ? reviewProjectsHtml(counts) : ''}
       ${meta.waiting && (counts.waiting_list || []).length
@@ -6433,9 +6446,9 @@ function renderFlowRun() {
         ? `<button class="fr-rv-act cl-pill" data-act="${meta.act}">${
             FR_ACT_LABELS[meta.act] || 'Open'}</button>` : ''}
       ${s.kind === 'review_someday'
-        ? '<button class="fr-rv-act cl-pill" data-act="map_someday">▶ Open MAP · Someday</button>' : ''}
+        ? '<button class="fr-rv-act cl-pill" data-act="map_someday">' + playMark(9) + ' Open MAP · Someday</button>' : ''}
       ${s.kind === 'review_waiting'
-        ? '<button class="fr-rv-act cl-pill" data-act="map_waiting">▶ Open MAP · Waiting</button>' : ''}`;
+        ? '<button class="fr-rv-act cl-pill" data-act="map_waiting">' + playMark(9) + ' Open MAP · Waiting</button>' : ''}`;
   } else {
     // An unknown kind must still be a page you can get past — a blank one would
     // strand the run (and, on a gated routine, the gate).
@@ -11445,7 +11458,7 @@ function renderEngage() {
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-qr-flow${r.done ? ' eg-qr-flow-done' : ''}" data-flow="${r.flowId}"
           title="${r.done ? 'Completed today' : 'Run this routine'} — the gate above judges ✗ unless this completes">${
-          r.done ? '✓ done' : '▶ run'}</button>
+          r.done ? '✓ done' : playMark(9) + ' run'}</button>
       </div>`;
     }
     if (r.kind === 'block') {
@@ -12916,7 +12929,7 @@ function renderClarify() {
         : `captured ${(item.captured_at || '').slice(0, 10)}`}</div>
     </div>`}
     ${item && item.flow_id ? `<div class="cl-row">
-      <button class="cl-pill cl-pill-on" id="cl-run-flow">▶ Run it</button>
+      <button class="cl-pill cl-pill-on" id="cl-run-flow">${playMark()} Run it</button>
       <span class="cl-hint">this action is a routine — running it is how it gets done</span>
     </div>` : ''}
     ${isProj ? `<div class="cl-row">
