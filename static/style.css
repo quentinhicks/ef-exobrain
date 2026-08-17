@@ -1173,6 +1173,21 @@ body.calendar-minimized #review-modal {
   display: none;
 }
 
+/* A CALENDAR EVENT WEARS ITS CALENDAR'S COLOUR, and stays readable doing it.
+   The hue arrives as --ev-color (set per event in renderGcalLayer); the fill,
+   the rule and the text are derived here so the light appendix can answer
+   differently. --ev-ink is what the hue is pulled TOWARD to become text: away
+   from the surface, which is white here and near-black in light. Mixing
+   toward a hardcoded #fff was fine on the dark surface and unreadable on the
+   pale one — measured at 1.2:1, which is not text, it is a watermark. */
+.tl-allday-event,
+.tl-gcal-event {
+  --ev-ink: #ffffff;
+  background: color-mix(in srgb, var(--ev-color, var(--accent)) 14%, transparent);
+  border-left-color: var(--ev-color, var(--accent));
+  color: color-mix(in srgb, var(--ev-color, var(--accent)) 50%, var(--ev-ink));
+}
+
 .tl-allday-event {
   height: 26px;
   padding: 0 10px;
@@ -4672,7 +4687,6 @@ button.eg-domain { cursor: pointer; }
 /* The drawn ▶ (playMark). Inline beside a label it needs the optical nudge a
    text glyph would have carried; on its own it is centred by its button. */
 .play-mark { vertical-align: -1px; }
-
 .fr-play-big {
   margin: 12px 0 0;
   border: 1px solid var(--border);
@@ -5642,6 +5656,18 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 :root.theme-light .md-codeblock { color: #8a5326; }
 :root.theme-light .md-quote { color: #47693a; }
 
+/* A calendar event's text is pulled toward INK here, not toward white, and
+   further than the dark theme pulls it: a pastel is already close to a white
+   page, so half of it is still a pastel. The percentages are measured, not
+   picked — see the ratios in the commit. The fill lightens a touch for the
+   same reason: 14% of a pastel on white is nearly nothing to sit text on. */
+:root.theme-light .tl-allday-event,
+:root.theme-light .tl-gcal-event {
+  --ev-ink: #10141a;
+  background: color-mix(in srgb, var(--ev-color, var(--accent)) 22%, transparent);
+  color: color-mix(in srgb, var(--ev-color, var(--accent)) 28%, var(--ev-ink));
+}
+
 /* Accent tints: keyed to the pastel accent, so they vanish on a light bg. */
 :root.theme-light .s2-drop-target { background: rgba(47, 111, 181, 0.10); }
 :root.theme-light .log-editor::selection { background: rgba(47, 111, 181, 0.22); }
@@ -5662,6 +5688,16 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* The gate pill is a tan chip with dark text — it reads on either theme; only
    the dismissed (grayed-out) state needs to stop being near-black. */
 :root.theme-light .tl-qr-line.tl-qr-dismissed .tl-qr-label { background: #c4c9cf; }
+
+/* A JUDGED pill inverts here. The judged colours are deep in this theme
+   (--block-red #a8434c, --block-green #2f7d63) because they sit on a white
+   page, and the pill's near-black ink was left over from the dark theme's
+   pastels: "Wake 08:00 ✗" came out at 3.16:1, which is a label you have to
+   lean in to read on the one surface that tells you a gate FAILED. */
+:root.theme-light .tl-qr-line.tl-qr-failed .tl-qr-label,
+:root.theme-light .tl-qr-line.tl-qr-success .tl-qr-label,
+:root.theme-light .tl-qr-line.tl-qr-failed .tl-qr-x,
+:root.theme-light .tl-qr-line.tl-qr-success .tl-qr-x { color: #ffffff; }
 
 /* Shadows: a 0.4-alpha black drop is a smudge on a light surface. */
 :root.theme-light .pa-suggest { box-shadow: 0 6px 20px rgba(15, 20, 25, 0.14); }
