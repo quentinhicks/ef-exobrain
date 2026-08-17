@@ -3950,7 +3950,8 @@ function initHub() {
 const logsView = { logs: [], open: null, content: '', dirty: false, saveTimer: null,
                    // Newest first: a log list is read from the top, and the
                    // one you want is nearly always the one you just wrote.
-                   desc: true, tags: new Set(), menuOpen: false };
+                   desc: true, tags: new Set(), menuOpen: false,
+                   q: '', hits: null, qTimer: null };
 
 // CHRONOLOGICAL, by the date parsed out of the filename — not by the filename.
 // Sorting the name as text put November before August and 26-8-11 before
@@ -3964,7 +3965,7 @@ function logDate(l) {
 }
 
 function sortedLogs() {
-  const rows = logsView.logs.filter(l =>
+  const rows = (logsView.hits || logsView.logs).filter(l =>
     [...logsView.tags].every(t => (l.tags || []).includes(t)));
   rows.sort((a, b) => logDate(a).localeCompare(logDate(b))
     || a.title.localeCompare(b.title));
@@ -4540,9 +4541,25 @@ function renderFlowEditor(body, title, f) {
     <div class="fr-link-hint">One action per ${
       (f.period || 'day') === 'week' ? 'week' : 'day'} — ticking it off is the
       end of it until the next one, and finishing the routine takes it away.</div>` : ''}
-    <div class="ref-list">${f.steps.map((s, i) => `
+    <div class="ref-list">${(() => {
+      // A HEADER is a label, not a step: storage drops it from `day_steps`, so
+      // it is never run, never credited and never counted. It carries no
+      // number for the same reason — the numbering is of the WORK, and a
+      // divider that consumed a number would make the routine read as one step
+      // longer than it is.
+      let n = 0;
+      return f.steps.map(s => {
+        if (s.kind === 'header') return `
+      <div class="ref-row fr-step-header" data-step="${s.id}">
+        <span class="gtd-section-head">${escHtml(s.content)}</span>
+        <button class="fr-up" data-step="${s.id}" title="Move up">↑</button>
+        <button class="fr-down" data-step="${s.id}" title="Move down">↓</button>
+        <button class="fr-open" data-step="${s.id}" title="Settings for this header">›</button>
+      </div>`;
+        n += 1;
+        return `
       <div class="ref-row${stepDueToday(s) ? '' : ' fr-step-off'}" data-step="${s.id}">
-        <span class="cl-chain-n">${i + 1}</span>
+        <span class="cl-chain-n">${n}</span>
         <span class="ref-text${stepShowsText(s) ? '' : ' fr-feature'}"
           title="${stepShowsText(s) ? 'Double-click to rewrite' : stepKindLabel(s)}">${
           stepShowsText(s) ? escHtml(s.content) : '⚙ ' + stepKindLabel(s)}</span>
@@ -4550,7 +4567,9 @@ function renderFlowEditor(body, title, f) {
         <button class="fr-up" data-step="${s.id}" title="Move up">↑</button>
         <button class="fr-down" data-step="${s.id}" title="Move down">↓</button>
         <button class="fr-open" data-step="${s.id}" title="Settings for this step">›</button>
-      </div>`).join('')
+      </div>`;
+      }).join('');
+    })()
       || '<div class="gtd-empty">No steps yet.</div>'}
     ${(() => {
       // What the routine adds up to TODAY — `day_steps`, so a step pawned away
@@ -4563,7 +4582,8 @@ function renderFlowEditor(body, title, f) {
       return `<div class="fr-total">${humanMinutes(t.total)} today${
         t.unknown ? ` · ${t.unknown} step${t.unknown === 1 ? '' : 's'} unestimated` : ''}</div>`;
     })()}
-    <button id="fr-add-step" class="map-add-btn">+ step</button></div>
+    <button id="fr-add-step" class="map-add-btn">+ step</button>
+    <button id="fr-add-header" class="map-add-btn">+ header</button></div>
     <button class="fr-play fr-play-big" data-flow="${f.id}">▶ Run</button>`;
 
   const patchFlow = async body2 => {
@@ -4590,6 +4610,22 @@ function renderFlowEditor(body, title, f) {
     add: async raw => {
       const created = await apiSend(`/api/flows/${f.id}/steps`, 'POST', { content: raw }).then(r => r.json());
       pushUndo(`added step "${raw}"`, async () => {
+        await apiSend(`/api/flow-steps/${created.id}`, 'DELETE');
+        await refreshAfterUndo();
+      });
+      await refreshRef();
+    },
+  }));
+
+  // Same sheet, same shape as + step — a header is added where the steps are
+  // added, not through a second grammar. It lands at the END like any step and
+  // is dragged up with ↑ to sit above the ones it names.
+  body.querySelector('#fr-add-header').addEventListener('click', () => openEntrySheet({
+    title: `${f.name} · add header`, placeholder: 'Name this section…',
+    add: async raw => {
+      const created = await apiSend(`/api/flows/${f.id}/steps`, 'POST',
+                                    { content: raw, kind: 'header' }).then(r => r.json());
+      pushUndo(`added header "${raw}"`, async () => {
         await apiSend(`/api/flow-steps/${created.id}`, 'DELETE');
         await refreshAfterUndo();
       });
@@ -6917,6 +6953,25 @@ function logPaste(e) {
   logEdit(ta, s, en, out, s + out.length);
 }
 
+// Marks the matched run inside a hit line, the way MAP's search does for a
+// title — reading the hit is the point, and an unmarked line makes you find
+// the word again by eye.
+function hlLogHit(line, q) {
+  const i = q ? line.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (i < 0) return escHtml(line);
+  return escHtml(line.slice(0, i)) + '<mark>' + escHtml(line.slice(i, i + q.length))
+    + '</mark>' + escHtml(line.slice(i + q.length));
+}
+
+async function runLogSearch() {
+  const q = logsView.q.trim();
+  if (!q) { logsView.hits = null; renderLogs(); return; }
+  logsView.hits = await apiGet(`/api/logs?q=${encodeURIComponent(q)}`, []);
+  // Another keystroke landed while this was in flight — that answer wins.
+  if (logsView.q.trim() !== q) return;
+  renderLogs();
+}
+
 function renderLogs() {
   const body = document.getElementById('logs-body');
   const title = document.getElementById('logs-title');
@@ -6936,17 +6991,42 @@ function renderLogs() {
               { month: 'short', day: 'numeric' })
           : new Date(l.updated_at).toLocaleDateString(undefined,
               { month: 'short', day: 'numeric' })}</span>
+        ${(l.hits || []).filter(Boolean).map(h =>
+          `<span class="log-hit">${hlLogHit(h, logsView.q)}</span>`).join('')}
       </button>`).join('');
-    const hidden = logsView.logs.length - sortedLogs().length;
+    const shown = sortedLogs().length;
+    const hidden = logsView.logs.length - shown;
     body.innerHTML = `
+      <div id="logs-search-wrap">
+        <input type="text" id="logs-q" placeholder="⌕ search what you wrote"
+          autocomplete="off" value="${escHtml(logsView.q)}">
+      </div>
       <div class="log-list">${rows || `<div class="log-empty">${
-        logsView.logs.length ? 'No log carries every tag you asked for' : 'No logs yet'}</div>`}</div>
-      ${hidden > 0 ? `<div class="log-hidden-note">${hidden} more behind the filter</div>` : ''}
+        logsView.q ? `Nothing in the logs says “${escHtml(logsView.q)}”`
+        : logsView.logs.length ? 'No log carries every tag you asked for'
+        : 'No logs yet'}</div>`}</div>
+      ${hidden > 0 ? `<div class="log-hidden-note">${hidden} more ${
+        logsView.q ? 'not matching' : 'behind the filter'}</div>` : ''}
       <button id="log-new" class="map-add-btn">+ log</button>
       <button id="log-dangerous" class="dw-entry" title="Stop typing and the draft is destroyed">⚡ Dangerous writing</button>`;
     body.querySelectorAll('.log-row').forEach(row => {
       row.addEventListener('click', () => openLog(row.dataset.name));
     });
+    const q = document.getElementById('logs-q');
+    q.addEventListener('input', e => {
+      logsView.q = e.target.value;
+      clearTimeout(logsView.qTimer);
+      // Debounced: each keystroke would otherwise read every file on the box.
+      logsView.qTimer = setTimeout(runLogSearch, 180);
+    });
+    q.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || !logsView.q) return;
+      e.stopPropagation();                     // peel the query, not the overlay
+      logsView.q = '';
+      logsView.hits = null;
+      renderLogs();
+    });
+    if (logsView.q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
     document.getElementById('log-dangerous')
       .addEventListener('click', openDangerousWriting);
     // Name and tags, and NO date to type — the server stamps today. Typing

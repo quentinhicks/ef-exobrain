@@ -5905,6 +5905,31 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .be-section .cl-hint { display: block; padding: 6px 20px 12px; line-height: 1.6; }
 .be-about-row { border-bottom: none; }
 
+/* Log search: the field, and the matched lines under a row. */
+#logs-search-wrap { padding: 8px 20px 4px; }
+#logs-q {
+  width: 100%;
+  font: 13px var(--font-sans);
+  padding: 7px 10px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.log-hit {
+  display: block;
+  width: 100%;
+  font: 11px/1.6 var(--font-mono);
+  color: var(--text-secondary);
+  padding-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The accent at low alpha: readable as a highlight in BOTH themes without a
+   second variable, since --accent is already redefined in the light appendix. */
+.log-hit mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--text-primary); }
+
 /* A log row's tags, inline after the title. Named vars only, so the light
    appendix needs no entry of its own. */
 .log-tag {

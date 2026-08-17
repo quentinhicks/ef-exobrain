@@ -3346,6 +3346,47 @@ def list_logs():
     return logs
 
 
+# CONTENT search. Tags answer "what kind of log is this"; only this answers
+# "what was in it", which is the question a corpus is actually kept for.
+#
+# Server-side because the bodies are FILES and the client has never seen them.
+# Returns the matching LINES, not just the filenames: a hit you cannot read is
+# a filename you still have to open to evaluate, which is the work you were
+# trying to skip. Case-insensitive substring, not a query language — the corpus
+# is a few hundred files of prose.
+def search_logs(q, per_file=3):
+    q = (q or '').strip().lower()
+    if not q:
+        return {}
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    hits = {}
+    for f in sorted(os.listdir(LOGS_DIR)):
+        if not f.endswith('.md'):
+            continue
+        try:
+            with open(os.path.join(LOGS_DIR, f), encoding='utf-8') as fh:
+                body = fh.read()
+        except OSError:
+            continue
+        name = f[:-3]
+        found = []
+        for line in body.split('\n'):
+            if q in line.lower():
+                line = line.strip()
+                if line:
+                    found.append(line[:200])
+            if len(found) >= per_file:
+                break
+        # A title match counts even when the body never says it — the name is
+        # part of the log, and the whole point was to stop reading names as
+        # filenames.
+        if not found and q in name.lower():
+            found = ['']
+        if found:
+            hits[name] = found
+    return hits
+
+
 def read_log(name):
     name = _log_name(name)
     path = os.path.join(LOGS_DIR, name + '.md')
@@ -4689,8 +4730,16 @@ def get_flows(date=None):
                 s['pawned_in'] = True
                 s['from_flow_id'] = s['flow_id']
                 carried.append(s)
+            # A 'header' is a LABEL, not a step. It is dropped here — the one
+            # place day_steps is composed — so it can never be run, credited,
+            # or measured against. That is the money rule, not a cosmetic one:
+            # day_steps is what put_flow_run re-checks and what qr_judge asks
+            # about, so a header that survived into it would be an uncreditable
+            # hard step holding a gated routine open forever and charging for a
+            # day that was never missed.
             f['day_steps'] = carried + [s for s in f['steps']
-                                        if s['due'] and not s.get('pawned_out')]
+                                        if s['due'] and not s.get('pawned_out')
+                                        and s['kind'] != 'header']
             run = conn.execute('SELECT * FROM flow_run WHERE flow_id = ? AND date = ?',
                                (f['id'], f['period_key'])).fetchone()
             f['run'] = dict(run) if run else None

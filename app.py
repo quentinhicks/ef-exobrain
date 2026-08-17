@@ -1086,7 +1086,15 @@ if not os.environ.get('PT_SERVER'):
 
 @app.route('/api/logs')
 def get_logs():
-    return jsonify(storage.list_logs())
+    # ?q= adds the matching lines per log. A query PARAMETER rather than a
+    # /api/logs/search route, which would be shadowed by a log actually named
+    # "search" — /api/logs/<name> is already that shape.
+    q = request.args.get('q')
+    if not q:
+        return jsonify(storage.list_logs())
+    hits = storage.search_logs(q)
+    return jsonify([dict(l, hits=hits[l['name']])
+                    for l in storage.list_logs() if l['name'] in hits])
 
 
 @app.route('/api/logs', methods=['POST'])
