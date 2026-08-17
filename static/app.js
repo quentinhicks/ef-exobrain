@@ -2153,6 +2153,26 @@ function seFieldHtml(f, v) {
     // A state the sheet can only clear, not edit — a gate's today-only window.
     control = `<div class="se-static">${escHtml(f.text)}</div>`
       + `<button type="button" class="se-inline-act" data-f="${f.key}">${escHtml(f.action)}</button>`;
+  } else if (f.kind === 'geocode') {
+    // AN ADDRESS INSTEAD OF A TYPED LATITUDE. Two ways in, and the second is
+    // the better one: "Here" takes the fix the ⌖ filter already keeps, which is
+    // exact for a place you are standing in and sends no address to anyone.
+    // The search is the fallback for somewhere you are NOT, and it goes to
+    // OpenStreetMap — so the query leaves this machine, which is why the two
+    // are offered side by side rather than search alone.
+    //
+    // Results are painted straight into .se-geo-out, never by re-rendering the
+    // sheet: a repaint would take the field being typed in with it.
+    control = `<div class="se-geocode" data-f="${f.key}">
+      <div class="se-geo-row">
+        <input class="se-input se-geo-q" type="search" autocomplete="off"
+          placeholder="${escHtml(f.placeholder || 'search an address…')}">
+        <button type="button" class="se-inline-act se-geo-go">Search</button>
+        <button type="button" class="se-inline-act se-geo-here"
+          title="Use this device's current position — exact, and nothing leaves the machine">Here</button>
+      </div>
+      <div class="se-geo-out"></div>
+    </div>`;
   } else if (f.kind === 'select') {
     control = `<select class="se-input se-select" data-f="${f.key}">${f.options(v).map(o =>
       `<option value="${escHtml(String(o.value))}"${String(o.value) === String(val) ? ' selected' : ''}>${escHtml(o.name)}</option>`
@@ -2244,6 +2264,67 @@ function wireSeSheet(fields) {
         await f.run(seSheet.item);
         closeSeSheet();
         renderSettingsIndex();
+      });
+    } else if (f.kind === 'geocode') {
+      const out = wrap.querySelector('.se-geo-out');
+      const q = wrap.querySelector('.se-geo-q');
+      const say = html => { out.innerHTML = html; };
+      // Writing through the INPUT rather than straight into `v` keeps one path
+      // to the value: the field's own handler stores it, so a picked address
+      // and a typed one land the same way and cannot disagree.
+      const setField = (key, value) => {
+        const input = el.querySelector(`input[data-f="${key}"]`);
+        if (input) {
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          v[key] = value;
+        }
+      };
+      const pick = (name, lat, lng, label) => {
+        setField('lat', lat);
+        setField('lng', lng);
+        const nameInput = el.querySelector('input[data-f="name"]');
+        if (nameInput && !nameInput.value.trim()) setField('name', name);
+        say(`<div class="se-geo-picked">✓ ${escHtml(label || name)}
+          <span class="se-geo-coords">${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}</span></div>
+          <div class="se-hint">The name is yours to rewrite — it is only a suggestion.</div>`);
+      };
+      const search = async () => {
+        const term = q.value.trim();
+        if (!term) return;
+        say('<div class="se-hint">searching…</div>');
+        try {
+          const res = await fetch(`/api/geocode?q=${encodeURIComponent(term)}`);
+          const data = await res.json();
+          if (!res.ok) { say(`<div class="se-error">${escHtml(data.error || 'lookup failed')}</div>`); return; }
+          if (!data.length) { say('<div class="se-hint">nothing found — try a fuller address</div>'); return; }
+          say(`<div class="se-geo-list">${data.map((r, i) => `
+            <button type="button" class="se-geo-hit" data-i="${i}">
+              <span class="se-geo-name">${escHtml(r.name)}</span>
+              <span class="se-geo-label">${escHtml(r.label)}</span>
+            </button>`).join('')}</div>`);
+          out.querySelectorAll('.se-geo-hit').forEach(b => b.addEventListener('click', () => {
+            const r = data[parseInt(b.dataset.i)];
+            pick(r.name, r.lat, r.lng, r.label);
+          }));
+        } catch (e) {
+          say('<div class="se-error">lookup failed — no network?</div>');
+        }
+      };
+      wrap.querySelector('.se-geo-go').addEventListener('click', search);
+      q.addEventListener('keydown', e => {
+        // Enter searches; it must not submit the sheet, which would save a
+        // location with no coordinates yet.
+        if (e.key === 'Enter') { e.preventDefault(); search(); }
+      });
+      wrap.querySelector('.se-geo-here').addEventListener('click', () => {
+        if (state.geo && state.geo.ok) {
+          pick('Here', state.geo.lat, state.geo.lng, 'this device’s current position');
+          return;
+        }
+        say('<div class="se-hint">no fix yet — enable location for this site, or search an address</div>');
+        initGeo();
       });
     } else if (f.kind === 'select') {
       wrap.addEventListener('change', () => {
@@ -2834,7 +2915,7 @@ const SETTINGS_SHEETS = {
     save: it => it ? 'Save location' : 'Save location',
     removeLabel: 'Delete location',
     confirm: it => `Delete "${it.name}"? Gates and tags pinned to it lose their anchor.`,
-    blank: () => ({ name: '', lat: '', lng: '', radius: '', active: true }),
+    blank: () => ({ name: '', lat: '', lng: '', radius: '', active: true, offer: true }),
     load: l => ({ name: l.name, lat: l.lat, lng: l.lng, radius: l.radius_m,
                   active: l.active !== 0 }),
     fields: (v, it) => it ? [
@@ -2844,10 +2925,16 @@ const SETTINGS_SHEETS = {
       { key: 'radius', label: 'Radius', kind: 'static', text: `${it.radius_m}m` },
       seStateRow('Paused: not offered to gates or tags. Ones already pinned keep their anchor.'),
     ] : [
+      { key: 'find', label: 'Find it', kind: 'geocode',
+        placeholder: 'e.g. 12 Nassau St, Princeton',
+        hint: 'Search an address, or take this device\'s position if you are there.' },
       { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Mox' },
       { key: 'lat', label: 'Latitude', kind: 'number', step: 'any', half: true },
       { key: 'lng', label: 'Longitude', kind: 'number', step: 'any', half: true },
       { key: 'radius', label: 'Radius', kind: 'number', suffix: 'm', hint: 'blank = 150m' },
+      { key: 'offer', label: 'Offer it', kind: 'check', on: 'A place I use', off: 'Just this once',
+        hint: 'Just this once still works as a geofence — it is simply never offered '
+              + 'in the pickers. Un-pause it later to promote it.' },
     ],
     submit: async (v, it) => {
       if (it) {
@@ -2863,7 +2950,14 @@ const SETTINGS_SHEETS = {
       const lng = parseFloat(v.lng);
       if (!v.name.trim() || isNaN(lat) || isNaN(lng)) return 'Name, latitude and longitude are required.';
       const radius = parseInt(v.radius);
-      await apiSend('/api/locations', 'POST', { name: v.name.trim(), lat, lng, radius_m: isNaN(radius) ? null : radius });
+      await apiSend('/api/locations', 'POST', {
+        name: v.name.trim(), lat, lng, radius_m: isNaN(radius) ? null : radius,
+        // "Just this once" is a PAUSED location: the row exists so the
+        // coordinates do, and the pickers never offer it.
+        active: v.offer === false ? 0 : 1,
+      });
+      state.locations = await fetch('/api/locations').then(r => r.json())
+        .catch(() => state.locations);
       await renderQrManager();
       return null;
     },
@@ -6165,7 +6259,7 @@ function flowTaskMinutes(i) {
 function egRowControl(i, started, title) {
   if (i && i.flow_id) {
     return `<span class="eg-run" data-run="${i.flow_id}" data-id="${i.id}"
-      title="Run this routine — ticking it off is not how it gets done">${playMark()}</span>`;
+      title="Run this routine — ticking it off is not how it gets done">${playMark(8)}</span>`;
   }
   return `<span class="eg-check${started ? ' eg-check-started' : ''}" data-id="${i.id}"
     title="${title}">${started ? '◐' : ''}</span>`;

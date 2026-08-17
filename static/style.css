@@ -591,6 +591,39 @@ select option {
 
 .se-inline-act { font-size: 13px; color: var(--accent); flex: none; }
 
+/* Address lookup, so a location costs a search instead of a typed latitude.
+   Colours are vars only — the light appendix swaps them and nothing here needs
+   a second entry. Hit targets are full-width rows: on a phone there is no
+   hover to find a small one with. */
+.se-geo-row { display: flex; gap: 8px; align-items: center; }
+.se-geo-q { flex: 1; min-width: 0; }
+.se-geo-out:not(:empty) { margin-top: 8px; }
+.se-geo-list { display: flex; flex-direction: column; gap: 2px; }
+
+.se-geo-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.se-geo-hit:hover { border-color: var(--accent); }
+.se-geo-name { font-size: 13px; color: var(--text-primary); }
+.se-geo-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.se-geo-picked { font-size: 13px; color: var(--accent); }
+.se-geo-coords { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+
 /* Pawning: the step's own setting, and the note the receiving routine shows. */
 .fr-pawn-sel { font: 12px var(--font-ui); max-width: 170px; }
 .fr-pawn-min { width: 64px; font-family: var(--font-mono); }
@@ -4246,20 +4279,25 @@ body.map-over-runner #map-overlay { z-index: 170; }
 
 /* ▶ INSTEAD OF THE TICK on a row a routine seeded (flow.as_task). Same 14px
    box the checkbox occupies so the column of controls stays a column, but it
-   is outlined in accent and carries the glyph: the row's one control is "run
-   it", not "call it done". Ticking such a row off would retire the seed with
-   the routine never run. The finger target is padded past the 14px box —
-   below ~36px a sub-target cannot be hit on a phone. */
+   carries the mark: the row's one control is "run it", not "call it done".
+   Ticking such a row off would retire the seed with the routine never run.
+   The finger target is padded past the 14px box — below ~36px a sub-target
+   cannot be hit on a phone.
+   The MARK is what distinguishes it from the tick box, not a colour: it used
+   to be outlined in accent, which made the one blue thing in a column of
+   ordinary rows read as a status rather than a verb. Ink, like every other
+   run mark in the app; the outline keeps --text-secondary, the same control
+   outline the checkbox beside it uses (3:1 in both themes). */
 .eg-run {
   width: 14px;
   height: 14px;
   flex: none;
-  border: 1.5px solid var(--accent);
+  border: 1.5px solid var(--text-secondary);
   border-radius: 4px;
-  color: var(--accent);
-  font-size: 8px;
-  line-height: 11px;
-  text-align: center;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
