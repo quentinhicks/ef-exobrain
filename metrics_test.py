@@ -178,6 +178,38 @@ c.patch(f"/api/metrics/{off['id']}", json={'active': 1})
 check('and un-pausing asks it again',
       c.get(f"/api/metrics/step/{ls['id']}?date={TODAY}").get_json()['complete'] is False)
 
+# THE SERVER DECIDES COMPLETION, not the client. The only thing enforcing a
+# hard metrics step used to be a disabled Done button driven by a boolean the
+# runner cached when it opened — so a stale tab, a second device or a replayed
+# PUT completed a gated run with metrics unanswered and the gate judged the day
+# satisfied.
+forge = c.post('/api/flows', json={'name': 'Forgeable'}).get_json()
+fs = c.post(f"/api/flows/{forge['id']}/steps",
+            json={'content': 'metrics', 'kind': 'metrics'}).get_json()
+fm = c.post('/api/metrics', json={'name': 'Mood tonight', 'kind': 'scale',
+                                  'step_ids': [fs['id']]}).get_json()
+run = c.put(f"/api/flows/{forge['id']}/run",
+            json={'date': TODAY, 'steps': {str(fs['id']): '21:00'},
+                  'completed': True}).get_json()
+check('a run claiming completion with metrics unanswered is REFUSED',
+      not run.get('completed_at'), run)
+c.put('/api/metrics/entry', json={'date': TODAY, 'metric_id': fm['id'],
+                                  'step_id': fs['id'], 'value': 3})
+run = c.put(f"/api/flows/{forge['id']}/run",
+            json={'date': TODAY, 'steps': {str(fs['id']): '21:00'},
+                  'completed': True}).get_json()
+check('and accepted once the metric is answered', bool(run.get('completed_at')), run)
+
+# A step that was never credited cannot be completed past either.
+skip = c.post('/api/flows', json={'name': 'Skippable'}).get_json()
+s1 = c.post(f"/api/flows/{skip['id']}/steps", json={'content': 'One'}).get_json()
+c.post(f"/api/flows/{skip['id']}/steps", json={'content': 'Two'}).get_json()
+run = c.put(f"/api/flows/{skip['id']}/run",
+            json={'date': TODAY, 'steps': {str(s1['id']): '21:00'},
+                  'completed': True}).get_json()
+check('completion with an uncredited step is refused too',
+      not run.get('completed_at'), run)
+
 # ── the settings row names WHERE it is asked ────────────────────
 m_mood = [m for m in c.get('/api/metrics').get_json() if m['id'] == mood['id']][0]
 check('a metric names the steps that ask it, not just a count',

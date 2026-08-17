@@ -69,6 +69,10 @@ def complete(flow_id, ymd, hhmm):
     conn.close()
 
 
+def _date_plus_day(ymd):
+    return (date_cls.fromisoformat(ymd) + timedelta(days=1)).isoformat()
+
+
 def reason_for(node_id, ymd):
     rows = [r for r in storage.qr_charge_rows_between(ymd, ymd) if r['node_id'] == node_id]
     return rows[0]['failure_reason'] if rows else None
@@ -296,6 +300,32 @@ f = [x for x in storage.get_flows() if x['id'] == flow['id']][0]
 fields = sorted(p['field'] for p in storage._pendings(f['pending']))
 check('queueing a second easing does not delete the first',
       fields == ['offset_min', 'qr_node_id'], fields)
+
+# ── THE DEADLINE IS SERVED (2026-08-17) ──────────────────────────────────
+#
+# app.js used to compute this itself from (src.intervals || [])[0]. But
+# day_intervals is CLIPPED and sorted by start, so a 23:00→07:00 routine's
+# from_previous TAIL sorts first: the client read the window as 00:00–07:00 and
+# showed the routine due this morning, overdue all day, while the judge charged
+# against 07:00 the NEXT morning. Display and the money path must not disagree.
+fresh()
+nid = storage.qr_create_node('Sleep', 'tok-cross', '21:00', '23:00')
+flow = storage.create_flow('Night')
+past = (date_cls.today() - timedelta(days=30)).isoformat()
+src = storage.create_schedule_source(
+    kind='rule', title='Night window', start=f'{past}T23:00:00', duration='PT8H',
+    recurrenceRules=[{'frequency': 'daily'}])
+storage.update_flow(flow['id'], qr_node_id=nid,
+                    source_uid=src['uid'] if isinstance(src, dict) else src)
+f = [x for x in storage.get_flows(TODAY) if x['id'] == flow['id']][0]
+check('a routine window across midnight opens at 23:00, not at the clipped tail',
+      f['window_open_min'] == 23 * 60, f['window_open_min'])
+check('and is due 07:00 TOMORROW — past 1440, which the tail lost',
+      f['due_min'] == 31 * 60, f['due_min'])
+check('the served deadline is the one the judge charges against',
+      qr_judge.routine_deadline(None, f, TODAY).isoformat()
+      == f'{_date_plus_day(TODAY)}T07:00:00',
+      qr_judge.routine_deadline(None, f, TODAY))
 
 # ── THE FREEZE (2026-08-17) ──────────────────────────────────────────────
 #

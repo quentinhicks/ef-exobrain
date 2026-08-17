@@ -1951,8 +1951,11 @@ def put_flow_run(id):
     # flow's business (a weekly routine files under its Monday). Normalising
     # here means no caller has to know the rule.
     date = storage.flow_period_key_for(id, date)
-    run = storage.upsert_flow_run(id, date, json.dumps(data.get('steps') or {}),
-                                  bool(data.get('completed')))
+    steps = data.get('steps') or {}
+    # The client's `completed` is a request, not a verdict — a gate can hang on
+    # it, so the server re-checks today's steps and every hard metrics step.
+    completed = bool(data.get('completed')) and storage.run_completion_ok(id, date, steps)
+    run = storage.upsert_flow_run(id, date, json.dumps(steps), completed)
     return jsonify(run)
 
 

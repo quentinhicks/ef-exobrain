@@ -242,7 +242,7 @@ def routine_deadline(node, flow, ymd, resolve=None):
     anchor_id = flow.get('before_node_id') or flow.get('qr_node_id')
     if not anchor_id:
         return None
-    anchor = node if anchor_id == node['id'] else next(
+    anchor = node if (node and anchor_id == node['id']) else next(
         (n for n in storage.qr_get_nodes() if n['id'] == anchor_id), None)
     if not anchor:
         return None
@@ -253,6 +253,42 @@ def routine_deadline(node, flow, ymd, resolve=None):
     if not flow.get('before_node_id') and flow.get('offset_min'):
         due += timedelta(minutes=flow['offset_min'])
     return due
+
+
+# THE DEADLINE AS DATA (2026-08-17). app.js used to answer this itself in
+# flowWindow/flowDueMin, and the two disagreed on every midnight-crossing
+# window: day_intervals is CLIPPED and sorted by start, so a 23:00→07:00
+# routine's from_previous tail ({'00:00','07:00'}) sorts first and the client
+# took it — showing the routine due at 07:00 THIS morning, overdue all day,
+# while the judge charged against 07:00 the NEXT. Display and the money path
+# disagreeing is the one thing this codebase calls a cardinal sin, so the
+# client is a reader now and this is the single implementation.
+#
+# Returns minutes from midnight of `ymd`, which may exceed 1440 — that is the
+# whole point, and what the tail-clipping lost.
+def flow_day_window(flow, ymd, resolve=None):
+    """(open_min, due_min) for a routine on a date; either may be None."""
+    open_min = None
+    own = _flow_own_end(flow, ymd, resolve)
+    if own and flow.get('source_uid'):
+        if resolve is None:
+            resolve, _ = storage.schedule_resolver()
+        src = resolve(flow['source_uid'])
+        day = date_cls.fromisoformat(ymd)
+        try:
+            occs = schedule.occurrences(src, resolve, day, day)
+        except schedule.Cycle:
+            occs = []
+        # The occurrence STARTING on this day, never the tail of yesterday's.
+        occ = next(((s, e) for s, e in occs if s.date() == day), None)
+        if occ:
+            open_min = occ[0].hour * 60 + occ[0].minute
+    due = routine_deadline(None, flow, ymd, resolve)
+    if due is None:
+        return open_min, None
+    base = date_cls.fromisoformat(ymd)
+    due_min = ((due.date() - base).days * 1440) + due.hour * 60 + due.minute
+    return open_min, due_min
 
 
 def _completed_local(iso):

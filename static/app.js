@@ -3870,15 +3870,14 @@ async function refreshRef() {
 // has none and the gate-derived deadline is still the answer. The interval comes
 // from /api/schedules?date=, which is where every other consumer reads a
 // source's wall-clock answer — no second expander on the client.
+// READ, never derived. This used to take (src.intervals || [])[0], but
+// day_intervals is CLIPPED and sorted by start, so a 23:00→07:00 routine's
+// from_previous tail sorts FIRST — the window read as 00:00–07:00 and the
+// routine showed overdue all day while the judge charged against 07:00 the
+// next morning. The server ships the same answer the judge uses.
 function flowWindow(f) {
-  if (!f || !f.source_uid) return null;
-  const src = (state.schedules || []).find(s => s.uid === f.source_uid);
-  const iv = src && (src.intervals || [])[0];
-  if (!iv) return null;
-  const open = timeToMinutes(iv.start);
-  let due = timeToMinutes(iv.end);
-  if (iv.into_next || due < open) due += 1440;   // past midnight, same rule as a gate
-  return { open, due };
+  if (!f || f.window_open_min == null || f.due_min == null) return null;
+  return { open: f.window_open_min, due: f.due_min };
 }
 
 function flowWindowLabel(f) {
@@ -3887,23 +3886,13 @@ function flowWindowLabel(f) {
   return `${minutesToHHMM(w.open % 1440)}–${minutesToHHMM(Math.round(w.due) % 1440)}`;
 }
 
+// Its own window where set, else the gate it is anchored to plus offset_min —
+// all of it decided server-side by qr_judge.routine_deadline, the function that
+// charges for it. Minutes from midnight of the flow's DATE, so a value over
+// 1440 means the deadline is tomorrow morning; that is the case the client's
+// own arithmetic used to lose.
 function flowDueMin(f) {
-  // Its own window wins where set; the gate-derived deadline is the fallback,
-  // so every routine written before this keeps answering the same way.
-  const own = flowWindow(f);
-  if (own) return own.due;
-  const nodeId = f.before_node_id || f.qr_node_id;
-  if (!nodeId) return null;
-  const n = (state.accountabilityNodes || []).find(x => x.id === nodeId);
-  if (!n) return null;
-  const dow = jsDateToDayOfWeek(new Date());
-  const ov = n.today_override;
-  const def = nodeWindowForDow(n, dow);
-  const end = ov ? ov.window_end : def.window_end;
-  const off = ov ? (ov.window_end_offset_days || 0) : (def.window_end_offset_days || 0);
-  let m = timeToMinutes(end) + (off ? 1440 : 0);
-  if (!f.before_node_id && f.offset_min) m += f.offset_min;
-  return m;
+  return f && f.due_min != null ? f.due_min : null;
 }
 
 // One list row, used by the index (root lists) and by an open list (its

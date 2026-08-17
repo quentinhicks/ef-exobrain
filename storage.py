@@ -4364,6 +4364,21 @@ def get_flows(date=None):
                                (f['id'], f['period_key'])).fetchone()
             f['run'] = dict(run) if run else None
     conn.close()
+    # THE DEADLINE IS SERVED, never re-derived by the client (2026-08-17).
+    # Same answer qr_judge charges against, from the same function — a local
+    # import, the direction qr_gate_day_windows already uses.
+    if date:
+        import qr_judge
+        resolve, _ = schedule_resolver()
+        for f in flows:
+            if f.get('source_uid') or f.get('qr_node_id') or f.get('before_node_id'):
+                try:
+                    f['window_open_min'], f['due_min'] = qr_judge.flow_day_window(
+                        f, date, resolve)
+                except Exception:
+                    f['window_open_min'], f['due_min'] = None, None
+            else:
+                f['window_open_min'], f['due_min'] = None, None
     return flows
 
 
@@ -4842,6 +4857,31 @@ def routine_gate_for_node(node_id, date):
     if flow is None:
         return None
     return bool(flow['completed_at'])
+
+
+# COMPLETION IS VERIFIED SERVER-SIDE (2026-08-17). The route used to store
+# whatever `completed` it was sent, and the only enforcement of a hard metrics
+# step was a DISABLED BUTTON driven by a boolean the client cached when the
+# runner opened. So a stale tab — one whose cache predates a metric another
+# session added or un-paused, a second device, anything replaying the PUT —
+# completed a gated run with metrics unanswered, and the gate judged the day
+# satisfied. A gate behind a hard metrics step is supposed to ask whether you
+# ANSWERED; a client-computed boolean is a hint, never the authority.
+#
+# Checks TODAY'S RUN (day_steps: due, minus pawned away, plus pawned in), not
+# the routine — the same composition the runner runs against.
+def run_completion_ok(flow_id, date, steps_map):
+    f = next((x for x in get_flows(date) if x['id'] == flow_id), None)
+    if not f:
+        return False
+    credited = set(str(k) for k in (steps_map or {}))
+    for s in f.get('day_steps') or []:
+        if str(s['id']) not in credited:
+            return False
+        if s.get('kind') == 'metrics' and s.get('requirement') != 'soft':
+            if not metrics_step_complete(s['id'], date):
+                return False
+    return True
 
 
 def upsert_flow_run(flow_id, date, steps, completed):
