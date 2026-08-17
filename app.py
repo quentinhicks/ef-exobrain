@@ -59,8 +59,13 @@ if getattr(sys, 'frozen', False):
 else:
     app = Flask(__name__)
 # A PT_SERVER client owns no database — everything lives on the server.
+# The timezone lever goes on HERE, immediately after the db exists and long
+# before anything dates anything: the daybook/backup thread starts further
+# down this file and used to run 58 lines ahead of the lever, filing today
+# under the OS zone at every startup.
 if not os.environ.get('PT_SERVER'):
     storage.init_db()
+    storage.apply_timezone()
 try:
     with open('config.json') as f:
         config = json.load(f)
@@ -1015,25 +1020,6 @@ VALID_TIMEZONES = [
 ]
 
 
-def _apply_timezone():
-    # The whole app dates things in LOCAL time (date_cls.today(), naive
-    # datetimes, the iCal expansion). Setting TZ for the process makes every
-    # one of those calls follow the setting — no call-site changes, and the
-    # server matches whatever timezone the phone/laptop are in.
-    tz = storage.get_settings().get('timezone')
-    if not tz:
-        return
-    os.environ['TZ'] = tz
-    try:
-        time.tzset()
-    except AttributeError:
-        pass  # Windows has no tzset; the OS timezone rules there
-
-
-if not os.environ.get('PT_SERVER'):
-    _apply_timezone()
-
-
 @app.route('/api/settings', methods=['PATCH'])
 def patch_settings():
     data = request.get_json()
@@ -1044,7 +1030,9 @@ def patch_settings():
     if 'timezone' in data:
         # Shift the whole server, then re-expand the calendar: stored gcal
         # times are naive local, so they must be re-parsed in the new zone.
-        _apply_timezone()
+        # The judge and the scan server pick the new zone up on their next
+        # run — each applies the lever itself at startup.
+        storage.apply_timezone()
         threading.Thread(target=_refresh_all_calendars, daemon=True).start()
     # Same shape as GET — a client that assigns this response over its settings
     # state would otherwise lose qr_worker_url until the next full load.

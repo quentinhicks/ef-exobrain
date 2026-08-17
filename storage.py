@@ -2,6 +2,7 @@ import os
 import re
 import json
 import sqlite3
+import time
 import uuid
 
 import recurrence
@@ -27,6 +28,35 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# THE ONE CLOCK. The whole app dates things in LOCAL time (date_cls.today(),
+# naive datetimes, the iCal expansion), so `setting.timezone` is applied by
+# setting the PROCESS TZ — no call-site changes anywhere.
+#
+# It lives HERE, not in app.py, because the setting reaches a process only if
+# that process asks for it, and three of them date things: Flask, qr_judge (on
+# a systemd timer — it converts scan windows to UTC bounds and decides which
+# day is "yesterday", with real money on the answer) and qr_scan_server. The
+# judge ran under the OS zone for its whole life while a comment claimed
+# otherwise; a VM in one zone and a setting in another judged a satisfied
+# night absent. Every entrypoint calls this before touching a date.
+def apply_timezone():
+    # NEVER set TZ without tzset. Windows has no tzset, and its CRT does not
+    # understand IANA names — it reads TZ once, fails to parse
+    # 'America/New_York', and falls back to UTC, moving the whole process by
+    # hours. That only stayed hidden while this ran late in app.py's import
+    # (the CRT had already resolved local time); moving the lever to where it
+    # belongs, before anything dates anything, is exactly what would expose it.
+    # On Windows the OS zone is therefore the app's zone, deliberately.
+    if not hasattr(time, 'tzset'):
+        return None
+    tz = get_settings().get('timezone')
+    if not tz:
+        return None
+    os.environ['TZ'] = tz
+    time.tzset()
+    return tz
 
 
 # "not passed" for the update_* functions, so None can mean "clear it". Defined

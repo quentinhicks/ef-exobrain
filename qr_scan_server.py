@@ -139,5 +139,8 @@ if __name__ == '__main__':
     data_dir = os.environ.get('PT_DATA_DIR')
     if data_dir:
         os.chdir(data_dir)
+    # A scan is stamped with a time the judge compares against local windows —
+    # this process dates things too, so it takes the same lever.
+    storage.apply_timezone()
     app.run(host='127.0.0.1', port=int(os.environ.get('QR_PORT', '5001')),
             use_reloader=False)

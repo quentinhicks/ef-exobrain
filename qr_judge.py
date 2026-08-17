@@ -19,6 +19,7 @@
 # judge() — this is deliberate, not an omission.
 import json
 import math
+import os
 import sys
 import time
 import urllib.parse
@@ -28,9 +29,12 @@ from datetime import date as date_cls, datetime, timedelta
 import storage
 import schedule
 
-# The process runs in the app's timezone (app.py's _apply_timezone sets TZ from
-# the setting), so naive local datetimes are correct here — same convention as
-# every other date in this codebase.
+# The process runs in the app's timezone — but only because __main__ calls
+# storage.apply_timezone() itself. It does NOT inherit it: this is a separate
+# process on a systemd timer, and for its whole life this comment claimed
+# otherwise while the process actually ran under the OS zone. That zone is
+# load-bearing here (mktime → UTC scan bounds, which day is "yesterday", when
+# a 24h pending lands), and it decides real charges.
 DOW = '0123456'  # 0 = Monday .. 6 = Sunday, matching recurring_task.days_of_week
 
 
@@ -651,6 +655,13 @@ def charge_for_failure(node, ymd, reason, sender=None):
 # unjudged failure to charge for. Importing the module (every test does) defines
 # everything first, so the whole suite passed while production crashed.
 if __name__ == '__main__':
+    # Before ANY date is read. The unit file sets WorkingDirectory to the data
+    # dir; run by hand from elsewhere, PT_DATA_DIR is what stops storage from
+    # opening an empty tracker.db beside the code and reporting a clean run.
+    _data_dir = os.environ.get('PT_DATA_DIR')
+    if _data_dir and os.path.isdir(_data_dir):
+        os.chdir(_data_dir)
+    storage.apply_timezone()
     found = judge(verbose=True)
     # Stamped so the panel can answer "is this actually running?" — the first
     # question about a judge on a timer, and one nothing else could answer: a
