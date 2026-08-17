@@ -4450,6 +4450,17 @@ body.map-over-runner #map-overlay { z-index: 170; }
 }
 .eg-rt-add:focus { border-bottom-color: var(--accent); }
 
+/* THE CALENDAR ENDS HERE. The day and the pool are two different claims —
+   what you have committed to, and what is merely available — and the line
+   between them used to be carried by the pool header's border-top. That band
+   is gone, so the rule moves to the thing it was always about: the end of the
+   day. :not(:empty) because a lone rule under nothing is a line about
+   nothing. */
+.eg-day:not(:empty) {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
 .eg-pool-head {
   padding: 14px 14px 4px;
   font: 10px var(--font-mono);
@@ -4458,6 +4469,13 @@ body.map-over-runner #map-overlay { z-index: 170; }
   color: var(--text-secondary);
   border-top: 1px solid var(--border);
 }
+
+/* One rule, not two: the deferred block brings its own border-top, and when
+   it sits directly under the day that would draw the same line twice. */
+.eg-day + .eg-pool-head { border-top: none; }
+
+/* The first pool row should not sit on the line. */
+.eg-day + .eg-pool { padding-top: 10px; }
 
 .eg-tag {
   flex: none;
