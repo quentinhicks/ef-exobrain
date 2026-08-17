@@ -310,13 +310,30 @@ function renderTimeline() {
 // swallows the click that follows a fired hold, so a long-press can't also
 // toggle/cancel whatever a plain tap on that element means. Mouse pointers
 // are ignored — they have the real right-click.
+// WHEN the last long press fired, as a clock time rather than a flag on an
+// element. The flag below still suppresses the click that follows the press —
+// but only while the element it was attached to still exists, and a long-press
+// handler that re-renders (startedToggle does) destroys its own guard. The
+// browser then delivers the touch's synthesized click to the FRESH node, which
+// has no memory of the press.
+//
+// On the pool checkbox that meant a 550ms hold marked the item in progress and
+// then COMPLETED it — the most destructive thing on the surface, reached by
+// the gesture meant to be the gentle one. A timestamp survives the re-render;
+// an element flag cannot.
+let lastLongPressAt = 0;
+
+function justLongPressed() {
+  return Date.now() - lastLongPressAt < 800;
+}
+
 function onLongPress(el, fn) {
   let t = null, sx = 0, sy = 0, fired = false;
   el.addEventListener('pointerdown', e => {
     if (e.pointerType === 'mouse') return;
     fired = false;
     sx = e.clientX; sy = e.clientY;
-    t = setTimeout(() => { fired = true; fn(); }, 550);
+    t = setTimeout(() => { fired = true; lastLongPressAt = Date.now(); fn(); }, 550);
   });
   el.addEventListener('pointermove', e => {
     if (t && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) {
@@ -10944,6 +10961,10 @@ function renderEngage() {
   body.querySelectorAll('.eg-check[data-id]').forEach(el => {
     const id = parseInt(el.dataset.id);
     el.addEventListener('click', async () => {
+      // HOLDING the box is "in progress" (the row's long press, which this sits
+      // inside). The click the browser synthesizes after that hold must not
+      // also complete the item — see justLongPressed.
+      if (justLongPressed()) return;
       const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
       await undoableDelete(id, `completed "${(item && item.content) || 'action'}"`);
       await after();
@@ -11145,6 +11166,10 @@ function renderEngage() {
     // date+TIME already places an action on any day. One path, not two.
     row.addEventListener('click', e => {
       if (!e.target.classList.contains('eg-text')) return;
+      // Same race as the checkbox: a long press on the row re-renders, taking
+      // its own click guard with it, and the synthesized click would then open
+      // clarify on top of the ◐ you just set.
+      if (justLongPressed()) return;
       const id = parseInt(row.dataset.id);
       const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
       if (item) openClarifyForItem(item, after);
