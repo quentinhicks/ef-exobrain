@@ -3679,19 +3679,26 @@ function initHub() {
     if (clarifyView.open) return;
     flushOpenNotes();
     if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
-    // (MAP has no transient layer of its own to peel any more — its rows open
-    // the clarify sheet, and the bail above lets the sheet peel first.)
+    // (MAP's rows open the clarify sheet, and the bail above lets the sheet
+    // peel first; its filter menu peels just above, before the overlay loop.)
     // Settings peels the way it navigates (11a): sheet, then section, then the
     // panel itself — so Esc is Back, not Close, until there is nothing left.
     if (seSheet.kind) { closeSeSheet(); return; }
+    // MAP's filter menu is a transient layer again (23a) — it peels before the
+    // MAP overlay in the loop below, the way every sheet peels before what
+    // opened it.
+    if (closeMapFilter()) return;
     // The occasion sheet peels before whatever it was opened from — and that is
     // Settings as often as it is the day, so it has to sit ABOVE the overlay
     // loop below or Esc would close Settings out from under an open sheet.
     if (occasionView.open) { closeOccasionSheet(); return; }
     // Legacy modal overlays first (they sit above the m-overlays), innermost
     // wins; the person-detail/bucket/add trio stack over People.
+    // Innermost first, and the order here IS the z-order: Settings (155) sits
+    // above map/logs (150) and the .m-overlay band (140) because it opens over
+    // whatever you already had up, so it peels before them.
     for (const id of ['person-add-overlay', 'bucket-mgr-overlay', 'person-detail-overlay',
-                      'map-overlay', 'logs-overlay', 'modal-overlay']) {
+                      'modal-overlay', 'map-overlay', 'logs-overlay']) {
       const el = document.getElementById(id);
       if (el && !el.classList.contains('hidden')) {
         if (id === 'logs-overlay') closeLogsView();
@@ -8226,7 +8233,50 @@ let mapWired = false;
 
 // MAP's one piece of view state: the search query. Session-local and NOT
 // undoable — it is a lens, not data.
-const mapView = { q: '' };
+// FOUR QUESTIONS ON ONE INVENTORY, asked from one menu (23a).
+//
+// MAP is the read-everything surface, so the narrowing lives in the header's
+// filter menu rather than a permanent band of chrome: one place that narrows
+// the list, and a pill that always names what you are looking at.
+//
+// The predicates live HERE and nowhere else — each is the client-side reading
+// of a state the server already models, and writing them once is what keeps
+// "Next actions" on MAP meaning the same thing it means in the pool.
+// Deliberately NOT the pool's full availability rule: MAP shows blocked
+// (`after_id`) actions too, because seeing the chain is the point of a map.
+const MAP_LENSES = [
+  { key: 'all', name: 'All', keep: () => true },
+  { key: 'next', name: 'Next actions',
+    keep: (i, today) => i.kind !== 'project' && i.status === 'active'
+      && !(i.defer_until && i.defer_until > today) },
+  { key: 'waiting', name: 'Waiting & deferred',
+    keep: (i, today) => i.status === 'waiting'
+      || (i.status === 'active' && i.defer_until && i.defer_until > today) },
+  { key: 'projects', name: 'Projects', keep: i => i.kind === 'project' },
+  { key: 'someday', name: 'Someday / maybe', keep: i => i.status === 'on_hold' },
+];
+
+const mapView = { q: '', lens: 'all', domainId: null, tags: new Set(), menuOpen: false };
+
+function mapLens() {
+  return MAP_LENSES.find(l => l.key === mapView.lens) || MAP_LENSES[0];
+}
+
+// How many terms are narrowing the list beyond the lens — what the pill counts.
+function mapFilterExtras() {
+  return (mapView.domainId != null ? 1 : 0) + mapView.tags.size;
+}
+
+// THE ONE PLACE the inventory is narrowed. Search runs over the result of this,
+// not beside it: a search inside "Waiting & deferred" must not turn up an
+// action you are not asking about.
+function mapVisibleItems(items, today) {
+  const lens = mapLens();
+  return items.filter(i =>
+    lens.keep(i, today)
+    && (mapView.domainId == null || String(i.domain_id) === String(mapView.domainId))
+    && [...mapView.tags].every(t => itemTags(i).includes(t)));
+}
 
 async function openMap() {
   if (!mapWired) {
@@ -8241,6 +8291,16 @@ async function openMap() {
       if (mapSortOn()) localStorage.setItem('mapSort', 'off');
       else localStorage.removeItem('mapSort');   // absent = on, one default
       renderMap();
+    });
+    document.getElementById('map-filter').addEventListener('click', e => {
+      e.stopPropagation();
+      mapView.menuOpen = !mapView.menuOpen;
+      renderMapFilter();
+    });
+    // Tapping anywhere else in the overlay puts the menu away — it is transient
+    // chrome, which is the whole point of 23a over a permanent rail.
+    document.getElementById('map-modal').addEventListener('click', e => {
+      if (!e.target.closest('#map-filter-menu, #map-filter')) closeMapFilter();
     });
     const q = document.getElementById('map-q');
     q.addEventListener('input', e => { mapView.q = e.target.value; renderMap(); });
@@ -8257,6 +8317,94 @@ async function openMap() {
   }
   await refreshMap();
   document.getElementById('map-overlay').classList.remove('hidden');
+}
+
+// The pill NAMES the lens, and counts the domain/tag terms rather than listing
+// them — unlike Engage's context button, which is the receipt for items the
+// POOL is hiding and must name every term. MAP hides nothing permanently: the
+// menu is one tap away and shows exactly what is on.
+function renderMapFilter() {
+  const pill = document.getElementById('map-filter');
+  const menu = document.getElementById('map-filter-menu');
+  if (!pill || !menu) return;
+  const extras = mapFilterExtras();
+  pill.textContent = `${mapLens().name}${extras ? ` · ${extras}` : ''} ▾`;
+  pill.classList.toggle('map-filter-on', mapView.lens !== 'all' || !!extras);
+  pill.title = 'What the list is showing — lens, domain and tags';
+
+  menu.classList.toggle('hidden', !mapView.menuOpen);
+  if (!mapView.menuOpen) { menu.innerHTML = ''; return; }
+
+  // Tags offered are the ones the inventory actually carries, plus any already
+  // required — narrowing to a tag must never make its own chip disappear.
+  const vocab = [...new Set([
+    ...(state.mapItems || []).flatMap(itemTags), ...mapView.tags,
+  ])].sort();
+  const domains = (state.domains || []).filter(d =>
+    d.active !== 0 || String(d.id) === String(mapView.domainId));
+
+  menu.innerHTML = `
+    <div class="map-filter-sec">List — showing</div>
+    <div class="map-filter-chips">
+      ${MAP_LENSES.map(l => `<button class="ctx-chip ${
+        l.key === mapView.lens ? 'ctx-req' : 'ctx-off'}" data-lens="${l.key}"
+        >${escHtml(l.name)}</button>`).join('')}
+    </div>
+    <div class="map-filter-sec">Domain — in force</div>
+    <div class="map-filter-chips">
+      <button class="ctx-chip ${mapView.domainId == null ? 'ctx-req' : 'ctx-off'}"
+        data-mapdomain="">All domains</button>
+      ${domains.map(d => `<button class="ctx-chip ${
+        String(d.id) === String(mapView.domainId) ? 'ctx-req' : 'ctx-off'}"
+        data-mapdomain="${d.id}">${escHtml(d.name)}</button>`).join('')}
+    </div>
+    <div class="map-filter-sec">Tags — every selected one required</div>
+    <div class="map-filter-chips">
+      ${vocab.length ? vocab.map(t => {
+        const on = mapView.tags.has(t);
+        return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-maptag="${escHtml(t)}"
+          title="${on ? 'required — click to clear' : 'click to require'}"
+          >${on ? '∧' : ''}${escHtml(t)}</button>`;
+      }).join('') : '<span class="cl-hint">no tags in the inventory yet</span>'}
+    </div>
+    ${mapView.lens !== 'all' || mapFilterExtras() ? `
+    <div class="map-filter-foot">
+      <button class="ctx-chip" id="map-filter-clear">⟳ show everything</button>
+    </div>` : ''}`;
+
+  // stopPropagation on every one of these: the handler RE-RENDERS the menu, so
+  // by the time the click bubbles to the modal's tap-off handler its target has
+  // been replaced and `closest('#map-filter-menu')` no longer finds it — the
+  // menu would put itself away on its own chips. The menu stays open across a
+  // pick on purpose: narrowing is usually several taps (a lens, then a tag).
+  const stay = (el, fn) => el.addEventListener('click', e => {
+    e.stopPropagation();
+    fn();
+    renderMap();
+  });
+  menu.querySelectorAll('[data-lens]').forEach(b =>
+    stay(b, () => { mapView.lens = b.dataset.lens; }));
+  menu.querySelectorAll('[data-mapdomain]').forEach(b => stay(b, () => {
+    mapView.domainId = b.dataset.mapdomain === '' ? null : parseInt(b.dataset.mapdomain);
+  }));
+  menu.querySelectorAll('[data-maptag]').forEach(b => stay(b, () => {
+    const t = b.dataset.maptag;
+    if (mapView.tags.has(t)) mapView.tags.delete(t);
+    else mapView.tags.add(t);
+  }));
+  const clear = menu.querySelector('#map-filter-clear');
+  if (clear) stay(clear, () => {
+    mapView.lens = 'all';
+    mapView.domainId = null;
+    mapView.tags.clear();
+  });
+}
+
+function closeMapFilter() {
+  if (!mapView.menuOpen) return false;
+  mapView.menuOpen = false;
+  renderMapFilter();
+  return true;
 }
 
 async function refreshMap() {
@@ -8396,9 +8544,16 @@ function wireMapRows(body, byId, afterFn) {
 function renderMap() {
   const body = document.getElementById('map-body');
   if (!body) return;
-  const items = state.mapItems || [];
-  const inboxItems = state.inbox || [];
   const todayStr = formatDateYMD(new Date());
+  renderMapFilter();
+  // Everything below reads the NARROWED set, search included — a search inside
+  // "Waiting & deferred" must not turn up an action you are not asking about.
+  const items = mapVisibleItems(state.mapItems || [], todayStr);
+  // "In" is not a next action, a project or a someday — it is what has not been
+  // decided yet. It belongs to the whole inventory and to no lens, so any lens
+  // at all puts it away rather than showing it under a heading it contradicts.
+  const inboxItems = (mapView.lens === 'all' && mapView.domainId == null && !mapView.tags.size)
+    ? (state.inbox || []) : [];
   const byId = {};
   items.forEach(i => { byId[i.id] = i; });
   // "In" rows join the lookup so the shared .map-text click/rename handlers
@@ -8608,7 +8763,14 @@ function renderMap() {
       </div>`;
       }).join('')}
     </div>`;
-  }).join('') : '<div class="pm-empty">Nothing in the inventory yet — capture into the inbox first.</div>') + inboxHtml;
+  }).join('') : `<div class="pm-empty">${
+    mapLens().key !== 'all' || mapFilterExtras()
+      // An empty list under a filter is a fact about the QUESTION, not about
+      // the inventory — say which, or it reads as "you have nothing".
+      ? `Nothing in the inventory answers “${escHtml(mapLens().name)}”${
+          mapFilterExtras() ? ' with those filters' : ''}.`
+      : 'Nothing in the inventory yet — capture into the inbox first.'
+  }</div>`) + inboxHtml;
 
   const patchItem = (id, patch) => apiSend(`/api/inbox/${id}`, 'PATCH', patch);
   const after = async () => { await refreshMap(); await refreshActiveItems(); };

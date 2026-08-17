@@ -243,10 +243,16 @@
   <!-- Projects manager (GTD Horizon 1) -->
   <div id="map-overlay" class="hidden">
     <div id="map-modal">
+      <!-- ONE filter menu in the header (23a): the LENS joins domain and tags
+           in a single menu, so there is one place that narrows the list and no
+           permanent band of chrome. The pill always names what you are looking
+           at; the menu is transient and peels before the overlay. -->
       <div class="modal-header">
-        <span class="modal-title">MAP — the whole inventory</span>
+        <span class="modal-title">MAP</span>
+        <button id="map-filter" class="map-filter-pill"></button>
         <button id="map-close" class="modal-close-btn">✕</button>
       </div>
+      <div id="map-filter-menu" class="hidden"></div>
       <!-- Search over everything MAP shows, the clarify project search's
            matcher (relScore) on the whole inventory instead of projects. -->
       <div id="map-search-wrap">

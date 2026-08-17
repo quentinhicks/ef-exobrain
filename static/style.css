@@ -253,11 +253,18 @@ select option {
 
 /* ── Modal ──────────────────────────────────────────────────── */
 
+/* 155: ABOVE the .m-overlay band (140) and the map/logs/person overlays (150),
+   below the hub (160). Settings is opened FROM the hub while another surface is
+   still up, and openBlockEditor does not close it — at z 100 it opened silently
+   BEHIND whatever you were looking at, which reads as a dead button. It is the
+   newest thing you asked for, so it stacks on top, and Esc peels it first
+   (initHub's overlay loop lists it before the rest) putting you back where you
+   were. */
 #modal-overlay {
   position: fixed;
   inset: 0;
   background: var(--overlay);
-  z-index: 100;
+  z-index: 155;
   display: flex;
   align-items: stretch;
   justify-content: flex-start;
@@ -3257,6 +3264,70 @@ body.crm-over-runner #bucket-mgr-overlay { z-index: 175; }
    mode (the ladder inverts there — see the theme section of CLAUDE.md). */
 #map-modal { background: var(--surface-mid); }
 
+/* ── MAP's one filter menu (23a) ─────────────────────────────
+   The lens joins domain and tags in the header's menu, so there is ONE place
+   that narrows the list and no permanent band of chrome. The pill names what
+   you are looking at; the menu is transient and hangs under the header.
+   Chips reuse .ctx-chip / .ctx-req / .ctx-off — the same grammar the Engage
+   context picker uses, so "required" looks the same everywhere it is said. */
+.map-filter-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 13px var(--font-ui);
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  padding: 5px 10px;
+  margin-left: auto;
+  margin-right: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.map-filter-pill:hover { border-color: var(--accent); }
+/* Non-default only: a pill that is always accented says nothing. */
+.map-filter-pill.map-filter-on {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: var(--on-accent);
+  font-weight: 500;
+}
+#map-filter-menu {
+  position: absolute;
+  top: 50px;
+  right: 12px;
+  z-index: 3;
+  width: 300px;
+  max-width: calc(100% - 24px);
+  max-height: 70%;
+  overflow-y: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.map-filter-sec {
+  font: 10px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.map-filter-sec:not(:first-child) { margin-top: 4px; }
+.map-filter-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.map-filter-foot {
+  margin-top: 6px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+}
+/* The menu is positioned against the modal, not the viewport. */
+#map-modal { position: relative; }
+
 /* MAP search: fixed above the scrolling body, so the query stays put while
    the results move under it. */
 #map-search-wrap {
@@ -5673,7 +5744,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    match-word field need anything of their own. */
 .oc-ev {
   font: 12px var(--font-mono);
-  color: var(--text-dim);
+  color: var(--text-secondary);
   padding: 0 14px 8px;
 }
 .oc-match {
@@ -5687,7 +5758,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .oc-hint {
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--text-secondary);
   padding: 6px 14px 0;
   line-height: 1.45;
 }
@@ -5699,14 +5770,14 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border-top: 1px solid var(--border-soft);
 }
 .oc-item-text { flex: 1; font-size: 13px; color: var(--text); }
-.oc-item-meta { font: 11px var(--font-mono); color: var(--text-dim); }
+.oc-item-meta { font: 11px var(--font-mono); color: var(--text-secondary); }
 /* A finger target, not a 10px edge — the whole right third of the row. */
 .oc-item-go {
   min-width: 40px;
   min-height: 36px;
   background: none;
   border: 0;
-  color: var(--text-dim);
+  color: var(--text-secondary);
   font-size: 16px;
   cursor: pointer;
 }
