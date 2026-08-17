@@ -253,3 +253,55 @@ def geocode(query, user_agent, limit=GEOCODE_LIMIT):
             'kind': r.get('type') or r.get('category') or '',
         })
     return out
+
+
+# --- Outbound notification: ntfy or Pushover ------
+#
+# Two transports because the choice is genuinely the user's and neither is
+# obviously right: ntfy costs nothing and needs no account, but its topic name
+# is the ONLY thing protecting it, so treat the text as semi-public. Pushover
+# costs $5 once, and its retry-until-acknowledged priority is the one thing
+# that fits a deadline you must not miss.
+#
+# `kind` is explicit rather than sniffed from the URL — guessing a transport
+# from a hostname is the sort of cleverness that fails silently the day the
+# hostname changes.
+#
+# Raises on failure. The caller decides whether a failed send is worth
+# surfacing; it must never be swallowed here, because silence is also what
+# SUCCESS looks like for this feature.
+def notify(kind, url, message, title=None, token=None, user=None, priority=None):
+    kind = (kind or 'ntfy').strip().lower()
+    url = (url or '').strip()
+    if not url:
+        raise ValueError('notify_url is not set')
+    if kind == 'pushover':
+        if not token or not user:
+            raise ValueError('pushover needs notify_token and notify_user')
+        body = urllib.parse.urlencode({
+            'token': token, 'user': user, 'message': message,
+            **({'title': title} if title else {}),
+            **({'priority': str(priority)} if priority is not None else {}),
+        }).encode()
+        req = urllib.request.Request(url, data=body, method='POST')
+    elif kind == 'ntfy':
+        headers = {'Content-Type': 'text/plain; charset=utf-8'}
+        if title:
+            # ntfy reads its metadata from headers, and a header cannot carry a
+            # newline or a non-latin-1 byte — so the title is flattened, and
+            # anything exotic falls back to the message body rather than
+            # throwing at the socket.
+            flat = ' '.join(str(title).split())
+            try:
+                flat.encode('latin-1')
+                headers['Title'] = flat
+            except UnicodeEncodeError:
+                message = f'{flat}\n{message}'
+        if priority is not None:
+            headers['Priority'] = str(priority)
+        req = urllib.request.Request(url, data=message.encode('utf-8'),
+                                     headers=headers, method='POST')
+    else:
+        raise ValueError(f'unknown notify_kind: {kind}')
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return response.status

@@ -1845,6 +1845,19 @@ CONFIG_KEYS = [
     {'key': 'gcal_write_source_id', 'label': 'Write-back source',
      'hint': 'which local calendar those events belong to'},
     {'key': 'autohotkey_path', 'label': 'AutoHotkey', 'hint': 'path to AutoHotkey.exe (Windows)'},
+    {'key': 'arrival_token', 'label': 'Arrival token', 'secret': True,
+     'hint': 'the shared secret the phone sends to /api/arrival — arrivals are '
+             'refused until it is set'},
+    {'key': 'notify_kind', 'label': 'Notify via',
+     'hint': 'ntfy (free, the topic name is the only secret) or pushover'},
+    {'key': 'notify_url', 'label': 'Notify URL',
+     'hint': 'the ntfy topic URL, or https://api.pushover.net/1/messages.json'},
+    {'key': 'notify_token', 'label': 'Notify token', 'secret': True,
+     'hint': 'pushover only'},
+    {'key': 'notify_user', 'label': 'Notify user',
+     'hint': 'pushover only'},
+    {'key': 'notify_live', 'label': 'Notifications live',
+     'hint': 'blank = dry run: arrivals are resolved and logged, nothing is sent'},
     {'key': 'geocode_user_agent', 'label': 'Geocoder contact',
      'hint': 'OpenStreetMap requires a real contact, e.g. "qpa (you@example.com)" '
              '— address search is off until it is set'},
@@ -2055,6 +2068,118 @@ def locations():
             active=0 if data.get('active') == 0 else 1)
         return jsonify(result), 201
     return jsonify(storage.get_locations())
+
+
+# ARRIVAL — the cue the app could never give itself.
+#
+# The phone knows one thing this server cannot: that you just walked in. It
+# sends that and nothing else; the message is composed HERE, from live data, at
+# the moment it is sent. That is the whole reason this design has no ledger and
+# no reconcile — nothing is ever copied onto the device, so nothing on the
+# device can go stale, and a notification cannot name an errand already done.
+#
+# Deliberately NOT a write: an arrival changes no row. It reads, and it may
+# send. Nothing about the day is recorded, which is also why no location
+# history accumulates — see the design doc; storing the stream was rejected.
+#
+# Sent once per (place, day) unless the item set CHANGES. The memo is in
+# memory, not a table: losing it on restart costs one duplicate notification,
+# which is not worth a migration or a daybook classification.
+_arrival_sent = {}
+
+
+def _resolve_arrival(data):
+    # Three ways in, because the phone app decides which it can offer.
+    # OwnTracks sends a region transition whose `desc` is the waypoint name,
+    # so name-matching is the path that needs no ids on the device.
+    locs = storage.get_locations()
+    if data.get('location_id') is not None:
+        return next((l for l in locs if l['id'] == data['location_id']), None)
+    name = (data.get('desc') or data.get('name') or '').strip().lower()
+    if name:
+        return next((l for l in locs if (l['name'] or '').strip().lower() == name), None)
+    try:
+        lat, lng = float(data['lat']), float(data.get('lon', data.get('lng')))
+    except (KeyError, TypeError, ValueError):
+        return None
+    # Nearest whose radius actually contains the fix — never merely nearest,
+    # which would fire at a place you drove past.
+    best = None
+    for l in locs:
+        d = _haversine_m(lat, lng, l['lat'], l['lng'])
+        if d <= (l['radius_m'] or 150) and (best is None or d < best[0]):
+            best = (d, l)
+    return best[1] if best else None
+
+
+def _haversine_m(a_lat, a_lng, b_lat, b_lng):
+    import math
+    R = 6371000.0
+    dlat = math.radians(b_lat - a_lat)
+    dlng = math.radians(b_lng - a_lng)
+    h = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(a_lat)) * math.cos(math.radians(b_lat)) * math.sin(dlng / 2) ** 2)
+    return 2 * R * math.asin(math.sqrt(h))
+
+
+@app.route('/api/arrival', methods=['POST'])
+def post_arrival():
+    data = request.get_json(silent=True) or {}
+    want = (config.get('arrival_token') or '').strip()
+    if not want:
+        return jsonify({'error': 'arrival_token is not set'}), 503
+    if (data.get('token') or '').strip() != want:
+        return jsonify({'error': 'bad token'}), 403
+    # A geofence app sends enter AND leave. Only arriving is a cue; leaving is
+    # accepted so the phone need not be taught to withhold it.
+    if (data.get('event') or 'enter').strip().lower() != 'enter':
+        return '', 204
+    loc = _resolve_arrival(data)
+    if not loc:
+        storage.set_setting('arrival_last', f'{datetime.now().isoformat(timespec="seconds")} '
+                                            f'unknown place')
+        return jsonify({'error': 'no matching location'}), 404
+    today = date_cls.today().isoformat()
+    items = storage.items_at_location(loc['id'], today)
+    storage.set_setting('arrival_last',
+                        f'{datetime.now().isoformat(timespec="seconds")} '
+                        f'{loc["name"]} — {len(items)} live')
+    if not items:
+        return '', 204                      # arriving with nothing to do is silent
+    key = (loc['id'], today)
+    stamp = tuple(sorted(i['id'] for i in items))
+    if _arrival_sent.get(key) == stamp:
+        return '', 204                      # same place, same day, same items
+    _arrival_sent[key] = stamp
+
+    lines = [i['content'] for i in items[:5]]
+    if len(items) > 5:
+        lines.append(f'+{len(items) - 5} more')
+    message = '\n'.join(lines)
+    if not (config.get('notify_live') or '').strip():
+        storage.set_setting('arrival_last_send',
+                            f'{datetime.now().isoformat(timespec="seconds")} DRY RUN '
+                            f'{loc["name"]}: {len(items)} item(s)')
+        return jsonify({'dry_run': True, 'location': loc['name'], 'items': len(items),
+                        'message': message}), 200
+    try:
+        aggregator.notify(
+            config.get('notify_kind', 'ntfy'), config.get('notify_url', ''), message,
+            title=loc['name'], token=config.get('notify_token'),
+            user=config.get('notify_user'))
+        storage.set_setting('arrival_last_send',
+                            f'{datetime.now().isoformat(timespec="seconds")} sent '
+                            f'{loc["name"]}: {len(items)} item(s)')
+    except Exception as e:
+        # LOUD. Silence is what success looks like here too, so a swallowed
+        # failure is indistinguishable from a quiet day.
+        _arrival_sent.pop(key, None)         # let the next arrival retry
+        storage.set_setting('arrival_last_send',
+                            f'{datetime.now().isoformat(timespec="seconds")} FAILED '
+                            f'{loc["name"]}: {e}')
+        print(f'arrival: send failed for {loc["name"]}: {e}')
+        return jsonify({'error': f'send failed: {e}'}), 502
+    return '', 204
 
 
 @app.route('/api/locations/<int:id>/items')

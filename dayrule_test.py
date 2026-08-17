@@ -63,6 +63,12 @@ ALLOWED = {
         'reads today\'s standing state to push outward',
     ('POST', '/api/accountability/nodes'):
         'the GET half of the same handler builds today\'s payload',
+    ('POST', '/api/arrival'):
+        'an arrival IS happening now — there is no earlier surface holding a '
+        'pinned day, and the phone must not send one: a device in another zone '
+        'would file under the wrong day, while the server\'s local date already '
+        'follows the timezone lever. It files no dated fact either — the only '
+        'writes are two status strings in `setting`',
 }
 
 WRITE_METHODS = ('POST', 'PUT', 'PATCH', 'DELETE')

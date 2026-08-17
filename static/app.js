@@ -687,6 +687,10 @@ function renderAlldayStrip() {
   }).join('');
 }
 
+// The height of the row that names an event — what two titles need between
+// them to be two titles rather than one smear. Matched to .tl-event-row.
+const EVENT_ROW_PX = 19;
+
 function renderGcalLayer(bodyH = 600) {
   const layer = document.getElementById('tl-gcal-layer');
   if (!layer) return;
@@ -697,14 +701,36 @@ function renderGcalLayer(bodyH = 600) {
   const dayEvents = state.gcalEvents.filter(e => !e.allday &&
     !state.tlHidden.event[`${e.uid}|${e.start}`] &&
     (sameDay(state.currentDate, e.start) || (state.view.end > DAY_MIN && sameDay(nextDate, e.start))));
-  layer.innerHTML = dayEvents.map(e => {
+  // TWO TITLES MAY NOT SHARE A LINE. Events are positioned by their start, so
+  // two that begin at the same minute land at the same top and print over each
+  // other — the day showed one smear of overlapping letters and neither event
+  // could be read. Boxes are allowed to overlap (that IS the day: a meeting
+  // inside a longer block); what cannot overlap is the row that names them.
+  //
+  // So the tops are walked in order and any one that would land within a row
+  // of the previous is pushed just below it. Only a collision moves anything:
+  // events far enough apart keep the position their time gives them, and the
+  // BOTTOM never moves, so an event still ends when it ends.
+  const rowPct = (EVENT_ROW_PX / Math.max(bodyH, 1)) * 100;
+  const boxes = [];
+  for (const e of dayEvents) {
     const base = sameDay(nextDate, e.start) ? DAY_MIN : 0;
     const startMin = base + isoMin(e.start);
     let endMin = base + isoMin(e.end);
     if (endMin <= startMin) endMin += DAY_MIN;
     const top = Math.max(0, minutesToViewPercent(startMin));
     const bottom = Math.min(100, minutesToViewPercent(endMin));
-    if (bottom - top <= 0) return '';
+    if (bottom - top <= 0) continue;
+    boxes.push({ e, startMin, top, bottom });
+  }
+  boxes.sort((a, b) => a.top - b.top || a.bottom - b.bottom);
+  let lastTop = -Infinity;
+  for (const box of boxes) {
+    if (box.top < lastTop + rowPct) box.top = lastTop + rowPct;
+    lastTop = box.top;
+  }
+
+  layer.innerHTML = boxes.map(({ e, top, bottom }) => {
     const height = Math.max(bottom - top, 2);
     const tight = (height * bodyH / 100) < 18;
     const timeStr = `${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`;
