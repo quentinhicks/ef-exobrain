@@ -2175,6 +2175,47 @@ def _hhmm_to_min(t):
     return int(h) * 60 + int(m)
 
 
+# THE ONE BLOCK RESOLUTION (2026-08-17). "Which blocks are in force on date D,
+# and when" was answered in six places that disagreed: get_engage_day wrapped a
+# past-midnight block and added yesterday's continuation at -1440, while
+# app.js's detectCurrentStandardBlock compared 'HH:MM' strings with no wrap and
+# never looked at yesterday — so a 22:00–01:00 block matched at NEITHER 23:00
+# ('23:00' < '01:00' is false) NOR 00:30 (wrong weekday), and the DOMAIN IN
+# FORCE was wrong for the block's whole span.
+#
+# Segments are in semantic minutes: a continuation from the previous day starts
+# negative, and an overnight block ends past 1440. Overrides are applied here,
+# cancellations dropped here, and nothing downstream re-decides any of it.
+def block_segments_for(date_str):
+    day = date_cls.fromisoformat(date_str)
+    conn = get_conn()
+    out = []
+
+    def add(day_dow, on_date, offset):
+        for b in conn.execute(
+                'SELECT * FROM recurring_block WHERE active = 1 AND day_of_week = ?',
+                (day_dow,)).fetchall():
+            ov = conn.execute('SELECT * FROM block_override WHERE block_id = ? AND date = ?',
+                              (b['id'], on_date)).fetchone()
+            if ov and ov['cancelled'] == 1:
+                continue
+            start_t = ov['start_time'] if ov and ov['start_time'] else b['start_time']
+            end_t = ov['end_time'] if ov and ov['end_time'] else b['end_time']
+            start = _hhmm_to_min(start_t) + offset
+            end = _hhmm_to_min(end_t) + (1440 if end_t < start_t else 0) + offset
+            if end <= 0:
+                continue
+            out.append({'block_id': b['id'], 'area_id': b['area_id'], 'label': b['label'],
+                        'start': start, 'end': end, 'date': on_date,
+                        'overridden': bool(ov)})
+
+    add(day.weekday(), date_str, 0)
+    add((day.weekday() - 1) % 7, (day - timedelta(days=1)).isoformat(), -1440)
+    conn.close()
+    out.sort(key=lambda r: r['start'])
+    return out
+
+
 def get_engage_day():
     # The whole day as Engage models it, assembled server-side so the NOW
     # panel (a separate document) can render the active section without
@@ -2188,33 +2229,21 @@ def get_engage_day():
     rows = []
     groups = {}
 
-    def add_blocks(day_dow, date_str, offset):
-        for b in conn.execute('SELECT * FROM recurring_block WHERE active = 1 AND day_of_week = ?',
-                              (day_dow,)).fetchall():
-            ov = conn.execute('SELECT * FROM block_override WHERE block_id = ? AND date = ?',
-                              (b['id'], date_str)).fetchone()
-            if ov and ov['cancelled'] == 1:
-                continue
-            start_t = ov['start_time'] if ov and ov['start_time'] else b['start_time']
-            end_t = ov['end_time'] if ov and ov['end_time'] else b['end_time']
-            start = _hhmm_to_min(start_t) + offset
-            end = _hhmm_to_min(end_t) + (1440 if end_t < start_t else 0) + offset
-            if end <= 0:
-                continue
-            if b['area_id'] in routine_areas:
-                g = groups.get(b['area_id'])
-                if g:
-                    g['start'] = min(g['start'], start)
-                    g['end'] = max(g['end'], end)
-                else:
-                    groups[b['area_id']] = {'kind': 'routine', 'area_id': b['area_id'],
-                                            'label': routine_areas[b['area_id']],
-                                            'start': start, 'end': end}
+    # One resolution, shared with the panel and the client — see
+    # block_segments_for. Routine areas collapse into one group per area.
+    for seg in block_segments_for(today_str):
+        if seg['area_id'] in routine_areas:
+            g = groups.get(seg['area_id'])
+            if g:
+                g['start'] = min(g['start'], seg['start'])
+                g['end'] = max(g['end'], seg['end'])
             else:
-                rows.append({'kind': 'block', 'label': b['label'], 'start': start, 'end': end})
-
-    add_blocks(today.weekday(), today_str, 0)
-    add_blocks((today.weekday() - 1) % 7, (today - timedelta(days=1)).isoformat(), -1440)
+                groups[seg['area_id']] = {'kind': 'routine', 'area_id': seg['area_id'],
+                                          'label': routine_areas[seg['area_id']],
+                                          'start': seg['start'], 'end': seg['end']}
+        else:
+            rows.append({'kind': 'block', 'label': seg['label'],
+                         'start': seg['start'], 'end': seg['end']})
     rows.extend(groups.values())
 
     for e in conn.execute('SELECT * FROM gcal_event WHERE allday = 0').fetchall():

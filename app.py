@@ -550,6 +550,15 @@ def delete_engage_placement_route(item_id):
     return '', 204
 
 
+@app.route('/api/blocks/day')
+def get_blocks_day_route():
+    # The blocks in force on a date, already resolved: overrides applied,
+    # cancellations dropped, past-midnight wrapped, yesterday's continuation
+    # carried in at a negative start. The client asks rather than re-deciding.
+    date = request.args.get('date') or date_cls.today().isoformat()
+    return jsonify(storage.block_segments_for(date))
+
+
 @app.route('/api/engage/day')
 def get_engage_day_route():
     # The NOW panel polls this and may well be the first reader of the day.

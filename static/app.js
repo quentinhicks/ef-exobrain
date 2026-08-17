@@ -990,22 +990,34 @@ function focusRefresh() {
 
 // ── Section 2: Active project items ──────────────────────────
 
+// TODAY's resolved blocks, from the server (storage.block_segments_for) —
+// refreshed by checkActiveBlock's 60s tick. Kept apart from state.overrides,
+// which holds the VIEWED timeline day and is overwritten on every nav: this
+// answers a question about NOW, and answering it from a viewed-day cache
+// resurrected a block you had cancelled today the moment you looked at
+// tomorrow.
+let todaySegments = { date: null, segments: [] };
+
+async function refreshTodaySegments() {
+  const date = formatDateYMD(new Date());
+  todaySegments = { date, segments: await apiGet(`/api/blocks/day?date=${date}`, []) };
+}
+
+// The block in force RIGHT NOW. Semantic minutes, so a 22:00–01:00 block is
+// one segment 1320→1500 and yesterday's continuation arrives at a negative
+// start — both of which the old 'HH:MM' string compare missed entirely, taking
+// the derived domain (and so the pool, section 2 and the filing suggestion)
+// with it for the block's whole span.
 function detectCurrentStandardBlock() {
   const now = new Date();
-  const dow = jsDateToDayOfWeek(now);
-  const nowTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-  const dateStr = formatDateYMD(now);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
   const projectsById = Object.fromEntries(state.areas.map(p => [p.id, p]));
-
-  for (const b of state.blocks) {
-    if (!b.active || b.day_of_week !== dow || !b.area_id) continue;
-    const proj = projectsById[b.area_id];
+  const blocksById = Object.fromEntries((state.blocks || []).map(b => [b.id, b]));
+  for (const seg of todaySegments.segments) {
+    if (!seg.area_id) continue;
+    const proj = projectsById[seg.area_id];
     if (!proj || proj.type !== 'standard') continue;
-    const ov = state.overrides.find(o => o.block_id === b.id && o.date === dateStr);
-    if (ov && ov.cancelled === 1) continue;
-    const startT = (ov && ov.start_time) || b.start_time;
-    const endT = (ov && ov.end_time) || b.end_time;
-    if (nowTime >= startT && nowTime < endT) return b;
+    if (nowMin >= seg.start && nowMin < seg.end) return blocksById[seg.block_id] || seg;
   }
   return null;
 }
@@ -3133,6 +3145,10 @@ function renderBeRecurring(tasks, areas) {
 }
 
 async function checkActiveBlock() {
+  // Fresh server truth for TODAY before deciding, every tick — a block
+  // cancelled or moved is then in force within the minute, and a cached
+  // answer here is exactly how the viewed day used to leak into "now".
+  await refreshTodaySegments();
   const newBlock = detectCurrentStandardBlock();
   const defaultArea = state.areas.find(p => p.is_default && p.active && p.type === 'standard');
   const newProjectId = newBlock
