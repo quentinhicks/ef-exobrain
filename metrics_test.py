@@ -167,6 +167,17 @@ check('and so does picking all seven',
       [m for m in c.get('/api/metrics').get_json()
        if m['id'] == off['id']][0]['days_of_week'] is None)
 
+# PAUSING IS THE THIRD CAUSE of "asks nothing", and it belongs with the second.
+# Pause promises it keeps the history and stops the asking; if the last active
+# metric on a hard step made the step unsatisfiable, the routine could never be
+# completed and the gate behind it would charge every night.
+c.patch(f"/api/metrics/{off['id']}", json={'active': 0})
+check('pausing the last metric on a step leaves it COMPLETE, not unsatisfiable',
+      c.get(f"/api/metrics/step/{ls['id']}?date={TODAY}").get_json()['complete'] is True)
+c.patch(f"/api/metrics/{off['id']}", json={'active': 1})
+check('and un-pausing asks it again',
+      c.get(f"/api/metrics/step/{ls['id']}?date={TODAY}").get_json()['complete'] is False)
+
 # ── the settings row names WHERE it is asked ────────────────────
 m_mood = [m for m in c.get('/api/metrics').get_json() if m['id'] == mood['id']][0]
 check('a metric names the steps that ask it, not just a count',

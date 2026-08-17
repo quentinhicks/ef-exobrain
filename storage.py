@@ -5516,11 +5516,18 @@ def metrics_for_step(step_id, ymd):
 
 # The active metrics BOUND to a step, whatever day it is. Only the completeness
 # rule needs this — see the note there.
+# Counts BINDINGS, not active metrics — deliberately unfiltered. Its one job is
+# to tell "nothing was ever bound here" (a mistake) from "bound, but nothing to
+# ask today" (fine). Pausing is the second: the Settings hint promises pause
+# keeps the history and stops the asking, so pausing the last active metric on
+# a hard step must degrade to nothing-due, not to unsatisfiable-forever. With
+# the active filter here it read as never-bound, the step could never be
+# credited, and a gate behind it charged every night.
 def metrics_linked_to_step(step_id):
     conn = get_conn()
     n = conn.execute(
-        '''SELECT COUNT(*) n FROM metric m JOIN metric_step ms ON ms.metric_id = m.id
-           WHERE ms.step_id = ? AND m.active = 1''', (step_id,)).fetchone()['n']
+        'SELECT COUNT(*) n FROM metric_step WHERE step_id = ?',
+        (step_id,)).fetchone()['n']
     conn.close()
     return n
 
