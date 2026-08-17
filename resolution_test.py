@@ -38,7 +38,7 @@ import qr_judge         # noqa: E402
 PROJECTING = (
     'days_of_week', 'day_of_week', 'rrule', 'recurrence_rules', 'recurrence_overrides',
     'source_uid', 'weekly_windows', 'defer_until', 'period', 'entries', 'follows',
-    'match_text', 'pawn_to_flow_id',
+    'match_text', 'pawn_to_flow_id', 'effective_date',
 )
 
 # table -> (resolver, how the answer reaches whoever needs it)
@@ -88,6 +88,14 @@ RESOLUTIONS = {
         'schedule.day_intervals',
         "served as each source's intervals on GET /api/schedules?date=. The DAY "
         'half is the server\'s; only the CLOCK comparison is the client\'s.'),
+    'easing_pending': (
+        'storage.row_as_of',
+        'served: the row AS OF a day, which is what draws a future one — '
+        'node.day_windows (with scheduled_change set on the days that differ) '
+        'and block_segments_for. effective_date is the first day a queued '
+        'change governs, rounded UP off midnight by effective_date_for. Days '
+        'at or before today resolve identically to the plain row, because '
+        'anything effective by today has already been applied to it.'),
     'time_preset': (
         None,
         'RETIRED. Kept as the migration source for schedule_source (the same '

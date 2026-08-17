@@ -649,8 +649,10 @@ def get_blocks_day_route():
     # The blocks in force on a date, already resolved: overrides applied,
     # cancellations dropped, past-midnight wrapped, yesterday's continuation
     # carried in at a negative start. The client asks rather than re-deciding.
+    # ?all=1 keeps the ones you cancelled, which the TIMELINE needs to strike
+    # through. Everything else wants the day as it will actually run.
     date = request.args.get('date') or date_cls.today().isoformat()
-    return jsonify(storage.block_segments_for(date))
+    return jsonify(storage.block_segments_for(date, with_cancelled=bool(request.args.get('all'))))
 
 
 @app.route('/api/engage/day')
@@ -1008,13 +1010,42 @@ def post_block():
 
 @app.route('/api/blocks/<int:id>', methods=['DELETE'])
 def delete_block(id):
+    # ?effective_from= dates the removal instead of doing it: the block keeps
+    # running, and leaves the timeline on that day.
+    effective_from = request.args.get('effective_from') or None
+    if effective_from:
+        if not _YMD_RE.match(effective_from):
+            return jsonify({'error': 'effective_from must be YYYY-MM-DD'}), 400
+        return jsonify(storage.schedule_block_change(
+            id, {storage.BLOCK_DELETE_FIELD: 1}, effective_from))
     storage.delete_block(id)
     return '', 204
+
+
+# Calling one off. The forward change was never applied, so there is nothing to
+# undo — the row is simply as it always was.
+@app.route('/api/blocks/<int:id>/scheduled/<field>', methods=['DELETE'])
+def cancel_block_scheduled(id, field):
+    storage.cancel_block_change(id, field)
+    return jsonify(storage.block_scheduled_changes(id))
 
 
 @app.route('/api/blocks/<int:id>', methods=['PATCH'])
 def patch_block(id):
     data = request.get_json()
+    # A DATE turns the same patch into a scheduled one: nothing about the block
+    # changes today, and every surface that draws a day resolves it through
+    # storage.row_as_of from that date on. No 24h rule here — a block is not on
+    # the money path, so the only floor is the date itself.
+    effective_from = data.pop('effective_from', None) or None
+    if effective_from:
+        if not _YMD_RE.match(effective_from):
+            return jsonify({'error': 'effective_from must be YYYY-MM-DD'}), 400
+        # The overlap check is deliberately NOT run: it asks about the week as
+        # it is now, and a block moving on Wednesday may legitimately overlap a
+        # block that is itself moving that day. The clash, if there is one,
+        # shows on the day it happens.
+        return jsonify(storage.schedule_block_change(id, data, effective_from))
     # Pausing is the one patch that does not move the block, so it does not go
     # through the overlap check — a paused block occupies no time at all.
     if set(data) == {'active'}:
@@ -1915,21 +1946,33 @@ def patch_accountability_node(id):
     if not node:
         return jsonify({'error': 'unknown node'}), 404
 
+    # silent: a DELETE arrives with no body at all, and asking for JSON that
+    # is not there is a 415 rather than an empty dict.
+    data = request.get_json(silent=True) or {}
+    # WHEN a change starts, asked once and answered in one place. A blank or
+    # absent date means the old behaviour exactly: tightenings now, easings in
+    # 24h. A date is a floor, never a bypass — qr_judge.schedule_node_patch
+    # takes the later of the two.
+    effective_from = (data.pop('effective_from', None) or
+                      request.args.get('effective_from') or None)
+    if effective_from and not _YMD_RE.match(effective_from):
+        return jsonify({'error': 'effective_from must be YYYY-MM-DD'}), 400
+
     if request.method == 'DELETE':
         # An inactive gate is already off the hook, so it goes at once. A LIVE
         # one is deleted on the 24h road, exactly like disabling it: deleting
         # is the loosest change there is, and an instant delete would be the
         # escape hatch the whole system exists to close. Queued, not refused —
         # "deactivate first" was a dead end that read as a bug (2026-08-15).
-        if not node['active']:
+        if not node['active'] and not effective_from:
             storage.qr_delete_node(id)
             return jsonify({'ok': True})
-        apply_at = (datetime.now() + timedelta(hours=qr_judge.LOOSEN_DELAY_H)).isoformat()
+        at, effective = _gate_landing(effective_from, eases=True)
         storage.qr_cancel_pending_change(id, storage.QR_DELETE_FIELD)
-        storage.qr_add_pending_change(id, storage.QR_DELETE_FIELD, '1', apply_at)
-        return jsonify({'pending': True, 'apply_at': apply_at})
+        storage.qr_add_pending_change(id, storage.QR_DELETE_FIELD, '1', at, effective)
+        return jsonify({'pending': True, 'apply_at': at, 'effective_date': effective})
 
-    immediate, pending = qr_judge.apply_node_patch(node, request.get_json() or {})
+    immediate, pending = qr_judge.schedule_node_patch(node, data, effective_from)
     if immediate:
         storage.qr_update_node(id, immediate)
         # Newest intent wins in BOTH directions: a field tightened now must drop
@@ -1937,20 +1980,55 @@ def patch_accountability_node(id):
         # land 24h later and quietly undo the tightening.
         for field in immediate:
             storage.qr_cancel_pending_change(id, field)
-    apply_at = (datetime.now() + timedelta(hours=qr_judge.LOOSEN_DELAY_H)).isoformat()
-    for field, value in pending.items():
+    for field, p in pending.items():
         storage.qr_cancel_pending_change(id, field)   # newest intent wins
-        storage.qr_add_pending_change(id, field, value, apply_at)
+        storage.qr_add_pending_change(id, field, p['value'], p['apply_at'],
+                                      p['effective_date'])
     return jsonify({'immediate': list(immediate), 'pending': list(pending),
-                    'apply_at': apply_at if pending else None})
+                    'scheduled': {f: {'apply_at': p['apply_at'],
+                                      'effective_date': p['effective_date']}
+                                  for f, p in pending.items()},
+                    # Kept for the surfaces built around one timestamp: the
+                    # LAST day anything in this patch starts, which is the day
+                    # the whole change is really in force.
+                    'apply_at': (max(p['apply_at'] for p in pending.values())
+                                 if pending else None),
+                    'effective_date': (max(p['effective_date'] for p in pending.values())
+                                       if pending else None)})
+
+
+# The same two floors as schedule_node_patch, for the routes that already know
+# which way their change goes (a pause and a delete only ever ease).
+def _gate_landing(effective_from, eases=True, now=None):
+    now = now or datetime.now()
+    at = now + timedelta(hours=qr_judge.LOOSEN_DELAY_H) if eases else now
+    if effective_from:
+        want = datetime.combine(date_cls.fromisoformat(effective_from),
+                                datetime.min.time())
+        if want > at:
+            at = want
+    return at.isoformat(), storage.effective_date_for(at)
 
 
 @app.route('/api/accountability/nodes/<int:id>/disable', methods=['PATCH'])
 def disable_accountability_node(id):
-    apply_at = (datetime.now() + timedelta(hours=qr_judge.LOOSEN_DELAY_H)).isoformat()
+    data = request.get_json(silent=True) or {}
+    effective_from = data.get('effective_from') or None
+    if effective_from and not _YMD_RE.match(effective_from):
+        return jsonify({'error': 'effective_from must be YYYY-MM-DD'}), 400
+    at, effective = _gate_landing(effective_from, eases=True)
     storage.qr_cancel_pending_change(id, 'active')
-    storage.qr_add_pending_change(id, 'active', '0', apply_at)
-    return jsonify({'pending': True, 'apply_at': apply_at})
+    storage.qr_add_pending_change(id, 'active', '0', at, effective)
+    return jsonify({'pending': True, 'apply_at': at, 'effective_date': effective})
+
+
+# Calling a queued change off. Nothing was applied, so there is nothing to put
+# back — cancelling is the gate staying exactly as it is, which is the tighter
+# direction and therefore always immediate.
+@app.route('/api/accountability/nodes/<int:id>/pending/<field>', methods=['DELETE'])
+def cancel_accountability_pending(id, field):
+    storage.qr_cancel_pending_change(id, field)
+    return jsonify(storage.qr_get_pending_changes(id))
 
 
 @app.route('/api/accountability/nodes/<int:id>/activate', methods=['PATCH'])

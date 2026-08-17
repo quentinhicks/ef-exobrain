@@ -1513,14 +1513,30 @@ def qr_gate_day_windows(node, days=17, start=None):
     import qr_judge
     start = start or (date_cls.today() - timedelta(days=3))
     resolve, _ = schedule_resolver()
+    # A CHANGE DATED FORWARD IS PART OF THE ANSWER (2026-08-17). Each day is
+    # resolved against the gate AS IT WILL BE on that day, so a window moved to
+    # 07:00 from Wednesday shows at 07:00 on Wednesday and at its old time on
+    # Tuesday, and a gate paused from Wednesday leaves the timeline there
+    # rather than the moment the pause lands. Days at or before today resolve
+    # identically to the plain node — see row_as_of.
+    revisions = revisions_for('gate', node['id'])
     out = {}
     for i in range(days):
         day = (start + timedelta(days=i)).isoformat()
-        if not qr_judge.applies_on(node, day):
+        as_of = row_as_of(node, revisions, day) if revisions else node
+        # Gone, or switched off, on that day: no window, so nothing is drawn
+        # and nothing claims a deadline the gate will not have.
+        if not as_of or falsy(as_of.get('active', 1)):
             continue
-        w = qr_judge.resolve_window(node, day)
+        if not qr_judge.applies_on(as_of, day):
+            continue
+        w = qr_judge.resolve_window(as_of, day)
         out[day] = {'window_start': w[0], 'window_end': w[1],
                     'window_end_offset_days': w[2]}
+        # Named so a surface can SAY the day is different, instead of quietly
+        # drawing a time nobody scheduled.
+        if any(r['effective_date'] <= day for r in revisions):
+            out[day]['scheduled_change'] = True
     return out
 
 
@@ -2411,18 +2427,34 @@ def _hhmm_to_min(t):
 # Segments are in semantic minutes: a continuation from the previous day starts
 # negative, and an overnight block ends past 1440. Overrides are applied here,
 # cancellations dropped here, and nothing downstream re-decides any of it.
-def block_segments_for(date_str):
+# with_cancelled is for the surface that has to STRIKE THROUGH what you called
+# off (the timeline) rather than merely not run it. Same resolution, same
+# rules, one extra row kind — a second function would be a second answer.
+def block_segments_for(date_str, with_cancelled=False):
     day = date_cls.fromisoformat(date_str)
     conn = get_conn()
+    apply_due_block_pendings(conn)
     out = []
+    # Every block, filtered in PYTHON rather than by `day_of_week = ?` in SQL:
+    # a block scheduled to MOVE to another weekday has to appear on the new day
+    # from its date and stop appearing on the old one, and a WHERE clause reads
+    # the block as it is today. Same reason `active` is checked below rather
+    # than in the query — a pause dated forward is not a pause yet.
+    blocks = [dict(r) for r in conn.execute('SELECT * FROM recurring_block').fetchall()]
+    revisions = _revisions_by_row(conn, 'block')
 
     def add(day_dow, on_date, offset):
-        for b in conn.execute(
-                'SELECT * FROM recurring_block WHERE active = 1 AND day_of_week = ?',
-                (day_dow,)).fetchall():
+        for raw in blocks:
+            # Resolved against the date the block STARTS on, which for the
+            # overnight tail below is yesterday — last night ran under
+            # yesterday's rules, whatever changes today.
+            b = row_as_of(raw, revisions.get(raw['id'], ()), on_date)
+            if not b or falsy(b['active']) or int(b['day_of_week']) != day_dow:
+                continue
             ov = conn.execute('SELECT * FROM block_override WHERE block_id = ? AND date = ?',
                               (b['id'], on_date)).fetchone()
-            if ov and ov['cancelled'] == 1:
+            cancelled = bool(ov and ov['cancelled'] == 1)
+            if cancelled and not with_cancelled:
                 continue
             start_t = ov['start_time'] if ov and ov['start_time'] else b['start_time']
             end_t = ov['end_time'] if ov and ov['end_time'] else b['end_time']
@@ -2432,7 +2464,13 @@ def block_segments_for(date_str):
                 continue
             out.append({'block_id': b['id'], 'area_id': b['area_id'], 'label': b['label'],
                         'start': start, 'end': end, 'date': on_date,
-                        'overridden': bool(ov)})
+                        'overridden': bool(ov), 'cancelled': cancelled,
+                        # Presentation, resolved the same way as the times: a
+                        # dated change to a colour or a place has to travel
+                        # with the day it belongs to, not be joined on later.
+                        'color': b['color'], 'location_id': b['location_id'],
+                        'scheduled_change': any(r['effective_date'] <= on_date
+                                                for r in revisions.get(raw['id'], ()))})
 
     add(day.weekday(), date_str, 0)
     add((day.weekday() - 1) % 7, (day - timedelta(days=1)).isoformat(), -1440)
@@ -3085,6 +3123,7 @@ def set_project_type(id, type):
 
 def get_blocks():
     conn = get_conn()
+    apply_due_block_pendings(conn)
     rows = conn.execute('''
         SELECT rb.*, p.name AS project_name, l.name AS location_name
         FROM recurring_block rb
@@ -3092,8 +3131,14 @@ def get_blocks():
         LEFT JOIN location l ON rb.location_id = l.id
         ORDER BY rb.day_of_week, rb.start_time
     ''').fetchall()
+    # What is already dated onto each block travels WITH it: the editor has to
+    # be able to say "moves to 07:00 on Wednesday" without a second fetch, and
+    # a change you cannot see is one you cannot call off.
+    changes = {}
+    for c in _block_changes(conn):
+        changes.setdefault(c['block_id'], []).append(c)
     conn.close()
-    return [dict(r) for r in rows]
+    return [dict(r, scheduled_changes=changes.get(r['id'], [])) for r in rows]
 
 
 def _fetch_block(conn, id):
@@ -3126,6 +3171,97 @@ def update_block(id, label, color, day_of_week, start_time, end_time, area_id, l
     result = _fetch_block(conn, id)
     conn.close()
     return result
+
+
+# ── A block change, dated forward ─────────────────────────────
+#
+# The same store, the same shape and the same cancel path as a gate's — kind
+# 'block'. What a block does NOT have is the easing rule: no block is on the
+# money path, so a change lands exactly when you said and nothing waits 24h.
+# The date is the whole mechanism here.
+BLOCK_SCHEDULED_FIELDS = ('label', 'color', 'day_of_week', 'start_time', 'end_time',
+                          'area_id', 'location_id', 'active')
+
+# The pseudo-field a dated removal is filed under, matching the flow half's
+# spelling. Not a column, so nothing can UPDATE a block with it.
+BLOCK_DELETE_FIELD = 'delete'
+
+
+def schedule_block_change(id, fields, effective_from):
+    conn = get_conn()
+    at = datetime.combine(date_cls.fromisoformat(effective_from), datetime.min.time())
+    # A date already gone (or today) is not a schedule — it is now, and the
+    # caller should have written the row. Landing it immediately keeps the
+    # store free of rows that were due before they were written.
+    now = datetime.now()
+    if at < now:
+        at = now
+    for field, value in fields.items():
+        if field not in BLOCK_SCHEDULED_FIELDS and field != BLOCK_DELETE_FIELD:
+            continue
+        _unpend_row(conn, 'block', id, field)          # newest intent wins
+        _pend_row(conn, 'block', id, field, value, at.isoformat())
+    conn.commit()
+    out = _block_changes(conn, id)
+    conn.close()
+    return out
+
+
+def _block_changes(conn, id=None):
+    if id is None:
+        rows = conn.execute(
+            "SELECT * FROM easing_pending WHERE kind = 'block' ORDER BY effective_date").fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM easing_pending WHERE kind = 'block' AND row_id = ?
+               ORDER BY effective_date""", (id,)).fetchall()
+    return [{'block_id': r['row_id'], 'field': r['field'],
+             'new_value': _pending_value(r['value']), 'apply_at': r['apply_at'],
+             'effective_date': r['effective_date'] or effective_date_for(r['apply_at'])}
+            for r in rows]
+
+
+def block_scheduled_changes(id=None):
+    conn = get_conn()
+    out = _block_changes(conn, id)
+    conn.close()
+    return out
+
+
+def cancel_block_change(id, field):
+    conn = get_conn()
+    _unpend_row(conn, 'block', id, field)
+    conn.commit()
+    conn.close()
+
+
+def apply_due_block_pendings(conn):
+    # On READ, the same choke point the routine half uses: block_segments_for
+    # and get_blocks are the only ways a block reaches a surface, so there is
+    # no scheduler to miss. Until this runs the projection already shows the
+    # right thing — this is what makes the ROW agree with it once the day
+    # arrives, so the editor stops showing a time that is no longer in force.
+    now = datetime.now().isoformat()
+    rows = conn.execute(
+        """SELECT * FROM easing_pending WHERE kind = 'block' AND apply_at <= ?
+           ORDER BY row_id, apply_at""", (now,)).fetchall()
+    gone = set()
+    for r in rows:
+        row_id, field = r['row_id'], r['field']
+        if row_id in gone:
+            continue
+        if field == BLOCK_DELETE_FIELD:
+            conn.execute('DELETE FROM recurring_block WHERE id = ?', (row_id,))
+            conn.execute("DELETE FROM easing_pending WHERE kind = 'block' AND row_id = ?",
+                         (row_id,))
+            gone.add(row_id)
+            continue
+        if field in BLOCK_SCHEDULED_FIELDS:
+            conn.execute('UPDATE recurring_block SET ' + field + ' = ? WHERE id = ?',
+                         (_pending_value(r['value']), row_id))
+        _unpend_row(conn, 'block', row_id, field)
+    if rows:
+        conn.commit()
 
 
 def get_todo(date):
@@ -3519,6 +3655,10 @@ def set_setting(key, value):
 def delete_block(id):
     conn = get_conn()
     conn.execute('DELETE FROM recurring_block WHERE id = ?', (id,))
+    # A change dated onto a block that no longer exists would sit in the store
+    # for ever and re-appear against whatever row later took the id. The gate
+    # half does the same in qr_delete_node — every door owes the rule.
+    conn.execute("DELETE FROM easing_pending WHERE kind = 'block' AND row_id = ?", (id,))
     conn.commit()
     conn.close()
 
@@ -5192,6 +5332,28 @@ def revisions_for(kind, row_id, conn=None):
              # from when they land, by the same rounding rule.
              'effective_date': r['effective_date'] or effective_date_for(r['apply_at'])}
             for r in rows]
+
+
+# Every row of one kind, in one query — what a 17-day loop or a whole week of
+# blocks needs so that drawing a calendar is not one SELECT per row per day.
+def _revisions_by_row(conn, kind):
+    out = {}
+    for r in conn.execute(
+            '''SELECT row_id, field, value, apply_at, effective_date FROM easing_pending
+               WHERE kind = ? ORDER BY effective_date, apply_at''', (kind,)).fetchall():
+        out.setdefault(r['row_id'], []).append(
+            {'field': r['field'], 'value': _pending_value(r['value']),
+             'apply_at': r['apply_at'],
+             'effective_date': r['effective_date'] or effective_date_for(r['apply_at'])})
+    return out
+
+
+# THE ONE TEST for a flag that arrives as a string. '0' is a true string in
+# Python, and these values come from JSON, from a form and from the pending
+# store (where they are whatever the door wrote), so "is this switched off"
+# has exactly one answer here. qr_judge._falsy is this function.
+def falsy(v):
+    return v in (None, '', 0, False, '0', 'false', 'False')
 
 
 # The deletion pseudo-fields, per kind. A row that is scheduled to GO does not

@@ -64,6 +64,23 @@ READS = {
         'schedule_source — a gated flow\'s source change runs through '
         'schedule.demands_less and pends if looser.',
 
+    # ── a change dated forward (2026-08-17) ──
+    'effective_date_for':
+        'not data — the ONE rounding rule turning "when does this land" into '
+        '"which day does it govern". Rounds UP off midnight, so a change '
+        'landing mid-afternoon governs the NEXT day: overstating a loosening '
+        'would show a gate as relaxed on a day still being judged.',
+    'row_as_of':
+        'not data — layers dated changes onto a row for a FUTURE day, which is '
+        'how the calendar draws Wednesday. Past and today cannot be affected: '
+        'anything effective by today has an apply_at that has already passed, '
+        'so it is written into the row and there is nothing left to layer. The '
+        'judge therefore reads exactly what it read before this existed.',
+    'falsy':
+        'not data — the one test for a switched-off flag, shared because a '
+        'queued `active` arrives as the string "0", which is TRUE in Python. '
+        'The projection has to read it exactly the way the judge does.',
+
     # ── things the judge writes itself, or config ──
     'qr_reserve_judgment': 'written BY the judge; the insert is the lock.',
     'qr_settle_charge': 'written BY the judge, after the API call.',

@@ -127,6 +127,9 @@ const state = {
   todo: null,
   yesterdayTodo: null,
   overrides: [],
+  // The VIEWED day's resolved blocks, keyed by the date they answer for —
+  // see fetchOverridesForDate. Never read without checking that date.
+  viewSegments: { date: null, segments: [] },
   inbox: [],
   projects: [],
   sheetsInbox: [],
@@ -181,7 +184,7 @@ const state = {
 // that is already on screen; on first load the initialiser makes that [].
 async function loadAll() {
   const dateStr = viewDay();
-  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily] = await Promise.all([
+  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments] = await Promise.all([
     apiGet('/api/blocks', state.blocks),
     apiGet('/api/areas', state.areas),
     apiGet('/api/domains', state.domains),
@@ -201,8 +204,12 @@ async function loadAll() {
     apiGet('/api/tag-devices', state.tagDevices),
     apiGet('/api/tag-times', state.tagTimes),
     apiGet('/api/tag-daily', state.tagDaily),
+    // The day's blocks as the SERVER resolves them, for the date being looked
+    // at. Fetched here as well as on every nav so the first paint has it.
+    apiGet(`/api/blocks/day?date=${dateStr}&all=1`, viewSegmentsFor(dateStr)),
   ]);
 
+  state.viewSegments = { date: dateStr, segments: Array.isArray(viewSegments) ? viewSegments : [] };
   state.locations = Array.isArray(locations) ? locations : [];
   state.tagLocations = Array.isArray(tagLocations) ? tagLocations : [];
   state.tagDevices = Array.isArray(tagDevices) ? tagDevices : [];
@@ -511,38 +518,15 @@ function updateNavButtons() {
 function renderBlocksLayer(bodyH = 600) {
   const layer = document.getElementById('tl-blocks-layer');
   if (!layer) return;
-  const dow = jsDateToDayOfWeek(state.currentDate);
   const projectsById = Object.fromEntries(state.areas.map(p => [p.id, p]));
   const dateStr = viewDay();
-  const prevDate = new Date(state.currentDate.getTime() - 86400000);
-  const prevDow = jsDateToDayOfWeek(prevDate);
-  const prevDateStr = formatDateYMD(prevDate);
 
-  const isVisible = (b, dayOfWeek) => b.active && b.day_of_week === dayOfWeek;
-
-  const segments = [];
-
-  // Today's blocks (overnight blocks run past 1440 in semantic minutes);
-  // a day override's times take precedence over the block's defaults
-  for (const b of state.blocks.filter(b => isVisible(b, dow))) {
-    const override = state.overrides.find(o => o.block_id === b.id && o.date === dateStr);
-    const startT = (override && override.start_time) || b.start_time;
-    const endT = (override && override.end_time) || b.end_time;
-    const startMin = timeToMinutes(startT);
-    const endMin = spanEndMin(startT, endT);
-    const cancelled = override ? override.cancelled === 1 : false;
-    segments.push({ b, startMin, endMin, cancelled, label: b.label, cont: false });
-  }
-
-  // Yesterday's overnight blocks — continuation segments from 00:00 → end_time
-  for (const b of state.blocks.filter(b => isVisible(b, prevDow))) {
-    const override = state.overrides.find(o => o.block_id === b.id && o.date === prevDateStr);
-    if (override && override.cancelled === 1) continue;
-    const startT = (override && override.start_time) || b.start_time;
-    const endT = (override && override.end_time) || b.end_time;
-    if (endT >= startT) continue;
-    segments.push({ b, startMin: 0, endMin: timeToMinutes(endT), cancelled: false, label: b.label + ' (cont.)', cont: true });
-  }
+  // SERVED, not re-derived: which blocks this date runs, their times with any
+  // override applied, and yesterday's overnight tail arriving at a negative
+  // start. A block scheduled to move or pause on a future date is already
+  // resolved into this, which is what makes the change visible before it
+  // lands rather than the moment it does.
+  const segments = viewSegmentsFor(dateStr).map(segmentRow);
 
   if (!segments.length && !state.blocks.some(b => b.active)) {
     layer.innerHTML = '<div class="tl-placeholder">No blocks yet — open Block Editor to add your schedule</div>';
@@ -675,6 +659,10 @@ function initBlockBarDrag(layer, dateStr) {
           const data = await res.json();
           const idx = state.overrides.findIndex(o => o.block_id === blockId && o.date === dateStr);
           if (idx !== -1) state.overrides[idx] = data; else state.overrides.push(data);
+          // The times on screen are the SERVER's resolution of this day, so a
+          // dropped block moves once the day is re-resolved — not when the
+          // local override array is patched.
+          await fetchOverridesForDate(state.currentDate);
         }
         renderTimeline();
       }
@@ -938,9 +926,49 @@ function initTimeline() {
   window.addEventListener('focus', focusRefresh);
 }
 
+// The VIEWED day's two halves, fetched together because they are two answers
+// to one question. `viewSegments` is the server's resolved block list for that
+// exact date (storage.block_segments_for): which blocks run, at what times,
+// with a change dated forward already applied. The client used to answer that
+// itself by filtering state.blocks on the weekday — which is fine until a
+// block is scheduled to MOVE, at which point the timeline for next Wednesday
+// draws this Wednesday's rules and quietly corrects itself later.
+//
+// Keyed by EXACT DATE and carrying it, like every other resolved-day payload,
+// and deliberately NOT the same store as todaySegments — that one answers a
+// question about NOW and must not be served from a viewed-day cache.
 async function fetchOverridesForDate(date) {
   const dateStr = formatDateYMD(date);
-  state.overrides = await fetch(`/api/overrides?date=${dateStr}`).then(r => r.json());
+  const [overrides, segments] = await Promise.all([
+    apiGet(`/api/overrides?date=${dateStr}`, state.overrides),
+    apiGet(`/api/blocks/day?date=${dateStr}&all=1`, []),
+  ]);
+  state.overrides = overrides;
+  state.viewSegments = { date: dateStr, segments };
+}
+
+// The segments for the day being looked at, or nothing if the cache holds
+// another day — a stale answer keyed by the wrong date is the bug this shape
+// exists to prevent, so it reports empty rather than guessing.
+function viewSegmentsFor(dateStr) {
+  return state.viewSegments && state.viewSegments.date === dateStr
+    ? state.viewSegments.segments : [];
+}
+
+// One segment as the renderers want it: the day question is the SERVER's, the
+// cosmetic join (which location is that id) stays here.
+function segmentRow(s) {
+  const cont = s.start < 0;                       // yesterday's overnight tail
+  const loc = (state.locations || []).find(l => String(l.id) === String(s.location_id));
+  return {
+    b: { id: s.block_id, area_id: s.area_id, color: s.color,
+         location_name: loc ? loc.name : null },
+    startMin: cont ? 0 : s.start,
+    endMin: s.end,
+    cancelled: !!s.cancelled,
+    label: s.label + (cont ? ' (cont.)' : ''),
+    cont,
+  };
 }
 
 async function toggleBlockOverride(blockId) {
@@ -953,12 +981,16 @@ async function toggleBlockOverride(blockId) {
     const saved = existing;
     const idx = state.overrides.indexOf(existing);
     state.overrides.splice(idx, 1);
+    markSegmentCancelled(blockId, dateStr, false);
     renderTimeline();
     try {
       const res = await apiSend(`/api/overrides/${saved.id}`, 'DELETE');
       if (!res.ok) throw new Error();
+      await fetchOverridesForDate(state.currentDate);
+      renderTimeline();
     } catch (err) {
       state.overrides.push(saved);
+      markSegmentCancelled(blockId, dateStr, true);
       renderTimeline();
       console.error('Override delete failed:', err);
     }
@@ -971,6 +1003,11 @@ async function toggleBlockOverride(blockId) {
   const optimistic = existing || { id: null, block_id: blockId, date: dateStr, cancelled };
   if (existing) existing.cancelled = cancelled;
   else state.overrides.push(optimistic);
+  // The strike-through is drawn from the SERVED day, so the local echo has to
+  // reach that too or the tap looks dead until the fetch returns. It is an
+  // echo of a write just made, not a second copy of the resolution rule —
+  // the refetch below replaces it with the server's answer either way.
+  markSegmentCancelled(blockId, dateStr, !!cancelled);
   renderTimeline();
   try {
     const res = await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: !!cancelled });
@@ -978,15 +1015,24 @@ async function toggleBlockOverride(blockId) {
     const data = await res.json();
     const idx = state.overrides.indexOf(optimistic);
     if (idx !== -1) state.overrides[idx] = data;
+    await fetchOverridesForDate(state.currentDate);
+    renderTimeline();
   } catch (err) {
     if (existing) existing.cancelled = prev;
     else {
       const idx = state.overrides.indexOf(optimistic);
       if (idx !== -1) state.overrides.splice(idx, 1);
     }
+    markSegmentCancelled(blockId, dateStr, !cancelled);
     renderTimeline();
     console.error('Override save failed:', err);
   }
+}
+
+function markSegmentCancelled(blockId, dateStr, cancelled) {
+  viewSegmentsFor(dateStr).forEach(s => {
+    if (s.block_id === blockId && s.date === dateStr) s.cancelled = cancelled;
+  });
 }
 
 // Called (via evaluate_js) after the NOW panel checks something off — and
@@ -2314,6 +2360,108 @@ function seStateRow(hint) {
            ...(hint ? { hint } : {}) };
 }
 
+// WHEN, asked in one place (2026-08-17). Blank means now — the sheet has always
+// meant "and from now on", so the empty field is the behaviour that already
+// existed. A date means the whole save is filed against that day: nothing
+// changes before it, and every surface that draws a day resolves it from there
+// (storage.row_as_of). It sits directly above the buttons, under the state
+// row, because it qualifies the SAVE rather than any one field.
+//
+// A gate's easings still wait their 24h — the date is a floor, never a bypass —
+// so the hint says which of the two won once the server has answered.
+function seWhenRow(hint) {
+  return { key: 'effective', label: 'Takes effect', kind: 'date',
+           hint: hint || 'Blank: now. A date changes nothing until that day.' };
+}
+
+// The day a scheduled change starts, said the way a person reads a date.
+function seWhenLabel(ymd) {
+  if (!ymd) return '';
+  const d = new Date(ymd + 'T12:00:00');
+  const today = wallDay();
+  if (ymd === today) return 'today';
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+// What a scheduled change is CALLED, so a row can say what it does rather
+// than name a column. GATE_FIELDS is the same idea for the money path.
+const BLOCK_FIELDS = {
+  label: 'Label', color: 'Colour', day_of_week: 'Day', start_time: 'From',
+  end_time: 'To', area_id: 'Area', location_id: 'Location', active: 'State',
+  delete: 'Deleted',
+};
+
+function blockChangeValue(c) {
+  if (c.field === 'day_of_week') return DAY_NAMES[parseInt(c.new_value)] || c.new_value;
+  if (c.field === 'active') return c.new_value ? 'Active' : 'Paused';
+  if (c.field === 'area_id') {
+    return ((state.areas || []).find(a => String(a.id) === String(c.new_value)) || {}).name || '—';
+  }
+  if (c.field === 'location_id') {
+    return ((state.locations || []).find(l => String(l.id) === String(c.new_value)) || {}).name || '—';
+  }
+  if (c.field === 'delete') return 'gone';
+  return String(c.new_value);
+}
+
+// A group is several rows moving together, so its scheduled changes are the
+// union of its rows' — deduped by (field, value, day), because "From → 07:00
+// on Wednesday" said five times is one decision, not five.
+function blockGroupChanges(g) {
+  const seen = new Set();
+  const out = [];
+  for (const row of g.rows) {
+    for (const c of (row.scheduled_changes || [])) {
+      const key = `${c.field}|${JSON.stringify(c.new_value)}|${c.effective_date}`;
+      // day_of_week is per row by nature — one row moves to Tuesday, another
+      // stays — so those are never collapsed.
+      if (c.field !== 'day_of_week' && seen.has(key)) continue;
+      seen.add(key);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+// Dating a group's edit. Each row takes the fields that actually changed;
+// WHICH DAYS the block runs is the one thing a date cannot express, because
+// adding a day means a row that does not exist yet and dropping one means
+// deleting a row — both are creations and deletions, not a field moving.
+// A same-size day set IS expressible: it is a move, paired in day order.
+async function scheduleBlockGroup(g, v) {
+  const oldDays = [...g.days].sort((a, b) => a - b);
+  const newDays = [...v.days].sort((a, b) => a - b);
+  if (oldDays.length !== newDays.length) {
+    return 'Adding or dropping a day can\'t be dated yet — clear the date to save '
+      + 'the days now, or change only the times, place and state.';
+  }
+  const fields = {};
+  if (v.label.trim() !== g.label) fields.label = v.label.trim();
+  if (v.color !== g.color) fields.color = v.color;
+  if (v.start !== g.start_time) fields.start_time = v.start;
+  if (v.end !== g.end_time) fields.end_time = v.end;
+  if (String(v.area || '') !== String(g.area_id || '')) fields.area_id = v.area || null;
+  if (String(v.location || '') !== String(g.location_id || '')) fields.location_id = v.location || null;
+  const wasActive = g.rows.some(r => r.active);
+  if (v.active !== wasActive) fields.active = v.active ? 1 : 0;
+
+  const rowsByDay = Object.fromEntries(g.rows.map(r => [r.day_of_week, r]));
+  const sends = [];
+  oldDays.forEach((day, i) => {
+    const row = rowsByDay[day];
+    const body = { ...fields, effective_from: v.effective };
+    if (newDays[i] !== day) body.day_of_week = newDays[i];
+    // Nothing but the date: there is no change to schedule.
+    if (Object.keys(body).length === 1) return;
+    sends.push(apiSend(`/api/blocks/${row.id}`, 'PATCH', body));
+  });
+  if (!sends.length) return 'Nothing changed, so there is nothing to schedule.';
+  const res = await Promise.all(sends);
+  if (res.some(r => !r.ok)) return 'Could not schedule that change.';
+  toast(`${g.label} changes from ${seWhenLabel(v.effective)}`);
+  return null;
+}
+
 // ── Per-datatype sheets ──────────────────────────────────────
 
 const SETTINGS_SHEETS = {
@@ -2325,7 +2473,7 @@ const SETTINGS_SHEETS = {
     save: () => 'Save block',
     removeLabel: 'Delete block',
     blank: () => ({ label: '', color: BLOCK_COLORS[0], days: [], start: '', end: '',
-                    area: '', location: '', active: true }),
+                    area: '', location: '', active: true, effective: '' }),
     load: g => ({
       label: g.label, color: g.color, days: g.days.slice(),
       start: g.start_time, end: g.end_time,
@@ -2333,6 +2481,7 @@ const SETTINGS_SHEETS = {
       // A group is paused when every row in it is — the rows only ever move
       // together, and a half-paused group has no meaning on the timeline.
       active: g.rows.some(r => r.active),
+      effective: '',
     }),
     fields: (v, g) => [
       { key: 'label', label: 'Label', kind: 'text', placeholder: 'e.g. Deep work' },
@@ -2346,10 +2495,33 @@ const SETTINGS_SHEETS = {
         options: () => seLocationOptions(null, v.location) },
       ...(g ? [seStateRow('Paused: off the timeline, and its hours are free for '
                           + 'another block. Nothing is deleted.')] : []),
+      ...(g ? [seWhenRow('Blank: now, as always. A date leaves this week alone and '
+                         + 'moves the block from that day — the timeline draws it '
+                         + 'there before it happens.')] : []),
+      ...(g ? blockGroupChanges(g).map(c => ({
+        key: `cancel_${c.block_id}_${c.field}`, label: '', kind: 'action',
+        text: `${BLOCK_FIELDS[c.field] || c.field} → ${blockChangeValue(c)}`
+          + ` from ${seWhenLabel(c.effective_date)}`,
+        action: 'Call off',
+        run: async () => {
+          await apiSend(`/api/blocks/${c.block_id}/scheduled/${c.field}`, 'DELETE');
+          await refreshBlockEditor();
+        },
+      })) : []),
     ],
     submit: async (v, g) => {
       if (!v.label.trim() || !v.color || !v.start || !v.end) return 'Label, colour, from and to are required.';
       if (!v.days.length) return 'Select at least one day.';
+      // DATED: nothing is rewritten today. The group's rows are patched with
+      // the date instead, which is why this returns before the delete-and-
+      // re-POST below — that path mints NEW ids, and a change dated onto an id
+      // that stops existing is a change that never happens.
+      if (g && v.effective) {
+        const err = await scheduleBlockGroup(g, v);
+        if (err) return err;
+        await refreshBlockEditor();
+        return null;
+      }
       if (g) await Promise.all(g.rows.map(r => apiSend(`/api/blocks/${r.id}`, 'DELETE')));
       const res = await apiSend('/api/blocks', 'POST', {
           label: v.label.trim(), color: v.color, days: v.days,
@@ -2381,7 +2553,11 @@ const SETTINGS_SHEETS = {
       return null;
     },
     remove: async g => {
-      await Promise.all(g.rows.map(r => apiSend(`/api/blocks/${r.id}`, 'DELETE')));
+      // A dated delete leaves the block running until that day, like a gate's.
+      const when = (seSheet.values || {}).effective;
+      const q = when ? `?effective_from=${encodeURIComponent(when)}` : '';
+      await Promise.all(g.rows.map(r => apiSend(`/api/blocks/${r.id}${q}`, 'DELETE')));
+      if (when) toast(`${g.label} gone from ${seWhenLabel(when)}`);
       await refreshBlockEditor();
     },
   },
@@ -2710,7 +2886,7 @@ const SETTINGS_SHEETS = {
       : 'Delete this gate permanently? Its scan link stops working.'),
     blank: () => ({
       label: '', source: '', sourceLabel: '',
-      location: '', radius: '', stake: '', routine: '',
+      location: '', radius: '', stake: '', routine: '', effective: '',
     }),
     load: n => {
       // A gate with a pending deactivation reads as Inactive here, so turning
@@ -2723,6 +2899,10 @@ const SETTINGS_SHEETS = {
         sourceLabel: n.schedule_label || '',
         location: '', radius: n.geofence_radius_m || '',
         active, active0: active,
+        // Always blank on open: a date is a decision about the save you are
+        // making now, not a property of the gate. Re-showing the last one
+        // would silently re-date the next edit.
+        effective: '',
         // Dollars in the field, cents in the column. Blank means "use the
         // default", which is a different thing from zero.
         stake: n.charge_cents == null ? '' : (n.charge_cents / 100).toFixed(2),
@@ -2731,7 +2911,13 @@ const SETTINGS_SHEETS = {
       };
     },
     fields: (v, it) => {
+      // `active` is left out of the list below because the State row above IS
+      // that change — but the row alone cannot say WHEN, and a pause dated to
+      // Wednesday reading as a flat "Paused" is the ambiguity this whole
+      // feature exists to remove. So the day goes in its hint.
       const pending = it ? (it.pending_changes || []).filter(p => p.field !== 'active') : [];
+      const pausedFrom = it ? (it.pending_changes || [])
+        .find(p => p.field === 'active' && falsyFlag(p.new_value)) : null;
       return [
         ...(it ? [] : [{ key: 'label', label: 'Label', kind: 'text', placeholder: 'e.g. Desk' }]),
         // WHEN this gate runs is a schedule source, edited in the picker — the
@@ -2801,17 +2987,40 @@ const SETTINGS_SHEETS = {
           run: n => removeOverride(n.id, n.today_override.date) }] : []),
         // Last, like every other sheet's — the read-outs above it are facts
         // about the gate, not fields, so the ladder still ends on the switch.
-        ...(it ? [seStateRow('Pausing a gate is an easing, so it takes effect in 24h —'
-          + ' turning it back on before then calls it off.')] : []),
-        ...(pending.length ? [{ key: 'pending', label: 'Pending', kind: 'static',
-          hint: 'Anything that makes a gate easier waits 24h, so it can\'t be loosened '
-            + 'in the moment you want to dodge it.',
-          text: pending.map(p => (p.field === '__delete__'
-            ? 'gate is deleted'
-            : `${GATE_FIELDS[p.field] || p.field} → `
-              + `${p.field === 'charge_cents' ? '$' + ((p.new_value || 0) / 100).toFixed(2)
-                : p.new_label || p.new_value}`)
-            + ` (applies ${new Date(p.apply_at).toLocaleString()})`).join('; ') }] : []),
+        ...(it ? [seStateRow(pausedFrom
+          ? `Paused from ${seWhenLabel(pausedFrom.effective_date)} — it still runs`
+            + ' until then, and the timeline shows it stopping there. Set it back'
+            + ' to Active to call that off.'
+          : 'Pausing a gate is an easing, so it takes effect in 24h —'
+            + ' turning it back on before then calls it off. Give it a date below'
+            + ' to pause it from a day instead.')] : []),
+        ...(it ? [seWhenRow('Blank: now, with easings waiting their 24h as always. A date'
+          + ' moves the whole change to that day — the timeline shows it there'
+          + ' before it happens. An easing dated sooner than 24h still waits.')] : []),
+        // One row per DECISION, each with its own way out — a scheduled change
+        // you cannot call off is worse than none. Cancelling never applies
+        // anything: the row was never touched, so there is nothing to undo,
+        // and staying as you are is the tighter direction anyway.
+        //
+        // The DAY it starts, not the timestamp it lands: "from Wed 19 Aug" is
+        // what was decided, and a change landing at 16:24 does not govern that
+        // morning's window (storage.effective_date_for).
+        ...gatePendingGroups(pending).map((grp, i) => ({
+          key: `pending_${i}`, label: i === 0 ? 'Scheduled' : '', kind: 'action',
+          text: `${grp.label ? grp.label + ' → ' : ''}${grp.text}`
+            + ` from ${seWhenLabel(grp.effective_date)}`,
+          action: 'Call off',
+          hint: i === 0 ? 'Anything that makes a gate easier waits 24h, so it can\'t be '
+            + 'loosened in the moment you want to dodge it.' : null,
+          run: async n => {
+            // Every field of the decision, or none: half a moved fence is a
+            // place that does not exist.
+            for (const f of grp.fields) {
+              await apiSend(`/api/accountability/nodes/${n.id}/pending/${f}`, 'DELETE');
+            }
+            await renderQrManager();
+          },
+        })),
       ];
     },
     submit: async (v, n) => {
@@ -2859,28 +3068,45 @@ const SETTINGS_SHEETS = {
         body.geofence_lat = loc.lat;
         body.geofence_lng = loc.lng;
       }
+      // The date rides the same patch, so one save is one decision: what
+      // changes, and from when. The server takes the later of it and the
+      // easing floor, and answers with the day each field really starts.
+      if (v.effective) body.effective_from = v.effective;
       const res = await apiSend(`/api/accountability/nodes/${n.id}`, 'PATCH', body);
       if (!res.ok) return `Edit failed (${res.status}).`;
       const result = await res.json();
       if (v.active !== v.active0) {
         const route = v.active ? 'activate' : 'disable';
-        const r = await apiSend(`/api/accountability/nodes/${n.id}/${route}`, 'PATCH');
+        const r = await apiSend(`/api/accountability/nodes/${n.id}/${route}`, 'PATCH',
+                                v.active || !v.effective ? undefined
+                                  : { effective_from: v.effective });
         if (!r.ok) return `${v.active ? 'Resume' : 'Pause'} failed (${r.status}).`;
       }
+      // What the server actually decided, per field — the date asked for is
+      // not always the day it starts, and saying the day back is the only way
+      // that is honest. A loosening dated inside 24h lands later than asked.
       if (result.pending && result.pending.length) {
-        alert(`Saved. Loosening changes apply ${new Date(result.apply_at).toLocaleString()}:\n`
-          + result.pending.map(p => `${p.field} → ${p.newVal}`).join('\n'));
+        const days = [...new Set(result.pending.map(f =>
+          seWhenLabel((result.scheduled[f] || {}).effective_date)))];
+        const asked = v.effective ? seWhenLabel(v.effective) : null;
+        toast(`${result.pending.map(f => GATE_FIELDS[f] || f).join(', ')} `
+          + `from ${days.join(' / ')}`
+          + (asked && !days.includes(asked) ? ` — not ${asked}: an easing waits 24h` : ''));
       }
       await renderQrManager();
       return null;
     },
     remove: async n => {
-      const res = await apiSend(`/api/accountability/nodes/${n.id}`, 'DELETE');
+      // The Takes-effect date applies to a deletion too: "gone from Wednesday"
+      // is a thing you schedule, and the gate keeps running until then.
+      const when = (seSheet.values || {}).effective;
+      const res = await apiSend(`/api/accountability/nodes/${n.id}`
+        + (when ? `?effective_from=${encodeURIComponent(when)}` : ''), 'DELETE');
       if (!res.ok) { toast(`Delete failed (${res.status}): ${await res.text()}`); return; }
       const out = await res.json().catch(() => ({}));
       // A live gate's deletion is QUEUED, so say when it lands — the gate is
       // still on the list until then, and silence would read as a failure.
-      if (out.pending) toast(`Deletion applies ${new Date(out.apply_at).toLocaleString()}`);
+      if (out.pending) toast(`Deleted from ${seWhenLabel(out.effective_date)}`);
       await renderQrManager();
     },
   },
@@ -3221,13 +3447,21 @@ function renderBeBlocks(blocks) {
   // A block row's identity is its GROUP, which has no server id — index it.
   const groups = groupBlocks(blocks).map((g, i) => ({ ...g, id: `g${i}` }));
   beCounts.blocks = groups.length;
-  list.innerHTML = groups.map(g => beRow({
-    id: g.id, color: g.color, name: g.label,
-    dim: !g.rows.some(r => r.active),
-    meta: `${formatDays(g.days)} · ${g.start_time}–${g.end_time}`,
-    sub: [g.project_name, g.location_name].filter(Boolean).join(' · '),
-    badge: g.rows.some(r => r.active) ? '' : 'paused',
-  })).join('') + beAddRow('Add block');
+  list.innerHTML = groups.map(g => {
+    // A change dated forward is part of what this block IS from that day, so
+    // the row says so — the whole point is not having to remember it.
+    const changes = blockGroupChanges(g);
+    const from = changes.length
+      ? changes.map(c => c.effective_date).sort()[0] : null;
+    return beRow({
+      id: g.id, color: g.color, name: g.label,
+      dim: !g.rows.some(r => r.active),
+      meta: `${formatDays(g.days)} · ${g.start_time}–${g.end_time}`,
+      sub: [g.project_name, g.location_name,
+            from ? `changes ${seWhenLabel(from)}` : null].filter(Boolean).join(' · '),
+      badge: g.rows.some(r => r.active) ? (from ? 'scheduled' : '') : 'paused',
+    });
+  }).join('') + beAddRow('Add block');
   wireBeList(list, 'block', groups);
 }
 
@@ -8096,9 +8330,50 @@ async function renderQrManager() {
 const GATE_FIELDS = {
   charge_cents: 'stake', window_start: 'from', window_end: 'to',
   window_end_offset_days: 'crosses midnight', days_of_week: 'days',
+  geofence_lat: 'place', geofence_lng: 'place',
   geofence_radius_m: 'radius', weekly_windows: 'per-day times', active: 'state',
   source_uid: 'schedule', __delete__: 'delete gate',
 };
+
+// THE FENCE IS ONE DECISION IN THREE COLUMNS. Queued per field like everything
+// else — which is right, since a field is the unit a tightening cancels — but
+// calling off ONE of them would leave the gate at a latitude from the new
+// place and a longitude from the old: a fence in the sea, satisfied by
+// nothing. So the sheet shows the three as one row and cancels them together.
+const GATE_FENCE = ['geofence_lat', 'geofence_lng', 'geofence_radius_m'];
+
+// Queued changes as DECISIONS rather than columns: the fence's three fields
+// collapse into one when they start on the same day, everything else is
+// itself. Each carries the fields it would cancel.
+function gatePendingGroups(pending) {
+  const out = [];
+  const fence = pending.filter(p => GATE_FENCE.includes(p.field));
+  const days = [...new Set(fence.map(p => p.effective_date))];
+  if (fence.length && days.length === 1) {
+    const loc = (state.locations || []).find(l =>
+      String(l.lat) === String((fence.find(p => p.field === 'geofence_lat') || {}).new_value));
+    out.push({ label: 'place', text: loc ? loc.name : 'a new place',
+               effective_date: days[0], fields: fence.map(p => p.field) });
+  } else {
+    fence.forEach(p => out.push({ label: GATE_FIELDS[p.field] || p.field,
+                                  text: String(p.new_value),
+                                  effective_date: p.effective_date, fields: [p.field] }));
+  }
+  pending.filter(p => !GATE_FENCE.includes(p.field)).forEach(p => out.push({
+    label: p.field === '__delete__' ? '' : (GATE_FIELDS[p.field] || p.field),
+    text: p.field === '__delete__' ? 'gate is deleted'
+      : p.field === 'charge_cents' ? '$' + ((p.new_value || 0) / 100).toFixed(2)
+      : p.field === 'active' ? (falsyFlag(p.new_value) ? 'paused' : 'active')
+      : p.new_label || String(p.new_value),
+    effective_date: p.effective_date, fields: [p.field],
+  }));
+  return out;
+}
+
+// '0' is a true string here too — the same trap storage.falsy exists for.
+function falsyFlag(v) {
+  return v === 0 || v === false || v === '0' || v === 'false' || v == null || v === '';
+}
 
 const GATE_REASONS = {
   absent: 'no scan',
@@ -10652,7 +10927,7 @@ async function refreshEngage() {
   // Catches fall back to the current values, not [] — this is the home screen,
   // and a network drop must not blank the day that is already rendered. See the
   // note on loadAll.
-  const [placements, futurePlaced, pool, all, overrides, routineItems, flows,
+  const [placements, futurePlaced, pool, all, overrides, daySegments, routineItems, flows,
          schedules, deferred] = await Promise.all([
     apiGet(`/api/engage/placements?date=${dateStr}`, engageView.placements),
     // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
@@ -10663,6 +10938,9 @@ async function refreshEngage() {
     apiGet('/api/inbox/active', engageView.pool),
     apiGet('/api/map', engageView.allItems),
     apiGet(`/api/overrides?date=${dateStr}`, []),
+    // Same served day the timeline draws — Engage lists the blocks it
+    // resolves, so both surfaces get the answer from one place.
+    apiGet(`/api/blocks/day?date=${dateStr}&all=1`, viewSegmentsFor(dateStr)),
     apiGet('/api/routine-items', []),
     // The day's routines, so a gate hairline can name the routine that gates it
     // — the link is what makes the gate pass or fail, and it was only visible
@@ -10678,6 +10956,7 @@ async function refreshEngage() {
   engageView.pool = pool;
   engageView.allItems = all;
   engageView.overrides = overrides;
+  state.viewSegments = { date: dateStr, segments: Array.isArray(daySegments) ? daySegments : [] };
   engageView.routineItems = routineItems;
   engageView.flows = Array.isArray(flows) ? flows : [];
   state.schedules = Array.isArray(schedules) ? schedules : [];
@@ -10781,7 +11060,10 @@ function engagePoolGates(nowMin, isToday) {
 // Assembling it was the first 110 lines of renderEngage. It is a pure
 // computation over state and the viewed day, and naming it makes the render
 // read as what it is: build the day, gate the pool, draw, wire.
-function engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin) {
+// No `dow` any more: which blocks a day has is the SERVER's answer now
+// (viewSegmentsFor), and the weekday was only ever the client's way of
+// working it out.
+function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   // The day's fixed points, all in semantic minutes.
   const rows = [];
 
@@ -10830,15 +11112,14 @@ function engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin) {
   const routineAreaIds = new Set(state.areas.filter(a => a.type === 'routine').map(a => a.id));
   const routineGroups = {};
 
-  state.blocks.filter(b => b.active && b.day_of_week === dow).forEach(b => {
-    const ov = engageView.overrides.find(o => o.block_id === b.id && o.date === dateStr);
-    const startT = (ov && ov.start_time) || b.start_time;
-    const endT = (ov && ov.end_time) || b.end_time;
-    const seg = { minute: timeToMinutes(startT),
-                  endMin: spanEndMin(startT, endT),
-                  id: b.id, label: b.label, cancelled: !!(ov && ov.cancelled === 1) };
-    if (routineAreaIds.has(b.area_id)) {
-      (routineGroups[b.area_id] = routineGroups[b.area_id] || []).push(seg);
+  // The same served answer the timeline draws (viewSegmentsFor), so the two
+  // cannot disagree about which blocks a day has. Yesterday's overnight tail
+  // (a negative start) is skipped here: Engage lists the day's own commitments.
+  viewSegmentsFor(dateStr).filter(s => s.start >= 0).forEach(s => {
+    const seg = { minute: s.start, endMin: s.end, id: s.block_id,
+                  label: s.label, cancelled: !!s.cancelled };
+    if (routineAreaIds.has(s.area_id)) {
+      (routineGroups[s.area_id] = routineGroups[s.area_id] || []).push(seg);
       return;
     }
     rows.push({ kind: 'block', ...seg });
@@ -10920,11 +11201,10 @@ function renderEngage() {
   // (which has room for one and picks by priority) the timeline can say so.
   const isNow = r => r.endMin > r.minute && r.minute <= nowMin && nowMin < r.endMin;
   const nowAttrs = r => ` data-s="${r.minute}" data-e="${r.endMin}"`;
-  const dow = jsDateToDayOfWeek(viewDate);
   const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
 
   const { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds } =
-    engageDayRows(now, dateStr, viewDate, isToday, dow, isoMin);
+    engageDayRows(now, dateStr, viewDate, isToday, isoMin);
 
   // Context filter. There are TWO AXES and they do not compose the same way:
   // a domain is WHERE the work belongs (single-valued — area.domain_id), a tag

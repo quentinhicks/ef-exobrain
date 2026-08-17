@@ -591,8 +591,10 @@ def is_loosening(field, current, nxt, node=None):
 
 def _falsy(v):
     # '0' is a true string in Python, and these values arrive from JSON and
-    # from the pending store as both types.
-    return v in (None, '', 0, False, '0', 'false', 'False')
+    # from the pending store as both types. ONE definition, in storage, because
+    # the future-day projection (storage.row_as_of's callers) has to read a
+    # queued `active` exactly the way the judge does.
+    return storage.falsy(v)
 
 
 def override_locked(node, ymd, now=None):
@@ -611,20 +613,51 @@ def override_locked(node, ymd, now=None):
 QR_IMMEDIATE_FIELDS = ('label',)
 
 
-def apply_node_patch(node, fields, now=None):
-    # Splits a patch into what applies now and what has to wait. Returns
-    # (immediate, pending) as {field: value}; the caller writes them.
+# A CHANGE CAN BE DATED FORWARD (2026-08-17), and this is the one place that
+# decides WHEN one lands. Two floors, and the later of them wins:
+#
+#   the easing floor — now for a tightening, now + 24h for a loosening. This
+#   is the teeth above, and a date cannot get underneath it: asking for a
+#   loosening "from tomorrow" when tomorrow is eight hours away still waits
+#   the full 24h, and the caller is told the day it really starts.
+#
+#   the date you asked for — local midnight of it. A change dated forward is
+#   NOT applied now even when it tightens: "7am from Wednesday" must leave
+#   Tuesday alone, and tightening early would be a change nobody asked for.
+#
+# Returns (immediate {field: value}, pending {field: {value, apply_at,
+# effective_date}}). apply_at is when the ROW is rewritten; effective_date is
+# the first day the change governs, and the two differ for a plain easing —
+# see storage.effective_date_for.
+def schedule_node_patch(node, fields, effective_from=None, now=None):
     now = now or datetime.now()
+    want = None
+    if effective_from:
+        want = datetime.combine(date_cls.fromisoformat(effective_from),
+                                datetime.min.time())
     immediate, pending = {}, {}
     for field, value in fields.items():
         if field not in storage.QR_NODE_FIELDS:
             continue
-        if field in QR_IMMEDIATE_FIELDS or not is_loosening(field, node.get(field),
-                                                            value, node):
+        eases = (field not in QR_IMMEDIATE_FIELDS
+                 and is_loosening(field, node.get(field), value, node))
+        at = now + timedelta(hours=LOOSEN_DELAY_H) if eases else now
+        if want and want > at:
+            at = want
+        if at <= now:
             immediate[field] = value
         else:
-            pending[field] = value
+            pending[field] = {'value': value, 'apply_at': at.isoformat(),
+                              'effective_date': storage.effective_date_for(at)}
     return immediate, pending
+
+
+def apply_node_patch(node, fields, now=None):
+    # The undated split, in the shape the callers before dates were added
+    # still read: (immediate, pending) as {field: value}. One classifier —
+    # this delegates rather than deciding again.
+    immediate, pending = schedule_node_patch(node, fields, None, now)
+    return immediate, {f: p['value'] for f, p in pending.items()}
 
 # ── Charging ─────────────────────────────────────────────────
 #
