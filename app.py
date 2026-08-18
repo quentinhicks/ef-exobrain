@@ -9,6 +9,8 @@ import subprocess
 import sys
 import threading
 import time
+import base64
+import urllib.parse
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
@@ -18,7 +20,7 @@ try:
     import webview
 except ImportError:
     webview = None  # headless server (PT_HEADLESS): Flask only, no windows
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, jsonify, redirect, render_template, request, send_from_directory
 
 import storage
 import schedule
@@ -2283,6 +2285,25 @@ def get_location_waypoints():
 OWNTRACKS_MODE_HTTP = 3
 
 
+def _owntracks_config(token, req):
+    # ONE builder for both delivery routes, so the file you download and the
+    # link you tap can never describe different endpoints.
+    scheme = req.headers.get('X-Forwarded-Proto') or req.scheme
+    return {
+        '_type': 'configuration',
+        'mode': OWNTRACKS_MODE_HTTP,
+        'url': f'{scheme}://qpa:{token}@{req.host}/api/arrival',
+        'waypoints': [{
+            '_type': 'waypoint',
+            'desc': l['name'],
+            'lat': l['lat'],
+            'lon': l['lng'],
+            'rad': l['radius_m'] or 150,
+            'tst': WAYPOINT_TST_BASE + l['id'],
+        } for l in storage.get_locations()],
+    }
+
+
 @app.route('/api/owntracks/config')
 def get_owntracks_config():
     want = (config.get('arrival_token') or '').strip()
@@ -2293,24 +2314,44 @@ def get_owntracks_config():
             or (auth.password if auth and auth.password else '')).strip()
     if sent != want:
         return jsonify({'error': 'bad token'}), 403
-    scheme = request.headers.get('X-Forwarded-Proto') or request.scheme
-    payload = {
-        '_type': 'configuration',
-        'mode': OWNTRACKS_MODE_HTTP,
-        'url': f'{scheme}://qpa:{want}@{request.host}/api/arrival',
-        'waypoints': [{
-            '_type': 'waypoint',
-            'desc': l['name'],
-            'lat': l['lat'],
-            'lon': l['lng'],
-            'rad': l['radius_m'] or 150,
-            'tst': WAYPOINT_TST_BASE + l['id'],
-        } for l in storage.get_locations()],
-    }
+    payload = _owntracks_config(want, request)
     return app.response_class(
         json.dumps(payload, indent=2),
         mimetype='application/json',
         headers={'Content-Disposition': 'attachment; filename="owntracks.otrc"'})
+
+
+# THE SAME CONFIG, HANDED STRAIGHT TO THE APP. The .otrc download above relies
+# on Safari saving a file and iOS offering to open it with OwnTracks, and that
+# hand-off failed in practice ("URI or file config not found"). OwnTracks
+# documents exactly one alternative — owntracks:///config?inline=<base64> — and
+# no remote-fetch parameter, so the config has to travel INSIDE the link.
+#
+# A 302 to that scheme is what makes it one tap: Safari follows the redirect
+# and iOS hands the payload to the app. No file, no Files.app, no menu.
+#
+# This is a REDIRECT, not a page — the JSON-only rule is untouched.
+@app.route('/api/owntracks/install')
+def get_owntracks_install():
+    want = (config.get('arrival_token') or '').strip()
+    if not want:
+        return jsonify({'error': 'arrival_token is not set'}), 503
+    if (request.args.get('token') or '').strip() != want:
+        return jsonify({'error': 'bad token'}), 403
+    blob = json.dumps(_owntracks_config(want, request)).encode('utf-8')
+    b64 = base64.b64encode(blob).decode('ascii')
+    # Percent-encoded: raw base64 contains + and =, and a + in a query string
+    # decodes as a SPACE, which would corrupt the payload for some fraction of
+    # configs and look like a mystery parse failure.
+    # The Location header is set BY HAND. flask.redirect() runs the target
+    # through Werkzeug's URL normaliser, which rewrites owntracks:///config to
+    # owntracks:/config — three slashes to one. OwnTracks documents the triple
+    # form, and a scheme handler that does not match is exactly how this
+    # surfaces: "URI or file config not found".
+    target = 'owntracks:///config?inline=' + urllib.parse.quote(b64, safe='')
+    resp = app.response_class(status=302)
+    resp.headers['Location'] = target
+    return resp
 
 
 @app.route('/api/locations/<int:id>/items')
