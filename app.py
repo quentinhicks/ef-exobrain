@@ -2263,6 +2263,56 @@ def get_location_waypoints():
     })
 
 
+# ONE TAP INSTEAD OF A MENU HUNT. OwnTracks' own iOS setup docs are unwritten
+# ("FIXME: configure the iOS app"), and its settings live behind an unlabelled
+# icon — so configuring it by hand means guessing at an interface. A .otrc
+# config file sidesteps all of it: open this URL on the phone and iOS offers to
+# hand the file to OwnTracks, which imports the mode, the endpoint and every
+# region in one go.
+#
+# mode 3 is HTTP (0 is MQTT) — from OwnTracks' JSON reference, not guessed.
+#
+# The URL is built from the request's OWN host, so whatever address the phone
+# reached this on is the address it will post back to. Hard-coding a tailnet IP
+# here would break the moment it is opened from anywhere else.
+#
+# The token is embedded as the Basic-auth password, which is both what keeps it
+# out of the access log and what makes this file a SECRET: it is the whole
+# credential. Served as an attachment so Safari treats it as a file to open
+# rather than text to display.
+OWNTRACKS_MODE_HTTP = 3
+
+
+@app.route('/api/owntracks/config')
+def get_owntracks_config():
+    want = (config.get('arrival_token') or '').strip()
+    if not want:
+        return jsonify({'error': 'arrival_token is not set'}), 503
+    auth = request.authorization
+    sent = ((request.args.get('token') or '')
+            or (auth.password if auth and auth.password else '')).strip()
+    if sent != want:
+        return jsonify({'error': 'bad token'}), 403
+    scheme = request.headers.get('X-Forwarded-Proto') or request.scheme
+    payload = {
+        '_type': 'configuration',
+        'mode': OWNTRACKS_MODE_HTTP,
+        'url': f'{scheme}://qpa:{want}@{request.host}/api/arrival',
+        'waypoints': [{
+            '_type': 'waypoint',
+            'desc': l['name'],
+            'lat': l['lat'],
+            'lon': l['lng'],
+            'rad': l['radius_m'] or 150,
+            'tst': WAYPOINT_TST_BASE + l['id'],
+        } for l in storage.get_locations()],
+    }
+    return app.response_class(
+        json.dumps(payload, indent=2),
+        mimetype='application/json',
+        headers={'Content-Disposition': 'attachment; filename="owntracks.otrc"'})
+
+
 @app.route('/api/locations/<int:id>/items')
 def get_location_items(id):
     # What is live AT a place. Read-only, and the answer an arrival will be
