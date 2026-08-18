@@ -4472,7 +4472,7 @@ function initHub() {
       }
       else if (dest === 'map') { openMap(); }
       else if (dest === 'people') { openM('tab-people'); openPeopleSurface(); }
-      else if (dest === 'journal') { openM('tab-journal'); renderJournal(); }
+      else if (dest === 'tracking') { openM('tab-tracking'); openTracking(); }
       else if (dest === 'social') { socialView.form = null; openM('tab-social'); refreshSocial(); }
       else if (dest === 'logs') {
         logsView.logs = await fetch('/api/logs').then(r => r.json());
@@ -8992,8 +8992,6 @@ function initPeopleModals() {
 
   document.getElementById('people-add-btn').addEventListener('click', openAddPerson);
   document.getElementById('people-buckets-btn').addEventListener('click', openBucketMgr);
-  const refresh = document.getElementById('journal-refresh');
-  if (refresh) refresh.addEventListener('click', () => renderJournal());
 }
 
 // Entered from the hub rail: render the grid once, show the session bar
@@ -9010,74 +9008,177 @@ async function renderPeople() {
 }
 window.renderPeople = renderPeople;
 
-// ── Journal (dashboard mirror of the sleep-gate nightly fill) ────
-const journalView = { table: null, ready: false, pending: null, habit: null };
-const RATING_OPTS = { '': '—', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7' };
-const HABIT_MARK_OPTS = { '': '—', ehh: 'Ehh', good: 'Good', great: 'Great' };
+// -- TRACKING: what you monitor about yourself, and what it has said ------
+//
+// The app collected self-monitoring answers every night and rendered NONE of
+// them: metric / metric_entry / metric_step were written by the runner,
+// metric_history() existed, and no surface ever called it. Settings only
+// DEFINES the questions. This page is the other half - the answers.
+//
+// The journal came in here (2026-08-17) rather than keeping a tab of its own:
+// a 1-7 rating IS a scale metric and a nightly prompt IS a text metric, so it
+// was a second self-monitoring system with its own table and its own page.
+// Habits and experiments sit here too - the same question asked over weeks
+// instead of nights.
+const trackingView = { metrics: [], habits: null, open: null, days: 60 };
 
-async function renderJournal() {
-  await loadJournalData();
+async function openTracking() {
+  trackingView.open = null;
+  await refreshTracking();
 }
-window.renderJournal = renderJournal;
+window.openTracking = openTracking;
 
-// Opening the tab pulls phone-written entries from the Worker (a no-op merge if
-// the Worker is unconfigured/unreachable) and renders the merged local view.
-async function loadJournalData() {
-  const data = await apiSend('/api/journal/sync', 'POST').then(r => r.json())
-    .catch(() => null)
-    || await apiGet('/api/journal', ({ days: [], habit: null }));
-  journalView.habit = data.habit;
-  renderJournalHabit(await apiGet('/api/habits', null));
-  renderJournalCards(data.days || []);
+async function refreshTracking() {
+  const [ov, habits] = await Promise.all([
+    apiGet(`/api/metrics/overview?days=${trackingView.days}`, { metrics: trackingView.metrics }),
+    apiGet('/api/habits', trackingView.habits),
+  ]);
+  trackingView.metrics = (ov && ov.metrics) || [];
+  trackingView.habits = habits;
+  renderTracking();
 }
 
-// Day cards: the two textareas + rating/habit selects, PATCH on change.
-function renderJournalCards(days) {
-  const grid = document.getElementById('journal-grid');
-  if (!grid) return;
-  const sorted = days.slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  const sel = (field, opts, val) => `<select class="jn-sel" data-field="${field}">${
-    Object.entries(opts).map(([v, label]) =>
-      `<option value="${v}"${String(val ?? '') === v ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
-  grid.innerHTML = sorted.map(d => `
-    <div class="jn-card" data-date="${escHtml(d.date)}">
-      <div class="jn-head">
-        <span class="jn-date">${escHtml(d.date)}</span>
-        <span class="jn-spacer"></span>
-        <label class="jn-sel-label">rating ${sel('rating', RATING_OPTS, d.rating)}</label>
-        <label class="jn-sel-label">habit ${sel('habit_mark', HABIT_MARK_OPTS, d.habit_mark)}</label>
-      </div>
-      <label class="jn-lab">What to do better tomorrow</label>
-      <textarea class="jn-ta" data-field="bottleneck" rows="2">${escHtml(d.bottleneck || '')}</textarea>
-      <label class="jn-lab">Active experiment</label>
-      <textarea class="jn-ta" data-field="active_experiment" rows="2">${escHtml(d.active_experiment || '')}</textarea>
-    </div>`).join('')
-    || '<div class="gtd-empty">No journal entries yet — they arrive from the sleep-gate nightly fill</div>';
+// One answer, said the way its own kind says it. A yes/no is not "1".
+function metricValueText(m, e) {
+  if (!e) return '';
+  if (m.kind === 'text') return e.value_text || '';
+  if (m.kind === 'yesno') return e.value_num ? 'yes' : 'no';
+  const n = e.value_num;
+  const shown = Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10);
+  return m.kind === 'scale' ? `${shown}/${m.scale_max}` : `${shown}${m.unit ? ' ' + m.unit : ''}`;
+}
 
-  const save = async (card, field, value) => {
-    const date = card.dataset.date;
-    if (field === 'rating') value = value === '' ? null : Number(value);
-    if (field === 'habit_mark' && value === '') value = null;
-    const res = await apiSend(`/api/journal/${date}`, 'PATCH', { [field]: value });
-    if (!res.ok) toast(`Save failed (${res.status})`);
+// A SPARKLINE, not a chart: the question a glance asks is "which way has this
+// been going", which a shape answers and axes only clutter. A scale is drawn
+// against its OWN range, so a 4/7 sits mid-height rather than wherever the
+// fortnight's spread happens to put it. Text metrics have no line and show
+// their last answers instead.
+function metricSpark(m) {
+  const pts = m.entries.filter(e => e.value_num != null);
+  if (pts.length < 2) return '';
+  const vals = pts.map(e => e.value_num);
+  const lo = m.kind === 'scale' ? m.scale_min : Math.min(...vals);
+  const hi = m.kind === 'scale' ? m.scale_max : Math.max(...vals);
+  const span = (hi - lo) || 1;
+  const W = 72, H = 20;
+  const d = pts.map((e, i) => {
+    const x = (i / (pts.length - 1)) * W;
+    const y = H - ((e.value_num - lo) / span) * H;
+    return `${x.toFixed(1)},${Math.max(1, Math.min(H - 1, y)).toFixed(1)}`;
+  }).join(' ');
+  return `<svg class="mx-spark" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"`
+    + ` fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">`
+    + `<polyline points="${d}" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+
+function renderTracking() {
+  const body = document.getElementById('tracking-body');
+  const title = document.getElementById('tracking-title');
+  if (!body) return;
+  if (trackingView.open) { renderMetricDetail(body, title); return; }
+  title.textContent = 'Tracking';
+
+  const rows = trackingView.metrics.map(m => {
+    const last = m.last;
+    const recentText = m.kind === 'text'
+      ? m.entries.slice(-2).reverse().map(e =>
+          `<span class="mx-quote">${escHtml((e.value_text || '').slice(0, 90))}</span>`).join('')
+      : '';
+    return `<button class="mx-row" data-metric="${m.id}">
+      <span class="mx-top">
+        <span class="mx-name">${escHtml(m.name)}</span>
+        <span class="mx-right">${metricSpark(m)}${
+          // A text metric's last answer is quoted in full below, so printing
+          // it here as well says the same thing twice on one row.
+          m.kind === 'text' ? '' : `<span class="mx-last">${
+            last ? escHtml(metricValueText(m, last)) : '—'}</span>`}</span>
+      </span>
+      <span class="mx-meta">${escHtml(m.kind)}${m.answered
+        ? ` · ${m.answered} day${m.answered === 1 ? '' : 's'}${
+            last ? ` · last ${escHtml(last.date)}` : ''}`
+        : ' · not answered yet'}</span>
+      ${recentText}
+    </button>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="mx-list">${rows || `<div class="gtd-empty">No metrics yet — Settings → `
+      + `Metrics is where the questions are written.</div>`}</div>
+    <div class="mx-sec">Habits and experiments</div>
+    <div id="tracking-habit"></div>`;
+  renderHabitPanel(trackingView.habits);
+  body.querySelectorAll('[data-metric]').forEach(el => el.addEventListener('click', () => {
+    trackingView.open = parseInt(el.dataset.metric);
+    renderTracking();
+  }));
+}
+
+// One metric, day by day, and every answer still correctable - the Journal tab
+// was the only place a past night could be fixed, so the page replacing it owes
+// that. An entry keeps the STEP that asked it: morning and night are two
+// askings of one question, and an edit may not merge them.
+//
+// Only days that were ANSWERED are listed. Adding an answer to a day nothing
+// asked about would have to invent an asker, and the routine is what asks.
+function renderMetricDetail(body, title) {
+  const m = trackingView.metrics.find(x => x.id === trackingView.open);
+  if (!m) { trackingView.open = null; renderTracking(); return; }
+  title.textContent = m.name;
+  const entries = m.entries.slice().reverse();
+  const stepName = id => {
+    const s = (m.steps || []).find(x => x.step_id === id);
+    if (s) return s.flow_name;
+    return id === 0 ? 'nightly journal' : '';
   };
-  grid.querySelectorAll('.jn-ta').forEach(ta =>
-    ta.addEventListener('blur', () => save(ta.closest('.jn-card'), ta.dataset.field, ta.value)));
-  grid.querySelectorAll('.jn-sel').forEach(s =>
-    s.addEventListener('change', () => save(s.closest('.jn-card'), s.dataset.field, s.value)));
+  const control = e => {
+    if (m.kind === 'text') {
+      return `<textarea class="mx-edit" rows="2" data-date="${e.date}"`
+        + ` data-step="${e.step_id}">${escHtml(e.value_text || '')}</textarea>`;
+    }
+    if (m.kind === 'yesno') {
+      return `<span class="mx-yn">${['1', '0'].map(v =>
+        `<button class="mx-set${String(e.value_num) === v ? ' mx-set-on' : ''}"`
+        + ` data-date="${e.date}" data-step="${e.step_id}" data-val="${v}">`
+        + `${v === '1' ? 'yes' : 'no'}</button>`).join('')}</span>`;
+    }
+    return `<input class="mx-edit mx-num" type="number" data-date="${e.date}"`
+      + ` data-step="${e.step_id}" value="${e.value_num == null ? '' : e.value_num}"`
+      + `${m.kind === 'scale' ? ` min="${m.scale_min}" max="${m.scale_max}"` : ''}>`;
+  };
+  body.innerHTML = `
+    <div class="mx-detail-bar">
+      <button class="log-back-btn" id="mx-back">‹ All metrics</button>
+      <span class="mx-meta">${escHtml(m.prompt || '')}</span>
+    </div>
+    ${entries.map(e => `
+      <div class="mx-day">
+        <span class="mx-day-date">${escHtml(e.date)}</span>
+        ${control(e)}
+        <span class="mx-day-step">${escHtml(stepName(e.step_id))}</span>
+      </div>`).join('')
+      || '<div class="gtd-empty">Nothing answered in this window yet.</div>'}`;
+
+  document.getElementById('mx-back').addEventListener('click', () => {
+    trackingView.open = null;
+    renderTracking();
+  });
+  const save = async (date, stepId, value) => {
+    const res = await apiSend('/api/metrics/entry', 'PUT',
+      { date, metric_id: m.id, step_id: stepId, value });
+    if (!res.ok) { toast('Could not save that answer'); return; }
+    await refreshTracking();
+  };
+  body.querySelectorAll('.mx-edit').forEach(el => el.addEventListener('change', () =>
+    save(el.dataset.date, parseInt(el.dataset.step), el.value)));
+  body.querySelectorAll('.mx-set').forEach(el => el.addEventListener('click', () =>
+    save(el.dataset.date, parseInt(el.dataset.step), el.dataset.val)));
 }
 
-// The STANDING VIEW of the habit system (2026-08-11): forming habits with
-// their health spectrum, the running experiment, the ledger of concluded
-// commitments with verdicts, and the old habit_week rows read-only at the
-// bottom — they were real commitments. Reads only: marks are made in the
-// nightly step, verdicts at the weekly review. No Settings page, on purpose —
-// a fourth surface would restate these three.
-function renderJournalHabit(hb) {
-  const el = document.getElementById('journal-habit');
+function renderHabitPanel(hb) {
+  const el = document.getElementById('tracking-habit');
   if (!el) return;
   if (!hb) { el.innerHTML = '<span class="jh-empty">Habits unavailable.</span>'; return; }
-  journalView.habits = hb;
+  trackingView.habits = hb;
   const ex = hb.experiments || {};
   const rows = [];
   // START and RESOLVE live here (2026-08-11): an experiment is a thing you
@@ -9114,7 +9215,7 @@ function renderJournalHabit(hb) {
     if (!content) return;
     const res = await apiSend('/api/habit-experiments', 'POST', { content });
     if (!res.ok) { toast((await res.json()).error || 'could not start'); return; }
-    renderJournalHabit(await fetch('/api/habits').then(r => r.json()));
+    renderHabitPanel(await fetch('/api/habits').then(r => r.json()));
   });
   const resolve = el.querySelector('#jh-resolve');
   if (resolve) resolve.addEventListener('click', async () => {
@@ -9123,7 +9224,7 @@ function renderJournalHabit(hb) {
     const note = prompt('How did it resolve? One line.');
     if (note == null) return;
     await apiSend(`/api/habit-experiments/${resolve.dataset.id}`, 'PATCH', { resolution: note });
-    renderJournalHabit(await fetch('/api/habits').then(r => r.json()));
+    renderHabitPanel(await fetch('/api/habits').then(r => r.json()));
   });
 }
 

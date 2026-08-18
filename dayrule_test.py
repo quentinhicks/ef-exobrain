@@ -59,8 +59,6 @@ ALLOWED = {
         'started_on: same — an experiment begins when you start it',
     ('POST', '/api/blocks/export-ics'):
         'reads an 8-week window forward from now; writes a file, not a day',
-    ('POST', '/api/journal/sync'):
-        'reads today\'s standing state to push outward',
     ('POST', '/api/accountability/nodes'):
         'the GET half of the same handler builds today\'s payload',
     ('POST', '/api/arrival'):

@@ -1086,6 +1086,7 @@ def init_db():
         )''')
     _migrate_time_presets(conn)
     _repair_time_preset_conversion(conn)
+    _migrate_journal_metrics(conn)
     _adopt_gate_schedules(conn)
     _migrate_easing_pendings(conn)
     _migrate_utc_stamps(conn)
@@ -4010,44 +4011,162 @@ def _ts_key(ts):
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def get_journal_days(since=None, until=None):
+# ── THE JOURNAL IS METRICS NOW (2026-08-17) ──────────────────
+#
+# A 1-7 rating IS a scale metric and a nightly prompt IS a text metric, so the
+# journal was a second self-monitoring system with its own table, its own
+# surface and no history anyone could read — while `metric` / `metric_entry`
+# collected answers nightly that NOTHING rendered. One store, one page.
+#
+# `journal_day` is kept as the MIGRATION SOURCE and never written again, the
+# same treatment gtd_review.steps, time_preset and qr_pending_change got.
+# habit_mark does NOT come along: a habit's marks are the habit system's
+# (`/api/habits/<id>/mark`), and that column was the older way of asking.
+#
+# (setting key, name, kind, prompt)
+JOURNAL_METRICS = (
+    ('journal_metric_rating', 'Day rating', 'scale', 'How was today?'),
+    ('journal_metric_bottleneck', 'Better tomorrow',
+     'text', 'What do you want to do better tomorrow?'),
+    ('journal_metric_experiment', 'Experiment note',
+     'text', 'How did the experiment feel today?'),
+)
+
+# The step id these entries are filed under. The nightly journal is a PAGE, not
+# a metrics step, so it has no step of its own to name — and 0 is not a
+# flow_step id, so it can never collide with a real one. Keeping the column
+# honest matters: (date, metric_id, step_id) is what stops the night's answer
+# overwriting the morning's, and this is simply a fourth asker.
+JOURNAL_STEP_ID = 0
+
+
+def _journal_metric_ids(conn):
+    out = {}
+    for key, name, kind, prompt in JOURNAL_METRICS:
+        row = conn.execute('SELECT value FROM setting WHERE key = ?', (key,)).fetchone()
+        mid = int(row['value']) if row and str(row['value']).isdigit() else None
+        if mid is not None:
+            if not conn.execute('SELECT 1 FROM metric WHERE id = ?', (mid,)).fetchone():
+                mid = None                      # deleted; mint it again below
+        if mid is None:
+            pos = conn.execute(
+                'SELECT COALESCE(MAX(position), 0) + 1 AS p FROM metric').fetchone()['p']
+            cur = conn.execute(
+                '''INSERT INTO metric (name, kind, prompt, scale_min, scale_max, position)
+                   VALUES (?, ?, ?, 1, 7, ?)''', (name, kind, prompt, pos))
+            mid = cur.lastrowid
+            conn.execute('INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)',
+                         (key, str(mid)))
+        out[key] = mid
+    return out
+
+
+def journal_metric_ids():
     conn = get_conn()
-    q = 'SELECT * FROM journal_day'
-    clauses, params = [], []
-    if since:
-        clauses.append('date >= ?'); params.append(since)
-    if until:
-        clauses.append('date <= ?'); params.append(until)
-    if clauses:
-        q += ' WHERE ' + ' AND '.join(clauses)
-    q += ' ORDER BY date DESC'
-    rows = conn.execute(q, params).fetchall()
+    ids = _journal_metric_ids(conn)
+    conn.commit()
     conn.close()
-    return [dict(r) for r in rows]
+    return ids
+
+
+_JOURNAL_FIELD_KEYS = {'rating': 'journal_metric_rating',
+                       'bottleneck': 'journal_metric_bottleneck',
+                       'active_experiment': 'journal_metric_experiment'}
+
+
+def _migrate_journal_metrics(conn):
+    # ONCE, and recorded — a converted row still looks convertible, the same
+    # reason setting.utc_stamps_localised exists. Never clear it to "re-run".
+    done = conn.execute(
+        "SELECT value FROM setting WHERE key = 'journal_metrics_migrated'").fetchone()
+    if done:
+        return
+    try:
+        rows = conn.execute('SELECT * FROM journal_day ORDER BY date').fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    ids = _journal_metric_ids(conn)
+    moved = 0
+    for r in rows:
+        for field, key in _JOURNAL_FIELD_KEYS.items():
+            value = r[field] if field in r.keys() else None
+            if value in (None, ''):
+                continue
+            num = float(value) if field == 'rating' else None
+            text = None if field == 'rating' else str(value)
+            conn.execute(
+                '''INSERT OR IGNORE INTO metric_entry
+                     (date, metric_id, step_id, value_num, value_text)
+                   VALUES (?,?,?,?,?)''',
+                (r['date'], ids[key], JOURNAL_STEP_ID, num, text))
+            moved += 1
+    conn.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('journal_metrics_migrated', ?)",
+                 (str(moved),))
+    conn.commit()
+    if moved:
+        print('journal: %d entries moved into metrics' % moved)
+
+
+def get_journal_days(since=None, until=None):
+    # Read back through the metrics, in the shape the nightly page and the
+    # runner already expect: one row per date with the three fields on it.
+    conn = get_conn()
+    ids = _journal_metric_ids(conn)
+    by_key = {v: k for k, v in ids.items()}
+    q = ('SELECT date, metric_id, value_num, value_text FROM metric_entry '
+         'WHERE metric_id IN (%s)' % ','.join('?' * len(ids)))
+    params = list(ids.values())
+    if since:
+        q += ' AND date >= ?'; params.append(since)
+    if until:
+        q += ' AND date <= ?'; params.append(until)
+    rows = conn.execute(q, params).fetchall()
+    conn.commit()
+    conn.close()
+    days = {}
+    field_of = {v: k for k, v in _JOURNAL_FIELD_KEYS.items()}
+    for r in rows:
+        d = days.setdefault(r['date'], {'date': r['date'], 'bottleneck': '',
+                                        'active_experiment': '', 'rating': None})
+        field = field_of.get(by_key.get(r['metric_id']))
+        if field == 'rating':
+            d['rating'] = int(r['value_num']) if r['value_num'] is not None else None
+        elif field:
+            d[field] = r['value_text'] or ''
+    return sorted(days.values(), key=lambda d: d['date'], reverse=True)
 
 
 def get_journal_day(date):
-    conn = get_conn()
-    row = conn.execute('SELECT * FROM journal_day WHERE date = ?', (date,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    days = get_journal_days(since=date, until=date)
+    return days[0] if days else None
 
 
 def upsert_journal_day(date, fields, updated_at=None):
-    ts = updated_at or datetime.now(timezone.utc).isoformat()
-    cols = [k for k in ('bottleneck', 'active_experiment', 'rating', 'habit_mark') if k in fields]
     conn = get_conn()
-    conn.execute('INSERT OR IGNORE INTO journal_day (date, updated_at) VALUES (?, ?)', (date, ts))
-    if cols:
-        sets = ', '.join(f'{c} = ?' for c in cols) + ', updated_at = ?'
-        params = [fields[c] for c in cols] + [ts, date]
-        conn.execute(f'UPDATE journal_day SET {sets} WHERE date = ?', params)
-    else:
-        conn.execute('UPDATE journal_day SET updated_at = ? WHERE date = ?', (ts, date))
+    ids = _journal_metric_ids(conn)
+    for field, key in _JOURNAL_FIELD_KEYS.items():
+        if field not in fields:
+            continue
+        value = fields[field]
+        # CLEARING DELETES THE ROW. No row means no data, never zero — the
+        # tag_day rule, and the one metric_entry already follows.
+        if value in (None, ''):
+            conn.execute(
+                'DELETE FROM metric_entry WHERE date = ? AND metric_id = ? AND step_id = ?',
+                (date, ids[key], JOURNAL_STEP_ID))
+            continue
+        num = float(value) if field == 'rating' else None
+        text = None if field == 'rating' else str(value)
+        conn.execute(
+            '''INSERT INTO metric_entry (date, metric_id, step_id, value_num, value_text)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(date, metric_id, step_id) DO UPDATE SET
+                 value_num = excluded.value_num, value_text = excluded.value_text''',
+            (date, ids[key], JOURNAL_STEP_ID, num, text))
     conn.commit()
-    row = conn.execute('SELECT * FROM journal_day WHERE date = ?', (date,)).fetchone()
     conn.close()
-    return dict(row)
+    return get_journal_day(date) or {'date': date, 'bottleneck': '',
+                                     'active_experiment': '', 'rating': None}
 
 
 # Last-write-wins merge of Worker-sourced rows (each carries a full row +
@@ -6488,6 +6607,34 @@ def metrics_step_complete(step_id, ymd):
     if not metrics_linked_to_step(step_id):
         return False
     return all(m['entry'] for m in metrics_for_step(step_id, ymd))
+
+
+# EVERY metric with its recent answers, in one read. The page is a list of
+# metrics and each one wants its own history — asking per metric would be N
+# round trips for a screen that is one glance, and the entries are a handful of
+# numbers each.
+#
+# Entries are grouped by DATE with the askers alongside: a metric asked morning
+# AND night has two answers for one day, and flattening them into a single
+# series would draw a sawtooth that means nothing.
+def metrics_overview(start, end, include_paused=False):
+    conn = get_conn()
+    where = '' if include_paused else 'WHERE active = 1'
+    metrics = [_metric_row(r) for r in conn.execute(
+        f'SELECT * FROM metric {where} ORDER BY position, id').fetchall()]
+    rows = conn.execute(
+        '''SELECT metric_id, date, step_id, value_num, value_text FROM metric_entry
+           WHERE date >= ? AND date <= ? ORDER BY date, step_id''', (start, end)).fetchall()
+    conn.close()
+    by_metric = {}
+    for r in rows:
+        by_metric.setdefault(r['metric_id'], []).append(dict(r))
+    for m in metrics:
+        entries = by_metric.get(m['id'], [])
+        m['entries'] = entries
+        m['answered'] = len({e['date'] for e in entries})
+        m['last'] = entries[-1] if entries else None
+    return metrics
 
 
 def metric_history(metric_id, start, end):

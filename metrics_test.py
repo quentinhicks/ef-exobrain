@@ -216,6 +216,58 @@ check('a metric names the steps that ask it, not just a count',
       sorted(s['flow_name'] for s in m_mood['steps']) == ['Morning', 'Night'],
       m_mood.get('steps'))
 
+# -- THE JOURNAL IS METRICS (2026-08-17) -------------------------------
+#
+# The nightly journal was a second self-monitoring system: its own table, its
+# own page, and a history nothing else could see. It writes through the same
+# door it always did (PATCH /api/journal/<date>) and the answers land in
+# metric_entry, so one page shows everything and journal_day is only the
+# migration's source.
+ids = storage.journal_metric_ids()
+check('the journal mints three metrics, once',
+      len(set(ids.values())) == 3 and storage.journal_metric_ids() == ids, ids)
+
+c.patch(f'/api/journal/{YDAY}', json={'rating': 6, 'bottleneck': 'the exporter'})
+back = c.get('/api/journal').get_json()['days']
+yday = [d for d in back if d['date'] == YDAY]
+check('the nightly door still reads back what it wrote',
+      yday and yday[0]['rating'] == 6 and yday[0]['bottleneck'] == 'the exporter', yday)
+
+names = {m['name']: m for m in c.get('/api/metrics').get_json()}
+rating = names.get('Day rating')
+check('and it is a metric like any other', rating is not None and rating['kind'] == 'scale',
+      sorted(names))
+
+entries = c.get(f"/api/metrics/{rating['id']}/history").get_json()
+check('the answer is in metric_entry, under the journal page as its asker',
+      any(e['date'] == YDAY and e['value_num'] == 6
+          and e['step_id'] == storage.JOURNAL_STEP_ID for e in entries), entries)
+
+# Clearing is the tag_day rule again: no row means no data, never zero.
+c.patch(f'/api/journal/{YDAY}', json={'rating': None})
+entries = c.get(f"/api/metrics/{rating['id']}/history").get_json()
+check('clearing the rating deletes the row rather than storing a 0',
+      not any(e['date'] == YDAY for e in entries), entries)
+
+# -- the page's one read ------------------------------------------------
+c.patch(f'/api/journal/{TODAY}', json={'rating': 4})
+ov = c.get('/api/metrics/overview?days=30').get_json()
+by_name = {m['name']: m for m in ov['metrics']}
+check('the overview carries every ACTIVE metric with its entries',
+      'Day rating' in by_name and 'Mood' in by_name, sorted(by_name))
+check('...each with its own answers, not a flattened series',
+      by_name['Day rating']['last']['value_num'] == 4, by_name['Day rating']['last'])
+check('...and a day count that is DAYS, not entries (morning + night is one day)',
+      by_name['Mood']['answered'] == len({e['date'] for e in by_name['Mood']['entries']}),
+      by_name['Mood'])
+
+paused = c.post('/api/metrics', json={'name': 'Retired thing', 'kind': 'scale'}).get_json()
+c.patch(f"/api/metrics/{paused['id']}", json={'active': 0})
+ov2 = c.get('/api/metrics/overview').get_json()
+check('a paused metric is not on the page (it is not being tracked)',
+      'Retired thing' not in {m['name'] for m in ov2['metrics']},
+      [m['name'] for m in ov2['metrics']])
+
 print('\n'.join(ok + bad))
 print('\n%d passed, %d failed' % (len(ok), len(bad)))
 sys.exit(1 if bad else 0)
