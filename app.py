@@ -861,6 +861,18 @@ def put_metric_entry():
                     'complete': storage.metrics_step_complete(int(data['step_id']), ymd)})
 
 
+# What the Metrics page reads: every metric with its recent answers. The window
+# is a READ, so defaulting it to "the last 60 days ending today" is the honest
+# answer to a question that named no dates.
+@app.route('/api/metrics/overview')
+def get_metrics_overview():
+    end = request.args.get('end') or date_cls.today().isoformat()
+    days = max(1, min(int(request.args.get('days') or 60), 400))
+    start = (date_cls.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
+    return jsonify({'start': start, 'end': end,
+                    'metrics': storage.metrics_overview(start, end)})
+
+
 @app.route('/api/metrics/<int:id>/history')
 def get_metric_history(id):
     end = request.args.get('end') or date_cls.today().isoformat()
@@ -1508,18 +1520,6 @@ def get_journal():
     })
 
 
-# Kept as the client's refresh hook; there is no phone mirror to pull any more,
-# so it just returns the local view (the nightly journal is a flow step in-app).
-@app.route('/api/journal/sync', methods=['POST'])
-def sync_journal_route():
-    today = date_cls.today().isoformat()
-    return jsonify({
-        'days': storage.get_journal_days(),
-        'habit': storage.get_habit_week_for(today),
-        'habits': storage.list_habit_weeks(),
-    })
-
-
 @app.route('/api/journal/<date>', methods=['PATCH'])
 def patch_journal(date):
     data = request.get_json() or {}
@@ -2125,8 +2125,24 @@ def _haversine_m(a_lat, a_lng, b_lat, b_lng):
 @app.route('/api/arrival', methods=['POST'])
 def post_arrival():
     data = request.get_json(silent=True) or {}
+
+    # EVERY CONTACT LEAVES A MARK, whatever happens to it. `arrival_last` is
+    # only written once a place has RESOLVED, so a rejected token and a phone
+    # that never called look identical from Settings — which is exactly the
+    # question being asked while setting the phone up. This answers it:
+    #   (nothing)  the phone has never reached this server
+    #   REJECTED   it is calling, and the token is wrong
+    #   ping       it is calling and authenticated — the URL works — but has
+    #              not crossed a region yet
+    #   leave      it is sending transitions; you left rather than arrived
+    # Never records the token, only the shape of what arrived.
+    def seen(note):
+        storage.set_setting('arrival_last_seen',
+                            f'{datetime.now().isoformat(timespec="seconds")} {note}')
+
     want = (config.get('arrival_token') or '').strip()
     if not want:
+        seen('REJECTED - arrival_token is not set on the server')
         return jsonify({'error': 'arrival_token is not set'}), 503
     # THREE PLACES, because the caller does not control all of them.
     # OwnTracks' URL field is documented as http[s]://[user[:password]@]host,
@@ -2138,6 +2154,7 @@ def post_arrival():
     sent = (data.get('token') or request.args.get('token')
             or (auth.password if auth and auth.password else '') or '').strip()
     if sent != want:
+        seen('REJECTED - bad token' + ('' if sent else ' (none sent)'))
         return jsonify({'error': 'bad token'}), 403
     # ONLY A TRANSITION IS AN ARRIVAL. OwnTracks HTTP mode posts EVERY location
     # update to this one URL — `_type: location` pings, several a minute while
@@ -2148,11 +2165,15 @@ def post_arrival():
     # `transition`; one that names none is a hand-made call and is trusted.
     kind = (data.get('_type') or '').strip().lower()
     if kind and kind != 'transition':
+        seen(f'ping ({kind}) - authenticated, no region crossed yet')
         return '', 204
     # A geofence app sends enter AND leave. Only arriving is a cue; leaving is
     # accepted so the phone need not be taught to withhold it.
-    if (data.get('event') or 'enter').strip().lower() != 'enter':
+    event = (data.get('event') or 'enter').strip().lower()
+    if event != 'enter':
+        seen(f'{event} {data.get("desc") or ""}'.strip())
         return '', 204
+    seen(f'enter {data.get("desc") or "(by coordinates)"}')
     loc = _resolve_arrival(data)
     if not loc:
         storage.set_setting('arrival_last', f'{datetime.now().isoformat(timespec="seconds")} '
