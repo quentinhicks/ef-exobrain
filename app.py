@@ -2128,9 +2128,15 @@ def post_arrival():
     want = (config.get('arrival_token') or '').strip()
     if not want:
         return jsonify({'error': 'arrival_token is not set'}), 503
-    # The token may ride the QUERY STRING as well as the body: OwnTracks posts
-    # a payload shape it owns, so the only place to add ours is the URL.
-    sent = (data.get('token') or request.args.get('token') or '').strip()
+    # THREE PLACES, because the caller does not control all of them.
+    # OwnTracks' URL field is documented as http[s]://[user[:password]@]host,
+    # so the token can ride as the Basic-auth PASSWORD — and that is the form
+    # to prefer: Werkzeug logs the request line, so a token in the query string
+    # ends up in the access log, while an Authorization header does not. The
+    # query string still works, for curl and for anything that cannot do Basic.
+    auth = request.authorization
+    sent = (data.get('token') or request.args.get('token')
+            or (auth.password if auth and auth.password else '') or '').strip()
     if sent != want:
         return jsonify({'error': 'bad token'}), 403
     # ONLY A TRANSITION IS AN ARRIVAL. OwnTracks HTTP mode posts EVERY location
@@ -2217,7 +2223,10 @@ def get_location_waypoints():
     want = (config.get('arrival_token') or '').strip()
     if not want:
         return jsonify({'error': 'arrival_token is not set'}), 503
-    if (request.args.get('token') or '').strip() != want:
+    auth = request.authorization
+    sent = ((request.args.get('token') or '')
+            or (auth.password if auth and auth.password else '')).strip()
+    if sent != want:
         # These are home addresses. Same secret as the arrivals they enable.
         return jsonify({'error': 'bad token'}), 403
     return jsonify({
