@@ -57,7 +57,11 @@ READS = {
     'qr_scans_in_window':
         'qr_scan — written ONLY by qr_scan_server from a real scan; the QR '
         'token is the secret and the geofence is checked there. No app route '
-        'writes it.',
+        'writes it. `proof` is decided the same way: the scan server writes '
+        '"tag" only after ntag.verify accepts the CMAC of the tap and '
+        'storage.qr_accept_tap claims a read counter the tag has never used — '
+        'a client cannot ask for it, and qr_judge.scan_satisfies is the one '
+        'place that says which proof clears which gate.',
     'qr_scans_between':
         'same rows, read for the ✓/✗ history.',
     'schedule_resolver':

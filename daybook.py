@@ -74,7 +74,7 @@ SKIP = {'gcal_recurring_seen', 'sheets_inbox_item', 'todo_sync', 'qr_todo_push',
 # social_action and social_axis_level earn their place because a rep's price is
 # STAMPED at log time — without the grid beside it, a later recalibration makes
 # the day's numbers unreadable.
-STATE = ('domain', 'area', 'qr_node', 'qr_pending_change', 'easing_pending',
+STATE = ('domain', 'area', 'qr_node', 'qr_tag', 'qr_pending_change', 'easing_pending',
          'flow', 'flow_step',
          'ref_list', 'recurring_block', 'recurring_task', 'routine_item',
          'location', 'bucket', 'person_bucket', 'calendar_source', 'deadline',

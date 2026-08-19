@@ -26,6 +26,7 @@ from datetime import datetime
 
 from flask import Flask, Response, request
 
+import ntag
 import storage
 
 app = Flask(__name__)
@@ -128,6 +129,82 @@ def scan(token):
                 'the geofence. Re-scan with location on.'), 200
     return ('Logged — OUT OF RANGE: %dm from the target (limit %dm). '
             'Re-scan to try again.' % (dist, node.get('geofence_radius_m') or 0)), 200
+
+
+TAP_PAGE = '''<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%(label)s</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      margin:0;padding:32px 20px;background:#0d0d0d;color:#e8e8e8}
+ h3{font-size:22px;margin:0 0 12px} p{color:#9a9a9a;line-height:1.5}
+ .ok{color:#7fd08a} .no{color:#e2857f}
+</style></head><body>
+<h3>%(label)s</h3>
+<p class="%(cls)s">%(msg)s</p>
+</body></html>'''
+
+
+def _tap_page(label, msg, ok, code):
+    return Response(TAP_PAGE % {'label': _esc(label), 'msg': _esc(msg),
+                                'cls': 'ok' if ok else 'no'},
+                    mimetype='text/html', status=code)
+
+
+@app.route('/t')
+def tap():
+    """A VERIFIED TAP — the hard proof, and the only route that can write one.
+
+    The tag mirrors two values into this URL and re-computes them on every tap
+    (see ntag.py). Nothing here is trusted: the UID arrives encrypted, the MAC
+    is checked with that tag's own key, and the read counter has to be one this
+    tag has never used. Which means a captured URL is worth nothing — replaying
+    it lands on a counter that is no longer new.
+
+    GET, not POST, because the tag hands the phone a URL and the browser
+    follows it: there is nothing to submit. It writes one row and reads one
+    label, exactly like /scan, so the public surface stays two routes wide.
+    """
+    picc = request.args.get('e') or request.args.get('picc_data') or ''
+    cm = request.args.get('c') or request.args.get('cmac') or ''
+    keys = ntag.load_keys()
+    if not keys:
+        # No keys configured at all: say so plainly. This is the state a fresh
+        # tag is in before its keys are pasted into Settings, and it is not
+        # something a stranger learns anything from.
+        return _tap_page('Tag', 'No tag keys are configured yet.', False, 503)
+    try:
+        uid, counter = ntag.identify(picc, cm, keys)
+    except ntag.TapError as e:
+        print('tap refused: %s' % e)
+        return _tap_page('Tag', 'Not a valid tap.', False, 403)
+
+    tag = storage.qr_tag_by_uid(uid)
+    if not tag:
+        # A real tag whose keys are configured but which no gate claims. Worth
+        # saying, because it is the state between programming a tag and adding
+        # it in Settings.
+        return _tap_page('Tag %s' % uid, 'This tag is not attached to a gate yet.',
+                         False, 404)
+    if not tag['active'] or not tag['node_active']:
+        pend = storage.qr_tag_pending(tag['id'])
+        return _tap_page(tag['label'],
+                         ('This tag starts counting %s.' % pend[:16].replace('T', ' '))
+                         if pend else 'This tag is paused.', False, 409)
+
+    now_iso = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.') + \
+        '%03dZ' % (datetime.utcnow().microsecond // 1000)
+    if not storage.qr_accept_tap(tag['id'], counter, now_iso):
+        # The counter is not new: a refresh of the page, or a replay of a URL
+        # someone kept. Either way this tap is already history, and it must not
+        # log a second scan.
+        return _tap_page(tag['label'], 'Already logged — tap the tag again.', True, 200)
+
+    storage.qr_log_scan(tag['node_id'], now_iso, None, None, None, None,
+                        proof='tag', tag_id=tag['id'])
+    return _tap_page(tag['node_label'], 'Logged — %s, read %d.' % (tag['label'], counter),
+                     True, 200)
 
 
 @app.route('/health')

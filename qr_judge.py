@@ -389,9 +389,7 @@ def judge(now=None, verbose=False):
             if now >= scan_close:
                 scans = storage.qr_scans_in_window(
                     node['id'], _utc_iso(ymd, start), _utc_iso(close_date, end))
-                satisfied = any(
-                    node.get('geofence_lat') is None or s.get('geofence_pass') == 1
-                    for s in scans)
+                satisfied = any(scan_satisfies(node, s) for s in scans)
                 # Order matters when both clocks have run out: no scan at all is
                 # the more basic failure, so it wins the reason — "routine not
                 # done" on a day you were never there would send you to fix the
@@ -485,8 +483,7 @@ def outcomes(from_date, to_date, now=None):
                             'outcome': 'failed' if j['failure_reason'] else 'success'})
             elif now >= _local_dt(close_date, end):
                 ok = any(
-                    open_iso <= s['scanned_at'] <= close_iso
-                    and (node.get('geofence_lat') is None or s.get('geofence_pass') == 1)
+                    open_iso <= s['scanned_at'] <= close_iso and scan_satisfies(node, s)
                     for s in by_node.get(node['id'], []))
                 out.append({'node_id': node['id'], 'date': ymd,
                             'outcome': 'success' if ok else 'failed'})
@@ -502,6 +499,30 @@ def outcomes(from_date, to_date, now=None):
 # passed. Ported verbatim from the Worker — these predicates ARE the teeth.
 
 LOOSEN_DELAY_H = 24
+
+
+def scan_satisfies(node, scan):
+    """Does this scan clear that gate? THE one answer, asked in two places.
+
+    It was written twice — once in judge() and once in outcomes() — and the two
+    copies agreed right up until a third kind of proof existed. They read this
+    now, so the history the app draws and the day the judge charges for cannot
+    disagree about what counted.
+
+    HARD ('tag') means a verified NTAG 424 DNA tap and nothing else: not a link,
+    not a geofence, however honest either looks. That is the whole point of the
+    hard mode — a link can be opened anywhere and a geofence is a claim made by
+    software you control, while a tap needs the tag in your hand.
+
+    SOFT ('link') keeps the old rule — the link, geofenced where a fence is set
+    — and accepts a tap too, because a tap is strictly stronger evidence than
+    the thing being asked for.
+    """
+    if (node.get('proof_mode') or 'link') == 'tag':
+        return scan.get('proof') == 'tag'
+    if scan.get('proof') == 'tag':
+        return True
+    return node.get('geofence_lat') is None or scan.get('geofence_pass') == 1
 
 
 def is_loosening(field, current, nxt, node=None):
@@ -574,6 +595,14 @@ def is_loosening(field, current, nxt, node=None):
         # 20:55, five minutes before a 21:00 deadline, and tonight is not
         # judged. Turning one back ON is tightening and applies immediately.
         return _falsy(nxt) and not _falsy(current)
+    if field == 'proof_mode':
+        # Going from the tag back to the link is the loosening that matters:
+        # the gate stops needing the object in your hand and starts accepting
+        # a URL you can open from bed. Tightening it (link -> tag) applies at
+        # once — but only where a live tag exists to clear it with, which
+        # app.py refuses at the door rather than pending, because a gate with
+        # no way to be cleared is not a commitment, it is a daily charge.
+        return str(current) == 'tag' and str(nxt) != 'tag'
     if field in ('geofence_lat', 'geofence_lng'):
         # A fence cannot be proven tighter by comparing coordinates: moving it
         # is loosening for the place you were meant to be, and CLEARING it

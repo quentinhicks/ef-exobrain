@@ -1013,6 +1013,19 @@ def init_db():
             accuracy_m    REAL
         )''')
     conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_tag (
+            id           INTEGER PRIMARY KEY,
+            node_id      INTEGER NOT NULL REFERENCES qr_node(id),
+            label        TEXT NOT NULL,
+            uid          TEXT NOT NULL UNIQUE,
+            -- The tag's own read counter, the highest one ACCEPTED. -1 means
+            -- no tap yet; a tap at or below it is a replay and is refused.
+            last_counter INTEGER NOT NULL DEFAULT -1,
+            last_tap_at  TEXT,
+            active       INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )''')
+    conn.execute('''
         CREATE TABLE IF NOT EXISTS qr_override (
             id                     INTEGER PRIMARY KEY,
             node_id                INTEGER NOT NULL REFERENCES qr_node(id),
@@ -1099,6 +1112,21 @@ def init_db():
     _migrate_easing_pendings(conn)
     _migrate_utc_stamps(conn)
     _retire_operating_experiments(conn)
+    # HOW A GATE MAY BE PROVED (2026-08-19). 'link' is what every gate did
+    # before: open the scan link, and pass the geofence where one is set.
+    # 'tag' demands a verified NTAG 424 DNA tap — see ntag.py. The DEFAULT is
+    # 'link' because a default that silently made every existing gate
+    # unclearable would be a charge for a day that was never missed.
+    for table, col, ddl in (
+            ('qr_node', 'proof_mode', "TEXT NOT NULL DEFAULT 'link'"),
+            # What actually proved this scan. Written by the scan server after
+            # it verifies, never sent by a client — see authority_test.
+            ('qr_scan', 'proof', "TEXT NOT NULL DEFAULT 'link'"),
+            ('qr_scan', 'tag_id', 'INTEGER')):
+        try:
+            conn.execute(f'SELECT {col} FROM {table} LIMIT 1')
+        except Exception:
+            conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {ddl}')
     # A CHANGE CAN BE DATED (2026-08-17). The store already held changes that
     # had not landed yet; the only thing it could not say was WHICH DAY one
     # starts counting from, so every pending was "24h from now" and nothing
@@ -7070,7 +7098,8 @@ def qr_create_node(label, token, window_start, window_end, offset_days=0,
 
 QR_NODE_FIELDS = ('label', 'window_start', 'window_end', 'window_end_offset_days',
                   'geofence_lat', 'geofence_lng', 'geofence_radius_m', 'active',
-                  'days_of_week', 'weekly_windows', 'charge_cents', 'source_uid')
+                  'days_of_week', 'weekly_windows', 'charge_cents', 'source_uid',
+                  'proof_mode')
 
 # The pseudo-field a queued DELETION is filed under: deliberately not a column,
 # so nothing can ever UPDATE a node with it (qr_apply_due_pending_changes reads
@@ -7100,14 +7129,176 @@ def qr_delete_node(node_id):
     conn.close()
 
 
-def qr_log_scan(node_id, scanned_at, lat, lng, geofence_pass, accuracy=None):
+def qr_log_scan(node_id, scanned_at, lat, lng, geofence_pass, accuracy=None,
+                proof='link', tag_id=None):
     conn = get_conn()
-    conn.execute(
-        '''INSERT INTO qr_scan (node_id, scanned_at, lat, lng, geofence_pass, accuracy_m)
-           VALUES (?,?,?,?,?,?)''',
-        (node_id, scanned_at, lat, lng, geofence_pass, accuracy))
+    cur = conn.execute(
+        '''INSERT INTO qr_scan (node_id, scanned_at, lat, lng, geofence_pass, accuracy_m,
+                                proof, tag_id)
+           VALUES (?,?,?,?,?,?,?,?)''',
+        (node_id, scanned_at, lat, lng, geofence_pass, accuracy, proof, tag_id))
+    conn.commit()
+    scan_id = cur.lastrowid
+    conn.close()
+    return scan_id
+
+
+# ── The tags a gate accepts ───────────────────────────────────────────────
+#
+# A tag belongs to ONE gate (Quentin, 2026-08-19): a gate may have several —
+# two doors into the same room — but a tap can only ever clear the gate its tag
+# is bound to. The AES keys are NOT here: they live in config.json, which is
+# not in the db and so not in the backups the db is dumped into.
+def qr_tags_for_node(node_id, active_only=False):
+    conn = get_conn()
+    apply_due_tag_pendings(conn)
+    rows = conn.execute(
+        'SELECT * FROM qr_tag WHERE node_id = ?'
+        + (' AND active = 1' if active_only else '') + ' ORDER BY id',
+        (node_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_all_tags():
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT t.*, n.label AS node_label, n.proof_mode
+           FROM qr_tag t JOIN qr_node n ON t.node_id = n.id ORDER BY t.node_id, t.id'''
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def qr_tag_by_uid(uid):
+    conn = get_conn()
+    apply_due_tag_pendings(conn)
+    row = conn.execute(
+        '''SELECT t.*, n.label AS node_label, n.active AS node_active
+           FROM qr_tag t JOIN qr_node n ON t.node_id = n.id
+           WHERE t.uid = ?''', ((uid or '').upper(),)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def qr_add_tag(node_id, label, uid, active=1):
+    conn = get_conn()
+    try:
+        cur = conn.execute(
+            'INSERT INTO qr_tag (node_id, label, uid, active) VALUES (?,?,?,?)',
+            (node_id, label, (uid or '').upper(), 1 if active else 0))
+    except sqlite3.IntegrityError:
+        conn.close()
+        return None                     # that UID is already some gate's tag
+    conn.commit()
+    row = conn.execute('SELECT * FROM qr_tag WHERE id = ?', (cur.lastrowid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+QR_TAG_FIELDS = ('label', 'active')
+
+
+def qr_update_tag(tag_id, fields):
+    sets = [(k, v) for k, v in fields.items() if k in QR_TAG_FIELDS]
+    if not sets:
+        return None
+    conn = get_conn()
+    conn.execute('UPDATE qr_tag SET ' + ', '.join(k + ' = ?' for k, _ in sets)
+                 + ' WHERE id = ?', [v for _, v in sets] + [tag_id])
+    conn.commit()
+    row = conn.execute('SELECT * FROM qr_tag WHERE id = ?', (tag_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def qr_delete_tag(tag_id):
+    conn = get_conn()
+    # The SCANS it proved stay: a tap that cleared a day is history, and the
+    # judgment for that day was written against it. tag_id simply dangles,
+    # exactly as a completed item's after_id does.
+    cur = conn.execute('DELETE FROM qr_tag WHERE id = ?', (tag_id,))
+    _unpend_row(conn, 'gate_tag', tag_id, 'active')
+    conn.commit()
+    gone = bool(cur.rowcount)
+    conn.close()
+    return gone
+
+
+# THE TAG KIND of easing_pending. A new tag on a HARD gate is a new way to
+# clear it — stick one by the desk and the gym gate is satisfied from the desk
+# — so it waits 24h like every other loosening, in the one store, keyed
+# (kind='gate_tag', row_id=tag_id, field='active'). Pausing or deleting a tag
+# is tightening and lands at once.
+#
+# Applied ON READ from both choke points (qr_tag_by_uid, which is what a tap
+# asks, and qr_tags_for_node, which is what the settings sheet draws), the same
+# arrangement apply_due_flow_pendings has — so the judge and the tap never wait
+# for a UI read to make a queued tag live.
+def apply_due_tag_pendings(conn):
+    now = datetime.now().isoformat()
+    rows = conn.execute(
+        """SELECT * FROM easing_pending WHERE kind = 'gate_tag' AND apply_at <= ?
+           ORDER BY row_id, apply_at""", (now,)).fetchall()
+    for r in rows:
+        if r['field'] in QR_TAG_FIELDS:
+            conn.execute('UPDATE qr_tag SET ' + r['field'] + ' = ? WHERE id = ?',
+                         (_pending_value(r['value']), r['row_id']))
+        conn.execute(
+            "DELETE FROM easing_pending WHERE kind = 'gate_tag' AND row_id = ? AND field = ?",
+            (r['row_id'], r['field']))
+    if rows:
+        conn.commit()
+
+
+def qr_pend_tag_live(tag_id):
+    """Queue a tag to start counting in 24h, and say when that is."""
+    conn = get_conn()
+    _pend_row(conn, 'gate_tag', tag_id, 'active', 1)
+    conn.commit()
+    row = conn.execute(
+        """SELECT apply_at FROM easing_pending
+           WHERE kind = 'gate_tag' AND row_id = ? AND field = 'active'""",
+        (tag_id,)).fetchone()
+    conn.close()
+    return row['apply_at'] if row else None
+
+
+def qr_tag_pending(tag_id):
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT apply_at FROM easing_pending
+           WHERE kind = 'gate_tag' AND row_id = ? AND field = 'active'""",
+        (tag_id,)).fetchone()
+    conn.close()
+    return row['apply_at'] if row else None
+
+
+def qr_unpend_tag(tag_id):
+    conn = get_conn()
+    _unpend_row(conn, 'gate_tag', tag_id, 'active')
     conn.commit()
     conn.close()
+
+
+def qr_accept_tap(tag_id, counter, when):
+    """Claim a read counter for this tag, or refuse it as already seen.
+
+    THE REPLAY GUARD, and it is one statement on purpose: two processes write
+    scans (the app and the public scan server), so a read-then-write would let
+    the same captured URL through twice if both landed at once. The UPDATE's
+    own WHERE decides, and rowcount is the answer — the same rule the
+    experiment writers follow.
+    """
+    conn = get_conn()
+    cur = conn.execute(
+        '''UPDATE qr_tag SET last_counter = ?, last_tap_at = ?
+           WHERE id = ? AND active = 1 AND last_counter < ?''',
+        (counter, when, tag_id, counter))
+    conn.commit()
+    accepted = bool(cur.rowcount)
+    conn.close()
+    return accepted
 
 
 def qr_scans_in_window(node_id, open_iso, close_iso):

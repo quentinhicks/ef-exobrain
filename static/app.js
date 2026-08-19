@@ -2249,6 +2249,65 @@ function closeSeSheet() {
   document.getElementById('block-editor-modal').classList.remove('be-sheet-open');
 }
 
+// ── A gate's NFC tags ─────────────────────────────────────────
+//
+// Rows on the gate's sheet, each opening the tag's own sheet — the same
+// arrangement a routine's steps have, and for the same reason: a flat field
+// list cannot hold a list of things that each need editing, pausing and
+// deleting. Which gate a new tag belongs to is remembered here, because
+// openSeSheet takes a kind and an item and a tag being CREATED has no item to
+// carry its parent.
+const tagSheetView = { gate: null };
+
+function tagState(t) {
+  if (!t.keys_set) return 'no keys yet';
+  if (t.pending_live_at) return `starts ${t.pending_live_at.slice(0, 16).replace('T', ' ')}`;
+  if (!t.active) return 'paused';
+  if (!t.last_tap_at) return 'live, never tapped';
+  return `last tap ${t.last_tap_at.slice(0, 16).replace('T', ' ')}`;
+}
+
+function gateTagRows(n) {
+  const rows = (n.tags || []).map((t, i) => ({
+    key: `tag_${t.id}`, label: i === 0 ? 'Tags' : '', kind: 'action',
+    text: `${t.label} · ${t.uid} · ${tagState(t)}`,
+    action: 'Edit', keepOpen: true,
+    run: () => openGateTagSheet(n, t),
+  }));
+  rows.push({
+    key: 'tag_add', label: rows.length ? '' : 'Tags', kind: 'action',
+    text: n.tap_url
+      ? `write ${n.tap_url} to a tag`
+      : 'set a Scan URL in Connections first — a tag needs somewhere to point',
+    action: '+ Tag', keepOpen: true,
+    hint: rows.length
+      ? 'A tag belongs to this gate only. On a tag-only gate a NEW tag starts'
+        + ' counting in 24h — it is another way to clear the gate.'
+      : 'A tag proves you were AT the thing. Program the URL above into an NTAG'
+        + ' 424 DNA with SDM mirroring on, then paste its two keys here.',
+    run: () => openGateTagSheet(n, null),
+  });
+  return rows;
+}
+
+function openGateTagSheet(node, tag) {
+  tagSheetView.gate = node;
+  openSeSheet('gatetag', tag);
+}
+
+// Back to the gate it belongs to, with fresh numbers — the tag sheet replaced
+// the gate's sheet on the way in, so this is the way back.
+async function backToGateSheet() {
+  const gate = tagSheetView.gate;
+  await renderQrManager();
+  const fresh = (state.accountabilityNodes || []).find(n => n.id === (gate || {}).id);
+  if (fresh) { openSeSheet('gate', fresh); return; }
+  // Nothing to go back to (the gate was deleted from another surface): close,
+  // rather than leave a sheet open over a gate that no longer exists.
+  closeSeSheet();
+  renderSettingsIndex();
+}
+
 function seFieldHtml(f, v) {
   const label = `<span class="se-flabel">${escHtml(f.label)}</span>`;
   const val = v[f.key];
@@ -2373,6 +2432,11 @@ function wireSeSheet(fields) {
     } else if (f.kind === 'action') {
       wrap.addEventListener('click', async () => {
         await f.run(seSheet.item);
+        // Most action rows CLEAR something and are done with the sheet. A row
+        // that opens another sheet instead says so, or the close below would
+        // shut the sheet it just opened — one sheet at a time, and this is how
+        // one hands over to the next.
+        if (f.keepOpen) return;
         closeSeSheet();
         renderSettingsIndex();
       });
@@ -2506,6 +2570,10 @@ async function submitSeSheet() {
     renderSeSheet();
     return;
   }
+  // A sheet that NAVIGATES has already opened the one you land on (a tag hands
+  // back to its gate), so closing here would shut that. Same bargain as an
+  // action row's keepOpen.
+  if (spec.navigates) return;
   closeSeSheet();
   renderSettingsIndex();
 }
@@ -2514,6 +2582,7 @@ async function removeSeItem() {
   const spec = SETTINGS_SHEETS[seSheet.kind];
   if (spec.confirm && !confirm(spec.confirm(seSheet.item))) return;
   await spec.remove(seSheet.item);
+  if (spec.navigates) return;
   closeSeSheet();
   renderSettingsIndex();
 }
@@ -3110,6 +3179,7 @@ const SETTINGS_SHEETS = {
         sourceLabel: n.schedule_label || '',
         location: '', radius: n.geofence_radius_m || '',
         active, active0: active,
+        proof: n.proof_mode || 'link', proof0: n.proof_mode || 'link',
         // Always blank on open: a date is a decision about the save you are
         // making now, not a property of the gate. Re-showing the last one
         // would silently re-date the next edit.
@@ -3179,6 +3249,20 @@ const SETTINGS_SHEETS = {
             + gateStatus(it.today_state.judged.charge_status) }]
           : it && it.today_state && it.today_state.scan ? [{ key: 'todayres', label: 'Today',
             kind: 'static', text: `✓ scanned ${it.today_state.scan.scanned_at.slice(11, 16)}` }] : []),
+        // HOW THIS GATE MAY BE PROVED. The soft answer is the link (plus the
+        // geofence where one is set) — which proves a URL was opened, not that
+        // you were there. The hard answer is a tap of one of this gate's NFC
+        // tags: the tag holds keys it never gives up and re-signs every tap, so
+        // a captured link is worth nothing.
+        ...(it ? [{ key: 'proof', label: 'Proof', kind: 'select',
+          options: () => [{ value: 'link', name: 'Link + geofence' },
+                          { value: 'tag', name: 'NFC tag only' }],
+          hint: v.proof === 'tag'
+            ? 'Only a tap of a tag below clears this gate — a link or a geofence no'
+              + ' longer counts. Going back to the link is an easing, so it waits 24h.'
+            : 'A tap still counts on a link gate — it is stronger than what is asked.'
+              + ' Switching to tag-only applies at once, and needs a live tag first.' }] : []),
+        ...(it ? gateTagRows(it) : []),
         ...(it ? [{ key: 'link', label: 'Scan link', kind: 'action',
           text: `${state.settings.gate_scan_url || ''}/scan/${it.token}`,
           action: 'Copy',
@@ -3257,6 +3341,7 @@ const SETTINGS_SHEETS = {
       const body = {
         geofence_radius_m: parseInt(v.radius) || n.geofence_radius_m,
       };
+      if (v.proof !== v.proof0) body.proof_mode = v.proof;
       // The schedule goes through the same 24h test as everything else, but the
       // test is now over OCCURRENCES (schedule.demands_less) rather than fields.
       if (v.source && v.source !== v.source0) body.source_uid = v.source;
@@ -3283,7 +3368,14 @@ const SETTINGS_SHEETS = {
       // easing floor, and answers with the day each field really starts.
       if (v.effective) body.effective_from = v.effective;
       const res = await apiSend(`/api/accountability/nodes/${n.id}`, 'PATCH', body);
-      if (!res.ok) return `Edit failed (${res.status}).`;
+      if (!res.ok) {
+        // The server refuses some changes in WORDS (a tag-only gate with no
+        // live tag could never be cleared). Saying the number instead of the
+        // sentence is how a refusal reads as a bug.
+        const why = (await res.json().catch(() => ({}))).error;
+        if (why) toast(why);
+        return why || `Edit failed (${res.status}).`;
+      }
       const result = await res.json();
       if (v.active !== v.active0) {
         const route = v.active ? 'activate' : 'disable';
@@ -3318,6 +3410,98 @@ const SETTINGS_SHEETS = {
       // still on the list until then, and silence would read as a failure.
       if (out.pending) toast(`Deleted from ${seWhenLabel(out.effective_date)}`);
       await renderQrManager();
+    },
+  },
+
+  // ONE TAG. A settings item like any other — edited, paused and deleted in the
+  // same words and the same place — with two extras nothing else has: a UID
+  // that is the tag's identity (so it cannot be edited afterwards) and two AES
+  // keys that are WRITE-ONLY, kept in config.json rather than the db, which is
+  // dumped into backups/ and pushed.
+  gatetag: {
+    // It hands back to the gate's sheet rather than to the index: a tag is only
+    // ever reached from there, and landing on the section list would lose the
+    // gate you were setting up.
+    navigates: true,
+    title: it => it ? it.label : 'Add tag',
+    save: it => it ? 'Save tag' : 'Add tag',
+    removeLabel: () => 'Delete tag',
+    canRemove: () => true,
+    confirm: t => `Delete "${t.label}"? Taps of it stop clearing the gate. `
+      + 'The scans it already proved stay.',
+    blank: () => ({ label: '', uid: '', meta: '', mac: '', active: true, active0: true }),
+    load: t => ({ label: t.label, uid: t.uid, meta: '', mac: '',
+                  active: !!t.active, active0: !!t.active }),
+    fields: (v, it) => [
+      { key: 'label', label: 'Name', kind: 'text', placeholder: 'e.g. Gym door' },
+      ...(it
+        ? [{ key: 'uid', label: 'UID', kind: 'static', text: it.uid }]
+        : [{ key: 'uid', label: 'UID', kind: 'text', placeholder: '7 bytes, 14 hex chars',
+             hint: 'The tag\'s own serial — the app reads it out of the first tap it '
+                 + 'verifies, so paste what the programming app shows.' }]),
+      { key: 'meta', label: 'Meta key', kind: 'password',
+        placeholder: it && it.keys_set ? '•••• set — blank leaves it' : '32 hex chars',
+        hint: 'The key the tag encrypts its UID and read counter with (SDM meta read key).' },
+      { key: 'mac', label: 'File key', kind: 'password',
+        placeholder: it && it.keys_set ? '•••• set — blank leaves it' : '32 hex chars',
+        hint: 'The key it signs each tap with (SDM file read key). Write-only: the app '
+            + 'says whether a key is set, never what it is.' },
+      ...(it ? [{ key: 'state', label: 'State', kind: 'static', text: tagState(it) }] : []),
+      ...(it ? [seStateRow('Paused: taps are refused and cannot clear the gate. On a'
+        + ' tag-only gate waking it up again waits 24h, like every other easing.')] : []),
+    ],
+    submit: async (v, t) => {
+      const gate = tagSheetView.gate || {};
+      const label = (v.label || '').trim();
+      const keys = async id => {
+        if (!v.meta && !v.mac) return null;
+        const r = await apiSend(`/api/accountability/tags/${id}/keys`, 'PUT',
+                                { meta: v.meta, mac: v.mac });
+        if (!r.ok) return (await r.json().catch(() => ({}))).error || 'Those keys were refused.';
+        return null;
+      };
+      if (!t) {
+        if (!label) return 'A tag needs a name.';
+        const res = await apiSend(`/api/accountability/nodes/${gate.id}/tags`, 'POST',
+                                  { label, uid: v.uid });
+        if (!res.ok) return (await res.json().catch(() => ({}))).error
+          || `Could not add it (${res.status}).`;
+        const made = await res.json();
+        const kerr = await keys(made.id);
+        if (kerr) return kerr;
+        if (made.pending_live_at) {
+          toast(`added — it starts counting ${made.pending_live_at.slice(0, 16).replace('T', ' ')}`);
+        }
+        await backToGateSheet();
+        return null;
+      }
+      if (label && label !== t.label) {
+        const r = await apiSend(`/api/accountability/tags/${t.id}`, 'PATCH', { label });
+        if (!r.ok) return (await r.json().catch(() => ({}))).error || 'Rename failed.';
+      }
+      const kerr = await keys(t.id);
+      if (kerr) return kerr;
+      if (v.active !== v.active0) {
+        const r = await apiSend(`/api/accountability/tags/${t.id}`, 'PATCH',
+                                { active: v.active ? 1 : 0 });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok) return out.error || 'That change was refused.';
+        // Waking a tag on a tag-only gate is an easing: the server queues it and
+        // says when, and the sheet has to pass that on or it reads as a no-op.
+        if (out.pending) {
+          toast(`it starts counting ${String(out.apply_at).slice(0, 16).replace('T', ' ')}`);
+        }
+      }
+      await backToGateSheet();
+      return null;
+    },
+    remove: async t => {
+      const res = await apiSend(`/api/accountability/tags/${t.id}`, 'DELETE');
+      if (!res.ok) {
+        toast((await res.json().catch(() => ({}))).error || `Delete failed (${res.status}).`);
+        return;
+      }
+      await backToGateSheet();
     },
   },
 

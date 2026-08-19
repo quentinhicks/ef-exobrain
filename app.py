@@ -25,6 +25,7 @@ from flask import Flask, jsonify, redirect, render_template, request, send_from_
 import storage
 import schedule
 import aggregator
+import ntag
 import qr_judge
 import daybook
 from aggregator import fetch_gcal, fetch_sheets
@@ -83,6 +84,17 @@ except (FileNotFoundError, json.JSONDecodeError):
 # that takes the whole app down on the next start. Values are never read BACK
 # out to a client: write-only is the property that matters for a secret, and it
 # is the reading that had to stay impossible, not the writing.
+def _config_file():
+    # The file as it is NOW, not the module's copy: another process (or another
+    # session) may have written a key since this one started, and merging into
+    # a stale dict would drop it.
+    try:
+        with open('config.json') as f:
+            return json.load(f) or {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
 def _update_config(values):
     global config
     try:
@@ -1789,7 +1801,34 @@ def _node_payload(node, today, routines=None):
                 routine_id=rt['id'] if rt else None,
                 schedule_label=label,
                 day_windows=storage.qr_gate_day_windows(node),
-                pending_changes=pending)
+                pending_changes=pending,
+                tags=_tag_payloads(node['id']),
+                tap_url=_tap_url())
+
+
+def _tap_url():
+    # What to write to a tag: the scan URL's host with /t and the two mirror
+    # placeholders the tag overwrites on every tap. Derived from the SAME config
+    # value the scan links use, so there is one host to be wrong.
+    base = (_gate_scan_url() or '').rstrip('/')
+    if not base:
+        return ''
+    # gate_scan_url points at the /scan half; the tap route is its sibling.
+    root = base[:-len('/scan')] if base.endswith('/scan') else base
+    return root + '/t?e=' + '0' * 32 + '&c=' + '0' * 16
+
+
+def _tag_payloads(node_id):
+    # Whether a tag's KEYS are set, never what they are — the same contract
+    # /api/config keeps for the Beeminder token. A tag with no keys can never
+    # verify a tap, so saying so is the difference between "it is not working"
+    # and "I never finished setting it up".
+    keys = ntag.load_keys()
+    out = []
+    for t in storage.qr_tags_for_node(node_id):
+        out.append(dict(t, keys_set=t['uid'].upper() in keys,
+                        pending_live_at=storage.qr_tag_pending(t['id'])))
+    return out
 
 
 @app.route('/api/gates/billing')
@@ -2023,6 +2062,16 @@ def patch_accountability_node(id):
         storage.qr_add_pending_change(id, storage.QR_DELETE_FIELD, '1', at, effective)
         return jsonify({'pending': True, 'apply_at': at, 'effective_date': effective})
 
+    if str(data.get('proof_mode') or '') == 'tag' and node.get('proof_mode') != 'tag':
+        # A gate nothing can clear is not a commitment, it is a charge every
+        # day — so this is refused at the door instead of applied as the
+        # tightening it technically is. (Refused IN WORDS, and the client
+        # toasts it: the sheet's foot is where the keyboard sits.)
+        live = [t for t in storage.qr_tags_for_node(id, active_only=True)
+                if t['uid'].upper() in ntag.load_keys()]
+        if not live:
+            return jsonify({'error': 'add a tag with its keys first — a tag-only gate '
+                                     'with no live tag could never be cleared'}), 400
     immediate, pending = qr_judge.schedule_node_patch(node, data, effective_from)
     if immediate:
         storage.qr_update_node(id, immediate)
@@ -2732,6 +2781,128 @@ def patch_location(id):
 def delete_location(id):
     storage.delete_location(id)
     return jsonify({'ok': True})
+
+
+# ── The tags a gate accepts ────────────────────────────────
+#
+# A tag belongs to ONE gate and a gate may have several (Quentin, 2026-08-19).
+# Everything here obeys the same 24h rule the gate's own fields do, in the same
+# store: a tag going LIVE is a new way to clear the gate, so on a tag-only gate
+# it waits; pausing or deleting one is tightening and lands at once.
+@app.route('/api/accountability/nodes/<int:id>/tags', methods=['POST'])
+def post_accountability_tag(id):
+    node = next((n for n in storage.qr_get_nodes() if n['id'] == id), None)
+    if not node:
+        return jsonify({'error': 'unknown node'}), 404
+    d = request.get_json() or {}
+    uid = re.sub(r'[^0-9A-Fa-f]', '', str(d.get('uid') or '')).upper()
+    if len(uid) != 14:
+        return jsonify({'error': 'the UID is 7 bytes — 14 hex characters'}), 400
+    label = (d.get('label') or '').strip() or ('Tag ' + uid[-4:])
+    # A LIVE tag on a tag-only gate waits its 24h, so it is created paused with
+    # the easing queued. On a link gate there is nothing to ease: the gate is
+    # already clearable by link, and the tag only makes the evidence stronger.
+    hard = (node.get('proof_mode') or 'link') == 'tag'
+    tag = storage.qr_add_tag(id, label, uid, active=0 if hard else 1)
+    if not tag:
+        return jsonify({'error': 'that UID already belongs to a gate'}), 409
+    if hard:
+        tag['pending_live_at'] = storage.qr_pend_tag_live(tag['id'])
+    tag['keys_set'] = uid in ntag.load_keys()
+    return jsonify(tag), 201
+
+
+@app.route('/api/accountability/tags/<int:tag_id>', methods=['PATCH', 'DELETE'])
+def patch_accountability_tag(tag_id):
+    tag = next((t for t in storage.qr_all_tags() if t['id'] == tag_id), None)
+    if not tag:
+        return jsonify({'error': 'unknown tag'}), 404
+    hard = (tag.get('proof_mode') or 'link') == 'tag'
+    others = [t for t in storage.qr_tags_for_node(tag['node_id'], active_only=True)
+              if t['id'] != tag_id and t['uid'].upper() in ntag.load_keys()]
+
+    if request.method == 'DELETE':
+        # The last live tag of a tag-only gate cannot go: the gate would charge
+        # for a day nothing could have cleared. Named in words, with the two
+        # ways out, rather than silently loosening the gate to link proof.
+        if hard and not others:
+            return jsonify({'error': 'this is the only tag that can clear ' + tag['node_label']
+                                     + ' — move the gate to link proof, or pause the gate '
+                                       'first'}), 400
+        storage.qr_delete_tag(tag_id)
+        return jsonify({'ok': True})
+
+    d = request.get_json(silent=True) or {}
+    fields = {}
+    if 'label' in d:
+        label = (d.get('label') or '').strip()
+        if not label:
+            return jsonify({'error': 'a tag needs a name'}), 400
+        fields['label'] = label
+    if 'active' in d:
+        want = 0 if storage.falsy(d.get('active')) else 1
+        if want and not tag['active']:
+            # Waking a tag up is the loosening — the same 24h a new one waits.
+            if hard:
+                return jsonify({'pending': True,
+                                'apply_at': storage.qr_pend_tag_live(tag_id)})
+            fields['active'] = 1
+        elif not want and tag['active']:
+            if hard and not others:
+                return jsonify({'error': 'this is the only tag that can clear '
+                                         + tag['node_label'] + ' — pausing it would '
+                                         'make the gate impossible to clear'}), 400
+            storage.qr_unpend_tag(tag_id)      # a queued wake-up is off
+            fields['active'] = 0
+    if not fields:
+        return jsonify(tag)
+    return jsonify(storage.qr_update_tag(tag_id, fields))
+
+
+@app.route('/api/accountability/tags/<int:tag_id>/keys', methods=['PUT'])
+def put_accountability_tag_keys(tag_id):
+    """The tag's two AES keys — WRITE ONLY, and not into the database.
+
+    They go to config.json beside the Beeminder token, for the same reason: the
+    db is dumped into backups/ and pushed, so a key in the db is a key in git.
+    Merged per tag rather than replacing the object, so entering the second
+    tag's keys cannot wipe the first's — which is also why this is its own door
+    instead of an entry in CONFIG_KEYS (a write-only blob nothing can read back
+    cannot be edited one tag at a time).
+    """
+    tag = next((t for t in storage.qr_all_tags() if t['id'] == tag_id), None)
+    if not tag:
+        return jsonify({'error': 'unknown tag'}), 404
+    d = request.get_json() or {}
+    pair = {}
+    for name, field in (('meta', 'meta'), ('mac', 'mac')):
+        raw = re.sub(r'[^0-9A-Fa-f]', '', str(d.get(field) or ''))
+        if len(raw) != 32:
+            return jsonify({'error': 'the ' + name + ' key is 16 bytes — '
+                                     '32 hex characters'}), 400
+        pair[field] = raw.upper()
+    keys = dict(_config_file().get('ntag_keys') or {})
+    keys[tag['uid'].upper()] = pair
+    _update_config({'ntag_keys': keys})
+    return jsonify({'ok': True, 'keys_set': True})
+
+
+@app.route('/api/accountability/tags/<int:tag_id>/keys', methods=['DELETE'])
+def delete_accountability_tag_keys(tag_id):
+    tag = next((t for t in storage.qr_all_tags() if t['id'] == tag_id), None)
+    if not tag:
+        return jsonify({'error': 'unknown tag'}), 404
+    if (tag.get('proof_mode') or 'link') == 'tag':
+        others = [t for t in storage.qr_tags_for_node(tag['node_id'], active_only=True)
+                  if t['id'] != tag_id and t['uid'].upper() in ntag.load_keys()]
+        if not others:
+            return jsonify({'error': 'clearing these keys would leave '
+                                     + tag['node_label'] + ' with no way to be '
+                                     'cleared'}), 400
+    keys = dict(_config_file().get('ntag_keys') or {})
+    keys.pop(tag['uid'].upper(), None)
+    _update_config({'ntag_keys': keys})
+    return jsonify({'ok': True, 'keys_set': False})
 
 
 @app.route('/api/accountability/nodes/<int:id>/overrides', methods=['POST'])
