@@ -442,6 +442,12 @@
        it; tap the chip to revert), "new log" on the Logs list. -->
   <div id="global-bar"></div>
 
+  <!-- A log's photos, full screen. Out here rather than inside #logs-overlay
+       because it covers that overlay (and the global bar) whole: a photo taken
+       on a phone is read by filling the screen with it, not by peering at it
+       inside a panel. Empty until a thumbnail is tapped. -->
+  <div id="log-photo-view" class="hidden"></div>
+
   <!-- Nightly-fill countdown. Lives out here, not in the People tab, because
        the add/log forms are fixed overlays that sit above the tab and hid it
        during the only ten minutes it governs. -->
