@@ -1492,6 +1492,25 @@ function undoablePatch(item, fields, label) {
 const NOTES_SAVE_MS = 700;
 const openNotes = [];
 
+// A NOTES FIELD GROWS TO ITS CONTENT. rows="2" is a floor, not a ceiling: on a
+// 430px-wide phone a note of any length was trapped in two lines with its own
+// scrollbar, so the thing you wrote was the thing you could not see. Height is
+// set from scrollHeight and CAPPED, because a note long enough to fill the
+// screen would push the sheet's verbs off the bottom — and on a phone a button
+// you have to scroll to find is a button that is not there.
+//
+// The cap is a share of the VIEWPORT rather than a fixed pixel count, so it
+// means the same thing on a phone and on the desktop window.
+function autoGrowNotes(ta) {
+  if (!ta) return;
+  const cap = Math.max(120, Math.round(window.innerHeight * 0.4));
+  ta.style.height = 'auto';                 // measure the content, not the box
+  ta.style.height = Math.min(ta.scrollHeight, cap) + 'px';
+  // Only the capped case needs to scroll; below the cap there is nothing to
+  // scroll and a scrollbar would just be noise.
+  ta.style.overflowY = ta.scrollHeight > cap ? 'auto' : 'hidden';
+}
+
 function wireNotesAutosave(ta, commit) {
   let timer = null;
   let pending = false;
@@ -1503,10 +1522,14 @@ function wireNotesAutosave(ta, commit) {
     await commit(ta.value);
   };
   ta.addEventListener('input', () => {
+    autoGrowNotes(ta);
     pending = true;
     clearTimeout(timer);
     timer = setTimeout(flush, NOTES_SAVE_MS);
   });
+  // Sized once at wiring time too: a field opened with content already in it
+  // must show that content, not wait for a keystroke to reveal it.
+  autoGrowNotes(ta);
   ta.__flushNotes = flush;
   // A notes field is a markdown field — the log editor's shortcut suite comes
   // with the autosave contract (Ctrl+S flushes via __flushNotes above).
@@ -13522,10 +13545,17 @@ function renderClarify() {
   });
   const notesTa = sheet.querySelector('#cl-notes');
   if (notesTa) {
-    notesTa.addEventListener('input', e => { clarifyView.notes = e.target.value; });
+    notesTa.addEventListener('input', e => {
+      clarifyView.notes = e.target.value;
+      autoGrowNotes(notesTa);
+    });
     // Not autosave-wired (closeClarify owns the flush), so add the markdown
     // suite explicitly. insertText fires input, so the mirror above stays hot.
     wireMdShortcuts(notesTa);
+    // ...and for the same reason the growth has to be asked for here: the
+    // sizing rides wireNotesAutosave everywhere else, which this field
+    // deliberately does not use.
+    autoGrowNotes(notesTa);
   }
   // The chosen PROJECT's notes, editable right where you're filing into it.
   // Saves to the project on blur; the item's own notes are #cl-notes above.
