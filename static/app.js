@@ -147,7 +147,6 @@ const state = {
   timerSeconds: 600,
   timerInterval: null,
   review: { due: null, last: {} },
-  experiments: [],
   accountabilityNodes: null,
   qrPageOverrides: {},
   qrDismissed: {},
@@ -184,7 +183,7 @@ const state = {
 // that is already on screen; on first load the initialiser makes that [].
 async function loadAll() {
   const dateStr = viewDay();
-  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, experiments, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments] = await Promise.all([
+  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments] = await Promise.all([
     apiGet('/api/blocks', state.blocks),
     apiGet('/api/areas', state.areas),
     apiGet('/api/domains', state.domains),
@@ -193,7 +192,6 @@ async function loadAll() {
     apiGet('/api/inbox', state.inbox),
     apiGet('/api/sheets/inbox', state.sheetsInbox),
     apiGet('/api/gtd-review', ({})),
-    apiGet('/api/experiments', state.experiments),
     apiGet('/api/accountability/nodes', []),
     apiGet('/api/calendars', []),
     apiGet('/api/settings', ({})),
@@ -224,7 +222,6 @@ async function loadAll() {
   state.sheetsInbox = sheetsInbox;
   // The nav dot means "this week's review isn't filed yet".
   state.review = { due: !reviewStatus.completed_at };
-  state.experiments = experiments;
   state.accountabilityNodes = Array.isArray(accountabilityNodes) ? accountabilityNodes : [];
   state.calendars = calendars;
   state.settings = settings;
@@ -394,19 +391,27 @@ function onPointerDrag(el, spec) {
     // Touch: hold still for 550ms to grab it.
     sy = e.clientY;
     const sx = e.clientX;
-    t = setTimeout(() => { t = null; arm(e); }, 550);
+    // The watchers live on DOCUMENT, not on el, and the timer checks that the
+    // finger is still down. Both because a finger that slides off the row — or
+    // lifts off it — fires neither move nor up on el, so the timer used to arm
+    // a drag for a touch that was already over: `touch-action: none` and a
+    // preventDefaulting pointermove handler left behind, which is a page that
+    // has stopped scrolling for no reason the user can see.
+    let down = true;
     const cancelOnMove = ev => {
       if (t && (Math.abs(ev.clientY - sy) > 10 || Math.abs(ev.clientX - sx) > 10)) {
         clearTimeout(t); t = null;
       }
     };
-    el.addEventListener('pointermove', cancelOnMove);
     const stop = () => {
+      down = false;
       clearTimeout(t); t = null;
-      el.removeEventListener('pointermove', cancelOnMove);
+      document.removeEventListener('pointermove', cancelOnMove);
     };
+    t = setTimeout(() => { t = null; if (down) arm(e); }, 550);
+    document.addEventListener('pointermove', cancelOnMove);
     ['pointerup', 'pointercancel'].forEach(ev =>
-      el.addEventListener(ev, stop, { once: true }));
+      document.addEventListener(ev, stop, { once: true }));
   });
 
   document.addEventListener('pointermove', e => {
@@ -8394,7 +8399,39 @@ function renderSocial() {
 
 // ── Init ─────────────────────────────────────────────────────
 
+// ── HOW TALL THE SCREEN ACTUALLY IS ──────────────────────────
+//
+// Every full-height surface here is `position: fixed`, and a fixed box is laid
+// out against the LAYOUT viewport — which on a phone includes the strip behind
+// the URL bar and does not shrink when the keyboard comes up. So the surface is
+// taller than what you can see, its inner scroller believes its content fits,
+// and the rows at the bottom are unreachable: content clipped with nothing to
+// scroll, on the device the app is shaped for. `100vh` has the same fault and
+// `100dvh` fixes only the URL-bar half.
+//
+// `visualViewport.height` is the one number that means VISIBLE, so it is
+// published once as `--vvh` and every fixed layer is sized from it. One
+// variable, read in CSS, so a new surface inherits the answer instead of
+// re-deriving it: the same bargain as --gbar-h.
+function initVisibleHeight() {
+  const vv = window.visualViewport;
+  const set = () => {
+    document.documentElement.style.setProperty(
+      '--vvh', Math.round(vv ? vv.height : window.innerHeight) + 'px');
+  };
+  set();
+  if (vv) {
+    vv.addEventListener('resize', set);
+    // The URL bar sliding away is a visual-viewport SCROLL, not a resize.
+    vv.addEventListener('scroll', set);
+  }
+  window.addEventListener('resize', set);
+  // The rotation fires before the new size is settled, hence the beat.
+  window.addEventListener('orientationchange', () => setTimeout(set, 80));
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  initVisibleHeight();          // before anything is measured or sized
   initThemeToggle();
   initPanelToggle();
   initBlockEditor();

@@ -115,11 +115,17 @@ select option {
 /* One phone-sized column. On a desktop/larger window the app letterboxes
    in the center; on a phone it is full-bleed. */
 
+/* --vvh is the VISIBLE height, written by initVisibleHeight() from
+   visualViewport; 100dvh is the fallback where that API is missing, and 100vh
+   the fallback before that. Everything fixed and full-height below is sized
+   from the same variable — see the comment on initVisibleHeight for why the
+   layout viewport is the wrong ruler on a phone. */
 #app {
   display: flex;
   justify-content: center;
   height: 100vh;
   height: 100dvh;
+  height: var(--vvh, 100dvh);
   overflow: hidden;
   background: var(--bg);
 }
@@ -134,7 +140,7 @@ select option {
 .m-overlay {
   position: fixed;
   top: 0;
-  bottom: 0;
+  bottom: 0;                  /* the bar contract at the end of the file wins */
   left: 50%;
   transform: translateX(-50%);
   background: var(--surface-mid);
@@ -2532,8 +2538,10 @@ body.calendar-minimized #review-modal {
 #log-photo-view {
   position: fixed;
   inset: 0;
+  height: var(--vvh, 100dvh);
   z-index: 210;
-  background: rgba(0, 0, 0, 0.94);
+  background: #000;            /* solid: the log's text showing through a
+                                  scrim is noise behind a photograph */
   display: flex;
   flex-direction: column;
 }
@@ -2683,6 +2691,7 @@ body.calendar-minimized #review-modal {
 #review-overlay {
   position: fixed;
   inset: 0;
+  height: var(--vvh, 100dvh);
   background: var(--overlay);
   z-index: 150;
   display: flex;
@@ -3478,7 +3487,7 @@ body.map-over-runner #map-overlay { z-index: 170; }
 #person-add-overlay {
   position: fixed;
   inset: 0;
-  background: var(--overlay);
+    background: var(--overlay);
   z-index: 150;
   display: flex;
   align-items: stretch;
@@ -4659,7 +4668,11 @@ body.map-over-runner #map-overlay { z-index: 170; }
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: 0;
+  /* The VISIBLE bottom. 100% is the viewport and --vvh is what you can see, so
+     the difference is the strip hidden under the browser chrome or the
+     keyboard; it is 0 on a desktop and 0 wherever --vvh is not set. Without
+     this the capture bar sits behind the keyboard it just opened. */
+  bottom: calc(100% - var(--vvh, 100%));
   width: 100%;
   max-width: 430px;
   height: var(--gbar-h);
@@ -4946,7 +4959,7 @@ button.eg-domain { cursor: pointer; }
   left: 50%;
   transform: translateX(-50%);
   top: 0;
-  bottom: var(--gbar-h);
+  height: calc(var(--vvh, 100dvh) - var(--gbar-h));
   width: 100%;
   max-width: 430px;
   background: var(--surface-mid);
@@ -5384,7 +5397,7 @@ button.eg-domain { cursor: pointer; }
 #app-toast {
   position: fixed;
   left: 50%;
-  bottom: 76px;
+  bottom: calc(76px + 100% - var(--vvh, 100%));
   transform: translateX(-50%) translateY(8px);
   background: var(--surface-2);
   color: var(--text-primary);
@@ -5483,7 +5496,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #oc-sheet-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 199;
+    z-index: 199;
   background: transparent;
 }
 
@@ -5503,8 +5516,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   transform: translateX(-50%);
   width: 100%;
   max-width: 430px;
-  bottom: 0;
-  max-height: 88%;
+  bottom: 0;                  /* the bar contract at the end of the file wins */
+  /* 88% of the VISIBLE screen. A percentage resolves against the layout
+     viewport, so on a phone with the keyboard up a sheet could be taller than
+     the room it had — which is how a Save button ends up under the keyboard
+     with no way to scroll to it. */
+  max-height: calc(var(--vvh, 100dvh) * 0.88);
   overflow-y: auto;
   background: var(--surface);
   border-top: 1px solid var(--border-soft);
@@ -5965,7 +5982,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #en-sheet,
 #oc-sheet-backdrop,
 #oc-sheet {
-  bottom: var(--gbar-h);
+  /* Above the bar, AND above whatever the browser chrome or the keyboard is
+     covering: 100% is the viewport, --vvh is what you can see, so the
+     difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
+     unset. Every layer's bottom is decided here, which is why the correction
+     only has to be written once. */
+  bottom: calc(var(--gbar-h) + 100% - var(--vvh, 100%));
 }
 
 /* ── The occasion sheet's own rows ───────────────────────────
@@ -6021,6 +6043,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #dw-session {
   position: fixed;
   inset: 0;
+  height: var(--vvh, 100dvh);
   left: 50%;
   transform: translateX(-50%);
   width: 100%;
