@@ -136,13 +136,33 @@ t.get(f'/t?e={nxt_picc}&c={nxt_cm}')
 check('the NEXT real tap is logged', len(storage.qr_scans_in_window(
     gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')) == 2)
 
+# The names a programming tool happens to use are not the app's business.
+alt = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), UID_A, 7)
+check("a tap named the way NXP's own backend names it is accepted",
+      t.get(f'/t?enc_picc_data={alt[0]}&sdmmac={alt[1]}').status_code == 200)
+bulk = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), UID_A, 8)
+check('...and the BULK form, both mirrors in one parameter',
+      t.get(f'/t?e={bulk[0]}{bulk[1]}').status_code == 200)
+check('...each logged exactly once', len(storage.qr_scans_in_window(
+    gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')) == 4)
+
+# A tag that mirrors its UID but NOT its read counter cannot be told from one
+# that does without the tag byte — and without the counter there is no replay
+# guard at all, so it is refused rather than read out of the padding.
+no_ctr = ntag.cbc_encrypt(bytes.fromhex(META),
+                          bytes((0x87,)) + bytes.fromhex(UID_A) + bytes(8)).hex().upper()
+ses = ntag.session_mac_key(bytes.fromhex(MAC), bytes.fromhex(UID_A), 0)
+no_ctr_mac = ntag._mact(ntag.cmac(ses)).hex().upper()
+check('a tag with no read-counter mirror is refused, in words',
+      t.get(f'/t?e={no_ctr}&c={no_ctr_mac}').status_code == 403)
+
 forged = t.get('/t?e=' + '11' * 16 + '&c=' + '22' * 8)
 check('a made-up tap is refused', forged.status_code == 403, forged.status_code)
 wrong_key = ntag.make_tap(bytes.fromhex('AA' * 16), bytes.fromhex(MAC), UID_A, 99)
 check('a tap encrypted with the wrong key is refused',
       t.get(f'/t?e={wrong_key[0]}&c={wrong_key[1]}').status_code == 403)
 check('...and neither logged anything', len(storage.qr_scans_in_window(
-    gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')) == 2)
+    gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')) == 4)
 
 # ── a tag belongs to ONE gate ──
 other = c.post('/api/accountability/nodes',
@@ -155,7 +175,7 @@ t.get(f'/t?e={pb}&c={mb}')
 gym = storage.qr_scans_in_window(gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')
 desk = storage.qr_scans_in_window(other['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')
 check('a tap with the SAME keys but another tag clears only its own gate',
-      len(gym) == 2 and len(desk) == 1, (len(gym), len(desk)))
+      len(gym) == 4 and len(desk) == 1, (len(gym), len(desk)))
 
 # ── a new tag on a tag-only gate waits its 24h ──
 second = c.post(f"/api/accountability/nodes/{gate['id']}/tags",
@@ -171,7 +191,7 @@ check('...and it says when it starts counting', b'starts counting' in queued.dat
       queued.data[:120])
 check('the gate that is still waiting logged nothing',
       len(storage.qr_scans_in_window(gate['id'], '2000-01-01T00:00:00Z',
-                                     '2100-01-01T00:00:00Z')) == 2)
+                                     '2100-01-01T00:00:00Z')) == 4)
 
 # time passes: the pending lands on READ, at either choke point
 conn = storage.get_conn()
@@ -184,7 +204,7 @@ check('once the 24h is up the tag goes live on the next read',
 p3, m3 = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), '04FFEEDDCCBB80', 2)
 t.get(f'/t?e={p3}&c={m3}')
 check('...and then it clears the gate', len(storage.qr_scans_in_window(
-    gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')) == 3)
+    gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')) == 5)
 
 # ── the gate must stay clearable ──
 check('a tag-only gate will not give up its last tag',

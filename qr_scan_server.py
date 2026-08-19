@@ -166,8 +166,19 @@ def tap():
     follows it: there is nothing to submit. It writes one row and reads one
     label, exactly like /scan, so the public surface stays two routes wide.
     """
-    picc = request.args.get('e') or request.args.get('picc_data') or ''
-    cm = request.args.get('c') or request.args.get('cmac') or ''
+    # WHATEVER THE PROGRAMMING TOOL CALLED THEM. Every SDM implementation picks
+    # its own query names — `e`/`c` here, `picc_data`/`cmac` in some encoders,
+    # `enc_picc_data`/`sdmmac` in NXP's own backend — and which one a tag ends
+    # up with is decided by an app on a phone, not by this code. So all three
+    # are accepted, plus the BULK form that concatenates the two mirrors into
+    # one 48-hex parameter. Nothing is trusted either way: the CMAC still has to
+    # verify and the counter still has to be new.
+    picc = (request.args.get('e') or request.args.get('picc_data')
+            or request.args.get('enc_picc_data') or '').strip()
+    cm = (request.args.get('c') or request.args.get('cmac')
+          or request.args.get('sdmmac') or '').strip()
+    if not cm and len(picc) == 48:
+        picc, cm = picc[:32], picc[32:]
     keys = ntag.load_keys()
     if not keys:
         # No keys configured at all: say so plainly. This is the state a fresh

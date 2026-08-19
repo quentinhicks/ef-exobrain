@@ -236,10 +236,17 @@ def decode_picc(key_meta, picc_hex):
         raise TapError('picc_data must be 16 bytes (32 hex chars), got %d' % len(blob))
     plain = cbc_decrypt(key_meta, blob)
     tag_byte = plain[0]
-    # Bit 7 set = the tag is telling us what it mirrored; the low nibble is the
-    # UID length. Anything else means this was not encrypted with THIS key.
+    # The tag byte says what the tag mirrored: bit 7 UID, bit 6 the read
+    # counter, low nibble the UID length. All three are checked because all
+    # three are load-bearing — a tag configured WITHOUT counter mirroring would
+    # otherwise have its padding read as a counter, and the replay guard is the
+    # counter. It doubles as the key check: there is no padding to verify, so a
+    # wrong meta key shows up as a tag byte that means nothing.
     if not tag_byte & 0x80 or (tag_byte & 0x0F) != 7:
-        raise TapError('picc_data did not decrypt to a UID mirror — wrong meta key?')
+        raise TapError('picc_data did not decrypt to a 7-byte UID mirror — wrong meta key?')
+    if not tag_byte & 0x40:
+        raise TapError('this tag does not mirror its read counter — turn SDMReadCtr on, '
+                       'or a captured URL could be replayed forever')
     uid = plain[1:8]
     counter = int.from_bytes(plain[8:11], 'little')
     return uid.hex().upper(), counter
