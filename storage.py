@@ -228,18 +228,6 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
-        CREATE TABLE IF NOT EXISTS experiment (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            title      TEXT NOT NULL,
-            hypothesis TEXT NOT NULL,
-            prediction TEXT NOT NULL,
-            scope      TEXT NOT NULL DEFAULT 'operating' CHECK(scope IN ('operating','skill')),
-            status     TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','graduated','killed')),
-            started_at TEXT NOT NULL,
-            ended_at   TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-        );
-
         CREATE TABLE IF NOT EXISTS yearly_review (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             year             INTEGER NOT NULL UNIQUE,
@@ -291,15 +279,6 @@ def init_db():
             synthesis    TEXT NOT NULL,
             next_focuses TEXT,
             created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-        );
-
-        CREATE TABLE IF NOT EXISTS monthly_experiment_verdict (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            monthly_review_id INTEGER NOT NULL REFERENCES monthly_review(id),
-            experiment_id     INTEGER NOT NULL REFERENCES experiment(id),
-            verdict           TEXT NOT NULL CHECK(verdict IN ('graduate','redesign','drop')),
-            notes             TEXT,
-            created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS monthly_project_status (
@@ -635,6 +614,27 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE recurring_task ADD COLUMN project_id INTEGER')
         conn.commit()
+    # A RECURRING PROJECT (2026-08-19). "Pay my taxes" comes back every year and
+    # is an OUTCOME, not one action: it wants decomposing each time. So the same
+    # table, the same due predicate and the same seeder answer one more question
+    # -- WHAT the occurrence is -- rather than a second scheduler growing beside
+    # this one and drifting from it.
+    #
+    #   spawn        'item' (a next action, the old behaviour) or 'project'
+    #   deadline_md  'MM-DD' -- the day the occurrence is DUE, resolved to a
+    #                real date at seed time. A recurring thing cannot carry a
+    #                fixed deadline, and "73 days after it appears" is not what
+    #                anybody means by tax day.
+    #   notes        the support material the occurrence starts life with, so a
+    #                yearly project does not begin from nothing every year.
+    for col, decl in (('spawn', "TEXT NOT NULL DEFAULT 'item'"),
+                      ('deadline_md', 'TEXT'),
+                      ('notes', 'TEXT')):
+        try:
+            conn.execute('SELECT %s FROM recurring_task LIMIT 1' % col)
+        except Exception:
+            conn.execute('ALTER TABLE recurring_task ADD COLUMN %s %s' % (col, decl))
+            conn.commit()
     # An occasion's TEMPLATE actions are ordinary inbox_item rows carrying
     # status 'occasion'. That status is what keeps them out of the inventory
     # with no query edits anywhere: every availability predicate wants
@@ -1098,6 +1098,7 @@ def init_db():
     _adopt_gate_schedules(conn)
     _migrate_easing_pendings(conn)
     _migrate_utc_stamps(conn)
+    _retire_operating_experiments(conn)
     # A CHANGE CAN BE DATED (2026-08-17). The store already held changes that
     # had not landed yet; the only thing it could not say was WHICH DAY one
     # starts counting from, so every pending was "24h from now" and nothing
@@ -1198,6 +1199,7 @@ def init_db():
     conn.commit()
     _seed_review_flow(conn)
     _backfill_review_steps(conn)
+    _seed_tax_project(conn)
     _merge_review_next_actions(conn)
     # Reference lists NEST (2026-08-11): a list can live inside a list. The
     # split at the root is what the index shows; delete splices children up a
@@ -1410,6 +1412,48 @@ def _migrate_utc_stamps(conn):
     if moved:
         print(f'timezone: localised {moved} UTC stamp(s) written before the '
               f'DEFAULTs were fixed')
+
+
+# THE OPERATING-EXPERIMENT SCHEMA IS RETIRED (2026-08-19, Quentin's
+# instruction). `experiment` (title / hypothesis / prediction / scope, verdicts
+# in `monthly_experiment_verdict`) was a SECOND self-monitoring system beside
+# `habit_experiment`: same question — is this change worth keeping — asked in a
+# vocabulary nothing rendered any more, since the reflective monthly-review UI
+# that judged it was removed. Two stores answering one question is the shape
+# the abstractions rule bans, and the live one is habit_experiment.
+#
+# The rows are ARCHIVED beside the db before the tables go, and the setting
+# records what happened rather than the drop being silent: history that
+# outlives a schema is the daybook's whole premise, and a dropped table is
+# gone from every future daybook file. Never clear the setting to "re-run" it
+# — the tables are gone, so a second pass would archive nothing and overwrite
+# the note that says where the rows went.
+def _retire_operating_experiments(conn):
+    if conn.execute("SELECT value FROM setting WHERE key = 'operating_experiments_retired'"
+                    ).fetchone():
+        return
+    dump = {}
+    for table in ('experiment', 'monthly_experiment_verdict'):
+        try:
+            dump[table] = [dict(r) for r in conn.execute(f'SELECT * FROM "{table}"').fetchall()]
+        except sqlite3.OperationalError:
+            continue            # never existed here — nothing to keep
+    rows = sum(len(v) for v in dump.values())
+    where = ''
+    if rows:
+        where = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)),
+                             'retired-operating-experiments.json')
+        with open(where, 'w', encoding='utf-8') as f:
+            json.dump(dump, f, indent=2, ensure_ascii=False)
+        print(f'retired the operating-experiment schema: {rows} row(s) -> {where}')
+    for table in ('monthly_experiment_verdict', 'experiment'):
+        conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('operating_experiments_retired', ?)",
+        (f'{date_cls.today().isoformat()}: dropped experiment + '
+         f'monthly_experiment_verdict, {rows} row(s)'
+         + (f' archived to {where}' if rows else ', none to archive'),))
+    conn.commit()
 
 
 def _migrate_easing_pendings(conn):
@@ -2879,6 +2923,84 @@ def _recurring_due(task, today):
     return today.day == min(anchor.day, last_dom)
 
 
+# THE WORKED EXAMPLE, seeded once (2026-08-19, Quentin asked for it).
+#
+# Taxes are the case recurring projects exist for: it comes back every year, it
+# is an outcome rather than one action, and the two dates are different --
+# the day it is sensible to START (the W-2s and 1099s are all in by 31 January,
+# so 1 February) and the day it is DUE (15 April, US tax day). A recurring
+# ACTION could only carry one of them.
+#
+# Yearly is spelled "every 12 months from 1 February" because that is the
+# grammar recurring_task already has: kind monthly_date with interval 12 lands
+# on the anchor's day-of-month every twelfth month, and _recurring_due is the
+# ONE predicate that answers which day. No new kind, no second scheduler.
+#
+# Once, and recorded -- the review_steps_offered idiom: this is an editable row,
+# and one Quentin deletes or rewords must not grow back on the next start.
+TAX_PROJECT = {
+    'name': 'Pay my taxes',
+    'start_md': (2, 1),
+    'deadline_md': '04-15',
+    'notes': ('Every form should have arrived by 31 January (W-2s, 1099s, '
+              '1098-T, brokerage statements). Due 15 April.\n\n'
+              'Next action is usually: collect the documents into one place.'),
+}
+
+
+def _seed_tax_project(conn):
+    if conn.execute("SELECT 1 FROM setting WHERE key = 'tax_project_seeded'").fetchone():
+        return
+    area = conn.execute(
+        """SELECT id FROM area WHERE is_default = 1 AND active = 1
+             AND type = 'standard' LIMIT 1""").fetchone()
+    if not area:
+        return                  # no General yet; try again on the next start
+    month, dom = TAX_PROJECT['start_md']
+    today = date_cls.today()
+    # The anchor is the FIRST occurrence, never a date already gone by: an
+    # anchor in the past would have _recurring_due answering for a February that
+    # already happened.
+    year = today.year if (today.month, today.day) <= (month, dom) else today.year + 1
+    conn.execute(
+        '''INSERT INTO recurring_task
+             (name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date,
+              spawn, deadline_md, notes)
+           VALUES (?, ?, 'monthly_date', NULL, NULL, NULL, 12, ?, 'project', ?, ?)''',
+        (TAX_PROJECT['name'], area['id'], date_cls(year, month, dom).isoformat(),
+         TAX_PROJECT['deadline_md'], TAX_PROJECT['notes']))
+    conn.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('tax_project_seeded', ?)",
+                 (date_cls(year, month, dom).isoformat(),))
+    conn.commit()
+    print('recurring: seeded the "%s" project, first %s' % (
+        TAX_PROJECT['name'], date_cls(year, month, dom).isoformat()))
+
+
+# 'MM-DD' -> the next real date on or after `day` falling on it. April 15 read
+# on 1 February is this year's tax day; read on 1 May it is next year's, which is
+# the only reading that keeps a deadline in the future of the thing it belongs
+# to. 29 February is honoured where the year has one and lands on 1 March where
+# it does not, rather than refusing to resolve at all.
+def _md_on_or_after(md, day):
+    if not md:
+        return None
+    try:
+        month, dom = [int(x) for x in str(md).split('-')]
+    except ValueError:
+        return None
+    for year in (day.year, day.year + 1, day.year + 2):
+        try:
+            d = date_cls(year, month, dom)
+        except ValueError:
+            try:
+                d = date_cls(year, month, dom - 1) + timedelta(days=1)
+            except ValueError:
+                return None
+        if d >= day:
+            return d.isoformat()
+    return None
+
+
 def seed_recurring_tasks():
     today = date_cls.today()
     today_str = today.isoformat()
@@ -2891,10 +3013,21 @@ def seed_recurring_tasks():
         if not live:
             # Seeded occurrences inherit the task's project, so a recurring
             # chore that belongs to an outcome lands inside its run.
+            #
+            # spawn = 'project' makes the occurrence an OUTCOME instead: kind
+            # 'project', so MAP files it under its own lens and the weekly
+            # review asks it for a next action, with its deadline resolved from
+            # deadline_md. ONE insert either way -- the two differ in what the
+            # row IS, not in how it arrives.
+            project = t.get('spawn') == 'project'
             conn.execute(
-                '''INSERT INTO inbox_item (content, status, area_id, project_id, recurring_task_id)
-                   VALUES (?, 'active', ?, ?, ?)''',
-                (t['name'], t['area_id'], t['project_id'], t['id'])
+                '''INSERT INTO inbox_item
+                     (content, status, kind, area_id, project_id, recurring_task_id,
+                      deadline, notes)
+                   VALUES (?, 'active', ?, ?, ?, ?, ?, ?)''',
+                (t['name'], 'project' if project else 'item', t['area_id'],
+                 t['project_id'], t['id'],
+                 _md_on_or_after(t.get('deadline_md'), today), t.get('notes') or '')
             )
         conn.execute('UPDATE recurring_task SET last_seeded = ? WHERE id = ?', (today_str, t['id']))
     conn.commit()
@@ -2958,12 +3091,15 @@ def get_recurring_tasks():
 
 
 def create_recurring_task(name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date,
-                          project_id=None):
+                          project_id=None, spawn='item', deadline_md=None, notes=None):
     conn = get_conn()
     cur = conn.execute(
-        '''INSERT INTO recurring_task (name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date, project_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        (name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date, project_id)
+        '''INSERT INTO recurring_task (name, area_id, kind, days_of_week, nth, weekday,
+                                       interval, anchor_date, project_id, spawn,
+                                       deadline_md, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date, project_id,
+         'project' if spawn == 'project' else 'item', deadline_md or None, notes or None)
     )
     row_id = cur.lastrowid
     conn.commit()
@@ -2972,13 +3108,29 @@ def create_recurring_task(name, area_id, kind, days_of_week, nth, weekday, inter
     return dict(row)
 
 
-def update_recurring_task(id, active=_UNSET, project_id=_UNSET):
+# The editable columns, by name. This took two keyword arguments and ran an
+# UPDATE each while Settings could only pause a task and file it under a
+# project; a recurring PROJECT is edited in the clarify sheet, which saves its
+# wording, its area, its notes, its deadline rule and its schedule in one go.
+RECURRING_FIELDS = ('name', 'area_id', 'kind', 'days_of_week', 'nth', 'weekday',
+                    'interval', 'anchor_date', 'project_id', 'spawn', 'deadline_md',
+                    'notes', 'active')
+
+
+def update_recurring_task(id, **fields):
+    sets, params = [], []
+    for key in RECURRING_FIELDS:
+        if key not in fields:
+            continue
+        value = fields[key]
+        if key == 'active':
+            value = 1 if value else 0
+        sets.append('%s = ?' % key)
+        params.append(value)
     conn = get_conn()
-    if active is not _UNSET:
-        conn.execute('UPDATE recurring_task SET active = ? WHERE id = ?', (1 if active else 0, id))
-        conn.commit()
-    if project_id is not _UNSET:
-        conn.execute('UPDATE recurring_task SET project_id = ? WHERE id = ?', (project_id, id))
+    if sets:
+        conn.execute('UPDATE recurring_task SET %s WHERE id = ?' % ', '.join(sets),
+                     params + [id])
         conn.commit()
     row = conn.execute('SELECT * FROM recurring_task WHERE id = ?', (id,)).fetchone()
     conn.close()
@@ -3814,44 +3966,6 @@ def get_sheets_inbox_items():
 
 # --- Experiments ---
 
-def get_experiments():
-    conn = get_conn()
-    rows = conn.execute('SELECT * FROM experiment ORDER BY created_at DESC').fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def create_experiment(data):
-    conn = get_conn()
-    cur = conn.execute(
-        'INSERT INTO experiment (title, hypothesis, prediction, scope, started_at) VALUES (?,?,?,?,?)',
-        (data['title'], data['hypothesis'], data['prediction'],
-         data.get('scope', 'operating'), data['started_at'])
-    )
-    row_id = cur.lastrowid
-    conn.commit()
-    row = conn.execute('SELECT * FROM experiment WHERE id = ?', (row_id,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-def update_experiment(id, data):
-    allowed = ('status', 'ended_at')
-    updates = {k: data[k] for k in allowed if k in data}
-    if not updates:
-        conn = get_conn()
-        row = conn.execute('SELECT * FROM experiment WHERE id = ?', (id,)).fetchone()
-        conn.close()
-        return dict(row)
-    fields = ', '.join(f'{k} = ?' for k in updates)
-    values = list(updates.values()) + [id]
-    conn = get_conn()
-    conn.execute(f'UPDATE experiment SET {fields} WHERE id = ?', values)
-    conn.commit()
-    row = conn.execute('SELECT * FROM experiment WHERE id = ?', (id,)).fetchone()
-    conn.close()
-    return dict(row)
-
 
 # --- Block Feedback ---
 
@@ -4407,14 +4521,26 @@ def create_habit_experiment(content, started_on):
     return dict(row)
 
 
+# A GUARDED WRITE REPORTS THE GUARD, NOT THE ROW (2026-08-19). Both writers
+# below only fire while the experiment is 'running', and both used to answer
+# with a fresh SELECT of the row — which exists either way, so an UPDATE that
+# matched NOTHING came back 200 with the untouched row and every caller read it
+# as success: ending one from Tracking and then pressing "End it" on a runner
+# page painted before that toasted "waiting for the weekly review" and pushed
+# an undo that would reopen something it never ended. `rowcount` is the only
+# thing that knows whether the write happened, so it is what decides the
+# return. Any future writer guarded on status owes the same shape.
 def rename_habit_experiment(id, content):
     # A RUNNING experiment can be reworded: you keep the same variable but say
     # it better than you did last night. Only while running — rewriting one the
     # review is about to judge would change the thing being judged.
     conn = get_conn()
-    conn.execute("UPDATE habit_experiment SET content = ? WHERE id = ? AND status = 'running'",
-                 (content, id))
+    cur = conn.execute("UPDATE habit_experiment SET content = ? WHERE id = ? AND status = 'running'",
+                       (content, id))
     conn.commit()
+    if not cur.rowcount:
+        conn.close()
+        return None
     row = conn.execute('SELECT * FROM habit_experiment WHERE id = ?', (id,)).fetchone()
     conn.close()
     return dict(row) if row else None
@@ -4422,11 +4548,14 @@ def rename_habit_experiment(id, content):
 
 def resolve_habit_experiment(id, resolution, today=None):
     conn = get_conn()
-    conn.execute(
+    cur = conn.execute(
         """UPDATE habit_experiment SET status = 'resolved', resolution = ?, resolved_on = ?
            WHERE id = ? AND status = 'running'""",
         (resolution, today or date_cls.today().isoformat(), id))
     conn.commit()
+    if not cur.rowcount:
+        conn.close()
+        return None
     row = conn.execute('SELECT * FROM habit_experiment WHERE id = ?', (id,)).fetchone()
     conn.close()
     return dict(row) if row else None
@@ -4532,12 +4661,6 @@ def create_monthly_review(data):
             (data['month'], data['synthesis'], focuses)
         )
         review_id = cur.lastrowid
-        for v in data.get('verdicts') or []:
-            conn.execute(
-                '''INSERT INTO monthly_experiment_verdict
-                   (monthly_review_id, experiment_id, verdict, notes) VALUES (?,?,?,?)''',
-                (review_id, v['experiment_id'], v['verdict'], v.get('notes'))
-            )
         for ps in data.get('project_statuses') or []:
             conn.execute(
                 '''INSERT INTO monthly_project_status
@@ -4610,14 +4733,6 @@ def get_monthly_brief(month):
         (month_start, month_end)
     ).fetchall()
 
-    active_exp = conn.execute(
-        "SELECT * FROM experiment WHERE status = 'active' ORDER BY started_at DESC LIMIT 1"
-    ).fetchone()
-
-    standing = conn.execute(
-        "SELECT id, title, ended_at FROM experiment WHERE status = 'graduated' ORDER BY ended_at DESC"
-    ).fetchall()
-
     conn.close()
 
     weekly_learnings = [
@@ -4645,28 +4760,11 @@ def get_monthly_brief(month):
             'display': f'{pos}/{total}' if total else '–'
         })
 
-    active_experiment = None
-    if active_exp:
-        from datetime import date as _date
-        try:
-            started = datetime.fromisoformat(active_exp['started_at'])
-            days_running = (datetime.utcnow() - started).days
-        except Exception:
-            days_running = 0
-        active_experiment = {
-            'id': active_exp['id'],
-            'title': active_exp['title'],
-            'prediction': active_exp['prediction'],
-            'days_running': days_running
-        }
-
     return {
         'weekly_learnings': weekly_learnings,
         'weekly_focuses': weekly_focuses,
         'project_hit_rates': project_hit_rates,
-        'daily_syntheses': [dict(r) for r in daily_rows],
-        'active_experiment': active_experiment,
-        'standing_practices': [dict(r) for r in standing]
+        'daily_syntheses': [dict(r) for r in daily_rows]
     }
 
 
@@ -4770,14 +4868,6 @@ def get_quarterly_brief(quarter):
         'SELECT month, synthesis, next_focuses FROM monthly_review ORDER BY month DESC LIMIT 3'
     ).fetchall()
 
-    verdict_rows = conn.execute(
-        '''SELECT mev.experiment_id, e.title, mev.verdict, mr.month
-           FROM monthly_experiment_verdict mev
-           JOIN experiment e ON mev.experiment_id = e.id
-           JOIN monthly_review mr ON mev.monthly_review_id = mr.id
-           ORDER BY mr.month DESC LIMIT 20'''
-    ).fetchall()
-
     project_rows = conn.execute(
         '''SELECT mps.area_id, p.name, mps.status, mr.month
            FROM monthly_project_status mps
@@ -4842,7 +4932,6 @@ def get_quarterly_brief(quarter):
 
     return {
         'monthly_syntheses': monthly_syntheses,
-        'experiment_verdicts': [dict(r) for r in verdict_rows],
         'project_activity': [dict(r) for r in project_rows],
         'previous_life_area_ratings': previous_ratings,
         'annual_theme': annual_theme,
@@ -4879,10 +4968,6 @@ def get_review_context():
         'SELECT focuses FROM quarterly_review ORDER BY created_at DESC LIMIT 1'
     ).fetchone()
 
-    active_exp = conn.execute(
-        "SELECT id, title, hypothesis, prediction FROM experiment WHERE status = 'active' LIMIT 1"
-    ).fetchone()
-
     conn.close()
 
     annual_theme = yearly['annual_theme'] if yearly else None
@@ -4894,15 +4979,10 @@ def get_review_context():
     if quarterly and quarterly['focuses']:
         quarterly_focuses = _json.loads(quarterly['focuses'])
 
-    active_experiment = None
-    if active_exp:
-        active_experiment = dict(active_exp)
-
     return {
         'annual_theme': annual_theme,
         'major_goals': major_goals,
-        'quarterly_focuses': quarterly_focuses,
-        'active_experiment': active_experiment
+        'quarterly_focuses': quarterly_focuses
     }
 
 

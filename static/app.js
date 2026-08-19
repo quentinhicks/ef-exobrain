@@ -3679,6 +3679,23 @@ function ordinalNth(n) {
   return ['1st', '2nd', '3rd', '4th', '5th'][n - 1] || `${n}th`;
 }
 
+// HOW OFTEN AN OUTCOME COMES BACK. All four are `monthly_date` — the day of the
+// month is the anchor's — so this is one interval, not a new kind and not a
+// second predicate: _recurring_due already answers "every N months from the
+// anchor", and 12 of them is a year. No every-N-days and no weekly here on
+// purpose: a weekly outcome is a routine, and routines already exist.
+const REC_PERIODS = [
+  { n: 1, label: 'Monthly' },
+  { n: 3, label: 'Quarterly' },
+  { n: 6, label: 'Twice a year' },
+  { n: 12, label: 'Yearly' },
+];
+
+function recPeriodLabel(interval) {
+  const p = REC_PERIODS.find(x => x.n === interval);
+  return p ? p.label.toLowerCase() : `every ${interval} months`;
+}
+
 function recurringScheduleLabel(t) {
   const every = (n, unit) => n > 1 ? `every ${n} ${unit}s` : `every ${unit}`;
   if (t.kind === 'weekly') {
@@ -3686,7 +3703,17 @@ function recurringScheduleLabel(t) {
     return `${days} ${every(t.interval, 'week')}`;
   }
   if (t.kind === 'monthly_nth') return `${ordinalNth(t.nth)} ${DAY_NAMES[t.weekday]} ${every(t.interval, 'month')}`;
-  if (t.kind === 'monthly_date') return `Day ${parseInt(t.anchor_date.slice(8, 10))} ${every(t.interval, 'month')}`;
+  if (t.kind === 'monthly_date') {
+    // A yearly one is a DATE — "1 February, yearly" is what it means, and
+    // "day 1 every 12 months" is the same fact said in the least useful way.
+    const day = parseInt(t.anchor_date.slice(8, 10));
+    if (t.interval === 12) {
+      const d = new Date(`${t.anchor_date}T12:00:00`);
+      return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}, yearly`;
+    }
+    return REC_PERIODS.some(p => p.n === t.interval)
+      ? `Day ${day}, ${recPeriodLabel(t.interval)}` : `Day ${day} ${every(t.interval, 'month')}`;
+  }
   return `Every ${t.interval} days`;
 }
 
@@ -3708,11 +3735,32 @@ function renderBeRecurring(tasks, areas) {
   list.innerHTML = tasks.map(t => beRow({
     id: t.id, name: t.name, dim: !t.active,
     meta: recurringScheduleLabel(t),
-    sub: [byId[t.area_id] ? byId[t.area_id].name : null, projectName(t.project_id)]
+    sub: [byId[t.area_id] ? byId[t.area_id].name : null, projectName(t.project_id),
+          t.spawn === 'project' && t.deadline_md
+            ? `due ${recDueLabel(t.deadline_md)}` : null]
       .filter(Boolean).join(' · '),
-    badge: t.active ? '' : 'paused',
-  })).join('') + beAddRow('Add recurring task');
-  wireBeList(list, 'recurring', tasks);
+    // Only the non-default state earns a badge, and a row that seeds an OUTCOME
+    // is not the default. Paused wins the slot: it is the louder fact.
+    badge: !t.active ? 'paused' : t.spawn === 'project' ? 'project' : '',
+  })).join('') + beAddRow('Add recurring task')
+    + `<button class="be-add-row" data-add-project="1">+ Add recurring project</button>`;
+  // Two kinds, two editors, one per kind — an ACTION is a flat set of fields
+  // (se-sheet) and an OUTCOME is decided in the clarify sheet, the way every
+  // other project is. The row opens whichever one made it, so nothing has two
+  // editors: the #oc-sheet bargain.
+  list.querySelectorAll('[data-row]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = tasks.find(x => String(x.id) === btn.dataset.row);
+      if (!t) return;
+      if (t.spawn === 'project') openClarifyForRecurring(t, refreshRecurringList);
+      else openSeSheet('recurring', t);
+    });
+  });
+  const add = list.querySelector('[data-add]');
+  if (add) add.addEventListener('click', () => openSeSheet('recurring', null));
+  const addProj = list.querySelector('[data-add-project]');
+  if (addProj) addProj.addEventListener('click',
+    () => openClarifyForRecurring(null, refreshRecurringList));
 }
 
 async function checkActiveBlock() {
@@ -4082,16 +4130,32 @@ function habitReviewHtml(hb) {
 
 async function habitVerb(id, verb, name) {
   if (verb === 'continue') { toast(`continuing: ${name}`); return; }
-  const verdict = prompt(verb === 'graduated'
-    ? 'One line for the ledger — what made it stick?'
-    : 'One line for the ledger — why drop it?') || null;
-  await apiSend(`/api/habits/${id}`, 'PATCH', { status: verb, verdict });
-  pushUndo(`${verb === 'graduated' ? 'graduated' : 'dropped'} "${name}"`, async () => {
-    await apiSend(`/api/habits/${id}`, 'PATCH', { status: 'forming' });
-    await openGtdReview();
+  // A habit ends in the same sheet an experiment does — it is the same kind of
+  // act, and the verdict is the same kind of line. Optional here, unlike an
+  // experiment's resolution: nothing downstream has to act on it.
+  openEndSheet({
+    title: verb === 'graduated' ? 'Graduate the habit' : 'Drop the habit',
+    subject: name,
+    meta: verb === 'graduated' ? 'it runs on its own — stop tracking it'
+                               : 'a verdict, not a failure',
+    label: 'One line for the ledger',
+    placeholder: verb === 'graduated' ? 'what made it stick?' : 'why drop it?',
+    actions: [{
+      label: verb === 'graduated' ? 'Graduate it' : 'Drop it',
+      run: async verdict => {
+        const res = await apiSend(`/api/habits/${id}`, 'PATCH',
+                                  { status: verb, verdict: verdict || null });
+        if (!res.ok) { toast('could not end it'); return false; }
+        pushUndo(`${verb === 'graduated' ? 'graduated' : 'dropped'} "${name}"`, async () => {
+          await apiSend(`/api/habits/${id}`, 'PATCH', { status: 'forming' });
+          await openGtdReview();
+        });
+        toast(`${verb}: ${name}`);
+        await openGtdReview();
+        return true;
+      },
+    }],
   });
-  toast(`${verb}: ${name}`);
-  await openGtdReview();
 }
 
 async function experimentVerb(id, verb, name) {
@@ -4504,6 +4568,9 @@ function initHub() {
     if (evSheet.open) { closeEvSheet(); return; }
     // The entry sheet likewise peels before whatever surface opened it.
     if (entrySheet.open) { closeEntrySheet(); return; }
+    // The ending sheet, the same way — it opens over the routine runner,
+    // Tracking and the weekly review, and peels before all three.
+    if (endSheet.open) { closeEndSheet(); return; }
     // A dangerous-writing session swallows Esc entirely — its own keydown
     // handler treats Esc as the abort, and nothing underneath may act on it.
     if (dwView.open) return;
@@ -6223,6 +6290,180 @@ function renderEntrySheet() {
   input.focus();
 }
 
+// THE NIGHT'S ENTRY, SAVED WITHOUT CREDITING THE STEP. The journal page holds
+// four fields and an experiment lifecycle beside them, and every act in that
+// lifecycle repaints the page — so the typed night is written to its own store
+// first, the way wireNotesAutosave flushes before anything can take the screen.
+// Crediting the step is a different statement (`#fr-done` makes it, and only
+// after the habit marks it demands), which is why this is not it.
+async function saveJournalDraft(el) {
+  const bottleneck = el.querySelector('#fr-jn-bottleneck');
+  if (!bottleneck) return;                       // not the journal page
+  // The 1-7 group only — `.fr-rate-on` alone would find a habit's mark once the
+  // rating is unanswered, and parseInt('good') is not a rating.
+  const rate = el.querySelector('[data-rate].fr-rate-on');
+  const entry = {
+    bottleneck: bottleneck.value,
+    problem: el.querySelector('#fr-jn-problem').value,
+    active_experiment: el.querySelector('#fr-jn-exp').value,
+    rating: rate ? parseInt(rate.dataset.rate) : null,
+  };
+  // The RUN's day, not the clock's — the night belongs to the night even when it
+  // is written after midnight (same rule as creditFlowStep).
+  await apiSend(`/api/journal/${runDay()}`, 'PATCH', entry);
+  // So the repaint under it shows what was typed rather than what was loaded.
+  flowRunView.journal = Object.assign({}, flowRunView.journal || {}, entry);
+}
+
+// ── ENDING one thing, in a sheet ──────────────────────────────
+//
+// Ending an experiment or a habit is a DECISION, so it happens in a
+// clarify-shaped sheet like every other decision — and behind three doors that
+// share it: the nightly routine's journal page, Tracking, and the weekly
+// review. All three used to ask with window.prompt(), which is not a gesture
+// the device this app is shaped for has: no touch target, no theme, no place in
+// the Esc ladder, and in the pywebview shell a prompt the host declines comes
+// back null, which the callers read as Cancel — the button did nothing and said
+// nothing.
+//
+// The line it asks for is the EVIDENCE the weekly review judges, so the sheet
+// requires it where the review will need it (the server refuses a blank one
+// too) and refuses with a toast, never only in the foot, where the keyboard is.
+const endSheet = { open: false, spec: null };
+
+function openEndSheet(spec) {
+  endSheet.open = true;
+  endSheet.spec = spec;
+  renderEndSheet();
+}
+
+function closeEndSheet() {
+  endSheet.open = false;
+  endSheet.spec = null;
+  document.getElementById('ex-sheet').classList.add('hidden');
+  document.getElementById('ex-sheet-backdrop').classList.add('hidden');
+}
+
+function renderEndSheet() {
+  const sheet = document.getElementById('ex-sheet');
+  const back = document.getElementById('ex-sheet-backdrop');
+  const spec = endSheet.spec;
+  sheet.classList.remove('hidden');
+  back.classList.remove('hidden');
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">${escHtml(spec.title)}</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="ex-close">✕</button>
+    </div>
+    <div class="ex-subject">${escHtml(spec.subject)}</div>
+    ${spec.meta ? `<div class="ex-meta">${escHtml(spec.meta)}</div>` : ''}
+    <div class="cl-sec"><span class="cl-label">${escHtml(spec.label)}</span></div>
+    <div class="cl-action-wrap">
+      <input type="text" class="cl-action" id="ex-note"
+        placeholder="${escHtml(spec.placeholder || '')}" autocomplete="off">
+    </div>
+    ${spec.next ? `
+    <div class="cl-sec"><span class="cl-label">${escHtml(spec.next.label)}</span></div>
+    <div class="cl-action-wrap">
+      <input type="text" class="cl-action" id="ex-next"
+        placeholder="${escHtml(spec.next.placeholder || '')}" autocomplete="off">
+    </div>
+    ${spec.next.hint ? `<div class="cl-donow">${escHtml(spec.next.hint)}</div>` : ''}` : ''}
+    <div class="cl-row">
+      ${spec.actions.map((a, i) =>
+        `<button class="cl-pill" data-exdo="${i}">${escHtml(a.label)}</button>`).join('')}
+      <button class="cl-pill" id="ex-cancel">Cancel</button>
+    </div>`;
+
+  const note = sheet.querySelector('#ex-note');
+  const nextField = sheet.querySelector('#ex-next');
+  const run = async i => {
+    const text = note.value.trim();
+    // A refusal has to be visible where the thumb is, not only in the foot.
+    if (spec.required && !text) { toast(spec.requireHint || 'One line first'); return; }
+    if (await spec.actions[i].run(text, nextField ? nextField.value.trim() : '')) closeEndSheet();
+  };
+  sheet.querySelectorAll('[data-exdo]').forEach(b =>
+    b.addEventListener('click', () => run(parseInt(b.dataset.exdo))));
+  sheet.querySelector('#ex-close').addEventListener('click', closeEndSheet);
+  sheet.querySelector('#ex-cancel').addEventListener('click', closeEndSheet);
+  back.addEventListener('click', closeEndSheet);
+  [note, nextField].forEach(f => {
+    if (!f) return;
+    f.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.stopPropagation();
+        // Enter commits only where there is ONE end to commit to. With two
+        // (weekly review / drop) it moves on instead: guessing which end you
+        // meant is the one thing this sheet must not do.
+        if (spec.actions.length === 1) run(0);
+        else if (f === note && nextField) nextField.focus();
+      } else if (e.key === 'Escape') {
+        e.stopPropagation();
+        if (f.value) { f.value = ''; return; }   // peel the text first
+        closeEndSheet();
+      }
+    });
+  });
+  note.focus();
+}
+
+// ENDING ONE EXPERIMENT AND STARTING TOMORROW'S IS ONE ACT (2026-08-19,
+// Quentin's instruction). One runs at a time, so the next can only start once
+// this one is closed — and the night you close it is the night you decide the
+// next one. The server does both in the ONE patch, which is also why this works
+// from the journal page without submitting the night: the experiment lifecycle
+// and the journal entry are separate stores, and the sheet touches only the
+// first. `after` repaints whichever surface opened the sheet.
+function endExperimentSheet(ex, day, after) {
+  openEndSheet({
+    title: 'End the experiment',
+    subject: ex.content,
+    meta: ex.started_on ? `running since ${ex.started_on}` : '',
+    label: 'How did it resolve?',
+    placeholder: 'one line — the review judges this',
+    required: true,
+    requireHint: 'One line on how it resolved — that line is what the review judges',
+    next: {
+      label: 'Tomorrow’s experiment',
+      placeholder: 'change one cue, one cost, or one reward',
+      hint: 'Optional, and it starts as soon as this one ends — nothing else on the page has to be saved first.',
+    },
+    actions: [
+      { label: 'End it → weekly review', run: (n, nx) => endExperiment(ex, day, n, nx, false, after) },
+      { label: 'End it → drop', run: (n, nx) => endExperiment(ex, day, n, nx, true, after) },
+    ],
+  });
+}
+
+async function endExperiment(ex, day, note, next, drop, after) {
+  const body = { resolution: note, date: day };
+  if (drop) body.outcome = 'drop';
+  if (next) body.next = next;
+  const res = await apiSend(`/api/habit-experiments/${ex.id}`, 'PATCH', body);
+  if (!res.ok) { toast((await res.json()).error || 'could not end it'); return false; }
+  const row = await res.json().catch(() => ({}));
+  const started = (row && row.next_experiment) || null;
+  pushUndo(started ? `ended the experiment and started “${started.content}”`
+                   : (drop ? 'dropped the experiment' : 'sent the experiment to the review'),
+    async () => {
+      // The new one closes FIRST: one runs at a time, and reopen refuses while
+      // another is running — an undo must not be the way around that rule.
+      if (started) await apiSend(`/api/habit-experiments/${started.id}`, 'PATCH',
+                                 { resolution: 'undone', outcome: 'drop' });
+      // One call whichever end it was: reopen wipes the resolution, any
+      // evaluation, and any habit the promotion minted.
+      const r = await apiSend(`/api/habit-experiments/${ex.id}/reopen`, 'POST');
+      if (!r.ok) toast((await r.json()).error || 'could not reopen it');
+      if (after) await after();
+    });
+  toast(started ? `running: ${started.content}`
+                : (drop ? 'dropped' : 'waiting for the weekly review'));
+  if (after) await after();
+  return true;
+}
+
 // ── The routine RUNNER: one step per page ─────────────────────
 //
 // Pages credit into flowRunView.steps ({step_id: 'done'|'soft'}); every
@@ -6502,7 +6743,10 @@ function renderFlowRun() {
             continues: keep it (do nothing), reword it, or end it. Ending asks
             which end it was, because "graduate" and "drop" are different claims:
             graduate hands it to the weekly review to judge, drop closes it now
-            and never queues it. */''}
+            and never queues it. Both ends, the line the review judges, and
+            TOMORROW'S experiment are one sheet (2026-08-19) — the same sheet
+            Tracking and the review open, and ending one no longer costs you
+            the half-written night underneath. */''}
       <div class="fr-exp">
         <div class="fr-exp-head">${running ? 'Tomorrow’s experiment' : 'Start an experiment'}</div>
         ${running ? `
@@ -6510,8 +6754,7 @@ function renderFlowRun() {
             title="Reword it and press keep — same variable, said better">
           <div class="cl-row">
             <button class="cl-pill" id="fr-exp-keep">Keep it running</button>
-            <button class="cl-pill" id="fr-exp-grad">End it → weekly review</button>
-            <button class="cl-pill" id="fr-exp-drop">End it → drop</button>
+            <button class="cl-pill" id="fr-exp-end">End it…</button>
           </div>
           <div class="fr-note fr-exp-hint">Keeping it is the default — you can just carry on.</div>`
         : `
@@ -6891,18 +7134,7 @@ function renderFlowRun() {
         await apiSend(`/api/habits/${r.dataset.habit}/mark`, 'POST', body);
       }
     }
-    if (s.kind === 'journal_night') {
-      // The run's day, not the clock's — the night's entry belongs to the night
-      // even when it is written after midnight (same rule as creditFlowStep).
-      const today = runDay();
-      const rate = el.querySelector('.fr-rate-on');
-      await apiSend(`/api/journal/${today}`, 'PATCH', {
-          bottleneck: el.querySelector('#fr-jn-bottleneck').value,
-          problem: el.querySelector('#fr-jn-problem').value,
-          active_experiment: el.querySelector('#fr-jn-exp').value,
-          rating: rate ? parseInt(rate.dataset.rate) : null,
-        });
-    }
+    if (s.kind === 'journal_night') await saveJournalDraft(el);
     creditFlowStep(s, 'done');
   });
   el.querySelectorAll('.fr-rate').forEach(b => b.addEventListener('click', () => {
@@ -6917,7 +7149,14 @@ function renderFlowRun() {
   // `running` above is scoped to the page-building branch; the handlers run out
   // here, so the experiment is re-read from the view state they share.
   const expRunning = ((flowRunView.habits || {}).experiments || {}).running || null;
+  // HALF-TYPED TEXT IS DATA, here too: every one of these repaints the page,
+  // and the page holds the night you were in the middle of writing. So the
+  // draft is written to its own store first — which is not the same thing as
+  // CREDITING the step: ending an experiment and starting the next must not
+  // require finishing the journal, and finishing the journal is what #fr-done
+  // is for.
   const expRefresh = async () => {
+    await saveJournalDraft(el);
     flowRunView.habits = await fetch('/api/habits').then(r => r.json())
       .catch(() => flowRunView.habits);
     renderFlowRun();
@@ -6952,31 +7191,14 @@ function renderFlowRun() {
     toast('reworded — still running');
     await expRefresh();
   });
-  const expEnd = async drop => {
-    // The resolution is the EVIDENCE the review judges, so it is written now
-    // rather than reconstructed a week later. Dropping still asks for it: the
-    // ledger is the point even when the answer was no.
-    const note = prompt(drop ? 'Why drop it? One line for the ledger.'
-                             : 'How did it resolve? One line for the review.');
-    if (note == null) return;
-    const body = { resolution: note };
-    if (drop) body.outcome = 'drop';
-    const res = await apiSend(`/api/habit-experiments/${expRunning.id}`, 'PATCH', body);
-    if (!res.ok) { toast((await res.json()).error || 'could not end it'); return; }
-    pushUndo(drop ? 'dropped the experiment' : 'sent the experiment to the review', async () => {
-      // One call whichever end it was: reopen wipes the resolution, any
-      // evaluation, and any habit the promotion minted.
-      const r = await apiSend(`/api/habit-experiments/${expRunning.id}/reopen`, 'POST');
-      if (!r.ok) toast((await r.json()).error || 'could not reopen it');
-      await expRefresh();
-    });
-    toast(drop ? 'dropped' : 'waiting for the weekly review');
-    await expRefresh();
-  };
-  const expGrad = el.querySelector('#fr-exp-grad');
-  if (expGrad) expGrad.addEventListener('click', () => expEnd(false));
-  const expDrop = el.querySelector('#fr-exp-drop');
-  if (expDrop) expDrop.addEventListener('click', () => expEnd(true));
+  // Both ends live in the one sheet, which also asks for tomorrow's experiment
+  // — the night you end one is the night you decide the next.
+  const expEnd = el.querySelector('#fr-exp-end');
+  if (expEnd) expEnd.addEventListener('click', async () => {
+    await saveJournalDraft(el);           // before the sheet takes the screen
+    // The RUN's day, so a night finished after midnight resolves the night.
+    endExperimentSheet(expRunning, runDay(), expRefresh);
+  });
 
   el.querySelectorAll('[data-dset]').forEach(b => b.addEventListener('click', async () => {
     const row = b.closest('[data-dtag]');
@@ -9478,7 +9700,7 @@ function renderHabitPanel(hb) {
   if (ex.running) {
     rows.push(`<div class="jh-row"><span class="jh-label">experiment</span>
       ${escHtml(ex.running.content)} <span class="jh-since">since ${escHtml(ex.running.started_on)}</span>
-      <button class="cl-pill" id="jh-resolve" data-id="${ex.running.id}">resolve</button></div>`);
+      <button class="cl-pill" id="jh-resolve">end it</button></div>`);
   } else {
     rows.push(`<div class="jh-row"><span class="jh-label">experiment</span>
       <input type="text" id="jh-exp-new" class="gr-ht-input"
@@ -9509,14 +9731,10 @@ function renderHabitPanel(hb) {
     renderHabitPanel(await fetch('/api/habits').then(r => r.json()));
   });
   const resolve = el.querySelector('#jh-resolve');
-  if (resolve) resolve.addEventListener('click', async () => {
-    // The resolution is the EVIDENCE the review's verbs judge, so it is asked
-    // for here rather than reconstructed from memory a week later.
-    const note = prompt('How did it resolve? One line.');
-    if (note == null) return;
-    await apiSend(`/api/habit-experiments/${resolve.dataset.id}`, 'PATCH', { resolution: note });
-    renderHabitPanel(await fetch('/api/habits').then(r => r.json()));
-  });
+  // The same sheet the routine uses — one ending, wherever you are standing,
+  // and the same offer of tomorrow's experiment with it.
+  if (resolve) resolve.addEventListener('click', () => endExperimentSheet(ex.running, wallDay(),
+    async () => renderHabitPanel(await fetch('/api/habits').then(r => r.json()))));
 }
 
 // --- nightly-fill window + 10-min hard-capped session ---
@@ -12719,6 +12937,12 @@ const clarifyView = {
   // defer it to a date, trash it) and a template has no today. So the verbs,
   // the Or row and the show-on/due row drop out and one Save remains.
   forOccasion: null,
+  // A RECURRING PROJECT'S template (2026-08-19). Non-null = the sheet is
+  // editing a `recurring_task` row that seeds a PROJECT — the same shape as
+  // template mode above, for the same reason: an outcome that comes back every
+  // year is decided in the words an outcome is always decided in, and Settings
+  // was the only place that could hold the schedule. { id } or { id: null }.
+  forRecurring: null,
   // A PROJECT is a different decision from an action, so the sheet is a
   // different sheet: an outcome has no next-physical-action, no context, no
   // parent project and nothing to place in a day. What it does have is a
@@ -12838,6 +13062,98 @@ async function openClarifyForOccasion(occ, item, after) {
   clarifyView.showTime = '';
   renderClarify();
   setTimeout(() => { const el = document.getElementById('cl-action'); if (el) el.focus(); }, 30);
+}
+
+// A RECURRING PROJECT'S template, written the way every project is written.
+// `task` null = a new one. There is no inbox_item here at all — the sheet is
+// editing the recurring_task row — so the queue stays empty and renderClarify
+// is told to stay open by forRecurring rather than by an item.
+async function openClarifyForRecurring(task, after) {
+  await clarifyLoadAux();
+  clarifyView.queue = [];
+  clarifyView.total = 0;
+  clarifyView.single = false;
+  clarifyView.external = false;
+  clarifyView.open = true;
+  clarifyView.after = after || null;
+  clarifyResetItem();
+  const defArea = (state.areas || []).find(a => a.is_default && a.active && a.type === 'standard');
+  clarifyView.forRecurring = {
+    id: task ? task.id : null,
+    interval: task ? (task.interval || 12) : 12,
+    anchor: task ? task.anchor_date : recNextAnchor(),
+    dueMd: task ? (task.deadline_md || '') : '',
+    active: task ? !!task.active : true,
+  };
+  clarifyView.action = task ? task.name : '';
+  clarifyView.notes = task ? (task.notes || '') : '';
+  clarifyView.areaId = (task && task.area_id) || (defArea ? defArea.id : null);
+  // 'active' is the branch that renders the filing chips and no date row; the
+  // dates here are the SCHEDULE's, and saveClarifyRecurring is what runs.
+  clarifyView.verb = 'active';
+  clarifyView.project = true;
+  renderClarify();
+  setTimeout(() => { const el = document.getElementById('cl-action'); if (el) el.focus(); }, 30);
+}
+
+// The default first occurrence: the same day next month, so a new template is
+// dated forward rather than into a month that has already gone (which
+// _recurring_due reads as "never").
+function recNextAnchor() {
+  const d = new Date();
+  d.setMonth(d.getMonth() + 1);
+  return formatDateYMD(d);
+}
+
+// 'MM-DD' as a person reads it. The YEAR is deliberately absent: the rule is a
+// day of the year, and the year it lands in is decided when it is seeded.
+function recDueLabel(md) {
+  if (!md) return '';
+  const [m, d] = String(md).split('-').map(x => parseInt(x));
+  if (!m || !d) return '';
+  return new Date(2001, m - 1, d).toLocaleDateString(undefined,
+    { day: 'numeric', month: 'long' });
+}
+
+// A date input insists on a year; the RULE has none. The first occurrence's year
+// is the one to show — it is the year the first deadline will land in for any
+// due date at or after the anchor's, and it reads as a date instead of as a
+// placeholder from 2001. It is never saved: recMdFromDate throws the year away,
+// and the hint under the row says the year is not part of the rule. (Which year
+// a given occurrence is due in is the SERVER's answer, resolved at seed time —
+// nothing here re-derives it.)
+function recDueInputValue(rec) {
+  const year = (rec.anchor || '').slice(0, 4) || String(new Date().getFullYear());
+  return `${year}-${rec.dueMd}`;
+}
+
+// The date input speaks in whole dates, the rule is a month and a day; the year
+// the picker insists on is dropped on the way in and never shown again.
+function recMdFromDate(ymd) {
+  return ymd && ymd.length >= 10 ? ymd.slice(5, 10) : '';
+}
+
+async function saveClarifyRecurring() {
+  const rec = clarifyView.forRecurring;
+  const name = clarifyView.action.trim();
+  if (!name) { toast('Name the outcome first'); return; }
+  if (!clarifyView.areaId) { toast('Pick an area to file it under'); return; }
+  if (!rec.anchor) { toast('Say when the first one starts'); return; }
+  const body = {
+    name, area_id: clarifyView.areaId, kind: 'monthly_date',
+    interval: rec.interval, anchor_date: rec.anchor, spawn: 'project',
+    deadline_md: rec.dueMd || null, notes: clarifyView.notes,
+  };
+  const res = rec.id
+    ? await apiSend(`/api/recurring/${rec.id}`, 'PATCH',
+                    Object.assign({ active: rec.active ? 1 : 0 }, body))
+    : await apiSend('/api/recurring', 'POST', body);
+  if (!res.ok) {
+    toast((await res.json().catch(() => ({}))).error || 'Could not save it');
+    return;
+  }
+  toast(rec.id ? 'Saved' : `"${name}" comes back ${recPeriodLabel(rec.interval)}`);
+  closeClarify();
 }
 
 // THE LAST DOMAIN YOU FILED INTO, for the rest of the day.
@@ -13005,7 +13321,7 @@ function closeClarify() {
   // this sheet decides about a template already discards on Esc. Saving only
   // the notes would be the one field that leaked out of a declined edit.
   const item = clarifyView.queue[0];
-  if (item && !clarifyView.external && !clarifyView.forOccasion
+  if (item && !clarifyView.external && !clarifyView.forOccasion && !clarifyView.forRecurring
       && clarifyView.notes !== (item.notes || '')) {
     undoablePatch(item, ['notes'], `edited notes on "${item.content}"`);
     patchInboxItem(item.id, { notes: clarifyView.notes });
@@ -13017,6 +13333,7 @@ function closeClarify() {
   clarifyView.external = false;
   clarifyView.forProject = null;
   clarifyView.forOccasion = null;
+  clarifyView.forRecurring = null;
   clarifyView.after = null;
   document.getElementById('clarify-sheet').classList.add('hidden');
   document.getElementById('clarify-backdrop').classList.add('hidden');
@@ -13036,6 +13353,7 @@ async function fileClarify(bucket, refListId) {
   // A template has no bucket — every exit on this sheet is a statement about
   // today, and the whole point of a template is that it has no today. Caught
   // before anything else so a stray keyboard exit (S, R, ⌫) can't file one.
+  if (clarifyView.forRecurring) { await saveClarifyRecurring(); return; }
   if (clarifyView.forOccasion) { await fileClarifyOccasion(); return; }
   if (clarifyView.external) { await fileClarifyExternal(bucket, refListId); return; }
   const startNow = bucket === 'do' && clarifyView.doVariant === 'progress';
@@ -13288,7 +13606,9 @@ function paintClarifyBusy(busy) {
 function renderClarify() {
   const sheet = document.getElementById('clarify-sheet');
   const item = clarifyView.queue[0];
-  if (!clarifyView.open || (!item && !clarifyView.external)) { closeClarify(); return; }
+  if (!clarifyView.open || (!item && !clarifyView.external && !clarifyView.forRecurring)) {
+    closeClarify(); return;
+  }
   document.getElementById('engage-body').classList.add('eg-dimmed');
   document.getElementById('clarify-backdrop').classList.remove('hidden');
   sheet.classList.remove('hidden');
@@ -13300,7 +13620,8 @@ function renderClarify() {
   // The project sheet: an outcome, not an action. No next-physical-action, no
   // contexts, no parent project, nothing to drop into a day — the decision is
   // just its state, its deadline and where it belongs.
-  const isProj = clarifyView.project && !clarifyView.external && !!item;
+  const rec = clarifyView.forRecurring;
+  const isProj = clarifyView.project && !clarifyView.external && (!!item || !!rec);
   const tpl = !!clarifyView.forOccasion;
   // "Do now" means two different things and only one of them was buildable:
   // FINISH it (the two-minute rule — filing deletes it) or START it. Starting
@@ -13320,7 +13641,44 @@ function renderClarify() {
     `<button class="cl-verb${verb === v ? ' cl-verb-on' : ''}" data-verb="${v}">${label} <span class="cl-key">${key}</span></button>`;
 
   let middle = '';
-  if (isProj) {
+  if (rec) {
+    // The SCHEDULE, in the place a project sheet asks about dates. Two dates,
+    // which is the whole reason this is not a recurring action: the day it
+    // makes sense to START (taxes: the forms are all in by 31 January) and the
+    // day it is DUE (15 April). One field each, and the due rule says which
+    // real date it will resolve to so the month-and-day is never a guess.
+    middle = `
+      <div class="cl-sec"><span class="cl-label">Comes back</span>
+        <span class="cl-hint">a new one appears, this often</span></div>
+      <div class="cl-chips">
+        ${REC_PERIODS.map(p => `<button class="cl-chip${
+          rec.interval === p.n ? ' cl-chip-on' : ''}" data-recper="${p.n}">${p.label}</button>`).join('')}
+      </div>
+      <div class="cl-row">
+        <span class="cl-label">First one</span>
+        <input type="date" id="cl-rec-anchor" class="cl-date"
+          title="The day it first appears — and the day of the month it uses from then on"
+          value="${escHtml(rec.anchor || '')}">
+        <span class="cl-label">Due</span>
+        <input type="date" id="cl-rec-due" class="cl-date"
+          title="Only the month and day are kept — the year is decided when it appears"
+          value="${escHtml(rec.dueMd ? recDueInputValue(rec) : '')}">
+        ${rec.dueMd ? '<button id="cl-rec-due-x" class="cl-x" title="No deadline">✕</button>' : ''}
+      </div>
+      <div class="cl-row">
+        <span class="cl-hint">${rec.dueMd
+          ? `due ${escHtml(recDueLabel(rec.dueMd))}, in whichever year it appears`
+          : 'no deadline: it appears and waits to be decomposed'}</span>
+      </div>
+      <div class="cl-sec"><span class="cl-label">State</span>
+        <span class="cl-hint">paused: nothing new is seeded</span></div>
+      <div class="cl-chips">
+        <button class="cl-chip${rec.active ? ' cl-chip-on' : ''}" data-recact="1">Active</button>
+        <button class="cl-chip${rec.active ? '' : ' cl-chip-on'}" data-recact="0">Paused</button>
+      </div>
+      <div class="cl-row"><span class="cl-hint">Paused stops new ones being seeded.
+        Any already filed stay exactly where they are.</span></div>`;
+  } else if (isProj) {
     middle = verb === 'trash'
       ? '<div class="cl-donow">Not a real outcome. Deleting it splices its actions up one level.</div>'
       : `<div class="cl-row">
@@ -13413,19 +13771,30 @@ function renderClarify() {
     <div class="cl-sec"><span class="cl-label">Notes</span><span class="cl-hint">support material — optional</span></div>
     <textarea id="cl-notes" class="cl-notes" rows="2"
       placeholder="Links, thinking… markdown ok">${escHtml(clarifyView.notes)}</textarea>`;
-  const acts = isProj
+  // A recurring project's TEMPLATE is a project with no item behind it, so
+  // there is nothing to count actions for. Guarded on `item`, not on isProj: an
+  // empty state.projects hid this for exactly as long as the scratch db had no
+  // projects in it, which is the worst way for a crash to wait.
+  const acts = isProj && item
     ? ((state.projects || []).find(p => p.id === item.id) || {}).action_count
     : null;
   sheet.innerHTML = `
     <div class="cl-head">
-      <span class="cl-eyebrow">${tpl ? 'Occasion' : `Clarify${isProj ? ' · project' : ''}`}</span>
-      <span class="cl-count">${tpl ? escHtml(clarifyView.forOccasion.name) : ext
+      <span class="cl-eyebrow">${rec ? 'Recurring · project'
+        : tpl ? 'Occasion' : `Clarify${isProj ? ' · project' : ''}`}</span>
+      <span class="cl-count">${rec ? escHtml(recPeriodLabel(rec.interval))
+        : tpl ? escHtml(clarifyView.forOccasion.name) : ext
         ? (clarifyView.forProject ? 'new action' : 'outside the app')
         : `${n} of ${clarifyView.total}`}</span>
       <span class="cl-spacer"></span>
       <span class="cl-hint">one at a time · esc / tap off</span>
     </div>
-    ${tpl ? `
+    ${rec ? `
+    <div class="cl-item">
+      <div class="cl-title">${escHtml(clarifyView.action || 'An outcome that comes back')}</div>
+      <div class="cl-captured">a project is seeded on the day it comes round, with
+        these notes and this deadline — then you decompose it as you would any other</div>
+    </div>` : tpl ? `
     <div class="cl-item">
       <div class="cl-title">${item ? escHtml(item.content) : 'A standing action'}</div>
       <div class="cl-captured">every time an event matches this occasion, a copy of
@@ -13450,36 +13819,39 @@ function renderClarify() {
       <button class="cl-pill cl-pill-on" id="cl-run-flow">${playMark()} Run it</button>
       <span class="cl-hint">this action is a routine — running it is how it gets done</span>
     </div>` : ''}
-    ${isProj ? `<div class="cl-row">
+    ${isProj && !rec ? `<div class="cl-row">
       <button class="cl-pill" id="cl-self-add">+ next action</button>
       ${acts >= 2 ? '<button class="cl-pill" id="cl-self-chain">⛓ order them</button>' : ''}
     </div>` : ''}
     <div class="cl-sec"><span class="cl-q">${isProj
       ? "What's the outcome?" : "What's the next physical action?"}</span></div>
     <div class="cl-action-wrap"><input type="text" id="cl-action" class="cl-action" value="${escHtml(clarifyView.action)}" autocomplete="off"${ext ? ' placeholder="e.g. Reply to Sam about the venue"' : ''}></div>
-    ${tpl ? '' : `<div class="cl-verbs">${isProj
+    ${tpl || rec ? '' : `<div class="cl-verbs">${isProj
       ? `${verbBtn('active', 'Active', 'A')}${verbBtn('defer', 'Defer', 'F')}${verbBtn('trash', 'Trash', '⌫')}`
       : `${verbBtn('do', 'Do now', 'D')}${verbBtn('delegate', 'Delegate', 'G')}${verbBtn('defer', 'Defer', 'F')}`}</div>`}
     ${middle}
     ${notesHtml}
-    ${tpl ? '' : `<div class="cl-row cl-or">
+    ${tpl || rec ? '' : `<div class="cl-row cl-or">
       <span class="cl-label">Or</span>
       ${ext || isProj ? '' : `<button class="cl-pill" id="cl-trash">Trash <span class="cl-key">⌫</span></button>`}
       <button class="cl-pill" id="cl-someday">Someday <span class="cl-key">S</span></button>
       <button class="cl-pill${clarifyView.refOpen ? ' cl-pill-on' : ''}" id="cl-reference">Reference <span class="cl-key">R</span></button>
     </div>`}
-    ${clarifyView.refOpen && !tpl ? `<div class="cl-chips cl-ref-row">
+    ${clarifyView.refOpen && !tpl && !rec ? `<div class="cl-chips cl-ref-row">
       ${clarifyView.refLists.map(l => `<button class="cl-chip" data-reflist="${l.id}">${escHtml(l.name)}</button>`).join('')}
       <input type="text" id="cl-ref-new" class="cl-chip-input" placeholder="+ new list">
     </div>` : ''}
     <div class="cl-foot">
-      <span class="cl-then">${tpl ? `Every ${escHtml(clarifyView.forOccasion.name)}`
+      <span class="cl-then">${rec ? `First one ${escHtml(rec.anchor || '—')}`
+        : tpl ? `Every ${escHtml(clarifyView.forOccasion.name)}`
         : ext ? 'Repeat until your head is empty'
         : next ? `Then: ${escHtml(next.content)}`
         : clarifyView.single ? 'Then: back to the day' : 'Then: anything outside the app'}</span>
       ${tpl && item ? '<button id="cl-occ-del" class="cl-pill oc-del">Delete</button>' : ''}
+      ${rec && rec.id ? '<button id="cl-rec-del" class="cl-pill oc-del">Delete</button>' : ''}
       ${ext && !tpl ? '<button id="cl-ext-done" class="cl-pill">Done</button>' : ''}
-      <button id="cl-file">${tpl ? (item ? 'Save ⏎' : 'Add it ⏎') : ext ? 'Add it ⏎' : 'File it ⏎'}</button>
+      <button id="cl-file">${rec ? (rec.id ? 'Save ⏎' : 'Add it ⏎')
+        : tpl ? (item ? 'Save ⏎' : 'Add it ⏎') : ext ? 'Add it ⏎' : 'File it ⏎'}</button>
     </div>`;
 
   sheet.querySelectorAll('[data-dovar]').forEach(b => b.addEventListener('click', () => {
@@ -13494,6 +13866,39 @@ function renderClarify() {
     renderClarify();
   }));
   sheet.querySelector('#cl-action').addEventListener('input', e => { clarifyView.action = e.target.value; });
+  sheet.querySelectorAll('[data-recper]').forEach(b => b.addEventListener('click', () => {
+    clarifyView.forRecurring.interval = parseInt(b.dataset.recper);
+    renderClarify();
+  }));
+  sheet.querySelectorAll('[data-recact]').forEach(b => b.addEventListener('click', () => {
+    clarifyView.forRecurring.active = b.dataset.recact === '1';
+    renderClarify();
+  }));
+  const recAnchor = sheet.querySelector('#cl-rec-anchor');
+  if (recAnchor) recAnchor.addEventListener('change', e => {
+    clarifyView.forRecurring.anchor = e.target.value;
+    renderClarify();
+  });
+  const recDue = sheet.querySelector('#cl-rec-due');
+  if (recDue) recDue.addEventListener('change', e => {
+    clarifyView.forRecurring.dueMd = recMdFromDate(e.target.value);
+    renderClarify();
+  });
+  const recDueX = sheet.querySelector('#cl-rec-due-x');
+  if (recDueX) recDueX.addEventListener('click', () => {
+    clarifyView.forRecurring.dueMd = '';
+    renderClarify();
+  });
+  const recDel = sheet.querySelector('#cl-rec-del');
+  if (recDel) recDel.addEventListener('click', async () => {
+    // A settings kind owes all three verbs, and this is the third. Occurrences
+    // already filed are ordinary projects and are left alone — the same words
+    // the se-sheet uses for a recurring task.
+    if (!confirm('Delete this recurring project? Any already seeded stay.')) return;
+    await apiSend(`/api/recurring/${clarifyView.forRecurring.id}`, 'DELETE');
+    toast('Deleted');
+    closeClarify();
+  });
   sheet.querySelectorAll('.cl-chip[data-tag]').forEach(b => b.addEventListener('click', () => {
     const t = b.dataset.tag;
     if (clarifyView.tags.has(t)) clarifyView.tags.delete(t);

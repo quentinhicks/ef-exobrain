@@ -448,15 +448,38 @@ def get_recurring():
     return jsonify(storage.get_recurring_tasks())
 
 
+RECURRING_KINDS = ('weekly', 'monthly_nth', 'monthly_date', 'every_n_days')
+
+# 'MM-DD', and nothing else — the deadline rule of a recurring occurrence.
+# Checked here rather than trusted, because a malformed one would resolve to no
+# deadline at all and look like a feature that quietly does not work.
+def _deadline_md(value):
+    if value in (None, ''):
+        return None, None
+    m = re.fullmatch(r'(\d{1,2})-(\d{1,2})', str(value).strip())
+    if not m:
+        return None, 'deadline_md must be MM-DD'
+    month, dom = int(m.group(1)), int(m.group(2))
+    if not (1 <= month <= 12 and 1 <= dom <= 31):
+        return None, 'deadline_md must be a real month and day'
+    return '%02d-%02d' % (month, dom), None
+
+
 @app.route('/api/recurring', methods=['POST'])
 def post_recurring():
     data = request.get_json()
-    if data.get('kind') not in ('weekly', 'monthly_nth', 'monthly_date', 'every_n_days'):
+    if data.get('kind') not in RECURRING_KINDS:
         return jsonify({'error': 'invalid kind'}), 400
+    if data.get('spawn') not in (None, 'item', 'project'):
+        return jsonify({'error': 'spawn must be item or project'}), 400
+    md, err = _deadline_md(data.get('deadline_md'))
+    if err:
+        return jsonify({'error': err}), 400
     task = storage.create_recurring_task(
         data['name'], data['area_id'], data['kind'],
         data.get('days_of_week'), data.get('nth'), data.get('weekday'),
-        data.get('interval') or 1, data['anchor_date'], data.get('project_id')
+        data.get('interval') or 1, data['anchor_date'], data.get('project_id'),
+        spawn=data.get('spawn') or 'item', deadline_md=md, notes=data.get('notes')
     )
     return jsonify(task), 201
 
@@ -465,10 +488,26 @@ def post_recurring():
 def patch_recurring(id):
     data = request.get_json()
     kwargs = {}
-    if 'active' in data:
-        kwargs['active'] = data['active']
-    if 'project_id' in data:
-        kwargs['project_id'] = data['project_id']
+    # The whole editable set, because the clarify sheet a recurring PROJECT is
+    # edited in saves its wording, area, notes, deadline rule and schedule at
+    # once. storage.RECURRING_FIELDS is the list; this is the validation.
+    for key in ('active', 'project_id', 'name', 'area_id', 'days_of_week', 'nth',
+                'weekday', 'interval', 'anchor_date', 'notes'):
+        if key in data:
+            kwargs[key] = data[key]
+    if 'kind' in data:
+        if data['kind'] not in RECURRING_KINDS:
+            return jsonify({'error': 'invalid kind'}), 400
+        kwargs['kind'] = data['kind']
+    if 'spawn' in data:
+        if data['spawn'] not in ('item', 'project'):
+            return jsonify({'error': 'spawn must be item or project'}), 400
+        kwargs['spawn'] = data['spawn']
+    if 'deadline_md' in data:
+        md, err = _deadline_md(data['deadline_md'])
+        if err:
+            return jsonify({'error': err}), 400
+        kwargs['deadline_md'] = md
     if not kwargs:
         return jsonify({'error': 'nothing to update'}), 400
     task = storage.update_recurring_task(id, **kwargs)
@@ -1477,39 +1516,6 @@ def export_blocks_ics():
     return jsonify({'path': path})
 
 
-# --- Experiments ---
-
-@app.route('/api/experiments')
-def list_experiments():
-    return jsonify(storage.get_experiments())
-
-
-@app.route('/api/experiments', methods=['POST'])
-def create_experiment():
-    data = request.get_json()
-    if not data.get('title'):
-        return jsonify({'error': 'title is required'}), 400
-    if not data.get('hypothesis'):
-        return jsonify({'error': 'hypothesis is required'}), 400
-    if not data.get('prediction'):
-        return jsonify({'error': 'prediction is required'}), 400
-    if not data.get('started_at'):
-        return jsonify({'error': 'started_at is required'}), 400
-    if data.get('scope', 'operating') == 'operating':
-        existing = storage.get_experiments()
-        if any(e['scope'] == 'operating' and e['status'] == 'active' for e in existing):
-            return jsonify({'error': 'An active operating experiment already exists'}), 400
-    result = storage.create_experiment(data)
-    return jsonify(result), 201
-
-
-@app.route('/api/experiments/<int:id>', methods=['PATCH'])
-def update_experiment(id):
-    data = request.get_json()
-    result = storage.update_experiment(id, data)
-    return jsonify(result)
-
-
 # --- Block Feedback ---
 
 @app.route('/api/journal')
@@ -1628,18 +1634,43 @@ def patch_habit_experiment(id):
         if not content:
             return jsonify({'error': 'content is required'}), 400
         row = storage.rename_habit_experiment(id, content)
-        return jsonify(row) if row else (jsonify({'error': 'no such experiment'}), 404)
+        # Only a RUNNING one can be reworded, and the write says whether it was:
+        # a 200 with the untouched row used to mean "reworded" to every caller.
+        return jsonify(row) if row else (
+            jsonify({'error': 'not running — nothing was reworded'}), 409)
     if 'resolution' in data:
-        row = storage.resolve_habit_experiment(id, (data.get('resolution') or '').strip())
+        # The resolution is the EVIDENCE the weekly review judges, so an empty
+        # one is refused rather than stored: a blank line reaches the review as
+        # "resolved: —", which is the one thing the queue cannot act on. The
+        # sheet asks for it and says so; this is the lock behind the sheet.
+        resolution = (data.get('resolution') or '').strip()
+        if not resolution:
+            return jsonify({'error': 'one line on how it resolved is required'}), 400
+        # WHICH DAY it resolved on comes from the surface that knows: the nightly
+        # routine sends its pinned run day, so an experiment ended at 00:20
+        # resolves on the night it belonged to rather than on the day that just
+        # started. Same day stamps the one that replaces it — the two halves of
+        # one act cannot disagree about when it happened.
+        day = data.get('date') or date_cls.today().isoformat()
+        row = storage.resolve_habit_experiment(id, resolution, day)
         if not row:
-            return jsonify({'error': 'not running'}), 404
+            return jsonify({'error': 'not running — it was already ended'}), 409
         # Dropping happens AT NIGHT as well as at the review: an experiment you
         # already know was a dead end should not have to sit in the review queue
         # to be closed. Resolve-then-evaluate, so there is one lifecycle rather
         # than a second way to end one. 'drop' spends no promotion slot.
         if data.get('outcome') == 'drop':
-            out = storage.evaluate_habit_experiment(id, 'drop')
-            return jsonify((out or {}).get('experiment') or row)
+            out = storage.evaluate_habit_experiment(id, 'drop', day)
+            row = (out or {}).get('experiment') or row
+        # ENDING ONE AND STARTING THE NEXT IS ONE ACT (2026-08-19, Quentin's
+        # instruction): the night you close an experiment is the night you
+        # decide tomorrow's, and one-at-a-time means the new one can only be
+        # started after this one is closed. Done HERE rather than as a second
+        # client call so the ordering is the server's and every surface that
+        # ends an experiment gets the same door — and so a start that lands
+        # while the end failed is impossible.
+        nxt = (data.get('next') or '').strip()
+        row['next_experiment'] = storage.create_habit_experiment(nxt, day) if nxt else None
         return jsonify(row)
     outcome = data.get('outcome')
     if outcome == 'resolved':

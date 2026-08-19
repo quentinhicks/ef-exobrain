@@ -5493,6 +5493,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #sp-sheet-backdrop,
 #ev-sheet-backdrop,
 #en-sheet-backdrop,
+#ex-sheet-backdrop,
 #oc-sheet-backdrop {
   position: fixed;
   inset: 0;
@@ -5510,6 +5511,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #sp-sheet,
 #ev-sheet,
 #en-sheet,
+#ex-sheet,
 #oc-sheet {
   position: fixed;
   left: 50%;
@@ -5980,6 +5982,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #ev-sheet,
 #en-sheet-backdrop,
 #en-sheet,
+#ex-sheet-backdrop,
+#ex-sheet,
 #oc-sheet-backdrop,
 #oc-sheet {
   /* Above the bar, AND above whatever the browser chrome or the keyboard is
@@ -5989,6 +5993,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
      only has to be written once. */
   bottom: calc(var(--gbar-h) + 100% - var(--vvh, 100%));
 }
+
+/* The ending sheet's own two lines: WHAT is being ended and since when. The
+   rest is the clarify vocabulary (.cl-head, .cl-sec, .cl-row, .cl-pill) — a
+   clarify-shaped sheet, not a new grammar. */
+.ex-subject { padding: 10px 14px 0; font-size: 15px; color: var(--text); }
+.ex-meta { padding: 2px 14px 8px; font: 12px var(--font-mono); color: var(--text-secondary); }
 
 /* ── The occasion sheet's own rows ───────────────────────────
    Reuses the clarify vocabulary (.cl-head, .cl-sec, .cl-row, .cl-pill) — this

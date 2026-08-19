@@ -50,6 +50,10 @@ ALLOWED = {
         'client sends it — an answer is a statement about a particular day',
     ('POST', '/api/people/night'):
         'client sends it — the routine states the night it is filling',
+    ('PATCH', '/api/habit-experiments/<int:id>'):
+        'client sends it — the run day for an experiment ended in the nightly '
+        'routine, so resolving one at 00:20 files under the night it ran, and '
+        'the experiment that replaces it starts on that same day',
 
     # These do not file a fact under a day at all — they stamp a CREATION or
     # read a window forward from now. The clock is the honest answer.
