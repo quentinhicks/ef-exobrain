@@ -18,6 +18,17 @@ of a bug that shipped:
                                 wrap by hand. Three bugs, including a block
                                 calendar that compared '23:00' < '01:00' as
                                 strings and so was never active overnight.
+  wallDay() where a dated fact
+  is written                    the same question answered with the CLOCK in
+                                a function whose subject is a RUN. A nightly
+                                routine finished at 02:00 recorded its CRM
+                                fill under the NEW day, so the step that
+                                opened the fill went on saying it was
+                                unfilled, and the night's entries landed on a
+                                day that had not happened yet. Scanned, not
+                                curated: a function counts because it names
+                                one of the dated endpoints, so a new caller
+                                is covered the day it is written.
 
 The accessors' own definitions are the one legitimate use of each, so they are
 allowed by line and nowhere else.
@@ -47,6 +58,34 @@ BANNED = [
      'const DAY_MIN = 1440;'),
 ]
 
+# ── The day a RUN's work is filed under ──────────────────────
+#
+# Every endpoint here takes a DATE saying which day the fact belongs to, so a
+# function naming one is answering "which day" — and inside the routine runner,
+# or any surface the runner RAISES over itself, that answer is runDay(). The
+# list is of ENDPOINTS, not of functions: nothing has to be remembered when a
+# new caller appears, which is the same reason authority_test scans qr_judge
+# instead of keeping a curated list.
+DAY_FILING = [
+    re.compile(r'/api/journal/'),
+    re.compile(r'/api/metrics/entry'),
+    re.compile(r'/api/habits/\$\{[^}]*\}/mark'),
+    re.compile(r'/api/people/night'),
+    re.compile(r'/api/people/\$\{[^}]*\}/interactions'),
+    re.compile(r'/api/tag-daily/answer'),
+    re.compile(r'/api/flows/\$\{[^}]*\}/run'),
+]
+
+# The one legitimate clock read in such a function, and why it is legitimate.
+# WHICH day the run pins to has to be decided from the clock — that is exactly
+# what flowRunDate answers (is yesterday's run still resumable?). Anything else
+# reading the clock in a day-filing function is the bug above.
+CLOCK_OK = [
+    (re.compile(r'flowRunDate\('),
+     "the pin itself is decided from the clock — flowRunDate asks whether "
+     "yesterday's run is still resumable"),
+]
+
 
 def owning_function(lines, i):
     """The nearest preceding definition line, so a use inside its own
@@ -56,6 +95,25 @@ def owning_function(lines, i):
         if line.startswith('function ') or line.startswith('const DAY_MIN'):
             return line
     return ''
+
+
+def day_filing_functions(lines):
+    """(name, start, end) for every top-level function whose body names one of
+    the dated endpoints. Top-level functions close on a lone `}` in column 1 —
+    all 400-odd of them are written that way."""
+    out = []
+    start, name = None, ''
+    for n, line in enumerate(lines):
+        m = re.match(r'(?:async )?function (\w+)', line)
+        if m:
+            start, name = n, m.group(1)
+            continue
+        if line == '}' and start is not None:
+            body = '\n'.join(lines[start:n + 1])
+            if any(p.search(body) for p in DAY_FILING):
+                out.append((name, start, n))
+            start = None
+    return out
 
 
 def main():
@@ -75,7 +133,22 @@ def main():
                 continue
             fails.append((n + 1, stripped[:88], instead))
 
+    dated = day_filing_functions(lines)
+    for name, start, end in dated:
+        for n in range(start, end + 1):
+            stripped = lines[n].strip()
+            if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            if 'wallDay(' not in lines[n]:
+                continue
+            if any(p.search(lines[n]) for p, _why in CLOCK_OK):
+                continue
+            fails.append((n + 1, stripped[:88],
+                          'runDay() — %s() files a dated fact, so its day is '
+                          'the run that work belongs to' % name))
+
     if fails:
+        fails.sort()
         print('%d use(s) of a banned pattern in static/app.js:\n' % len(fails))
         for lineno, text, instead in fails:
             print(f'  app.js:{lineno}')
@@ -90,6 +163,8 @@ midnight, a paused row, or a config change.""")
     print('app.js uses the accessors.')
     print('  which day     wallDay / viewDay / runDay')
     print('  past midnight spanEndMin / windowEndMin / clockHHMM / DAY_MIN')
+    print("  a run's day   %d function(s) file a dated fact, none from the clock"
+          % len(dated))
     return 0
 
 
