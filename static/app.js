@@ -1683,8 +1683,29 @@ function currentDevice() {
   return DEVICE_TAGS.includes(override) ? override : detectDevice();
 }
 
+// AN ITEM'S CONTEXTS INCLUDE ITS PROJECT'S (2026-08-19, Quentin's
+// instruction). @errands on the project says the same thing about each action
+// under it, so this is what every READER asks: the pool's gates, MAP's lens,
+// the chips on a row. The server derives it on the walk that already computes
+// effective_deadline (storage._walk_up) — the client never re-walks the tree,
+// and the fallback is the row's own tags for payloads that carry none.
 function itemTags(item) {
+  return ((item.effective_tags != null ? item.effective_tags : item.tags) || '')
+    .split(/\s+/).filter(Boolean);
+}
+
+// What this row itself SAYS, which is the only thing an editor may write. A
+// clarify sheet that saved the inherited set would copy a project's contexts
+// onto its children, and removing one from the project could then never undo
+// them — the same reason effective_deadline is never written down.
+function ownTags(item) {
   return (item.tags || '').split(/\s+/).filter(Boolean);
+}
+
+// The ones that arrived from above: shown, never editable, on the row's sheet.
+function inheritedTags(item) {
+  const own = new Set(ownTags(item));
+  return itemTags(item).filter(t => !own.has(t));
 }
 
 // '#tag' tokens typed into an add bar become tags. An entry that is ONLY tags
@@ -10683,7 +10704,7 @@ function renderMap() {
         isStalled ? ' map-row-stalled' : ''}" data-id="${item.id}" draggable="true">
       ${chainN[item.id] ? `<span class="cl-chain-n" title="Position in this project's dependency chain">[${chainN[item.id]}]</span>` : ''}
       <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
-      ${isProject ? '' : itemTags(item).map(t =>
+      ${ownTags(item).map(t =>
         `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
       ${badge(item)}
       ${item.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${item.pushed} times — too big, not real, or being avoided">pushed ${item.pushed}x</span>` : ''}
@@ -10807,7 +10828,7 @@ function renderMap() {
           isProject && stalled.has(i.id) ? ' map-row-stalled' : ''}${
           isIn && !i.area_id ? ' map-row-in' : ''}" data-id="${i.id}">
         <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(i.content)}</span>
-        ${isProject ? '' : itemTags(i).map(t =>
+        ${ownTags(i).map(t =>
           `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
         ${badge(i)}
         <span class="map-crumb">${escHtml(crumb(i)) || 'in'}</span>
@@ -13405,7 +13426,7 @@ function clarifyResetItem() {
   // silently mark the next capture in progress.
   clarifyView.doVariant = 'done';
   clarifyView.action = item ? item.content : '';
-  clarifyView.tags = new Set(item ? itemTags(item) : []);
+  clarifyView.tags = new Set(item ? ownTags(item) : []);
   clarifyView.showDate = '';
   clarifyView.showTime = '';
   // A project's start date is a standing property, not a fresh decision, so
@@ -13490,6 +13511,36 @@ function chainNumbers(actions) {
   });
   return nums;
 }
+// The sheet's state, copied and put back — for the one detour it takes: into
+// the project's own clarify and back. Functions are skipped (the `after` that
+// runs the detour is re-attached by the caller) and a Set is copied rather than
+// aliased, or restoring would hand back the very object the other sheet edited.
+function clarifySnapshot() {
+  const snap = {};
+  for (const k of Object.keys(clarifyView)) {
+    const v = clarifyView[k];
+    if (typeof v === 'function') continue;
+    snap[k] = v instanceof Set ? new Set(v) : v;
+  }
+  return snap;
+}
+
+function clarifyRestore(snap) {
+  Object.assign(clarifyView, snap);
+  clarifyView.open = true;
+}
+
+// The contexts this item did not choose: they come from the project above it.
+// Read from the project SELECTED IN THE SHEET as well as from the row, so
+// picking a project says what the item is about to inherit — before it is
+// filed, which is when the decision is actually being made.
+function clarifyInherited() {
+  const p = (state.projects || []).find(x => x.id === clarifyView.projectId);
+  const item = clarifyView.queue[0];
+  const from = [...(p ? itemTags(p) : []), ...(item ? inheritedTags(item) : [])];
+  return [...new Set(from)].filter(t => !clarifyView.tags.has(t));
+}
+
 function closeClarify() {
   flushOpenNotes();
   // Notes typed here must survive ANY exit, filed or not — Escape (and the
@@ -13863,9 +13914,24 @@ function renderClarify() {
       <div class="cl-row"><span class="cl-hint">Paused stops new ones being seeded.
         Any already filed stay exactly where they are.</span></div>`;
   } else if (isProj) {
+    // CONTEXTS ON A PROJECT are not the project's own filter — a project is
+    // never in the pool — they are the contexts every action under it
+    // inherits (2026-08-19, Quentin). Which is why they are offered here at
+    // all, against the old rule that a project sheet has none: it is the one
+    // place to say "everything in this is done at the desk" once instead of on
+    // every action. Time estimates are left out of the vocabulary on purpose —
+    // a project's length is not each action's length, and inheriting one would
+    // put a false chip on every child.
     middle = verb === 'trash'
       ? '<div class="cl-donow">Not a real outcome. Deleting it splices its actions up one level.</div>'
-      : `<div class="cl-row">
+      : `<div class="cl-sec"><span class="cl-label">Contexts</span>
+        <span class="cl-hint">every action under it inherits these</span></div>
+      <div class="cl-chips">
+        ${clarifyView.tagVocab.filter(t => !EST_TAGS.includes(t)).map(t =>
+          `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+        <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
+      </div>
+      <div class="cl-row">
         ${verb === 'defer' ? `<span class="cl-label">Start on</span>
         <input type="date" id="cl-show-date" class="cl-date"
           title="When you want to start working on this" value="${clarifyView.showDate}">` : ''}
@@ -13897,6 +13963,8 @@ function renderClarify() {
           `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
         <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
       </div>
+      ${clarifyInherited().length ? `<div class="cl-row"><span class="cl-hint">from the project:
+        ${clarifyInherited().map(t => escHtml(t)).join(' · ')} — change them on the project itself</span></div>` : ''}
       ${tpl ? '' : `<div class="cl-row">
         ${doProgress ? '' : `<span class="cl-label">Show on</span>
         <input type="date" id="cl-show-date" class="cl-date"
@@ -13912,7 +13980,9 @@ function renderClarify() {
         ${clarifyView.projectId ? `<button id="cl-proj-notes-btn" class="cl-pill${clarifyView.projNotesOpen ? ' cl-pill-on' : ''}"
           title="The project's support material — saved to the project, not this item">✎</button>
         <button id="cl-proj-chain" class="cl-pill"
-          title="Order this project's actions and set dependencies">⛓</button>` : ''}
+          title="Order this project's actions and set dependencies">⛓</button>
+        <button id="cl-proj-open" class="cl-pill"
+          title="Clarify the project itself — its outcome, its deadline, the contexts everything in it inherits">›</button>` : ''}
       </div>
       ${clarifyView.projNotesOpen && clarifyView.projectId ? `
       <textarea id="cl-proj-notes" class="cl-notes" rows="3"
@@ -14164,6 +14234,29 @@ function renderClarify() {
     await openFlowRun(fid);
   });
 
+  // A PROJECT YOU HAVE JUST NAMED IS UNCLARIFIED (2026-08-19, Quentin). It has
+  // an outcome nobody has written, no deadline and none of the contexts its
+  // actions will inherit — and the moment you know all three is the moment you
+  // named it. So the sheet OFFERS it, the way every surface that creates an
+  // action offers the same ›, and clarify still never opens by itself.
+  //
+  // The half-made decisions on this sheet are data: they are snapshotted and
+  // put back when the project's sheet closes, so the detour costs nothing.
+  const projOpen = sheet.querySelector('#cl-proj-open');
+  if (projOpen) projOpen.addEventListener('click', async () => {
+    const proj = (state.projects || []).find(x => x.id === clarifyView.projectId);
+    if (!proj) return;
+    const snap = clarifySnapshot();
+    await openClarifyForItem(proj, async () => {
+      // Whatever the project's sheet did to state.projects, the name shown
+      // here comes from the snapshot's id — re-read so a rename shows.
+      state.projects = await fetch('/api/projects').then(r => r.json()).catch(() => state.projects);
+      clarifyRestore(snap);
+      const again = (state.projects || []).find(x => x.id === clarifyView.projectId);
+      if (again) clarifyView.projectName = again.content;
+      renderClarify();
+    });
+  });
   const chainBtn = sheet.querySelector('#cl-proj-chain');
   if (chainBtn) chainBtn.addEventListener('click', async () => {
     const p = (state.projects || []).find(x => x.id === clarifyView.projectId);

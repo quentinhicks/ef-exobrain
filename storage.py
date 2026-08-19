@@ -1832,14 +1832,27 @@ _DEFERRED = """i.kind = 'item' AND i.status = 'active'
 # were typed?), and `deadline` is the user's own discipline — the app must not
 # invent one on a row he set by hand. It also stays out of every availability
 # predicate, exactly as a plain deadline does.
-def _deadline_chain(conn):
-    return {r['id']: (r['project_id'], r['deadline'])
-            for r in conn.execute('SELECT id, project_id, deadline FROM inbox_item')}
+# A PROJECT'S TAGS BIND EVERYTHING UNDER IT TOO (2026-08-19, Quentin's
+# instruction). @errands on the project is the same statement about each of its
+# actions — you do not do them anywhere else — so the contexts a project carries
+# are the contexts every active item under it is filtered by: the pool's gates,
+# MAP's lens and the chips on a row all read the inherited set.
+#
+# DERIVED like the deadline, and for the same reason: cascading tokens onto the
+# children would make removing one from the project impossible to undo (which of
+# a row's tags were typed, and which were inherited?). One walk answers both
+# questions, so there is one chain query and one place a cycle is guarded.
+#
+# ORDER: the row's own tags first, then each ancestor's, deduped. What the item
+# says about itself leads, which is what a reader expects of a chip row.
+def _inherit_chain(conn):
+    return {r['id']: (r['project_id'], r['deadline'], r['tags'])
+            for r in conn.execute(
+                'SELECT id, project_id, deadline, tags FROM inbox_item')}
 
 
-def _effective_deadline(chain, item_id):
-    best = None
-    seen = set()
+def _walk_up(chain, item_id):
+    best, tags, seen = None, [], set()
     cur = item_id
     # The seen-set is the cycle guard: update_inbox_item refuses to create one,
     # but a walk that trusts the data is a walk that hangs the server if it ever
@@ -1849,17 +1862,20 @@ def _effective_deadline(chain, item_id):
         node = chain.get(cur)
         if node is None:
             break
-        parent, deadline = node
+        parent, deadline, own = node
         if deadline and (best is None or deadline < best):
             best = deadline
+        for t in (own or '').split():
+            if t not in tags:
+                tags.append(t)
         cur = parent
-    return best
+    return best, ' '.join(tags)
 
 
-def _apply_inherited_deadlines(conn, rows):
-    chain = _deadline_chain(conn)
+def _apply_inherited(conn, rows):
+    chain = _inherit_chain(conn)
     for r in rows:
-        r['effective_deadline'] = _effective_deadline(chain, r['id'])
+        r['effective_deadline'], r['effective_tags'] = _walk_up(chain, r['id'])
     return rows
 
 
@@ -1877,7 +1893,7 @@ def get_active_items_all():
            ORDER BY i.captured_at DESC''',
         (today,)
     ).fetchall()
-    out = _apply_inherited_deadlines(conn, [dict(r) for r in rows])
+    out = _apply_inherited(conn, [dict(r) for r in rows])
     conn.close()
     return out
 
@@ -1894,7 +1910,7 @@ def get_active_items_for_domain(domain_id):
            ORDER BY i.captured_at DESC''',
         (domain_id, today)
     ).fetchall()
-    out = _apply_inherited_deadlines(conn, [dict(r) for r in rows])
+    out = _apply_inherited(conn, [dict(r) for r in rows])
     conn.close()
     return out
 
@@ -1930,12 +1946,16 @@ def items_at_location(location_id, day=None):
             ORDER BY i.captured_at DESC''',
         (today,)
     ).fetchall()
-    out = []
-    for r in rows:
-        bound = {binds[t] for t in (r['tags'] or '').split() if t in binds}
-        if len(bound) == 1 and location_id in bound:
-            out.append(dict(r))
-    out = _apply_inherited_deadlines(conn, out)
+    # Inherited FIRST, then filtered: a project pinned to a location speaks for
+    # its actions, so the gate has to ask the same set of tags every other
+    # reader asks. Filtering on the row's own tags left an action under an
+    # @office project visible from anywhere.
+    out = _apply_inherited(conn, [dict(r) for r in rows])
+    out = [r for r in out
+           if len({binds[t] for t in (r['effective_tags'] or '').split() if t in binds}
+                  ) == 1
+           and location_id in {binds[t] for t in (r['effective_tags'] or '').split()
+                               if t in binds}]
     conn.close()
     return out
 
@@ -1955,7 +1975,7 @@ def get_map_items():
            WHERE i.status IN ('active', 'waiting', 'on_hold')
            ORDER BY d.name, a.name, i.id'''
     ).fetchall()
-    out = _apply_inherited_deadlines(conn, [dict(r) for r in rows])
+    out = _apply_inherited(conn, [dict(r) for r in rows])
     conn.close()
     return out
 
@@ -1977,7 +1997,7 @@ def get_deferred_items():
             ORDER BY i.defer_until, i.captured_at''',
         (today,)
     ).fetchall()
-    out = _apply_inherited_deadlines(conn, [dict(r) for r in rows])
+    out = _apply_inherited(conn, [dict(r) for r in rows])
     conn.close()
     return out
 
@@ -2032,7 +2052,7 @@ def get_all_projects():
            ORDER BY a.name, pr.captured_at ASC'''
     ).fetchall()
     # Projects nest, so a sub-project inherits its parent's deadline too.
-    out = _apply_inherited_deadlines(conn, [dict(r) for r in rows])
+    out = _apply_inherited(conn, [dict(r) for r in rows])
     conn.close()
     return out
 
