@@ -887,6 +887,13 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE metric ADD COLUMN days_of_week TEXT')
         conn.commit()
+    # The 'tags' kind's vocabulary (2026-08-19), space-separated. Empty for
+    # every other kind, which is why it defaults to '' rather than NULL.
+    try:
+        conn.execute('SELECT options FROM metric LIMIT 1')
+    except Exception:
+        conn.execute("ALTER TABLE metric ADD COLUMN options TEXT NOT NULL DEFAULT ''")
+        conn.commit()
     conn.execute('''
         CREATE TABLE IF NOT EXISTS tag_daily (
             tag TEXT PRIMARY KEY
@@ -1087,6 +1094,7 @@ def init_db():
     _migrate_time_presets(conn)
     _repair_time_preset_conversion(conn)
     _migrate_journal_metrics(conn)
+    _migrate_journal_prompts(conn)
     _adopt_gate_schedules(conn)
     _migrate_easing_pendings(conn)
     _migrate_utc_stamps(conn)
@@ -4026,10 +4034,29 @@ def _ts_key(ts):
 # (setting key, name, kind, prompt)
 JOURNAL_METRICS = (
     ('journal_metric_rating', 'Day rating', 'scale', 'How was today?'),
-    ('journal_metric_bottleneck', 'Better tomorrow',
-     'text', 'What do you want to do better tomorrow?'),
+    ('journal_metric_bottleneck', 'Overreaction',
+     'text', 'What interesting way did you subconsciously overreact today?'),
+    ('journal_metric_problem', 'Solvable problem',
+     'text', 'What is a formulation of a problem you have that you can explicitly solve?'),
     ('journal_metric_experiment', 'Experiment note',
      'text', 'How did the experiment feel today?'),
+)
+
+# The WORDING of a journal question is Quentin's to change (Settings -> Metrics
+# writes the questions, and these are ordinary metric rows once minted), so the
+# seed above only ever reaches a db that does not have the row yet. Rewording an
+# EXISTING one therefore takes a migration, and it runs ONCE, recorded -- the
+# journal_metrics_migrated idiom, and for the same reason: a rewritten prompt
+# looks exactly like a hand-edited one, so re-running would silently undo an
+# edit made after this landed. The key is dated so a LATER rewording is its own
+# entry rather than a clearing of this one.
+#
+# (setting key, metric setting key, old prompt it is allowed to replace,
+#  new name, new prompt)
+JOURNAL_REWORDS = (
+    ('journal_prompt_reword_260819', 'journal_metric_bottleneck',
+     'What do you want to do better tomorrow?',
+     'Overreaction', 'What interesting way did you subconsciously overreact today?'),
 )
 
 # The step id these entries are filed under. The nightly journal is a PAGE, not
@@ -4069,9 +4096,22 @@ def journal_metric_ids():
     return ids
 
 
+# API field -> metric. The three original names are also journal_day COLUMNS,
+# which is what the migration below reads; a field added later (problem) has no
+# column and is skipped there by the `field in r.keys()` guard, because there is
+# no history of a question that was never asked.
 _JOURNAL_FIELD_KEYS = {'rating': 'journal_metric_rating',
                        'bottleneck': 'journal_metric_bottleneck',
+                       'problem': 'journal_metric_problem',
                        'active_experiment': 'journal_metric_experiment'}
+
+# The empty day, in the shape the nightly page and the runner expect. One
+# definition, so a new question cannot be added to the read and forgotten in the
+# write -- they disagreed about `problem` for exactly as long as it took to
+# notice the field vanishing on a day with no answers.
+def _empty_journal_day(date):
+    return {'date': date, 'bottleneck': '', 'problem': '',
+            'active_experiment': '', 'rating': None}
 
 
 def _migrate_journal_metrics(conn):
@@ -4107,6 +4147,25 @@ def _migrate_journal_metrics(conn):
         print('journal: %d entries moved into metrics' % moved)
 
 
+def _migrate_journal_prompts(conn):
+    # ONCE per entry, and only where the prompt is still the one being replaced:
+    # if it has already been reworded by hand, the hand wins and the marker is
+    # still set, so this never asks again.
+    for key, metric_key, was, name, prompt in JOURNAL_REWORDS:
+        if conn.execute('SELECT 1 FROM setting WHERE key = ?', (key,)).fetchone():
+            continue
+        row = conn.execute('SELECT value FROM setting WHERE key = ?',
+                           (metric_key,)).fetchone()
+        mid = int(row['value']) if row and str(row['value']).isdigit() else None
+        if mid is not None:
+            conn.execute(
+                'UPDATE metric SET name = ?, prompt = ? WHERE id = ? AND prompt = ?',
+                (name, prompt, mid, was))
+        conn.execute('INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)',
+                     (key, prompt))
+    conn.commit()
+
+
 def get_journal_days(since=None, until=None):
     # Read back through the metrics, in the shape the nightly page and the
     # runner already expect: one row per date with the three fields on it.
@@ -4126,8 +4185,7 @@ def get_journal_days(since=None, until=None):
     days = {}
     field_of = {v: k for k, v in _JOURNAL_FIELD_KEYS.items()}
     for r in rows:
-        d = days.setdefault(r['date'], {'date': r['date'], 'bottleneck': '',
-                                        'active_experiment': '', 'rating': None})
+        d = days.setdefault(r['date'], _empty_journal_day(r['date']))
         field = field_of.get(by_key.get(r['metric_id']))
         if field == 'rating':
             d['rating'] = int(r['value_num']) if r['value_num'] is not None else None
@@ -4165,8 +4223,7 @@ def upsert_journal_day(date, fields, updated_at=None):
             (date, ids[key], JOURNAL_STEP_ID, num, text))
     conn.commit()
     conn.close()
-    return get_journal_day(date) or {'date': date, 'bottleneck': '',
-                                     'active_experiment': '', 'rating': None}
+    return get_journal_day(date) or _empty_journal_day(date)
 
 
 # Last-write-wins merge of Worker-sourced rows (each carries a full row +
@@ -6377,7 +6434,21 @@ def apply_people_capture(ops):
 
 # --- Self-monitoring: metrics asked on a routine step (2026-08-16) ---
 
-METRIC_KINDS = ('scale', 'count', 'yesno', 'text')
+# A 'tags' metric asks a MULTI-SELECT from a vocabulary it owns: the answer is
+# which of a known set applied, not a number and not free prose. It exists
+# because comparing interventions needs the same spelling every night, and free
+# text does not give that — one typo silently splits a group in two.
+#
+# The vocabulary lives in `metric.options`, space-separated, and the answer in
+# `metric_entry.value_text`, also space-separated. No new table: the entry
+# columns already say "value_text carries text", and a set of chosen tokens is
+# text. Adding a tag from the runner appends to `options`, so the vocabulary
+# grows where it is used rather than only in Settings.
+#
+# 'none' is a REAL answer and must stay selectable: no row means no data, so
+# "nothing applied last night" needs something to record, or a hard metrics
+# step could never be cleared on an ordinary night.
+METRIC_KINDS = ('scale', 'count', 'yesno', 'text', 'tags')
 
 
 def _metric_row(r):
@@ -6390,6 +6461,23 @@ def _metric_row(r):
 # sends or the string the column holds; '' and a full week both become NULL,
 # which is what "no opinion about the calendar" is stored as everywhere else
 # (step_due_on reads NULL as every day).
+def _norm_tags(v):
+    # Accepts the list the picker sends or the string the column holds. Order is
+    # kept as given (it is the order the chips draw in) and duplicates dropped,
+    # because two spellings of one tag is the exact failure this kind exists to
+    # prevent.
+    if v is None:
+        return ''
+    parts = v.split() if isinstance(v, str) else [str(x) for x in v]
+    seen, out = set(), []
+    for t in parts:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return ' '.join(out)
+
+
 def _norm_days(v):
     if v is None:
         return None
@@ -6431,11 +6519,12 @@ def create_metric(data):
     pos = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM metric').fetchone()['p']
     cur = conn.execute(
         '''INSERT INTO metric (name, kind, prompt, scale_min, scale_max, unit, position,
-                               days_of_week)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                               days_of_week, options)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         ((data.get('name') or '').strip(), kind, (data.get('prompt') or '').strip(),
          int(data.get('scale_min') or 1), int(data.get('scale_max') or 7),
-         (data.get('unit') or '').strip(), pos, _norm_days(data.get('days_of_week'))))
+         (data.get('unit') or '').strip(), pos, _norm_days(data.get('days_of_week')),
+         _norm_tags(data.get('options'))))
     mid = cur.lastrowid
     conn.commit()
     conn.close()
@@ -6468,6 +6557,8 @@ def update_metric(id, data):
             fields[c] = int(data[c])
     if 'days_of_week' in data:
         fields['days_of_week'] = _norm_days(data['days_of_week'])
+    if 'options' in data:
+        fields['options'] = _norm_tags(data['options'])
     # PAUSING never deletes and never touches entries already recorded: a paused
     # metric stops being ASKED and stops being offered, and its history stands.
     if 'active' in data:
@@ -6566,8 +6657,17 @@ def set_metric_entry(ymd, metric_id, step_id, value):
         conn.close()
         return None
     num, text = None, None
-    if kind == 'text':
-        text = str(value)
+    if kind in ('text', 'tags'):
+        # 'tags' rides value_text: a chosen SET is text, normalised through the
+        # same function that owns the vocabulary so an answer can never hold a
+        # spelling the options do not, or the same tag twice.
+        text = _norm_tags(value) if kind == 'tags' else str(value)
+        if not text:
+            conn.execute('DELETE FROM metric_entry WHERE date = ? AND metric_id = ? '
+                         'AND step_id = ?', (ymd, metric_id, step_id))
+            conn.commit()
+            conn.close()
+            return None
     elif kind == 'yesno':
         num = 1 if value in (True, 1, '1', 'yes', 'true') else 0
     else:

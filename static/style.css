@@ -2486,6 +2486,129 @@ body.calendar-minimized #review-modal {
   font-size: 11px;
 }
 
+/* The open log's photos. A strip, not a grid: it sits between the bar and the
+   editor, so it may cost one row of typing space and no more. Scrolls sideways
+   on its own — the overlay body must never scroll horizontally. */
+.log-photos {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  flex: 0 0 auto;
+  padding-bottom: 2px;
+}
+
+/* 56px, because a thumbnail is a finger target with no hover to find it. */
+.log-thumb {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid var(--text-secondary);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-low);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.log-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.log-thumb-fallback {
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+/* Full-screen, and DARK IN BOTH THEMES on purpose (the NOW panel's precedent,
+   inverted): a photo is judged against a neutral ground, and a light frame
+   around a phone snapshot changes what you think you are looking at. Above the
+   sheet band (200) so the picture is never behind something that was already
+   up; below dangerous writing (240), which nothing may cover. */
+#log-photo-view {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  background: rgba(0, 0, 0, 0.94);
+  display: flex;
+  flex-direction: column;
+}
+
+#log-photo-view.hidden { display: none; }
+
+.lpv-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
+.lpv-close {
+  color: #fff;
+  font-size: 13px;
+  padding: 8px 10px;
+  min-height: 36px;
+}
+
+.lpv-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lpv-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+}
+
+.lpv-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.lpv-fallback {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+  padding: 0 24px;
+}
+
+.lpv-nav {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 14px 18px;
+}
+
+/* Thirds of nothing to aim at otherwise: these are the only two controls on a
+   screen filled with picture, so they are 48px targets at the bottom, where a
+   thumb reaches. */
+.lpv-step {
+  color: #fff;
+  font-size: 20px;
+  min-width: 72px;
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+}
+
+.lpv-step:disabled {
+  color: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
 .log-editor-wrap {
   flex: 1;
   min-height: 0;
@@ -6216,3 +6339,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .jh-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font: 13px/1.7 var(--font-sans); }
 .jh-done { color: var(--text-secondary); }
 .jh-legacy { color: var(--text-secondary); font-size: 12px; }
+
+
+/* A tags metric's vocabulary grows from the runner, so the + sits with the
+   chips rather than in Settings. Dashed to read as "not an answer". */
+.mt-chip-add { border-style: dashed; color: var(--text-secondary); }

@@ -1835,8 +1835,20 @@ function viewDay() {
   return formatDateYMD(state.currentDate);
 }
 
+// The pin holds only while a run is OPEN. `flowRunView.date` is left standing
+// after closeFlowRun (it is the record of the run that just ended), so reading
+// the field itself meant every later runDay() in the session still answered
+// with a night that finished hours ago. Gate it on `open` and the fallback is
+// the honest one: no run, no pin, wall clock.
+//
+// It reaches PAST the runner's own pages: any surface the runner RAISES is
+// acting for that run, so the CRM fill's night, the interaction it logs and
+// the read that asks whether tonight was filled all file under the run's day,
+// not the clock's. That is the bug Quentin hit — a nightly routine finished at
+// 02:00 recorded its CRM fill under the new day, so the step it was opened
+// from went on saying it was unfilled.
 function runDay() {
-  return flowRunView.date || wallDay();
+  return (flowRunView.open && flowRunView.date) || wallDay();
 }
 
 function formatTodoDate(date) {
@@ -2009,10 +2021,55 @@ function renderAbout() {
   const copy = el.querySelector('#be-about-copy');
   if (copy) {
     copy.addEventListener('click', () => {
-      navigator.clipboard?.writeText(link);
-      toast('App link copied');
+      copyAndSay(link, 'App link');
     });
   }
+}
+
+// COPY THAT WORKS OFF LOCALHOST. navigator.clipboard is gated on a SECURE
+// CONTEXT, so it is undefined over http://<tailnet-name>:5000 — which is every
+// Windows and Mac client running in PT_SERVER mode. The old code was
+// `navigator.clipboard?.writeText(...)` followed unconditionally by a success
+// toast, so on those machines nothing was copied and the app said it had been.
+// A lying confirmation is worse than a visible failure.
+//
+// The execCommand fallback is the same idiom the markdown editors already rely
+// on. It needs a real selection in the document, so the textarea is attached,
+// selected, copied and removed. Returns whether it actually worked, and every
+// caller must respect that rather than assume.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* fall through — a rejected permission is not a reason to give up */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    // Off-screen but NOT display:none: an unrendered field cannot be selected.
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+// One place decides what a copy SAYS, so a failure can never be reported as a
+// success. On failure the text is shown, because a link you can select by hand
+// beats a button that quietly does nothing.
+async function copyAndSay(text, label) {
+  if (await copyText(text)) { toast(`${label} copied`); return true; }
+  toast(`Could not copy — ${text}`);
+  return false;
 }
 
 // ── Connections (config.json) ────────────────────────────────
@@ -3098,10 +3155,9 @@ const SETTINGS_SHEETS = {
           text: `${state.settings.gate_scan_url || ''}/scan/${it.token}`,
           action: 'Copy',
           hint: 'The QR code to print. Anyone with this URL can satisfy the gate.',
-          run: n => {
-            navigator.clipboard?.writeText(`${state.settings.gate_scan_url || ''}/scan/${n.token}`);
-            toast('Scan link copied');
-          } }] : []),
+          run: n => copyAndSay(
+            `${state.settings.gate_scan_url || ''}/scan/${n.token}`, 'Scan link'),
+          }] : []),
 
         // A today-only window and a deferred loosening are states this sheet
         // can report and clear but not edit — they were tooltips on the old
@@ -3910,7 +3966,7 @@ async function setReviewTick(key, done) {
   const ticks = reviewTicks();
   if (done) ticks[key] = 'done'; else delete ticks[key];
   const complete = reviewSteps().every(s => ticks[s.id]);
-  const run = await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: wallDay(), steps: ticks, completed: complete }).then(r => r.json()).catch(() => null);
+  const run = await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: runDay(), steps: ticks, completed: complete }).then(r => r.json()).catch(() => null);
   if (run) gtdReview.flow.run = run;
   renderGtdReview();
   updateReviewNavDot();
@@ -4327,7 +4383,7 @@ function renderGtdReview() {
       // the same act whichever surface you say it on, so the run is completed
       // here too — otherwise the runner would still show the week as open.
       if (gtdReview.flow) {
-        await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: wallDay(),
+        await apiSend(`/api/flows/${gtdReview.flow.id}/run`, 'PUT', { date: runDay(),
                                  steps: reviewTicks(), completed: true });
       }
       state.review.due = false;
@@ -4362,8 +4418,7 @@ function closeM(id) {
 }
 
 async function refreshCrmNight() {
-  const night = await apiGet(`/api/people/night?date=${flowRunView.date
-    || wallDay()}`, null);
+  const night = await apiGet(`/api/people/night?date=${runDay()}`, null);
   flowRunView.crmFilled = !!(night && night.satisfied_at);
   flowRunView.crmKind = night ? night.kind : null;
   renderFlowRun();
@@ -4392,6 +4447,9 @@ function initHub() {
     // MAP overlay in the loop below, the way every sheet peels before what
     // opened it.
     if (closeMapFilter()) return;
+    // A photo fills the screen over the logs overlay, so it peels first — before
+    // that overlay's own filter menu, the way every raised layer does.
+    if (logsView.photo != null) { closeLogPhoto(); return; }
     if (closeLogsFilter()) return;
     // The occasion sheet peels before whatever it was opened from — and that is
     // Settings as often as it is the day, so it has to sit ABOVE the overlay
@@ -4494,7 +4552,10 @@ const logsView = { logs: [], open: null, content: '', dirty: false, saveTimer: n
                    // Newest first: a log list is read from the top, and the
                    // one you want is nearly always the one you just wrote.
                    desc: true, tags: new Set(), menuOpen: false,
-                   q: '', hits: null, qTimer: null };
+                   q: '', hits: null, qTimer: null,
+                   // The open log's photos, in the order the markdown links
+                   // them, and which one is being LOOKED at (null = none).
+                   photos: [], photo: null };
 
 // CHRONOLOGICAL, by the date parsed out of the filename — not by the filename.
 // Sorting the name as text put November before August and 26-8-11 before
@@ -6396,7 +6457,9 @@ function renderFlowRun() {
     // answered.
     page = `<div class="fr-step-big">Nightly journal</div>
       <textarea id="fr-jn-bottleneck" class="cl-notes" rows="2"
-        placeholder="What do you want to do better tomorrow?">${escHtml(j.bottleneck || '')}</textarea>
+        placeholder="What interesting way did you subconsciously overreact today?">${escHtml(j.bottleneck || '')}</textarea>
+      <textarea id="fr-jn-problem" class="cl-notes" rows="2"
+        placeholder="What is a formulation of a problem you have that you can explicitly solve?">${escHtml(j.problem || '')}</textarea>
       ${running ? `<div class="fr-note">experiment: ${escHtml(running.content)}
         <span class="fr-of">since ${escHtml(running.started_on)}</span> — how did it feel today?</div>` : ''}
       <textarea id="fr-jn-exp" class="cl-notes" rows="2"
@@ -6519,6 +6582,17 @@ function renderFlowRun() {
           </div>` : ''}
           ${m.kind === 'count' ? `<input type="number" class="mt-input" data-metric="${m.id}"
             inputmode="numeric" value="${num == null ? '' : num}" placeholder="how many">` : ''}
+          ${m.kind === 'tags' ? `<div class="mt-chips">${
+            (m.options || '').split(' ').filter(Boolean).map(t => {
+              // Selected is membership in the answer, not equality: this is the
+              // one kind where several answers are true at once.
+              const on = ((e.value_text || '').split(' ').filter(Boolean)).includes(t);
+              return `<button class="mt-chip${on ? ' mt-chip-on' : ''}"
+                data-mtag="${m.id}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`;
+            }).join('')}
+            <button class="mt-chip mt-chip-add" data-mtagadd="${m.id}"
+              title="Add a new tag to this question's vocabulary">+</button>
+          </div>` : ''}
           ${m.kind === 'text' ? `<input type="text" class="mt-input" data-metric="${m.id}"
             value="${escHtml(e.value_text || '')}" placeholder="a line">` : ''}
         </div>`;
@@ -6642,7 +6716,7 @@ function renderFlowRun() {
     const prev = ((flowRunView.metrics[s.id] || {}).metrics || [])
       .find(m => m.id === metricId) || {};
     const before = prev.entry
-      ? (prev.kind === 'text' ? prev.entry.value_text : prev.entry.value_num) : null;
+      ? (['text', 'tags'].includes(prev.kind) ? prev.entry.value_text : prev.entry.value_num) : null;
     const res = await fetch('/api/metrics/entry', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date, metric_id: metricId, step_id: s.id, value }),
@@ -6668,6 +6742,37 @@ function renderFlowRun() {
     const cur = m.entry ? m.entry.value_num : null;
     // Tapping the answer you already gave clears it — the day-context idiom.
     saveMetric(mid, cur === v ? null : v);
+  }));
+  // A TAGS answer is a SET, so a tap toggles one member and rewrites the whole
+  // string. Clearing every tag stores null, not '' — no row means no data, and
+  // an empty string would read as "answered nothing" rather than "not asked".
+  // That is why the vocabulary should carry a 'none' tag: it is how a night
+  // with no interventions is said OUT LOUD, which a hard step can then credit.
+  el.querySelectorAll('[data-mtag]').forEach(b => b.addEventListener('click', () => {
+    const mid = parseInt(b.dataset.mtag);
+    const tag = b.dataset.tag;
+    const m = ((flowRunView.metrics[s.id] || {}).metrics || []).find(x => x.id === mid) || {};
+    const cur = ((m.entry && m.entry.value_text) || '').split(' ').filter(Boolean);
+    const next = cur.includes(tag) ? cur.filter(t => t !== tag) : cur.concat([tag]);
+    saveMetric(mid, next.length ? next.join(' ') : null);
+  }));
+  // The vocabulary grows WHERE IT IS USED: starting a new intervention should
+  // not mean a trip to Settings at 7am. Appending is a PATCH to the metric, so
+  // the tag is there tomorrow too.
+  el.querySelectorAll('[data-mtagadd]').forEach(b => b.addEventListener('click', async () => {
+    const mid = parseInt(b.dataset.mtagadd);
+    const raw = (prompt('New tag (one word, same spelling every night)') || '').trim();
+    const tag = raw.split(/\s+/)[0];
+    if (!tag) return;
+    const m = ((flowRunView.metrics[s.id] || {}).metrics || []).find(x => x.id === mid) || {};
+    const opts = ((m.options || '').split(' ').filter(Boolean));
+    if (!opts.includes(tag)) {
+      const res = await apiSend(`/api/metrics/${mid}`, 'PATCH',
+                                { options: opts.concat([tag]).join(' ') });
+      if (!res.ok) { toast('Could not add that tag'); return; }
+    }
+    const cur = ((m.entry && m.entry.value_text) || '').split(' ').filter(Boolean);
+    saveMetric(mid, cur.concat([tag]).join(' '));
   }));
   el.querySelectorAll('.mt-input').forEach(inp => inp.addEventListener('change', () => {
     saveMetric(parseInt(inp.dataset.metric), inp.value.trim() === '' ? null : inp.value.trim());
@@ -6765,6 +6870,7 @@ function renderFlowRun() {
       const rate = el.querySelector('.fr-rate-on');
       await apiSend(`/api/journal/${today}`, 'PATCH', {
           bottleneck: el.querySelector('#fr-jn-bottleneck').value,
+          problem: el.querySelector('#fr-jn-problem').value,
           active_experiment: el.querySelector('#fr-jn-exp').value,
           rating: rate ? parseInt(rate.dataset.rate) : null,
         });
@@ -7626,6 +7732,128 @@ async function uploadLogPhoto(file) {
   await flushLogSave();
 }
 
+// ── Seeing them (2026-08-19) ──────────────────────────────────
+//
+// Uploading a photo and never being able to look at it was half a feature: the
+// markdown link is the durable record, and it renders in any markdown viewer,
+// but the app is what is in your hand when you want to see what you wrote down.
+// So the LINKS are the gallery — parsed out of the text, never a second list to
+// keep in step — and the file is fetched through the route that already serves
+// media to the phone.
+//
+// Only `media/` paths, deliberately: those are the photos this app stored, so
+// the strip never fires a request at a host the log happens to mention, and an
+// offline log shows its own pictures.
+const LOG_PHOTO_RE = /!\[[^\]]*\]\((media\/[^)\s]+)\)/g;
+
+function logPhotoPaths(text) {
+  const out = [];
+  for (const m of String(text || '').matchAll(LOG_PHOTO_RE)) {
+    if (!out.includes(m[1])) out.push(m[1]);   // linked twice, shown once
+  }
+  return out;
+}
+
+function logPhotoUrl(rel) {
+  return '/api/logs/media/' + encodeURIComponent(rel.replace(/^media\//, ''));
+}
+
+// The strip under the editor bar. Rebuilt only when the SET of links changes:
+// re-rendering on every keystroke would restart every image load, which on a
+// phone is a flicker and a bill.
+function renderLogPhotos() {
+  const strip = document.getElementById('log-photos');
+  if (!strip) return;
+  const ta = document.getElementById('log-editor');
+  const paths = logPhotoPaths(ta ? ta.value : logsView.content);
+  logsView.photos = paths;
+  const key = paths.join('|');
+  if (strip.dataset.paths === key) return;
+  strip.dataset.paths = key;
+  strip.classList.toggle('hidden', !paths.length);
+  strip.innerHTML = paths.map((rel, i) => `
+    <button class="log-thumb" data-i="${i}" title="${escHtml(rel)}">
+      <img src="${escHtml(logPhotoUrl(rel))}" alt="${escHtml(rel)}" loading="lazy">
+      <span class="log-thumb-fallback hidden">${escHtml(
+        rel.split('.').pop().toLowerCase())}</span>
+    </button>`).join('');
+  strip.querySelectorAll('.log-thumb').forEach(b => {
+    // A HEIC straight off an iPhone is a real file this browser cannot draw, so
+    // the tile says which kind it is instead of going quietly blank.
+    const img = b.querySelector('img');
+    img.addEventListener('error', () => {
+      img.classList.add('hidden');
+      b.querySelector('.log-thumb-fallback').classList.remove('hidden');
+    });
+    b.addEventListener('click', () => openLogPhoto(parseInt(b.dataset.i)));
+  });
+}
+
+function openLogPhoto(i) {
+  if (!logsView.photos.length) return;
+  logsView.photo = Math.max(0, Math.min(logsView.photos.length - 1, i));
+  paintLogPhoto();
+}
+
+function closeLogPhoto() {
+  logsView.photo = null;
+  const el = document.getElementById('log-photo-view');
+  if (!el) return;
+  el.classList.add('hidden');
+  el.innerHTML = '';                 // stop decoding a picture nobody is on
+}
+
+// Clamped, not wrapping: the strip is short and in view, so running off the end
+// silently landing you at the other end is a worse answer than nothing moving.
+function stepLogPhoto(d) {
+  if (logsView.photo == null) return;
+  const next = logsView.photo + d;
+  if (next < 0 || next >= logsView.photos.length) return;
+  logsView.photo = next;
+  paintLogPhoto();
+}
+
+function paintLogPhoto() {
+  const el = document.getElementById('log-photo-view');
+  if (!el || logsView.photo == null) return;
+  const rel = logsView.photos[logsView.photo];
+  const n = logsView.photos.length;
+  el.innerHTML = `
+    <div class="lpv-bar">
+      <button class="lpv-close" id="lpv-close">‹ Back</button>
+      <span class="lpv-name">${escHtml(rel.replace(/^media\//, ''))}</span>
+      <span class="lpv-count">${logsView.photo + 1} / ${n}</span>
+    </div>
+    <div class="lpv-stage" id="lpv-stage">
+      <img src="${escHtml(logPhotoUrl(rel))}" alt="${escHtml(rel)}">
+      <div class="lpv-fallback hidden" id="lpv-fallback">This browser cannot
+        display a ${escHtml(rel.split('.').pop().toLowerCase())} — the file is
+        in logs/media, and any viewer that reads the log will show it.</div>
+    </div>
+    ${n > 1 ? `<div class="lpv-nav">
+      <button class="lpv-step" id="lpv-prev"${logsView.photo ? '' : ' disabled'}>‹</button>
+      <button class="lpv-step" id="lpv-next"${
+        logsView.photo < n - 1 ? '' : ' disabled'}>›</button>
+    </div>` : ''}`;
+  el.classList.remove('hidden');
+  const img = el.querySelector('.lpv-stage img');
+  img.addEventListener('error', () => {
+    img.classList.add('hidden');
+    el.querySelector('#lpv-fallback').classList.remove('hidden');
+  });
+  el.querySelector('#lpv-close').addEventListener('click', closeLogPhoto);
+  // The STAGE closes on a tap, not the whole surface: the bar and the arrows are
+  // in the way of a finger otherwise, which is how a photo viewer starts closing
+  // itself every time you try to page through it.
+  el.querySelector('#lpv-stage').addEventListener('click', e => {
+    if (e.target.id === 'lpv-stage') closeLogPhoto();
+  });
+  const prev = el.querySelector('#lpv-prev');
+  if (prev) prev.addEventListener('click', () => stepLogPhoto(-1));
+  const next = el.querySelector('#lpv-next');
+  if (next) next.addEventListener('click', () => stepLogPhoto(1));
+}
+
 // Marks the matched run inside a hit line, the way MAP's search does for a
 // title — reading the hit is the point, and an unmarked line makes you find
 // the word again by eye.
@@ -7734,6 +7962,7 @@ function renderLogs() {
       <input type="file" id="log-photo-input" accept="image/*" hidden>
       <span id="log-save-status" class="log-save-status"></span>
     </div>
+    <div id="log-photos" class="log-photos hidden"></div>
     <div class="log-editor-wrap">
       <div id="log-highlight" class="log-highlight" aria-hidden="true"></div>
       <textarea id="log-editor" class="log-editor" spellcheck="false"></textarea>
@@ -7741,8 +7970,10 @@ function renderLogs() {
   const ta = document.getElementById('log-editor');
   ta.value = logsView.content;
   updateLogHighlight();
+  renderLogPhotos();
   ta.addEventListener('input', () => {
     updateLogHighlight();
+    renderLogPhotos();      // a pasted or uploaded link joins the strip at once
     logsView.dirty = true;
     document.getElementById('log-save-status').textContent = '·';
     clearTimeout(logsView.saveTimer);
@@ -9272,7 +9503,9 @@ function endPeopleSession() {
 }
 
 async function peopleSatisfy(kind) {
-  const today = wallDay();
+  // The RUN's day when the runner raised this surface (crm_fill opens the CRM
+  // over itself), the wall day otherwise — runDay() is that sentence.
+  const today = runDay();
   if (kind === 'entries' && peopleView.satisfiedDate === today) return;
   peopleView.satisfiedDate = today;
   await apiSend('/api/people/night', 'POST', { kind, date: today }).catch(() => {});
@@ -9464,7 +9697,7 @@ function renderPersonDetail(p) {
     <textarea id="pd-notes" class="pd-notes" placeholder="Notes…">${escHtml(p.notes || '')}</textarea>
     <div class="pd-log-heading">Interactions</div>
     <form id="pd-add-form" class="pd-add-form">
-      <input type="date" id="pd-int-date" value="${escHtml(wallDay())}">
+      <input type="date" id="pd-int-date" value="${escHtml(runDay())}">
       <input type="text" id="pd-int-note" placeholder="What happened?" autocomplete="off">
       <select id="pd-int-source">
         <option value="desktop">desktop</option>
@@ -13909,7 +14142,7 @@ function openAddPerson() {
       </div>
       <div class="pa-int">
         <div class="pd-log-heading">Interaction (optional)</div>
-        <div class="pa-row"><label>Date</label><input type="date" id="pa-int-date" value="${escHtml(wallDay())}"></div>
+        <div class="pa-row"><label>Date</label><input type="date" id="pa-int-date" value="${escHtml(runDay())}"></div>
         <div class="pa-row"><label>What happened</label><input type="text" id="pa-int-note" autocomplete="off"></div>
         <div class="pa-row"><label>Source</label>
           <select id="pa-int-source"><option value="desktop">desktop</option><option value="phone">phone</option></select>
