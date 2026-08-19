@@ -1528,6 +1528,8 @@ def patch_journal(date):
     fields = {}
     if 'bottleneck' in data:
         fields['bottleneck'] = data['bottleneck'] or ''
+    if 'problem' in data:
+        fields['problem'] = data['problem'] or ''
     if 'active_experiment' in data:
         fields['active_experiment'] = data['active_experiment'] or ''
     if 'rating' in data:

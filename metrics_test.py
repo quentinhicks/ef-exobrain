@@ -224,14 +224,23 @@ check('a metric names the steps that ask it, not just a count',
 # metric_entry, so one page shows everything and journal_day is only the
 # migration's source.
 ids = storage.journal_metric_ids()
-check('the journal mints three metrics, once',
-      len(set(ids.values())) == 3 and storage.journal_metric_ids() == ids, ids)
+# Counted off JOURNAL_METRICS rather than a literal: the nightly page is
+# allowed to grow a question (it grew 'problem' on 2026-08-19), and a hardcoded
+# number turns that into a test failure that says nothing.
+check('the journal mints one metric per nightly question, once',
+      len(set(ids.values())) == len(storage.JOURNAL_METRICS)
+      and storage.journal_metric_ids() == ids, ids)
 
-c.patch(f'/api/journal/{YDAY}', json={'rating': 6, 'bottleneck': 'the exporter'})
+c.patch(f'/api/journal/{YDAY}', json={'rating': 6, 'bottleneck': 'the exporter',
+                                      'problem': 'name the broker'})
 back = c.get('/api/journal').get_json()['days']
 yday = [d for d in back if d['date'] == YDAY]
 check('the nightly door still reads back what it wrote',
       yday and yday[0]['rating'] == 6 and yday[0]['bottleneck'] == 'the exporter', yday)
+# A question added after the first three has no journal_day column behind it,
+# so this is the check that the read and the write agree about it anyway.
+check('a question added later reads back through the same door',
+      yday and yday[0].get('problem') == 'name the broker', yday)
 
 names = {m['name']: m for m in c.get('/api/metrics').get_json()}
 rating = names.get('Day rating')
