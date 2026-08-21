@@ -597,6 +597,70 @@ select option {
 
 .se-inline-act { font-size: 13px; color: var(--accent); flex: none; }
 
+/* The tag-programming steps, folded under the Proof row. A DISCLOSURE and not
+   a tooltip: the button is a full-width finger target, and the body opens in
+   place — a hover tooltip is a control that does not exist on a phone. The
+   outline is --text-secondary, not --border: this is an interactive control
+   and owes 3:1. Code lines scroll inside themselves so the sheet never does. */
+.se-info { gap: 8px; }
+
+.se-info-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--text-secondary);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font: 13px var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.se-info-i { color: var(--accent); font-size: 15px; flex: none; }
+.se-info-t { flex: 1; min-width: 0; }
+
+.se-info-body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--surface-low);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.se-info-h {
+  font: 11px var(--font-mono);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 12px 0 6px;
+}
+
+.se-info-body .se-info-h:first-child { margin-top: 0; }
+
+.se-info-list { margin: 0; padding-left: 20px; }
+.se-info-list > li { margin-bottom: 8px; }
+.se-info-sub { margin: 6px 0 0; padding-left: 16px; }
+.se-info-sub > li { margin-bottom: 4px; }
+
+.se-info-code {
+  display: block;
+  margin-top: 6px;
+  padding: 7px 9px;
+  background: var(--surface-2);
+  border-radius: 6px;
+  font: 11px var(--font-mono);
+  color: var(--text-primary);
+  white-space: pre;
+  overflow-x: auto;
+}
+
 /* Address lookup, so a location costs a search instead of a typed latitude.
    Colours are vars only — the light appendix swaps them and nothing here needs
    a second entry. Hit targets are full-width rows: on a phone there is no

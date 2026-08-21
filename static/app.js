@@ -2253,6 +2253,9 @@ function openSeSheet(kind, item) {
   seSheet.item = item || null;
   seSheet.values = item ? spec.load(item) : spec.blank();
   seSheet.error = '';
+  // Folded on open: the steps are for the one evening you program a tag, not
+  // for every visit to the gate that uses it.
+  seSheet.infoOpen = {};
   document.getElementById('se-sheet').classList.remove('hidden');
   document.getElementById('se-sheet-backdrop').classList.remove('hidden');
   document.getElementById('block-editor-modal').classList.add('be-sheet-open');
@@ -2287,6 +2290,64 @@ function tagState(t) {
   if (!t.last_tap_at) return 'live, never tapped';
   return `last tap ${t.last_tap_at.slice(0, 16).replace('T', ' ')}`;
 }
+
+// HOW TO PROGRAM A TAG, in the one place the decision is made. Tag-only proof
+// is the only setting here that cannot be finished inside the app: half of it
+// happens in a third-party NFC writer, and getting the SDM options wrong makes
+// a tag that reads fine and never satisfies the gate. So the steps live behind
+// an ⓘ on the Proof row rather than in a document nobody has open at the time.
+// It is a disclosure, not a tooltip — a phone has no hover to find one with.
+const TAG_SETUP_INFO = [
+  { h: 'Before you open NFC.cool', start: 1, items: [
+    { t: 'Get the UID. Read the tag with NFC.cool — it shows the chip type and '
+       + 'the UID. You want the 7-byte, 14-hex-character value.' },
+    { t: 'Generate the two keys yourself, as hex, somewhere you can read them. '
+       + 'NFC.cool will take a key as a passphrase, but this app needs the '
+       + 'actual key bytes — a passphrase whose hex you cannot see is a key you '
+       + 'cannot paste in here.',
+      code: "python -c \"import secrets; print('meta', secrets.token_hex(16)); "
+       + "print('file', secrets.token_hex(16))\"" },
+    { t: 'Copy the tap URL. The Tags row above prints it in full. The zeros are '
+       + 'placeholders — the tag overwrites them on every tap.',
+      code: 'https://<host>:8443/t?e=000…000&c=0000000000000000' },
+    { t: 'Add the tag here NOW, keys and all: + Tag → name, UID, both keys. Do '
+       + 'it before programming, so a half-failed write does not leave you '
+       + 'holding a configured tag whose keys are only in your scrollback.' },
+  ] },
+  { h: 'In NFC.cool Tools', start: 5, items: [
+    { t: 'Write the NDEF URL — the full tap URL from step 3, zeros included.' },
+    { t: 'Turn on SUN / SDM on the NDEF file (file 02):', sub: [
+      'Encrypted PICC data mirror positioned at the e= zeros, with UID '
+        + 'mirroring and read-counter mirroring both on. Not the plain '
+        + 'uid=…&ctr=… variant — that one is rejected deliberately.',
+      'SDMMAC mirror positioned at the c= zeros.',
+      'No encrypted file data, and MAC input offset = MAC offset (the MAC '
+        + 'covers nothing but itself). Some apps word this as “SDM MAC input '
+        + 'starts at the MAC” — same thing.',
+      'NDEF file read access: free, no key, so any phone can follow the URL.',
+      'SDM Meta Read key → the slot for the meta key; SDM File Read key → the '
+        + 'slot for the file key. Slot numbers are yours to choose — this app '
+        + 'stores key VALUES, not slot numbers.',
+    ] },
+    { t: 'Change the keys LAST, entering them as hex, not as a passphrase. '
+       + 'Doing it after the URL and the SDM config means every earlier step '
+       + 'ran on the easy factory auth, so a failure midway leaves a tag you '
+       + 'can still talk to. If you also change key 0 (the master), write it '
+       + 'down somewhere durable — lose it and the tag can never be '
+       + 'reconfigured.' },
+    { t: 'Leave it in AES mode. If you see an LRP option, do not.' },
+  ] },
+  { h: 'Then', start: 9, items: [
+    { t: 'Back here: set Proof to “NFC tag only”. It refuses until the tag and '
+       + 'its keys are in place — that refusal is the check working.' },
+    { t: 'Tap it. You should get “Logged — <tag name>, read N”. If you do not, '
+       + "copy the e= and c= values out of the phone's address bar and run "
+       + 'this on the VM. It prints each stage, so you will see whether the '
+       + 'meta key is wrong (picc_data will not decrypt), the file key is wrong '
+       + '(cmac fails), or the counter mirror is off.',
+      code: 'python ntag.py <e> <c> <meta-key> <file-key>' },
+  ] },
+];
 
 function gateTagRows(n) {
   const rows = (n.tags || []).map((t, i) => ({
@@ -2330,6 +2391,27 @@ async function backToGateSheet() {
 }
 
 function seFieldHtml(f, v) {
+  // A DISCLOSURE, not a tooltip: there is no hover on a phone, so the ⓘ is a
+  // full-width button and the steps open in place, under the row they are
+  // about. Open state lives on seSheet so a re-render (any field change
+  // repaints the whole sheet) does not fold it shut mid-read.
+  if (f.kind === 'info') {
+    const open = !!(seSheet.infoOpen || {})[f.key];
+    const body = !open ? '' : `<div class="se-info-body">${f.sections.map(sec => `
+      <div class="se-info-h">${escHtml(sec.h)}</div>
+      <ol class="se-info-list" start="${sec.start}">${sec.items.map(it => `
+        <li>${escHtml(it.t)}
+          ${it.code ? `<code class="se-info-code">${escHtml(it.code)}</code>` : ''}
+          ${it.sub ? `<ul class="se-info-sub">${it.sub.map(x =>
+            `<li>${escHtml(x)}</li>`).join('')}</ul>` : ''}
+        </li>`).join('')}</ol>`).join('')}</div>`;
+    return `<div class="se-field se-info">
+      <button type="button" class="se-info-btn" data-f="${f.key}" aria-expanded="${open}">
+        <span class="se-info-i">ⓘ</span>
+        <span class="se-info-t">${escHtml(f.text)}</span>
+        <span class="be-chev">${open ? '⌄' : '›'}</span>
+      </button>${body}</div>`;
+  }
   const label = `<span class="se-flabel">${escHtml(f.label)}</span>`;
   const val = v[f.key];
   let control = '';
@@ -2448,7 +2530,13 @@ function wireSeSheet(fields) {
   fields.forEach(f => {
     const wrap = el.querySelector(`[data-f="${f.key}"]`);
     if (!wrap) return;
-    if (f.kind === 'openpicker') {
+    if (f.kind === 'info') {
+      wrap.addEventListener('click', () => {
+        seSheet.infoOpen = seSheet.infoOpen || {};
+        seSheet.infoOpen[f.key] = !seSheet.infoOpen[f.key];
+        renderSeSheet();
+      });
+    } else if (f.kind === 'openpicker') {
       wrap.addEventListener('click', () => f.open(v));
     } else if (f.kind === 'action') {
       wrap.addEventListener('click', async () => {
@@ -3283,6 +3371,9 @@ const SETTINGS_SHEETS = {
               + ' longer counts. Going back to the link is an easing, so it waits 24h.'
             : 'A tap still counts on a link gate — it is stronger than what is asked.'
               + ' Switching to tag-only applies at once, and needs a live tag first.' }] : []),
+        // Sits under Proof, above the tags themselves — the order you do it in.
+        ...(it ? [{ key: 'tagsetup', kind: 'info', label: '',
+          text: 'How to program a tag for hard mode', sections: TAG_SETUP_INFO }] : []),
         ...(it ? gateTagRows(it) : []),
         ...(it ? [{ key: 'link', label: 'Scan link', kind: 'action',
           text: `${state.settings.gate_scan_url || ''}/scan/${it.token}`,
