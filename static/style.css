@@ -263,10 +263,7 @@ select option {
 
 #right-panel {
   flex: 1;
-  background: var(--surface-mid);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  margin: 8px;
+  min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -1149,18 +1146,17 @@ select option {
 }
 
 .tl-nav-btn {
-  padding: 2px 8px;
-  font-size: 15px;
+  min-width: 32px;
+  min-height: 34px;
+  padding: 0 4px;
+  font-size: 18px;
   color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  line-height: 1.5;
+  border: none;
+  background: none;
+  line-height: 1;
 }
 
-.tl-nav-btn:hover {
-  background: var(--surface-2);
-  color: var(--text-primary);
-}
+.tl-nav-btn:hover { color: var(--text-primary); }
 
 .tl-nav-btn:disabled {
   opacity: 0.3;
@@ -1194,12 +1190,14 @@ select option {
    nothing. Getting this backwards ellipsised "Saturday" to "Saturd..." while
    "Last fetched: j..." kept its column. */
 #fetch-status {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+#fetch-status:empty { display: none; }
 
 .tl-refresh-area {
   display: flex;

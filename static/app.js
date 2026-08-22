@@ -794,10 +794,14 @@ function updateFetchStatus() {
     el.classList.add('fetch-failed');
     return;
   }
+  // NOTHING WHEN IT IS WORKING (2026-08-22, asked for). "Last fetched: 3 min
+  // ago" was a permanent column in a header that has to fit on a phone, and it
+  // answered a question nobody asks while the answer is fine. The FAILURE
+  // stays: that one is the difference between a quiet day and a calendar that
+  // has silently stopped updating, and it is the only thing here that a
+  // missing row could otherwise be mistaken for.
   el.classList.remove('fetch-failed');
-  if (!state.lastFetched) { el.textContent = ''; return; }
-  const mins = Math.floor((Date.now() - state.lastFetched) / 60000);
-  el.textContent = mins === 0 ? 'Last fetched: just now' : `Last fetched: ${mins} min ago`;
+  el.textContent = '';
 }
 
 function startCurrentTimeTick() {
