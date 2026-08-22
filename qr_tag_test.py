@@ -19,11 +19,22 @@ import datetime
 import json
 import os
 import sys
+import tempfile
 
-import ntag
-import storage
-import qr_judge
-import app as A
+# A SCRATCH DIRECTORY, like every other suite. Without it this ran against the
+# tracker.db and config.json beside the code, so it passed exactly once: the
+# second run found its own tags already claimed ("that UID already belongs to a
+# gate") and failed at the first key it tried to write. It also wrote its
+# fixture keys into a real config.json, which is the file that holds the live
+# ones - a test must never be able to touch those.
+HERE = os.path.dirname(os.path.abspath(__file__))
+os.chdir(tempfile.mkdtemp())
+sys.path.insert(0, HERE)
+
+import ntag             # noqa: E402
+import storage          # noqa: E402
+import qr_judge         # noqa: E402
+import app as A         # noqa: E402
 
 ok, bad = [], []
 def check(label, cond, extra=''):
