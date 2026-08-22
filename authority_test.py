@@ -21,6 +21,7 @@ reaching for something new fails this test until someone says who decides it.
 Companions: resolution_test, ledger_test, dayrule_test, daybook_test.
 """
 
+import ast
 import os
 import re
 import sys
@@ -105,6 +106,94 @@ READS = {
         'nothing tighter), which is the point of that inversion.',
 }
 
+# -- WHERE THE ANSWER COMES FROM (2026-08-21, Quentin's instruction) --------
+#
+# The reads above say WHO decides each value. This half says WHERE it lives:
+# every gate fact the money path judges on must come off THIS box - its sqlite
+# and its config.json - and never off the wire. The system WAS a Cloudflare
+# Worker holding its own D1 copy of the gates until 2026-08-08, so "the judge
+# asked a remote for the window" is not a hypothetical failure, it is the
+# previous architecture. A leftover fetch would look entirely ordinary and
+# would mean money moving on numbers this machine cannot show you.
+#
+# So the file gets exactly two doors out, and both are the PAYMENT RAIL rather
+# than a data source: the charge itself, and the token check. Anything else
+# reaching for the network fails here. The PROOF path (the scan server, the tag
+# verifier) gets no door at all - it decides presence from the request in front
+# of it and the keys in config.json, and asks nobody.
+ALLOWED_URLS = {
+    'https://www.beeminder.com/api/v1/charges.json':
+        'the charge itself - money OUT. It carries no gate fact back IN.',
+    'https://www.beeminder.com/api/v1/users/me.json':
+        'does the configured token work, and who does it bill. Reads no gate.',
+}
+NET_DOORS = {'_http_post', '_http_get'}             # the only two that may open one
+NET_CALLERS = {'beeminder_charge', 'verify_token'}  # and the only two that may ask
+REMOTE_MODULES = ('requests', 'httpx', 'aiohttp', 'aggregator', 'gspread')
+LOCAL_ONLY = ['qr_scan_server.py', 'ntag.py']       # the proof path asks nobody
+
+
+def _functions(tree):
+    # Every function in the file, nested ones included: a closure inside judge()
+    # is still judge()'s reach.
+    return [(n.name, n) for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _names_in(node):
+    names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+    return names | {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+
+
+def check_sources(fails):
+    with open(os.path.join(HERE, 'qr_judge.py'), encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and node.value.startswith(('http://', 'https://')):
+            if node.value not in ALLOWED_URLS:
+                fails.append('qr_judge names the URL %s - the money path may '
+                             'reach beeminder and nothing else' % node.value)
+
+    for name, fn in _functions(tree):
+        used = _names_in(fn)
+        if 'urlopen' in used and name not in NET_DOORS:
+            fails.append('qr_judge.%s opens the network itself - only %s may, '
+                         'and only to charge'
+                         % (name, ' / '.join(sorted(NET_DOORS))))
+        reached = used & NET_DOORS
+        if reached and name not in NET_CALLERS | NET_DOORS:
+            fails.append('qr_judge.%s reaches %s - a gate fact is read off this '
+                         'box, never the wire'
+                         % (name, ', '.join(sorted(reached))))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            named = [a.name for a in node.names]
+            if isinstance(node, ast.ImportFrom):
+                named.append(node.module or '')
+            for n in named:
+                if (n or '').split('.')[0] in REMOTE_MODULES:
+                    fails.append('qr_judge imports %s - it judges on local '
+                                 'storage and config.json, nothing else' % n)
+
+    for fname in LOCAL_ONLY:
+        with open(os.path.join(HERE, fname), encoding='utf-8') as f:
+            body = f.read()
+        for bad in ('urlopen', 'requests.', 'http://', 'https://'):
+            if bad in body:
+                fails.append('%s mentions %s - the PROOF path decides presence '
+                             'from the tap in front of it, and asks nobody'
+                             % (fname, bad))
+
+    if not fails:
+        for url, why in sorted(ALLOWED_URLS.items()):
+            print('PASS  out to %s' % url)
+            print('        %s' % why)
+        print('PASS  every gate fact the judge charges on is read off this box')
+
+
 CALL_RE = re.compile(r'storage\.([a-zA-Z_][a-zA-Z0-9_]*)')
 
 
@@ -135,6 +224,8 @@ def main():
     if getattr(storage, 'run_completion_ok', None) is None:
         fails.append('storage.run_completion_ok is gone — nothing re-checks a '
                      'run the client claims is complete')
+
+    check_sources(fails)
 
     if fails:
         print('\n%d unaccounted money-path read(s):' % len(fails))
