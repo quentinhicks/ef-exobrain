@@ -6780,7 +6780,13 @@ const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
                       // Checklist steps: per-RUN ticks ({step_id: {item_id:
                       // true}}), session-local — the ref list is a reusable
                       // template and its own done flags stay untouched.
-                      refLists: [], checks: {} };
+                      refLists: [], checks: {},
+                      // Steps pushed to the back of THIS run. Session-local and
+                      // deliberately so: it is the order you are meeting them
+                      // in, not a fact about the day, and flow_run.steps is a
+                      // map of CREDITS that the judge reads — writing anything
+                      // else into it would look like one.
+                      skipped: {} };
 
 // MIDNIGHT RESUME. The run-day pin lived only in the memory of the session
 // that opened it, so a night routine half-done at 23:58 and reopened at 00:05
@@ -6814,6 +6820,7 @@ async function openFlowRun(flowId) {
   ]);
   flowRunView.refLists = refLists;
   flowRunView.checks = {};
+  flowRunView.skipped = {};
   const flow = flows.find(f => f.id === flowId);
   if (!flow) return;
   // THE RUN IS TODAY'S STEPS, and the server composed that list once
@@ -6886,6 +6893,42 @@ async function creditFlowStep(step, how) {
     return;
   }
   const next = flowRunView.flow.steps.findIndex(s => !flowRunView.steps[s.id]);
+  flowRunView.idx = next === -1 ? flowRunView.idx : next;
+  renderFlowRun();
+}
+
+// SKIP IT FOR NOW, and meet it at the end (2026-08-22, Quentin's instruction).
+// A step you cannot do at this minute used to leave two options: credit it
+// dishonestly, or abandon the run — and on a gated routine the second one costs
+// money. Skipping moves the step to the BACK of what is left; it does not
+// credit it, does not remove it, and does not change what completion requires.
+//
+// It is ORDER ONLY, which is what keeps it off the money path: `day_steps` is
+// the server's composition of what today owes and put_flow_run re-checks it, so
+// re-ordering the same set can neither add a step nor let one go unmet. That is
+// also why the skip is not a pawn — a pawn moves work to ANOTHER routine and
+// shortens that routine's gate, a decision with a price. This one is free.
+//
+// AND IT REFUSES WHEN IT IS THE LAST THING LEFT. "Come back at the end" needs
+// an end to come back to; with one step remaining, skipping would put it back
+// in front of you, which reads as a broken button. Being told that is the point
+// — the last step is the one the routine is actually asking for.
+function skipFlowStep() {
+  const steps = flowRunView.flow.steps;
+  const step = steps[flowRunView.idx];
+  const left = steps.filter(x => !flowRunView.steps[x.id]);
+  if (left.length <= 1) {
+    // A refusal that only renders in the foot reads as a dead button on a
+    // phone, where the keyboard sits there. Say it where it will be seen.
+    toast('Last one left — there is nothing to come back from.');
+    return;
+  }
+  steps.splice(flowRunView.idx, 1);
+  steps.push(step);
+  flowRunView.skipped[step.id] = true;
+  // The next thing still owed, in the order that now stands. Never idx + 1:
+  // the step that WAS next has just slid into this index.
+  const next = steps.findIndex(x => !flowRunView.steps[x.id]);
   flowRunView.idx = next === -1 ? flowRunView.idx : next;
   renderFlowRun();
 }
@@ -6991,6 +7034,7 @@ function renderFlowRun() {
   // folded in as zero — under-reporting the time left is the one thing a
   // number like this must not do.
   const left = stepsMinutes(f.steps.filter(x => !flowRunView.steps[x.id]));
+  const steps_left = f.steps.filter(x => !flowRunView.steps[x.id]).length;
 
   let page = '';
   if (s.kind === 'text') {
@@ -7234,6 +7278,10 @@ function renderFlowRun() {
       <button class="modal-close-btn" id="fr-close">✕</button>
     </div>
     <div class="fr-page">${page}${credited ? '<div class="fr-note">✓ already credited</div>' : ''}
+      ${flowRunView.skipped[s.id] && !credited
+        ? `<div class="fr-note">skipped earlier — ${steps_left <= 1
+            ? 'and it is the last thing left, so this is where the routine ends'
+            : 'it comes round again at the end'}</div>` : ''}
       ${s.pawned_in ? `<div class="fr-note fr-pawned-in">pawned here from ${
         escHtml(flowName(s.from_flow_id))} — it costs this routine ${
         s.pawn_minutes || 0} min, so tonight's gate closes that much earlier</div>` : ''}</div>
@@ -7254,6 +7302,12 @@ function renderFlowRun() {
         ? `<button id="fr-unpawn" class="cl-pill" title="Send it back to ${
           escHtml(flowName(s.from_flow_id))} — this gate returns to its full length">← ${
           escHtml(flowName(s.from_flow_id))}</button>` : ''}
+      ${/* Not now, but still tonight. Hidden once the step is credited (there
+            is nothing to come back for) and never shown on the only step left
+            — see skipFlowStep, which refuses that case in words. */''}
+      ${!credited ? `<button id="fr-skip" class="cl-pill" title="${
+        steps_left <= 1 ? 'This is the last one left'
+          : 'Move it to the end of tonight\u2019s run'}">skip for now</button>` : ''}
       <button id="fr-done" class="cl-pill cl-pill-on"${
         s.requirement !== 'soft'
           && ((s.kind === 'social_spec' && day.specOk !== true)
@@ -7271,6 +7325,8 @@ function renderFlowRun() {
   el.querySelector('#fr-back').addEventListener('click', () => {
     if (flowRunView.idx > 0) { flowRunView.idx--; renderFlowRun(); }
   });
+  const skip = el.querySelector('#fr-skip');
+  if (skip) skip.addEventListener('click', skipFlowStep);
   const soft = el.querySelector('#fr-soft');
   if (soft) soft.addEventListener('click', () => creditFlowStep(s, 'soft'));
   // Per-RUN ticks: they live in flowRunView.checks, never on ref_item — the
