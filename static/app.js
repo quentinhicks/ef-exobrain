@@ -2461,7 +2461,20 @@ function seFieldHtml(f, v) {
       <div class="se-geo-out"></div>
     </div>`;
   } else if (f.kind === 'select') {
-    control = `<select class="se-input se-select" data-f="${f.key}">${f.options(v).map(o =>
+    // WHAT IT SHOWS IS WHAT IT HOLDS. A <select> whose value matches none of
+    // its options still DRAWS the first one, so a blank required field looked
+    // filled in: adding a recurring task showed "Area: General", refused the
+    // save with "Name, area and start date are required", and there was
+    // nothing on screen to act on — the field it was complaining about was
+    // visibly answered. Rather than fix that one sheet, the renderer now
+    // prepends a placeholder whenever the model's value is not on offer, so
+    // the control cannot claim an answer nobody gave.
+    const opts = f.options(v);
+    const missing = !opts.some(o => String(o.value) === String(val == null ? '' : val));
+    const all = missing
+      ? [{ value: val == null ? '' : val, name: f.placeholder || '— pick one —' }].concat(opts)
+      : opts;
+    control = `<select class="se-input se-select" data-f="${f.key}">${all.map(o =>
       `<option value="${escHtml(String(o.value))}"${String(o.value) === String(val) ? ' selected' : ''}>${escHtml(o.name)}</option>`
     ).join('')}</select>`;
   } else if (f.kind === 'swatches') {
@@ -2498,6 +2511,14 @@ function seFieldHtml(f, v) {
   const suffix = f.suffix ? `<span class="se-fsuffix">${escHtml(f.suffix)}</span>` : '';
   return `<div class="se-field${f.half ? ' se-half' : ''}">${label}
     <div class="se-frow">${control}${suffix}</div>${hint}</div>`;
+}
+
+// The foot of a sheet is where a phone keyboard sits, so an error rendered
+// only there reads as a dead button. Same rule as everywhere else: toast it.
+function seSheetRefuse(msg) {
+  seSheet.error = msg;
+  if (msg) toast(msg);
+  renderSeSheet();
 }
 
 function renderSeSheet() {
@@ -2689,8 +2710,7 @@ async function submitSeSheet() {
   btn.disabled = true;
   const error = await spec.submit(seSheet.values, seSheet.item);
   if (error) {
-    seSheet.error = error;
-    renderSeSheet();
+    seSheetRefuse(error);
     return;
   }
   // A sheet that NAVIGATES has already opened the one you land on (a tag hands
@@ -2962,7 +2982,7 @@ const SETTINGS_SHEETS = {
     confirm: () => 'Delete this recurring task? Occurrences already filed stay.',
     blank: () => ({
       name: '', area: '', kind: 'weekly', days: [], interval: 1,
-      nth: 1, weekday: 0, anchor: wallDay(),
+      nth: 1, weekday: 0, anchor: wallDay(), due: '',
     }),
     load: t => ({ project: t.project_id || '', active: !!t.active }),
     fields: (v, it) => {
@@ -2982,7 +3002,7 @@ const SETTINGS_SHEETS = {
       const unit = v.kind === 'every_n_days' ? 'day(s)' : v.kind === 'weekly' ? 'week(s)' : 'month(s)';
       return [
         { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Water the plants' },
-        { key: 'area', label: 'Area', kind: 'select',
+        { key: 'area', label: 'Area', kind: 'select', placeholder: '— pick an area —',
           options: () => (state.areas || []).filter(p => p.active && p.type === 'standard')
             .map(p => ({ value: p.id, name: p.name })) },
         { key: 'kind', label: 'Repeats', kind: 'select', rerender: true, options: () => [
@@ -2998,8 +3018,19 @@ const SETTINGS_SHEETS = {
           { key: 'weekday', label: 'Weekday', kind: 'select', half: true,
             options: () => DAY_NAMES.map((d, i) => ({ value: i, name: d })) },
         ] : []),
-        { key: 'interval', label: 'Every', kind: 'number', min: 1, suffix: unit, half: true },
+        { key: 'interval', label: 'Every', kind: 'number', min: 1, suffix: unit, half: true,
+          hint: v.kind === 'monthly_date'
+            ? 'Yearly is 12 months — there is one scheduler, not a second kind.' : null },
         { key: 'anchor', label: 'Starting', kind: 'date', half: true },
+        // The occurrence's DUE day, which the form could not express at all:
+        // "appears 1 April, due 12 May" was a task you could describe and not
+        // enter. Only the month and day are kept (deadline_md) — the year is
+        // decided when the occurrence is actually seeded, so it can never be
+        // due in a year that has passed.
+        { key: 'due', label: 'Due', kind: 'date', half: true,
+          hint: v.due
+            ? `Due ${recDueLabel(v.due.slice(5))} of whichever year it appears in.`
+            : 'Optional. Only the month and day are kept.' },
       ];
     },
     submit: async (v, it) => {
@@ -3012,11 +3043,17 @@ const SETTINGS_SHEETS = {
         await refreshRecurringList();
         return null;
       }
-      if (!v.name.trim() || !v.area || !v.anchor) return 'Name, area and start date are required.';
+      // Each one named on its own: "Name, area and start date are required"
+      // made you check all three to find the one that was not.
+      if (!v.name.trim()) return 'Give the task a name.';
+      if (!v.area) return 'Pick an area for it.';
+      if (!v.anchor) return 'Set the day it starts.';
       const body = {
         name: v.name.trim(), area_id: parseInt(v.area), kind: v.kind,
         anchor_date: v.anchor, interval: parseInt(v.interval) || 1,
       };
+      // YYYY-MM-DD in, MM-DD stored: the year belongs to the occurrence.
+      if (v.due) body.deadline_md = v.due.slice(5);
       if (v.kind === 'weekly') {
         if (!v.days.length) return 'Select at least one day.';
         body.days_of_week = v.days.slice().sort().join('');
