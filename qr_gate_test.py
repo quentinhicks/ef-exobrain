@@ -88,6 +88,20 @@ def reason_for(node_id, ymd):
     return rows[0]['failure_reason'] if rows else None
 
 
+def cents_for(node_id, ymd):
+    # What the day cost, as the split prices it. amount_cents is only written
+    # when money actually moves (these fixtures run with charging off), so the
+    # figure comes from the CREDIT the judgment recorded against the stake —
+    # the same arithmetic charge_for_failure does.
+    rows = [r for r in storage.qr_charge_rows_between(ymd, ymd) if r['node_id'] == node_id]
+    if not rows:
+        return None
+    stake = qr_judge.node_charge_cents(
+        [n for n in storage.qr_get_nodes() if n['id'] == node_id][0],
+        qr_judge.charge_settings())
+    return int(stake * (1 - (rows[0]['credit_pct'] or 0) / 100.0))
+
+
 # ── the predicate ────────────────────────────────────────────
 fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-1', '06:00', '08:00')
@@ -156,9 +170,15 @@ qr_judge.judge()
 check('scanned AND routine done in time passes', reason_for(nid, YESTERDAY) is None,
       reason_for(nid, YESTERDAY))
 
-# ── each half has its OWN deadline (2026-08-15) ──────────────
-# Done, but after the routine was due. The routine's deadline here is the gate's
-# close (it has no window of its own and no offset), so 08:30 is late.
+# ── the stake SPLITS between the two halves (2026-08-22) ─────
+#
+# This reverses the 2026-08-15 rule that either half missed at its own deadline
+# lost the whole day. It left a missed morning with no reason to do the routine
+# at all, which is the half actually worth doing. Now each half is worth half
+# the stake, and only both-on-time pays nothing.
+#
+# Scanned, routine done LATE (its deadline is the gate's close, 08:00, so 08:30
+# is late). The scan half is earned; the routine half is not.
 fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-6b', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
@@ -166,12 +186,63 @@ storage.update_flow(flow['id'], qr_node_id=nid)
 scan(nid, YESTERDAY)
 complete(flow['id'], YESTERDAY, '08:30')
 qr_judge.judge()
-check('a routine finished AFTER its deadline does not save the day',
-      reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
+check('a routine finished AFTER its deadline no longer loses the WHOLE day',
+      reason_for(nid, YESTERDAY) == 'routine_late', reason_for(nid, YESTERDAY))
+check('...it costs half the stake, because the scan half was met',
+      cents_for(nid, YESTERDAY) == 100, cents_for(nid, YESTERDAY))
 
-# The routine falls due before the scan window closes (offset_min = -240 on a
-# 20:00–23:00 gate → due 19:00). At 20:00 the scan still has three hours, but
-# the routine's clock has run out and the day is already lost.
+# Scanned, routine NEVER done: same half owed, different reason — one says the
+# routine ran late, the other that it never ran.
+fresh()
+nid = storage.qr_create_node('Wake', 'tok-wake-6b2', '06:00', '08:00')
+flow = storage.create_flow('Morning routine')
+storage.update_flow(flow['id'], qr_node_id=nid)
+scan(nid, YESTERDAY)
+qr_judge.judge()
+check('scanned but the routine never ran also costs half',
+      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY))
+      == ('routine_incomplete', 100),
+      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)))
+
+# NOT scanned, routine done late in the day: the routine half is earned however
+# late it was, which is the incentive the whole change exists to create.
+fresh()
+nid = storage.qr_create_node('Wake', 'tok-wake-6b3', '06:00', '08:00')
+flow = storage.create_flow('Morning routine')
+storage.update_flow(flow['id'], qr_node_id=nid)
+complete(flow['id'], YESTERDAY, '21:40')
+qr_judge.judge()
+check('a routine done at 21:40 on a 08:00 gate still earns its half back',
+      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)) == ('absent', 100),
+      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)))
+
+# Neither half: the whole stake, as before.
+fresh()
+nid = storage.qr_create_node('Wake', 'tok-wake-6b4', '06:00', '08:00')
+flow = storage.create_flow('Morning routine')
+storage.update_flow(flow['id'], qr_node_id=nid)
+qr_judge.judge()
+check('neither half met still costs the whole stake',
+      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)) == ('absent', 200),
+      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)))
+
+# Both on time: nothing owed, and the row is the freeze's judged success.
+fresh()
+nid = storage.qr_create_node('Wake', 'tok-wake-6b5', '06:00', '08:00')
+flow = storage.create_flow('Morning routine')
+storage.update_flow(flow['id'], qr_node_id=nid)
+scan(nid, YESTERDAY)
+complete(flow['id'], YESTERDAY, '07:30')
+qr_judge.judge()
+check('both halves on time is the only way to pay nothing',
+      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
+
+# ── and the DAY has to end before any of that can be said ────
+#
+# The routine can earn its half until midnight, so a gate with a routine is no
+# longer judged when its scan window shuts. (Before this, a routine missed at
+# its own deadline was judged on the spot — which would now charge the full
+# stake for a routine that was about to be done, and a judged day is FROZEN.)
 fresh()
 TODAY = date_cls.today().isoformat()
 nid = storage.qr_create_node('Sleep', 'tok-sleep-6c', '20:00', '23:00')
@@ -179,22 +250,30 @@ flow = storage.create_flow('Night routine')
 storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-240)
 at_2000 = datetime.fromisoformat(f'{TODAY}T20:00:00')
 qr_judge.judge(now=at_2000)
-check('a routine missed at ITS deadline fails the gate while the scan window is'
-      ' still open', reason_for(nid, TODAY) == 'routine_incomplete', reason_for(nid, TODAY))
-
-# …and the same day, done in time, is not judged early: the scan still has
-# until 23:00 to happen.
-fresh()
-nid = storage.qr_create_node('Sleep', 'tok-sleep-6d', '20:00', '23:00')
-flow = storage.create_flow('Night routine')
-storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-240)
-complete(flow['id'], TODAY, '18:30')
-qr_judge.judge(now=at_2000)
-check('a routine done in time leaves the scan window alone',
+check('the routine deadline passing no longer judges the day',
       reason_for(nid, TODAY) is None, reason_for(nid, TODAY))
 qr_judge.judge(now=datetime.fromisoformat(f'{TODAY}T23:01:00'))
-check('…and once the scan window closes unscanned, THAT is the failure',
-      reason_for(nid, TODAY) == 'absent', reason_for(nid, TODAY))
+check('...nor does the scan window closing, while the day can still change',
+      reason_for(nid, TODAY) is None, reason_for(nid, TODAY))
+# The routine, done at 23:30 — after both deadlines, still inside the day.
+complete(flow['id'], TODAY, '23:30')
+qr_judge.judge(now=datetime.fromisoformat(f'{TODAY}T23:59:00'))
+check('...still not judged one minute before midnight',
+      reason_for(nid, TODAY) is None, reason_for(nid, TODAY))
+tomorrow = (date_cls.today() + timedelta(days=1)).isoformat()
+qr_judge.judge(now=datetime.fromisoformat(f'{tomorrow}T00:05:00'))
+check('once the day is over it is judged, and the late routine earned its half',
+      (reason_for(nid, TODAY), cents_for(nid, TODAY)) == ('absent', 100),
+      (reason_for(nid, TODAY), cents_for(nid, TODAY)))
+
+# A gate with NO routine is unchanged: nothing about it can still move once the
+# window shuts, so it is judged then, exactly as it always was.
+fresh()
+nid = storage.qr_create_node('Sleep', 'tok-sleep-6d', '20:00', '23:00')
+qr_judge.judge(now=datetime.fromisoformat(f'{TODAY}T23:01:00'))
+check('a gate with no routine is still judged the moment its window closes',
+      (reason_for(nid, TODAY), cents_for(nid, TODAY)) == ('absent', 200),
+      (reason_for(nid, TODAY), cents_for(nid, TODAY)))
 
 fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-7', '06:00', '08:00')
@@ -204,6 +283,8 @@ complete(flow['id'], YESTERDAY, '07:30')
 qr_judge.judge()
 check('routine done but NEVER SCANNED still reads as absent, not as the routine',
       reason_for(nid, YESTERDAY) == 'absent', reason_for(nid, YESTERDAY))
+check('...and costs half, since the routine half was met',
+      cents_for(nid, YESTERDAY) == 100, cents_for(nid, YESTERDAY))
 
 # Unlinking has to actually release the gate, or a removed requirement keeps
 # failing days forever — but it is an EASING, so it releases in 24h and not

@@ -2094,6 +2094,17 @@ def _gate_day_payload(node, ymd, now=None):
 
     r_due = qr_judge.routine_deadline(node, flow, ymd) if flow else None
     settings = qr_judge.charge_settings()
+    # WHERE THE DAY STANDS, priced. The same ladder the judge charges on
+    # (day_credit), asked of the scans inside the window — so an unjudged day
+    # shows what it would cost if it ended now, and a judged one is read back
+    # from its row rather than recomputed under a config that has since moved.
+    in_window = [sc for sc in scans if sc['in_window']]
+    credit, credit_reason = qr_judge.day_credit(node, ymd, flow, in_window)
+    judged = storage.qr_node_day_state(node['id'], ymd)['judged']
+    if judged:
+        credit = (judged.get('credit_pct') or 0) / 100.0
+        credit_reason = judged.get('failure_reason')
+    stake = qr_judge.node_charge_cents(node, settings)
     return {
         'node_id': node['id'], 'label': node['label'], 'date': ymd,
         'applies': applies, 'active': bool(node.get('active')),
@@ -2109,8 +2120,20 @@ def _gate_day_payload(node, ymd, now=None):
             'completed_at': flow.get('completed_at')},
         'location': loc,
         'scans': scans,
-        'judged': storage.qr_node_day_state(node['id'], ymd)['judged'],
-        'stake_cents': qr_judge.node_charge_cents(node, settings),
+        'judged': judged,
+        # The two halves, named. A single "failed" hid the half that WAS met,
+        # which is the thing the split exists to make visible.
+        'credit': {
+            'pct': int(credit * 100),
+            'owed_cents': int(stake * (1 - credit)),
+            'reason': credit_reason,
+            'scan_half': any(sc['satisfies'] for sc in in_window),
+            'routine_half': bool(flow and flow.get('completed_at')),
+            'splits': flow is not None,
+            'settles_at': qr_judge.settle_after(
+                node, ymd, flow, (start, end, offset)).strftime('%Y-%m-%d %H:%M'),
+        },
+        'stake_cents': stake,
         'live': settings['live'] and not settings['dryrun'],
         'tags': _tag_payloads(node['id']),
         'pending_changes': storage.qr_get_pending_changes(node['id']),

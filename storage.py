@@ -7354,7 +7354,8 @@ def qr_node_day_state(node_id, date):
     judged = None
     try:
         judged = conn.execute(
-            '''SELECT failure_reason, charge_status, amount_cents FROM qr_charge_log
+            '''SELECT failure_reason, charge_status, amount_cents, credit_pct
+               FROM qr_charge_log
                WHERE node_id = ? AND date = ?''', (node_id, date)).fetchone()
     except sqlite3.OperationalError:
         pass                              # pre-charge-columns db
@@ -7486,10 +7487,18 @@ def qr_ensure_charge_columns():
     # window_start/end/offset_days are the FREEZE (2026-08-17): the judgment
     # stamps the window it was made against, so a closed day can be read back
     # instead of re-resolved under whatever the config says later.
+    # credit_pct is the SPLIT (2026-08-22): what share of the stake the day
+    # earned back — 100 both halves on time, 50 one of them, 0 neither. Stored
+    # rather than inferred from the amount, because the amount is only written
+    # when money actually moves: in dry run or under the cap there is no figure
+    # to read back, and a half-met day would be indistinguishable from a lost
+    # one on every surface. NULL on rows written before the split, which is
+    # exactly what those rows meant — the whole stake.
     for table, col, decl in (('qr_charge_log', 'charge_id', 'TEXT'),
                              ('qr_charge_log', 'window_start', 'TEXT'),
                              ('qr_charge_log', 'window_end', 'TEXT'),
                              ('qr_charge_log', 'offset_days', 'INTEGER'),
+                             ('qr_charge_log', 'credit_pct', 'INTEGER'),
                              ('qr_node', 'charge_cents', 'INTEGER')):
         try:
             conn.execute(f'SELECT {col} FROM {table} LIMIT 1')
@@ -7500,7 +7509,7 @@ def qr_ensure_charge_columns():
 
 
 def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cents=None,
-                        window=None):
+                        window=None, credit_pct=None):
     # Returns True only if THIS call created the row. The insert is the
     # reservation: it happens before anything acts on the judgment, so a
     # concurrent or repeated tick backs off here instead of duplicating.
@@ -7517,9 +7526,10 @@ def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cen
     cur = conn.execute(
         '''INSERT OR IGNORE INTO qr_charge_log
              (node_id, date, failure_reason, charge_status, amount_cents,
-              window_start, window_end, offset_days)
-           VALUES (?,?,?,?,?,?,?,?)''',
-        (node_id, date, failure_reason, charge_status, amount_cents, ws, we, off))
+              window_start, window_end, offset_days, credit_pct)
+           VALUES (?,?,?,?,?,?,?,?,?)''',
+        (node_id, date, failure_reason, charge_status, amount_cents, ws, we, off,
+         credit_pct))
     conn.commit()
     won = cur.rowcount > 0
     conn.close()
@@ -7581,7 +7591,8 @@ def qr_weekly_spent_cents(through_date):
 def qr_charge_rows_between(from_date, to_date):
     conn = get_conn()
     rows = conn.execute(
-        '''SELECT node_id, date, failure_reason, charge_status, amount_cents, charge_id
+        '''SELECT node_id, date, failure_reason, charge_status, amount_cents, charge_id,
+                  credit_pct
            FROM qr_charge_log WHERE date >= ? AND date <= ?
              AND failure_reason IS NOT NULL
            ORDER BY date DESC, node_id''',
@@ -7618,7 +7629,7 @@ def qr_judgments_between(from_date, to_date):
     qr_ensure_charge_columns()
     conn = get_conn()
     rows = conn.execute(
-        '''SELECT node_id, date, failure_reason, charge_status
+        '''SELECT node_id, date, failure_reason, charge_status, credit_pct
            FROM qr_charge_log WHERE date >= ? AND date <= ?''',
         (from_date, to_date)).fetchall()
     conn.close()

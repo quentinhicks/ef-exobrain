@@ -3081,6 +3081,14 @@ body.calendar-minimized #review-modal {
   background: var(--block-green);
 }
 
+/* HALF MET (2026-08-22). Its own state, between the two: one of the scan and
+   the routine was done and the day cost half the stake. Amber rather than red,
+   because red would say the half you did counted for nothing. */
+.tl-qr-line.tl-qr-partial .tl-qr-label {
+  background: var(--block-amber);
+  color: var(--on-accent);
+}
+
 .tl-qr-line.tl-qr-failed .tl-qr-label {
   background: var(--block-red);
 }

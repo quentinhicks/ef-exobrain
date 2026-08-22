@@ -313,6 +313,75 @@ def _completed_local(iso):
 
 # How far back a judge that has been down will reach. Bounded so a database
 # restored from an old backup, or a gate created long ago, cannot walk a month.
+# ── TWO HALVES, PRICED SEPARATELY (2026-08-22, Quentin's instruction) ─────
+#
+# The old rule was all-or-nothing: miss either half and the whole stake went.
+# That left a missed morning with NO REASON TO DO THE ROUTINE AT ALL — the day
+# was already lost by 09:00, and the routine is the part that was actually
+# worth doing. So the stake now splits.
+#
+#   scan in its window AND routine done by its deadline  ->  nothing to pay
+#   either one of those, on its own                      ->  half the stake
+#   neither                                              ->  the whole stake
+#
+# The routine half is earned by finishing the routine AT ALL on its day, late or
+# not; the scan half can only be earned inside the window, because a scan is a
+# claim about where you were at a time. Both on time is the only way to pay
+# nothing — a late routine costs the same half as no scan does, which is what
+# keeps "on time" worth aiming at.
+#
+# WHAT THIS COSTS, and it is the part to be careful about: a day can no longer
+# be settled when its scan window closes, because the routine can still earn
+# its half at 20:00. So a gate WITH a routine is judged after its day has ENDED
+# (settle_after below). A gate without one is unchanged — nothing about it can
+# still change once the window shuts, so it is judged then, as it always was.
+FULL, HALF, NONE = 1.0, 0.5, 0.0
+
+
+def day_credit(node, ymd, flow, scans, now=None):
+    """How much of the stake this day earned back, and why. THE one answer.
+
+    Returned as (credit, reason). `reason` is NULL when nothing is owed — a row
+    with no failure_reason is a judged success, which is what the freeze made a
+    row mean (see qr_reserve_judgment).
+    """
+    scan_ok = any(scan_satisfies(node, sc) for sc in scans)
+    done = _completed_local(flow['completed_at']) if flow else None
+    if flow is None:
+        # No routine: the scan IS the whole commitment, so there is no half to
+        # earn and nothing to wait for.
+        return (FULL, None) if scan_ok else (NONE, 'absent')
+
+    r_due = routine_deadline(node, flow, ymd)
+    on_time = bool(done) and (r_due is None or done <= r_due)
+    if scan_ok and on_time:
+        return FULL, None
+    if scan_ok:
+        # The scan half is earned. The routine was late, or never happened.
+        return HALF, 'routine_late' if done else 'routine_incomplete'
+    if done:
+        # The routine half is earned, however late. No scan, so half is owed.
+        return HALF, 'absent'
+    return NONE, 'absent'
+
+
+def settle_after(node, ymd, flow, window):
+    """The moment this day can be judged without the answer still moving.
+
+    The scan window's close, and — where a routine is linked — the end of the
+    day itself, because the routine can earn its half right up to midnight.
+    Judging at the scan's close would charge the full stake for a routine that
+    was about to be done, and a judged day is FROZEN, so there is no second
+    look. This is the whole reason the split needs a timing rule at all.
+    """
+    start, end, offset = window
+    close = _local_dt(close_date_of(ymd, offset), end)
+    if flow is None:
+        return close
+    day_end = _local_dt(_date_plus(ymd, 1), '00:00')
+    return max(close, day_end)
+
+
 BACKFILL_MAX_DAYS = 14
 
 
@@ -370,39 +439,19 @@ def judge(now=None, verbose=False):
             money_reach = ymd >= _date_plus(today, -1)
             start, end, offset = resolve_window(node, ymd)
             close_date = close_date_of(ymd, offset)
-            scan_close = _local_dt(close_date, end)
 
-            # The routine's own clock, which can run out well before the scan
-            # window closes — and when it does, that alone decides the day.
+            # The routine that gates this node, if any. It no longer decides the
+            # day on its own clock: a routine done late still earns half, so the
+            # day is not answerable until it can no longer change (settle_after).
             flow = storage.gating_flow_for_node(node['id'], ymd)
-            r_due = routine_deadline(node, flow, ymd) if flow else None
-            r_late = (flow is not None and r_due is not None and now >= r_due
-                      and not (_completed_local(flow['completed_at'])
-                               and _completed_local(flow['completed_at']) <= r_due))
-
-            if now < scan_close and not r_late:
-                continue  # both clocks still running
+            if now < settle_after(node, ymd, flow, (start, end, offset)):
+                continue
             if storage.qr_judgment_exists(node['id'], ymd):
                 continue
 
-            reason = None
-            if now >= scan_close:
-                scans = storage.qr_scans_in_window(
-                    node['id'], _utc_iso(ymd, start), _utc_iso(close_date, end))
-                satisfied = any(scan_satisfies(node, s) for s in scans)
-                # Order matters when both clocks have run out: no scan at all is
-                # the more basic failure, so it wins the reason — "routine not
-                # done" on a day you were never there would send you to fix the
-                # wrong thing.
-                if not satisfied:
-                    reason = 'absent'
-                elif r_late:
-                    reason = 'routine_incomplete'
-            elif r_late:
-                # The scan still has time; the routine does not. Judging now is
-                # the point of the change — the day is already lost, and saying
-                # so at 21:00 rather than at 23:00 is the honest answer.
-                reason = 'routine_incomplete'
+            scans = storage.qr_scans_in_window(
+                node['id'], _utc_iso(ymd, start), _utc_iso(close_date, end))
+            credit, reason = day_credit(node, ymd, flow, scans, now)
             tag = '' if ymd == today else ' (%s)' % ymd
             if reason is None:
                 # A ROW ON SUCCESS TOO (2026-08-17) — the FREEZE, reversing
@@ -418,18 +467,21 @@ def judge(now=None, verbose=False):
                 # the day back to success. Presence is a deadline; late proof
                 # is not proof.
                 storage.qr_reserve_judgment(node['id'], ymd, None, 'ok', None,
-                                            window=(start, end, offset))
+                                            window=(start, end, offset),
+                                            credit_pct=100)
                 continue
 
             if not money_reach:
                 # Judged, frozen, never charged — see _days_to_judge.
                 if storage.qr_reserve_judgment(node['id'], ymd, reason, 'stale', None,
-                                               window=(start, end, offset)):
+                                               window=(start, end, offset),
+                                               credit_pct=int(credit * 100)):
                     lines.append('X   %s (%s): %s -> stale (backfill)'
                                  % (node['label'], ymd, reason))
                 continue
 
-            status = charge_for_failure(node, ymd, reason, window=(start, end, offset))
+            status = charge_for_failure(node, ymd, reason, window=(start, end, offset),
+                                        credit=credit)
             if status is None:
                 continue          # another tick reserved it first
             lines.append('X   %s%s: %s -> %s' % (node['label'], tag, reason, status))
@@ -479,8 +531,13 @@ def outcomes(from_date, to_date, now=None):
                 ymd = _date_plus(ymd, 1)
                 continue
             if j:
+                # A judged day is read back, never re-derived. Which of the
+                # three it was comes from the AMOUNT against the stake: a half
+                # charge is a half-met day, and calling that "failed" would
+                # hide the half that was met — the thing the split exists to
+                # make visible.
                 out.append({'node_id': node['id'], 'date': ymd,
-                            'outcome': 'failed' if j['failure_reason'] else 'success'})
+                            'outcome': judged_outcome(j)})
             elif now >= _local_dt(close_date, end):
                 ok = any(
                     open_iso <= s['scanned_at'] <= close_iso and scan_satisfies(node, s)
@@ -499,6 +556,19 @@ def outcomes(from_date, to_date, now=None):
 # passed. Ported verbatim from the Worker — these predicates ARE the teeth.
 
 LOOSEN_DELAY_H = 24
+
+
+def judged_outcome(judgment):
+    """success / partial / failed, READ off a judgment row, never re-derived.
+
+    Asked in one place so the timeline, the day read-out and anything later
+    cannot disagree about what a half-charged day was. credit_pct is NULL on
+    rows written before the split — and those rows meant the whole stake, so a
+    missing value is a plain failure, which is what they were.
+    """
+    if not judgment.get('failure_reason'):
+        return 'success'
+    return 'partial' if (judgment.get('credit_pct') or 0) > 0 else 'failed'
 
 
 def scan_satisfies(node, scan):
@@ -813,16 +883,21 @@ def _http_get(url):
         return 200 <= r.status < 300, json.loads(r.read() or b'{}')
 
 
-def charge_for_failure(node, ymd, reason, sender=None, window=None):
+def charge_for_failure(node, ymd, reason, sender=None, window=None, credit=0.0):
     """The whole money path for one judged failure. Returns the status stored.
 
     Reserve BEFORE charging, and only the tick that won the reservation may
     call Beeminder. Every early return still leaves a row, so the day is
     judged exactly once whatever happens to the money.
+
+    `credit` is the share of the stake the day EARNED BACK (day_credit): half
+    for one of the two halves met, so the amount is what is left owing. It is
+    rounded DOWN to the cent in the user's favour, and the amount stored is the
+    amount charged, so the cap and the log agree with the card.
     """
     storage.qr_ensure_charge_columns()
     s = charge_settings()
-    amount = node_charge_cents(node, s)
+    amount = int(node_charge_cents(node, s) * (1 - credit))
     spent = storage.qr_weekly_spent_cents(ymd)
     capped = s['live'] and (spent + amount) > s['cap_cents']
     will_charge = s['live'] and not capped
@@ -830,7 +905,7 @@ def charge_for_failure(node, ymd, reason, sender=None, window=None):
     status = 'capped' if capped else ('charging' if will_charge else 'would_fire')
     won = storage.qr_reserve_judgment(
         node['id'], ymd, reason, status, amount if will_charge else None,
-        window=window)
+        window=window, credit_pct=int(credit * 100))
     if not won:
         return None          # another tick owns this day; do not touch money
 

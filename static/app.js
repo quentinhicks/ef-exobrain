@@ -9204,7 +9204,20 @@ function gatePopHtml(d) {
         + ' written — so these minutes do not shorten it.'}</div>`;
   }
 
+  const cr = d.credit || {};
   let verdict = '<div class="gp-sect">The verdict</div>';
+  // THE TWO HALVES, each worth half the stake. Shown as the two statements
+  // they are, so a day that cost $1.00 says which half it lost.
+  if (cr.splits) {
+    verdict += gpRow('Scan half', cr.scan_half
+      ? '<span class="gp-ok">met — scanned inside the window</span>'
+      : '<span class="gp-no">not met — no scan counted in the window</span>');
+    verdict += gpRow('Routine half', cr.routine_half
+      ? (cr.reason === 'routine_late'
+          ? '<span class="gp-no">done, but after its deadline</span>'
+          : '<span class="gp-ok">met — the routine was done</span>')
+      : '<span class="gp-no">not met — the routine has not been done</span>');
+  }
   if (d.judged) {
     verdict += gpRow('Judged', d.judged.failure_reason
       ? `<span class="gp-no">${escHtml(gateReason(d.judged.failure_reason))}</span>`
@@ -9213,12 +9226,19 @@ function gatePopHtml(d) {
       + (d.judged.amount_cents ? ` · $${(d.judged.amount_cents / 100).toFixed(2)}` : ''));
   } else if (!w.closed) {
     verdict += `<div class="gp-note">Still open. It is judged when the window closes at`
-      + ` ${escHtml(w.end)}${w.offset_days ? ' tomorrow' : ''}.</div>`;
+      + ` ${escHtml(w.end)}${w.offset_days ? ' tomorrow' : ''}${cr.splits
+        ? ', and not before the day ends — the routine can still earn its half' : ''}.</div>`;
+  } else if (cr.splits) {
+    verdict += '<div class="gp-note">The window has closed, but the day has not:'
+      + ' finishing the routine still earns half the stake back, right up to'
+      + ' midnight.</div>';
   } else {
     verdict += '<div class="gp-note">Closed, and the judge has not reached it yet.</div>';
   }
-  verdict += gpRow('At stake', `<span class="gp-mono">$${(d.stake_cents / 100).toFixed(2)}`
-    + `</span>${d.live ? '' : ' · not charging for real yet'}`);
+  verdict += gpRow(d.judged ? 'Cost' : 'As it stands',
+    `<span class="gp-mono">$${((cr.owed_cents == null ? d.stake_cents : cr.owed_cents) / 100)
+      .toFixed(2)}</span> of $${(d.stake_cents / 100).toFixed(2)}`
+    + `${d.live ? '' : ' · not charging for real yet'}`);
   if (d.proof_mode === 'tag') {
     verdict += gpRow('Proof', 'a verified NFC tap, and nothing else');
   }
@@ -9274,6 +9294,9 @@ function renderQrLayer() {
     const line = document.createElement('div');
     // outcome colors the pill for judged (closed) windows: green/red
     const outcome = state.qrOutcomes[cacheKey];
+    // success / partial / failed — 'partial' is the half-met day the split
+    // created (2026-08-22). Painting it red would say the routine you did do
+    // counted for nothing, which is the opposite of the point.
     line.className = 'tl-qr-line' + (locked ? ' tl-qr-locked' : '') + (dismissed ? ' tl-qr-dismissed' : '')
       + (outcome ? ` tl-qr-${outcome}` : '');
     line.style.top = `${pct}%`;
@@ -9727,6 +9750,7 @@ const GATE_REASONS = {
   geofence: 'scanned somewhere else',
   geofence_fail: 'scanned somewhere else',
   routine_incomplete: 'routine not done',
+  routine_late: 'routine done late',
   social_floor: 'social floor not met',
 };
 const GATE_STATUSES = {
