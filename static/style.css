@@ -42,30 +42,29 @@
      the top and bottom rather than as hairlines floating in the grid. Named
      here so the light appendix answers with the design's own values and no
      second rule has to know about them. */
-  /* The neutral pill: a gate whose day has not been decided. Was a hardcoded
-     tan with no light value, which is the shape of colour that rots. The tan
-     carries near-black in BOTH themes — it is a coloured chip, not a surface,
-     so it does not need to invert.
+  /* WHAT COLOUR A GATE IS (2026-08-22, Quentin's instruction). THREE STATES,
+     and all three are about the SCAN:
 
-     --ink-judged is the ink for the three judged fills. It is a token and not
-     a pair of theme-scoped rules on purpose: the judged colours are pastel on
-     dark and deep on light, so the ink flips, but the PRECEDENCE between
-     "judged" and "bookend" has to stay one ordered list at one specificity.
-     Theme-scoped rules for it (which is what was here) outrank that list and
-     silently won — a satisfied SLEEP band came out white-on-gold at 2.4:1. */
-  /* The day/date slot in both navs. A hard width, so the arrows never move. */
-  --daynav-slot: 168px;
+        grey   still to be done - the window has not closed, or no verdict yet
+        green  met - a scan that counted
+        red    missed
 
-  --gate-pill: #d9bd92;
-  --on-gate-pill: #1a1200;
-  --ink-judged: #1a1200;
+     plus amber for the half-met day the 50/50 split created, which is a real
+     price and would otherwise have to lie in one direction or the other.
+
+     The values are the app's own block colours and the on-hold grey, so the
+     light appendix already answers for every one of them and nothing here is a
+     new hardcoded colour. --on-gate is the ink for all four: the fills are
+     pastel on dark and deep on light, so it flips with the theme - as a TOKEN,
+     never as a theme-scoped rule, because a rule outranks the state list and
+     silently wins it. */
+  --gate-open: var(--on-hold);
+  --gate-met: var(--block-green);
+  --gate-half: var(--block-amber);
+  --gate-missed: var(--block-red);
+  --on-gate: #1a1200;
   --gate-dismissed: #1f1f1f;
   --on-gate-dismissed: #e8e8e8;
-
-  --gate-wake: #a83232;
-  --on-gate-wake: #ffffff;
-  --gate-sleep: #c9a24a;
-  --on-gate-sleep: #2b2000;
 
   --font-ui: 'Inter', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
@@ -3151,6 +3150,19 @@ body.calendar-minimized #review-modal {
 .gp-ok { color: var(--success); }
 .gp-no { color: var(--danger); }
 
+/* The read-out's one verb. It sits at the foot, apart from the facts above it,
+   because everything else in this popup is something the box knows and this is
+   something you are doing. */
+.gp-foot {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.gp-foot button { min-height: 36px; }
+
 .gp-note {
   margin-top: 8px;
   color: var(--text-secondary);
@@ -3165,102 +3177,64 @@ body.calendar-minimized #review-modal {
   pointer-events: none;
 }
 
-/* ── WHAT COLOUR A GATE IS (2026-08-22, Quentin's instruction) ────────────
-   The pills lost their words, so colour is now the whole of what they say at
-   a glance. It therefore has to be exactly right, and it has to be ONE thing:
-   every state sets the same pair of variables — the fill and the ink that goes
-   on it — and the label, the lock, the verdict mark and the ✕ all read the
-   ink. Before this the ✕ was a hardcoded near-black, which was invisible on
-   the wake band's dark red, and the base pill was a hardcoded tan with no
-   light value at all.
+/* ── A GATE IS ONE SMALL SQUARE (2026-08-22, Quentin's instruction) ───────
+   It was a chip carrying a name, a time, a lock and a verdict. All four are
+   readable somewhere else: the TIME is WHERE the square sits on the timeline
+   (the hour gutter is right beside it), and the rest is one tap away in the
+   read-out. What is left is the only thing a glance needs — is this gate done,
+   still to do, or missed — and colour says that without any words at all.
 
-   The ORDER below is the precedence, because these are plain declarations on
-   one element and the last match wins:
-
-     open            the neutral pill — nothing has been decided yet
-     judged          green / amber / red, what the day cost
-     bookend         wake and sleep keep their own colour: a band is an
-                     IDENTITY, and its verdict is the ✓ ½ ✗ in the label
-     dismissed       greyed, over everything: you asked not to see it today  */
+   The state list is one ordered set of variable declarations at one
+   specificity, so precedence is simply the order you read them in: open, then
+   the three verdicts, then dismissed over everything. */
 .tl-qr-line {
-  --pill-bg: var(--gate-pill);
-  --pill-ink: var(--on-gate-pill);
+  --pill-bg: var(--gate-open);
+  --pill-ink: var(--on-gate);
 }
 
-.tl-qr-line.tl-qr-success { --pill-bg: var(--block-green); --pill-ink: var(--ink-judged); }
-.tl-qr-line.tl-qr-partial { --pill-bg: var(--block-amber); --pill-ink: var(--ink-judged); }
-.tl-qr-line.tl-qr-failed  { --pill-bg: var(--block-red);   --pill-ink: var(--ink-judged); }
-
-.tl-qr-line.tl-qr-wake  { --pill-bg: var(--gate-wake);  --pill-ink: var(--on-gate-wake); }
-.tl-qr-line.tl-qr-sleep { --pill-bg: var(--gate-sleep); --pill-ink: var(--on-gate-sleep); }
+.tl-qr-line.tl-qr-success { --pill-bg: var(--gate-met); }
+.tl-qr-line.tl-qr-partial { --pill-bg: var(--gate-half); }
+.tl-qr-line.tl-qr-failed  { --pill-bg: var(--gate-missed); }
 
 .tl-qr-line.tl-qr-dismissed {
   --pill-bg: var(--gate-dismissed);
   --pill-ink: var(--on-gate-dismissed);
 }
 
-.tl-qr-line.tl-qr-dismissed .tl-qr-label { cursor: default; }
+.tl-qr-line.tl-qr-dismissed .tl-qr-label,
 .tl-qr-line.tl-qr-locked .tl-qr-label { cursor: default; }
 
-/* Brightened rather than repainted: a hover that swapped in one fixed colour
-   told you nothing about which pill you were on, and undid the coding above. */
 .tl-qr-line:not(.tl-qr-dismissed):not(.tl-qr-locked) .tl-qr-label:hover,
 .tl-qr-line.tl-qr-dragging .tl-qr-label {
-  filter: brightness(1.12);
-}
-
-/* WAKE AND SLEEP ARE THE DAY'S EDGES (2026-08-22, the Calendar Page design).
-   They already sit at the top and bottom of the grid — the view window is
-   bounded by them — so the band is what they always were, drawn honestly. Same
-   element, same pill, same gestures: drag still moves the deadline, the ✕ still
-   greys it for the day, and a tap still opens the read-out. Only the paint
-   changes.
-
-   The band keeps the pill's own width (20% of the column, right-aligned) so
-   the hour gutter stays readable underneath it. */
-.tl-qr-line.tl-qr-band .tl-qr-label {
-  width: 20%;
-  min-width: 104px;
-  justify-content: center;
-  border-radius: 0;
-  padding: 5px 10px;
-  font: 700 12px var(--font-mono);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  white-space: nowrap;
+  filter: brightness(1.15);
 }
 
 .tl-qr-label {
   position: absolute;
-  right: 8px;
+  right: 10px;
   top: -9px;
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
-  pointer-events: auto;
-  cursor: ns-resize;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
   background: var(--pill-bg);
   color: var(--pill-ink);
-  padding: 2px 8px;
   border-radius: 3px;
-}
-
-/* The ✕ and the lock live INSIDE the pill, so they take the pill's ink. This
-   is the whole reason the ink is a variable: hardcoded, the ✕ was near-black
-   on the wake band's dark red and could not be seen at all. */
-.tl-qr-x {
   pointer-events: auto;
-  background: none;
-  border: none;
-  color: inherit;
-  font-size: 10px;
-  cursor: pointer;
-  padding: 0 2px;
-  margin-left: 4px;
-  opacity: 0.75;
+  cursor: ns-resize;
 }
 
-.tl-qr-x:hover { opacity: 1; }
+/* THE SQUARE IS 18px AND THE TARGET IS 36px. A finger cannot hit 18, and
+   growing the paint to meet it would undo the point of the change — so the hit
+   area is an invisible ring around it. */
+.tl-qr-label::after {
+  content: '';
+  position: absolute;
+  inset: -9px;
+}
 
 /* ---- NOW panel ---- */
 
@@ -6226,26 +6200,20 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    picked — see the ratios in the commit. The fill lightens a touch for the
    same reason: 14% of a pastel on white is nearly nothing to sit text on. */
 :root.theme-light .tl-allday-event,
-/* The Calendar Page design is drawn in light, so these are its values
-   verbatim; the dark ones above are the same hues carried onto the dark
-   surface. */
-:root.theme-light {
-  /* The judged fills are DEEP here (--block-red #a8434c, --block-green
-     #2f7d63) because they sit on a white page, so their ink flips to white.
-     The tan chip and the bookends keep their own inks. */
-  --ink-judged: #ffffff;
-  --gate-dismissed: #c4c9cf;
-  --on-gate-dismissed: #1f2328;
-  --gate-wake: #8f2020;
-  --on-gate-wake: #ffffff;
-  --gate-sleep: #c9a24a;
-  --on-gate-sleep: #2b2000;
-}
-
 :root.theme-light .tl-gcal-event {
   --ev-ink: #10141a;
   background: color-mix(in srgb, var(--ev-color, var(--accent)) 22%, transparent);
   color: color-mix(in srgb, var(--ev-color, var(--accent)) 28%, var(--ev-ink));
+}
+
+/* The gate states, light. The fills themselves are the block colours and the
+   on-hold grey, which this appendix already answers for; only the ink flips —
+   they are DEEP here (--block-red #a8434c, --block-green #2f7d63, --on-hold
+   #6b7480) because they sit on a white page. */
+:root.theme-light {
+  --on-gate: #ffffff;
+  --gate-dismissed: #c4c9cf;
+  --on-gate-dismissed: #1f2328;
 }
 
 /* Accent tints: keyed to the pastel accent, so they vanish on a light bg. */
@@ -6267,12 +6235,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 
 /* The gate pill is a tan chip with dark text — it reads on either theme; only
    the dismissed (grayed-out) state needs to stop being near-black. */
-/* (The pill's light values are now --ink-judged and --gate-dismissed, set with
+/* (The gate square's light values are --on-gate and --gate-dismissed, set with
    the other light tokens above. They were theme-scoped RULES here, which
-   outranked the state list that decides bookend-versus-judged precedence and
-   quietly won it: a satisfied SLEEP band took the judged white ink onto its
-   gold band at 2.4:1. Fixing the var beats fixing the rule — the appendix
-   already swaps it, so no second entry can drift.) */
+   outranked the state list and quietly won it. Fixing the var beats fixing the
+   rule — the appendix already swaps it, so no second entry can drift.) */
 
 /* Shadows: a 0.4-alpha black drop is a smudge on a light surface. */
 :root.theme-light .pa-suggest { box-shadow: 0 6px 20px rgba(15, 20, 25, 0.14); }

@@ -9102,17 +9102,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Accountability ────────────────────────────────────────────
 
-// WHAT A GATE PILL SAYS (2026-08-22, Quentin's instruction): the time, and the
-// lock when it is locked. NO NAME. The word was the same word every day in the
-// same place, and on the bookends it was saying what the band's own colour
-// already says — the calendar is glanced at, and a label that never changes is
-// read once and then never again. What is left is what actually varies: the
-// deadline, whether it can still be moved, and (on a bookend) how the day went.
+// A GATE IS ONE SQUARE (2026-08-22, Quentin's instruction). No name, no time,
+// no verdict mark — a scan target glyph, and a colour saying whether the day
+// is done, still to do or missed. Everything else was legible somewhere else
+// already: the TIME is where the square sits against the hour gutter, and the
+// rest is one tap away in the read-out.
 //
-// The name is not gone, it has moved to where it is asked for: the pill's
-// tooltip, and the read-out that opens on a tap.
-function qrPillText(endHHMM, offsetDays, locked, mark) {
-  return `${endHHMM}${offsetDays ? ' +1d' : ''}${locked ? ' 🔒︎' : ''}${mark || ''}`;
+// The glyph is the same in every state on purpose. It says "this is a gate";
+// the colour says how it went, and a shape that changed too would be two
+// codings of one fact.
+const QR_GLYPH = '▣';
+
+// What the square is worth SAYING, for the things that can ask in words: the
+// tooltip, and assistive technology. The read-out says all of it on a tap.
+function qrPillTitle(node, endHHMM, offsetDays, locked, outcome) {
+  const state = { success: 'met', partial: 'half met', failed: 'missed' }[outcome]
+    || 'still to do';
+  return `${node.label} — ${endHHMM}${offsetDays ? ' +1d' : ''} · ${state}`
+    + (locked ? ' · locked, within 24h' : '');
 }
 
 // ── THE GATE READ-OUT (2026-08-21, Quentin's instruction) ─────────────────
@@ -9160,6 +9167,17 @@ async function openGatePop(nodeId, date, anchorEl) {
   el.innerHTML = gatePopHtml(d);
   placeGatePop(el, anchorEl);
   el.querySelector('.gp-close').addEventListener('click', closeGatePop);
+  // The only thing in here that CHANGES anything, and it changes only what you
+  // can SEE: greying the square for this day is a view preference, not a fact
+  // about the gate, so it stays session-local like it always was.
+  const hide = el.querySelector('#gp-hide');
+  if (hide) hide.addEventListener('click', () => {
+    const key = `${nodeId}:${date}`;
+    if (state.qrDismissed[key]) delete state.qrDismissed[key];
+    else state.qrDismissed[key] = true;
+    renderQrLayer();
+    openGatePop(nodeId, date, anchorEl);
+  });
 }
 
 // Beside the pill, and inside the screen. A popup that opens under the thumb or
@@ -9307,12 +9325,15 @@ function gatePopHtml(d) {
     verdict += gpRow('Proof', 'a verified NFC tap, and nothing else');
   }
 
+  const greyed = !!state.qrDismissed[`${d.node_id}:${d.date}`];
+  const foot = `<div class="gp-foot"><button id="gp-hide" class="se-inline-act">${
+    greyed ? 'Show it again' : 'Grey it out for this day'}</button></div>`;
   return `<div class="gp-head">
       <span class="gp-title">${escHtml(d.label)}</span>
       <button class="gp-close" title="Close">✕</button>
     </div>
     <div class="gp-date">${escHtml(d.date)}</div>
-    ${rows.join('')}${out}${scans}${extra}${verdict}`;
+    ${rows.join('')}${out}${scans}${extra}${verdict}${foot}`;
 }
 
 function renderQrLayer() {
@@ -9353,38 +9374,30 @@ function renderQrLayer() {
     const endDate = offsetDays ? localDatePlusDays(pageDate, 1) : pageDate;
     const windowEndMs = new Date(`${endDate}T${windowEnd}:00`).getTime();
     const locked = windowEndMs <= Date.now() + 24 * 60 * 60 * 1000;
-    const dismissed = !locked && !!state.qrDismissed[cacheKey];
+    // GREYING IS A VIEW PREFERENCE, so a locked gate can be greyed too. The
+    // `!locked` here was incidental: the ✕ was only ever rendered on unlocked
+    // pills, so the question never came up. Now that the verb lives in the
+    // read-out — which opens on every gate, locked included — leaving it in
+    // made the button dead on exactly the gates you look at most.
+    const dismissed = !!state.qrDismissed[cacheKey];
 
     const line = document.createElement('div');
     // outcome colors the pill for judged (closed) windows: green/red
     const outcome = state.qrOutcomes[cacheKey];
-    // success / partial / failed — 'partial' is the half-met day the split
-    // created (2026-08-22). Painting it red would say the routine you did do
-    // counted for nothing, which is the opposite of the point.
-    //
-    // WAKE and SLEEP draw as the day's bookend bands rather than as hairlines
-    // (the Calendar Page design): the view window is bounded by them, so they
-    // are already at the top and bottom edges and the band is what they were
-    // all along. Same element and same gestures — only the paint differs.
-    const isWake = String(node.id) === String(state.settings.qr_wake_node_id);
-    const isSleep = String(node.id) === String(state.settings.qr_sleep_node_id);
+    // ONE VOCABULARY FOR EVERY GATE: grey still to do, green met, red missed,
+    // amber the half-met day the 50/50 split created. Wake and sleep are not
+    // special-cased any more — they were briefly drawn as coloured bookend
+    // bands, which meant the two most important gates were the two that did
+    // NOT say how their day went.
     line.className = 'tl-qr-line' + (locked ? ' tl-qr-locked' : '') + (dismissed ? ' tl-qr-dismissed' : '')
-      + (outcome ? ` tl-qr-${outcome}` : '')
-      + (isWake ? ' tl-qr-band tl-qr-wake' : '') + (isSleep ? ' tl-qr-band tl-qr-sleep' : '');
+      + (outcome ? ` tl-qr-${outcome}` : '');
     line.style.top = `${pct}%`;
 
     const label = document.createElement('span');
     label.className = 'tl-qr-label';
     const labelText = document.createElement('span');
-    // A bookend band carries its verdict as a mark rather than as a fill: its
-    // colour is its identity (see the band rules in style.css), and on a phone
-    // a glyph survives a glance that a hue does not.
-    const mark = (isWake || isSleep) && outcome
-      ? ({ success: ' ✓', partial: ' ½', failed: ' ✗' }[outcome] || '') : '';
-    labelText.textContent = qrPillText(windowEnd, offsetDays, locked, mark);
-    // The name, for anything that can ask for it: hover, and assistive tech.
-    // A tap opens the read-out, which names it in full.
-    label.title = node.label;
+    labelText.textContent = QR_GLYPH;
+    label.title = qrPillTitle(node, windowEnd, offsetDays, locked, outcome);
     label.appendChild(labelText);
     line.appendChild(label);
     layer.appendChild(line);
@@ -9416,21 +9429,11 @@ function renderQrLayer() {
 
     if (locked) return;
 
-    const xBtn = document.createElement('button');
-    xBtn.className = 'tl-qr-x';
-    xBtn.textContent = '✕';
-    xBtn.title = dismissed ? 'Restore' : 'Gray out for this day';
-    label.appendChild(xBtn);
-
-    // pointerdown, not mousedown: the pill's drag starts on pointerdown now, so
-    // a mousedown guard would no longer keep pressing ✕ from grabbing the pill.
-    xBtn.addEventListener('pointerdown', e => e.stopPropagation());
-    xBtn.addEventListener('click', e => {
-      e.stopPropagation();
-      if (state.qrDismissed[cacheKey]) delete state.qrDismissed[cacheKey];
-      else state.qrDismissed[cacheKey] = true;
-      renderQrLayer();
-    });
+    // NO ✕ ON THE SQUARE. It does not fit an 18px target, and a second control
+    // inside the one you are trying to tap is how a mis-tap happens. Greying a
+    // gate for the day moves to the read-out, which is where every other verb
+    // about one gate already lives — reachable by tap, unlike the right-click
+    // that was the mouse's way in.
 
     let dragging = false;
     let dragStartY = 0;
