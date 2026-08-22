@@ -42,6 +42,26 @@
      the top and bottom rather than as hairlines floating in the grid. Named
      here so the light appendix answers with the design's own values and no
      second rule has to know about them. */
+  /* The neutral pill: a gate whose day has not been decided. Was a hardcoded
+     tan with no light value, which is the shape of colour that rots. The tan
+     carries near-black in BOTH themes — it is a coloured chip, not a surface,
+     so it does not need to invert.
+
+     --ink-judged is the ink for the three judged fills. It is a token and not
+     a pair of theme-scoped rules on purpose: the judged colours are pastel on
+     dark and deep on light, so the ink flips, but the PRECEDENCE between
+     "judged" and "bookend" has to stay one ordered list at one specificity.
+     Theme-scoped rules for it (which is what was here) outrank that list and
+     silently won — a satisfied SLEEP band came out white-on-gold at 2.4:1. */
+  /* The day/date slot in both navs. A hard width, so the arrows never move. */
+  --daynav-slot: 168px;
+
+  --gate-pill: #d9bd92;
+  --on-gate-pill: #1a1200;
+  --ink-judged: #1a1200;
+  --gate-dismissed: #1f1f1f;
+  --on-gate-dismissed: #e8e8e8;
+
   --gate-wake: #a83232;
   --on-gate-wake: #ffffff;
   --gate-sleep: #c9a24a;
@@ -1164,12 +1184,16 @@ select option {
 }
 
 #tl-date-label {
+  flex: none;
+  width: var(--daynav-slot);
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
   font-size: 15px;
   font-weight: 700;
-  text-align: left;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* The weekday is what you read, the date is what you check — the design's two
@@ -1177,11 +1201,14 @@ select option {
    column is 430, and at 20px "Wednesday" pushed the controls off the line. */
 #tl-date-label .tl-dow { font-size: 17px; font-weight: 700; color: var(--text-primary); }
 #tl-date-label .tl-dm {
-  margin-left: 6px;
   font: 12px var(--font-mono);
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
+/* The name is what overflows on a long weekday; the date must never be the
+   thing that gets cut, since it is the half that changes as you page. */
+#tl-date-label .tl-dow { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* The fetch status is the one thing in the header that may go missing: it is a
    footnote, and it was taking a column of its own and wrapping to four lines. */
@@ -3138,28 +3165,48 @@ body.calendar-minimized #review-modal {
   pointer-events: none;
 }
 
+/* ── WHAT COLOUR A GATE IS (2026-08-22, Quentin's instruction) ────────────
+   The pills lost their words, so colour is now the whole of what they say at
+   a glance. It therefore has to be exactly right, and it has to be ONE thing:
+   every state sets the same pair of variables — the fill and the ink that goes
+   on it — and the label, the lock, the verdict mark and the ✕ all read the
+   ink. Before this the ✕ was a hardcoded near-black, which was invisible on
+   the wake band's dark red, and the base pill was a hardcoded tan with no
+   light value at all.
+
+   The ORDER below is the precedence, because these are plain declarations on
+   one element and the last match wins:
+
+     open            the neutral pill — nothing has been decided yet
+     judged          green / amber / red, what the day cost
+     bookend         wake and sleep keep their own colour: a band is an
+                     IDENTITY, and its verdict is the ✓ ½ ✗ in the label
+     dismissed       greyed, over everything: you asked not to see it today  */
+.tl-qr-line {
+  --pill-bg: var(--gate-pill);
+  --pill-ink: var(--on-gate-pill);
+}
+
+.tl-qr-line.tl-qr-success { --pill-bg: var(--block-green); --pill-ink: var(--ink-judged); }
+.tl-qr-line.tl-qr-partial { --pill-bg: var(--block-amber); --pill-ink: var(--ink-judged); }
+.tl-qr-line.tl-qr-failed  { --pill-bg: var(--block-red);   --pill-ink: var(--ink-judged); }
+
+.tl-qr-line.tl-qr-wake  { --pill-bg: var(--gate-wake);  --pill-ink: var(--on-gate-wake); }
+.tl-qr-line.tl-qr-sleep { --pill-bg: var(--gate-sleep); --pill-ink: var(--on-gate-sleep); }
+
+.tl-qr-line.tl-qr-dismissed {
+  --pill-bg: var(--gate-dismissed);
+  --pill-ink: var(--on-gate-dismissed);
+}
+
+.tl-qr-line.tl-qr-dismissed .tl-qr-label { cursor: default; }
+.tl-qr-line.tl-qr-locked .tl-qr-label { cursor: default; }
+
+/* Brightened rather than repainted: a hover that swapped in one fixed colour
+   told you nothing about which pill you were on, and undid the coding above. */
 .tl-qr-line:not(.tl-qr-dismissed):not(.tl-qr-locked) .tl-qr-label:hover,
 .tl-qr-line.tl-qr-dragging .tl-qr-label {
-  background: #e7cfa5;
-}
-
-.tl-qr-line.tl-qr-locked .tl-qr-label {
-  cursor: default;
-}
-
-.tl-qr-line.tl-qr-dismissed .tl-qr-label {
-  background: #333333;
-  color: var(--text-secondary);
-  cursor: default;
-}
-
-.tl-qr-line.tl-qr-dismissed .tl-qr-x {
-  color: var(--text-secondary);
-}
-
-/* judged deadlines (window closed): green = satisfied, red = failed */
-.tl-qr-line.tl-qr-success .tl-qr-label {
-  background: var(--block-green);
+  filter: brightness(1.12);
 }
 
 /* WAKE AND SLEEP ARE THE DAY'S EDGES (2026-08-22, the Calendar Page design).
@@ -3173,7 +3220,7 @@ body.calendar-minimized #review-modal {
    the hour gutter stays readable underneath it. */
 .tl-qr-line.tl-qr-band .tl-qr-label {
   width: 20%;
-  min-width: 128px;
+  min-width: 104px;
   justify-content: center;
   border-radius: 0;
   padding: 5px 10px;
@@ -3183,66 +3230,37 @@ body.calendar-minimized #review-modal {
   white-space: nowrap;
 }
 
-.tl-qr-line.tl-qr-wake { --band-color: var(--gate-wake); --band-ink: var(--on-gate-wake); }
-.tl-qr-line.tl-qr-sleep { --band-color: var(--gate-sleep); --band-ink: var(--on-gate-sleep); }
-
-.tl-qr-line.tl-qr-wake .tl-qr-label,
-.tl-qr-line.tl-qr-sleep .tl-qr-label {
-  background: var(--band-color);
-  color: var(--band-ink);
-}
-
-/* A BOOKEND KEEPS ITS OWN COLOUR, and says how the day went in words instead.
-   Letting the outcome fill win made a failed WAKE a pale red band — the same
-   family as its identity colour, so "this is the wake gate" and "this day was
-   missed" became indistinguishable. The band is an identity; the verdict is a
-   ✓ or ✗ in the label, which also survives being read in a hurry. */
-.tl-qr-line.tl-qr-band.tl-qr-success .tl-qr-label,
-.tl-qr-line.tl-qr-band.tl-qr-partial .tl-qr-label,
-.tl-qr-line.tl-qr-band.tl-qr-failed .tl-qr-label {
-  background: var(--band-color);
-  color: var(--band-ink);
-}
-
-/* HALF MET (2026-08-22). Its own state, between the two: one of the scan and
-   the routine was done and the day cost half the stake. Amber rather than red,
-   because red would say the half you did counted for nothing. */
-.tl-qr-line.tl-qr-partial .tl-qr-label {
-  background: var(--block-amber);
-  color: var(--on-accent);
-}
-
-.tl-qr-line.tl-qr-failed .tl-qr-label {
-  background: var(--block-red);
-}
-
 .tl-qr-label {
   position: absolute;
   right: 8px;
   top: -9px;
   font-size: 10px;
   font-weight: 700;
-  color: #1a1200;
   white-space: nowrap;
   pointer-events: auto;
   cursor: ns-resize;
-  background: #d9bd92;
+  background: var(--pill-bg);
+  color: var(--pill-ink);
   padding: 2px 8px;
   border-radius: 3px;
 }
 
+/* The ✕ and the lock live INSIDE the pill, so they take the pill's ink. This
+   is the whole reason the ink is a variable: hardcoded, the ✕ was near-black
+   on the wake band's dark red and could not be seen at all. */
 .tl-qr-x {
   pointer-events: auto;
   background: none;
   border: none;
-  color: #1a1200;
+  color: inherit;
   font-size: 10px;
   cursor: pointer;
   padding: 0 2px;
   margin-left: 4px;
+  opacity: 0.75;
 }
 
-.tl-qr-x:hover { color: #000000; }
+.tl-qr-x:hover { opacity: 1; }
 
 /* ---- NOW panel ---- */
 
@@ -4565,6 +4583,7 @@ body.map-over-runner #map-overlay { z-index: 170; }
    to today. Off-today gets the accent so a planning view can never be
    mistaken for the real day. */
 .eg-nav {
+  flex: none;
   font-size: 17px;
   line-height: 1;
   color: var(--text-secondary);
@@ -4574,9 +4593,24 @@ body.map-over-runner #map-overlay { z-index: 170; }
 .eg-day-btn {
   display: inline-flex;
   align-items: baseline;
+  justify-content: center;
   gap: 8px;
   padding: 0;
+  /* The same hard slot as the calendar's: the arrows either side of it hold
+     still whatever day is being looked at. */
+  flex: none;
+  width: var(--daynav-slot);
+  overflow: hidden;
 }
+
+.eg-day-btn .eg-day-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eg-day-btn .eg-day-date { white-space: nowrap; }
 .eg-day-off .eg-day-name, .eg-day-off .eg-day-date { color: var(--accent); }
 #eg-today {
   font: 10px var(--font-mono);
@@ -6196,6 +6230,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    verbatim; the dark ones above are the same hues carried onto the dark
    surface. */
 :root.theme-light {
+  /* The judged fills are DEEP here (--block-red #a8434c, --block-green
+     #2f7d63) because they sit on a white page, so their ink flips to white.
+     The tan chip and the bookends keep their own inks. */
+  --ink-judged: #ffffff;
+  --gate-dismissed: #c4c9cf;
+  --on-gate-dismissed: #1f2328;
   --gate-wake: #8f2020;
   --on-gate-wake: #ffffff;
   --gate-sleep: #c9a24a;
@@ -6227,17 +6267,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 
 /* The gate pill is a tan chip with dark text — it reads on either theme; only
    the dismissed (grayed-out) state needs to stop being near-black. */
-:root.theme-light .tl-qr-line.tl-qr-dismissed .tl-qr-label { background: #c4c9cf; }
-
-/* A JUDGED pill inverts here. The judged colours are deep in this theme
-   (--block-red #a8434c, --block-green #2f7d63) because they sit on a white
-   page, and the pill's near-black ink was left over from the dark theme's
-   pastels: "Wake 08:00 ✗" came out at 3.16:1, which is a label you have to
-   lean in to read on the one surface that tells you a gate FAILED. */
-:root.theme-light .tl-qr-line.tl-qr-failed .tl-qr-label,
-:root.theme-light .tl-qr-line.tl-qr-success .tl-qr-label,
-:root.theme-light .tl-qr-line.tl-qr-failed .tl-qr-x,
-:root.theme-light .tl-qr-line.tl-qr-success .tl-qr-x { color: #ffffff; }
+/* (The pill's light values are now --ink-judged and --gate-dismissed, set with
+   the other light tokens above. They were theme-scoped RULES here, which
+   outranked the state list that decides bookend-versus-judged precedence and
+   quietly won it: a satisfied SLEEP band took the judged white ink onto its
+   gold band at 2.4:1. Fixing the var beats fixing the rule — the appendix
+   already swaps it, so no second entry can drift.) */
 
 /* Shadows: a 0.4-alpha black drop is a smudge on a light surface. */
 :root.theme-light .pa-suggest { box-shadow: 0 6px 20px rgba(15, 20, 25, 0.14); }

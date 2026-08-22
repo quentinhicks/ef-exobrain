@@ -9065,6 +9065,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Accountability ────────────────────────────────────────────
 
+// WHAT A GATE PILL SAYS (2026-08-22, Quentin's instruction): the time, and the
+// lock when it is locked. NO NAME. The word was the same word every day in the
+// same place, and on the bookends it was saying what the band's own colour
+// already says — the calendar is glanced at, and a label that never changes is
+// read once and then never again. What is left is what actually varies: the
+// deadline, whether it can still be moved, and (on a bookend) how the day went.
+//
+// The name is not gone, it has moved to where it is asked for: the pill's
+// tooltip, and the read-out that opens on a tap.
+function qrPillText(endHHMM, offsetDays, locked, mark) {
+  return `${endHHMM}${offsetDays ? ' +1d' : ''}${locked ? ' 🔒︎' : ''}${mark || ''}`;
+}
+
 // ── THE GATE READ-OUT (2026-08-21, Quentin's instruction) ─────────────────
 //
 // Tap a gate on the calendar and it says what this box knows about that gate on
@@ -9331,8 +9344,10 @@ function renderQrLayer() {
     // a glyph survives a glance that a hue does not.
     const mark = (isWake || isSleep) && outcome
       ? ({ success: ' ✓', partial: ' ½', failed: ' ✗' }[outcome] || '') : '';
-    labelText.textContent = `${node.label} ${windowEnd}${offsetDays ? ' +1d' : ''}${
-      locked ? ' 🔒︎' : ''}${mark}`;
+    labelText.textContent = qrPillText(windowEnd, offsetDays, locked, mark);
+    // The name, for anything that can ask for it: hover, and assistive tech.
+    // A tap opens the read-out, which names it in full.
+    label.title = node.label;
     label.appendChild(labelText);
     line.appendChild(label);
     layer.appendChild(line);
@@ -9411,8 +9426,7 @@ function renderQrLayer() {
       const displayPct = Math.min(100, Math.max(0, minutesToViewPercent(mins)));
       line.style.top = `${displayPct}%`;
       setLabelEdge(displayPct);
-      const nextDay = mins >= DAY_MIN;
-      labelText.textContent = `${node.label} ${clockHHMM(mins)}${nextDay ? ' +1d' : ''}`;
+      labelText.textContent = qrPillText(clockHHMM(mins), mins >= DAY_MIN, false, '');
     }
 
     async function onUp(clientY, e) {
