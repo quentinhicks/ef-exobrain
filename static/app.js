@@ -4814,6 +4814,10 @@ async function refreshCrmNight() {
 
 function initHub() {
   const hub = document.getElementById('hub-overlay');
+  // Tapping anywhere else closes the read-out — the backdrop is transparent and
+  // covers the screen, so the day stays visible behind what is describing it.
+  document.getElementById('gate-pop-backdrop')
+    .addEventListener('click', closeGatePop);
   hub.addEventListener('click', e => { if (e.target === hub) hub.classList.add('hidden'); });
   document.querySelectorAll('.m-close').forEach(btn => {
     btn.addEventListener('click', () => closeM(btn.dataset.close));
@@ -4825,6 +4829,9 @@ function initHub() {
     // without this bail it would close the overlay out from under it.
     if (clarifyView.open) return;
     flushOpenNotes();
+    // The gate read-out is the innermost layer wherever it is open (a popup
+    // beside its pill, over the calendar), so it peels before anything else.
+    if (gatePop.nodeId != null) { closeGatePop(); return; }
     if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
     // (MAP's rows open the clarify sheet, and the bail above lets the sheet
     // peel first; its filter menu peels just above, before the overlay loop.)
@@ -8988,6 +8995,186 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Accountability ────────────────────────────────────────────
 
+// ── THE GATE READ-OUT (2026-08-21, Quentin's instruction) ─────────────────
+//
+// Tap a gate on the calendar and it says what this box knows about that gate on
+// that day: the window and WHICH LAYER decided it, the pinned place and radius,
+// every scan with how far away it landed, the routine, the minutes pawned into
+// it, and the judgment. It exists because a gate that will not clear had no
+// surface to ask — "the scan does not work and I cannot see why" is not
+// answerable from a pill reading `Kanji Hall 10:00`.
+//
+// SERVED, never mirrored. Every value comes from /api/accountability/nodes/:id
+// /day, which resolves through qr_judge's own functions, so the read-out cannot
+// tell you a story the judge disagrees with. The client formats; it decides
+// nothing — which is also why nothing here writes.
+const gatePop = { nodeId: null, date: null };
+
+// When a deadline drag last finished. A drag's trailing click must not open the
+// read-out, and the flag cannot live on the pill: saving a drag re-renders the
+// layer, so the marked element is gone before the click arrives.
+let qrDragEndedAt = 0;
+
+async function openGatePop(nodeId, date, anchorEl) {
+  gatePop.nodeId = nodeId;
+  gatePop.date = date;
+  const el = document.getElementById('gate-pop');
+  const back = document.getElementById('gate-pop-backdrop');
+  el.innerHTML = '<div class="gp-note">reading…</div>';
+  el.classList.remove('hidden');
+  back.classList.remove('hidden');
+  placeGatePop(el, anchorEl);
+  let d = null;
+  try {
+    const r = await fetch(`/api/accountability/nodes/${nodeId}/day?date=${date}`);
+    d = r.ok ? await r.json() : null;
+  } catch (e) { d = null; }
+  // Still the gate that was asked for: a second tap while the first was in
+  // flight must not paint the previous gate's day over the new one.
+  if (gatePop.nodeId !== nodeId || gatePop.date !== date) return;
+  if (!d) {
+    el.innerHTML = '<div class="gp-note">Could not read this gate — the app is'
+      + ' offline, so the day cannot be resolved. Nothing has changed.</div>';
+    return;
+  }
+  el.innerHTML = gatePopHtml(d);
+  placeGatePop(el, anchorEl);
+  el.querySelector('.gp-close').addEventListener('click', closeGatePop);
+}
+
+// Beside the pill, and inside the screen. A popup that opens under the thumb or
+// off the bottom edge is a popup you cannot read on a phone.
+function placeGatePop(el, anchorEl) {
+  const pad = 12;
+  // An ELEMENT or the rect it was measured at: the mouse path re-renders the
+  // pill out from under itself, so it hands over the measurement instead.
+  const r = !anchorEl
+    ? { left: pad, right: pad, top: window.innerHeight / 3, bottom: window.innerHeight / 3 }
+    : (anchorEl.getBoundingClientRect ? anchorEl.getBoundingClientRect() : anchorEl);
+  const w = el.offsetWidth || 340;
+  const h = el.offsetHeight || 300;
+  let left = Math.min(Math.max(pad, r.left), window.innerWidth - w - pad);
+  let top = r.bottom + 8;
+  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 8);
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+}
+
+function closeGatePop() {
+  gatePop.nodeId = null;
+  gatePop.date = null;
+  document.getElementById('gate-pop').classList.add('hidden');
+  document.getElementById('gate-pop-backdrop').classList.add('hidden');
+}
+
+function gpRow(k, v, cls) {
+  return `<div class="gp-row"><span class="gp-k">${escHtml(k)}</span>`
+    + `<span class="gp-v${cls ? ' ' + cls : ''}">${v}</span></div>`;
+}
+
+function gatePopHtml(d) {
+  const w = d.window;
+  const rows = [];
+
+  rows.push(gpRow('Window', `<span class="gp-mono">${escHtml(w.start)}–${escHtml(w.end)}`
+    + `${w.offset_days ? ' +1d' : ''}</span>`));
+  rows.push(gpRow('Set by', escHtml(w.from)));
+  if (!d.applies) rows.push(gpRow('Runs today', '<span class="gp-no">no — its schedule '
+    + 'has no occurrence on this day</span>'));
+  if (!d.active) rows.push(gpRow('Gate', '<span class="gp-no">paused</span>'));
+
+  // THE PART THAT ANSWERS THE QUESTION. The pin, the radius, and then every
+  // scan with the distance the scan server measured — a 220m miss with 65m of
+  // GPS error is a different problem from a wrong pin, and the two look
+  // identical from a failed day.
+  let out = '';
+  if (d.location) {
+    out += '<div class="gp-sect">Where it must be scanned</div>';
+    out += gpRow('Pinned', escHtml(d.location.name || 'an unnamed place'));
+    out += gpRow('Position', `<span class="gp-mono">${d.location.lat.toFixed(5)}, `
+      + `${d.location.lng.toFixed(5)}</span>`);
+    out += gpRow('Radius', `<span class="gp-mono">${d.location.radius_m || 0}m</span>`);
+  }
+
+  let scans = '<div class="gp-sect">Scans on this day</div>';
+  if (!d.scans.length) {
+    scans += '<div class="gp-note">None. Nothing reached this gate on this day.</div>';
+  } else {
+    scans += d.scans.map(sc => {
+      const t = sc.local_time || sc.scanned_at.slice(11, 16);
+      const bits = [];
+      if (sc.distance_m != null) bits.push(`${sc.distance_m}m away`);
+      if (sc.accuracy_m != null) bits.push(`±${Math.round(sc.accuracy_m)}m fix`);
+      if (sc.proof === 'tag') bits.push('tag tap');
+      if (!sc.in_window) bits.push('outside the window');
+      const verdict = sc.satisfies && sc.in_window
+        ? '<span class="gp-ok">counts</span>'
+        : `<span class="gp-no">${sc.satisfies ? 'too late' : 'does not count'}</span>`;
+      return gpRow(t, `${verdict}${bits.length ? ' · ' + escHtml(bits.join(' · ')) : ''}`);
+    }).join('');
+    // The distance is the whole diagnosis, so say what it means rather than
+    // leaving two numbers to be compared by eye.
+    const near = d.scans.filter(sc => sc.distance_m != null && !sc.satisfies);
+    if (near.length && d.location) {
+      const best = Math.min(...near.map(sc => sc.distance_m));
+      scans += `<div class="gp-note">The closest scan landed ${best}m from the pin,`
+        + ` and the fence is ${d.location.radius_m || 0}m. Either the pin is not where`
+        + ` you actually stand, or the radius is tighter than the fix your phone gets`
+        + ` indoors — widening it is an easing, so it takes 24h.</div>`;
+    }
+  }
+
+  let extra = '';
+  if (d.routine) {
+    extra += '<div class="gp-sect">The routine it also demands</div>';
+    extra += gpRow('Routine', escHtml(d.routine.name));
+    extra += gpRow('Due', `<span class="gp-mono">${escHtml(d.routine.deadline || '—')}</span>`);
+    extra += gpRow('Done', d.routine.completed_at
+      ? `<span class="gp-ok">${escHtml(String(d.routine.completed_at).slice(11, 16))}</span>`
+      : '<span class="gp-no">not yet</span>');
+  }
+
+  // The pawn is the one input that moves the deadline without writing anything
+  // down, so it is invisible everywhere else — which is exactly why it is here.
+  if (d.pawn && d.pawn.minutes) {
+    extra += '<div class="gp-sect">Pawned onto this routine</div>';
+    extra += d.pawn.steps.map(st => gpRow(`${st.minutes}m`,
+      `${escHtml(st.content || 'a step')}${st.from_routine
+        ? ' · from ' + escHtml(st.from_routine) : ''}`)).join('');
+    extra += `<div class="gp-note">${d.pawn.applied
+      ? `The deadline is ${d.pawn.minutes} minutes earlier than the schedule says,`
+        + ' because that time arrived here. Un-pawning restores it by itself.'
+      : 'This day has a window of its own, and a window set for one day stands as'
+        + ' written — so these minutes do not shorten it.'}</div>`;
+  }
+
+  let verdict = '<div class="gp-sect">The verdict</div>';
+  if (d.judged) {
+    verdict += gpRow('Judged', d.judged.failure_reason
+      ? `<span class="gp-no">${escHtml(gateReason(d.judged.failure_reason))}</span>`
+      : '<span class="gp-ok">satisfied</span>');
+    verdict += gpRow('Charge', escHtml(gateStatus(d.judged.charge_status))
+      + (d.judged.amount_cents ? ` · $${(d.judged.amount_cents / 100).toFixed(2)}` : ''));
+  } else if (!w.closed) {
+    verdict += `<div class="gp-note">Still open. It is judged when the window closes at`
+      + ` ${escHtml(w.end)}${w.offset_days ? ' tomorrow' : ''}.</div>`;
+  } else {
+    verdict += '<div class="gp-note">Closed, and the judge has not reached it yet.</div>';
+  }
+  verdict += gpRow('At stake', `<span class="gp-mono">$${(d.stake_cents / 100).toFixed(2)}`
+    + `</span>${d.live ? '' : ' · not charging for real yet'}`);
+  if (d.proof_mode === 'tag') {
+    verdict += gpRow('Proof', 'a verified NFC tap, and nothing else');
+  }
+
+  return `<div class="gp-head">
+      <span class="gp-title">${escHtml(d.label)}</span>
+      <button class="gp-close" title="Close">✕</button>
+    </div>
+    <div class="gp-date">${escHtml(d.date)}</div>
+    ${rows.join('')}${out}${scans}${extra}${verdict}`;
+}
+
 function renderQrLayer() {
   const layer = document.getElementById('tl-qr-layer');
   if (!layer) return;
@@ -9052,6 +9239,22 @@ function renderQrLayer() {
     setLabelEdge(pct);
 
     line.addEventListener('contextmenu', e => e.preventDefault());
+
+    // TAP TO READ IT — the FINGER's path, and a locked pill's only one. A tap
+    // never enters onPointerDrag (that needs a 550ms hold), so no re-render
+    // eats the click. An unlocked pill under a MOUSE is served from the drag's
+    // own no-movement branch instead; see the note there. Wired ABOVE the
+    // locked bail on purpose: a
+    // locked gate cannot be dragged, and it is the one you most want to ask
+    // about. The click that TRAILS a drag is turned away by qrDragEndedAt —
+    // see the note where that is set.
+    label.addEventListener('click', e => {
+      if (e.target.closest('.tl-qr-x')) return;
+      if (Date.now() - qrDragEndedAt < 500) return;   // the tail of a drag
+      e.stopPropagation();
+      openGatePop(node.id, pageDate, label);
+    });
+
     if (locked) return;
 
     const xBtn = document.createElement('button');
@@ -9120,11 +9323,28 @@ function renderQrLayer() {
       // A FINGER has no such no-op press to guard against: it already committed
       // by holding still for 550ms, so any movement it makes is deliberate.
       const touch = e && e.pointerType !== 'mouse';
-      if (Math.abs(clientY - dragStartY) < (touch ? 1 : 5)) {
+      const moved = Math.abs(clientY - dragStartY) >= (touch ? 1 : 5);
+      // A drag ends in a click on the label, and that click would open the
+      // read-out on top of the deadline you just moved. onPointerDrag's own
+      // suppressor cannot carry this one: it marks the ELEMENT, and saving a
+      // drag re-renders the whole layer, so by the time the click lands the
+      // marked pill has been replaced by a fresh one. The guard therefore
+      // lives outside the DOM. A finger is already covered — its tap never
+      // arms a drag at all — but a mouse has no such separation.
+      if (moved) qrDragEndedAt = Date.now();
+      if (!moved) {
         if (e && e.button === 2 && !touch) {
           hideTimelineItem('qr', cacheKey, node.label);
+          renderQrLayer();
+          return;
         }
+        // A press that never moved is a TAP: read the gate out. The rect is
+        // taken BEFORE the re-render — a detached element measures as zero, and
+        // the popup would open in the top-left corner instead of beside its
+        // pill.
+        const rect = label.getBoundingClientRect();
         renderQrLayer();
+        openGatePop(node.id, pageDate, rect);
         return;
       }
 

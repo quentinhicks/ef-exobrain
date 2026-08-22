@@ -1776,13 +1776,7 @@ def _node_payload(node, today, routines=None):
     # uses (qr_judge.resolve_window), so the panel, the timeline and the judge
     # cannot disagree about when a gate runs. The client is never handed a rule.
     resolve, _ = storage.schedule_resolver()
-    src = resolve(node.get('source_uid')) if node.get('source_uid') else None
-    label = ''
-    if src:
-        try:
-            label = schedule.describe(src, resolve)
-        except schedule.Cycle:
-            label = 'broken: this schedule refers to itself'
+    label = _schedule_label(node)
     # A pending change to the schedule is a UID in the table, which is unreadable
     # on a sheet. The server knows what it means, so it says it here.
     pending = storage.qr_get_pending_changes(node['id'])
@@ -2018,6 +2012,145 @@ def accountability_nodes():
     storage.qr_apply_due_pending_changes(datetime.now().isoformat())
     routines = storage.get_flows()
     return jsonify([_node_payload(n, today, routines) for n in storage.qr_get_nodes()])
+
+
+# WHAT THIS GATE IS, ON ONE DAY, out of this box's own database (2026-08-21,
+# Quentin's instruction). The pill on the timeline said a label and a time; when
+# a scan did not clear it there was nowhere to look, and "the app does not know
+# I am in Kanji Hall" is not answerable from a label. Every number the judge
+# would charge on is here, RESOLVED BY THE JUDGE'S OWN FUNCTIONS rather than
+# assembled a second way: resolve_window, applies_on, routine_deadline and
+# scan_satisfies. A transparency surface that re-derives its answers would show
+# you a day the judge does not believe in, which is worse than showing nothing.
+#
+# The DATE is a read default (date_cls.today()); the client sends the day it is
+# looking at.
+def _gate_day_payload(node, ymd, now=None):
+    now = now or datetime.now()
+    override = storage.qr_get_override(node['id'], ymd)
+    applies = qr_judge.applies_on(node, ymd)
+    start, end, offset = qr_judge.resolve_window(node, ymd, override)
+    close_date = qr_judge.close_date_of(ymd, offset)
+    open_iso = qr_judge._utc_iso(ymd, start)
+    close_iso = qr_judge._utc_iso(close_date, end)
+
+    # WHY the window is what it is. The pill shows one time; which of the four
+    # layers produced it is the first thing you need when it is not the time you
+    # expected. Same ladder as resolve_window, in the same order.
+    if override:
+        source = 'this day only (dragged on the timeline)'
+    elif qr_judge.source_window_for(node, ymd):
+        source = 'the schedule: ' + (_schedule_label(node) or 'its own rule')
+    elif qr_judge.weekly_window_for(node, ymd):
+        source = 'the weekly window for this weekday'
+    else:
+        source = 'the gate default'
+
+    # The pawn shortens the deadline by COMPUTATION, never as a written
+    # override, so it is invisible in every column — which is exactly why it
+    # belongs here. An override stands as written and the pawn does not apply
+    # (resolve_window returns before _less_pawned), so say that rather than
+    # showing minutes that did nothing.
+    pawn_min = storage.pawned_minutes_for_node(node['id'], ymd)
+    flow = storage.gating_flow_for_node(node['id'], ymd)
+    pawned = []
+    if flow:
+        names = {f['id']: f['name'] for f in storage.get_flows()}
+        for st in storage.steps_pawned_into(flow['id'], ymd):
+            pawned.append({'content': st.get('content'),
+                           'minutes': st.get('pawn_minutes') or 0,
+                           'from_routine': names.get(st.get('flow_id'))})
+
+    loc = None
+    if node.get('geofence_lat') is not None:
+        named = next((l for l in storage.get_locations()
+                      if l['lat'] == node['geofence_lat']
+                      and l['lng'] == node['geofence_lng']), None)
+        loc = {'name': (named or {}).get('name'),
+               'lat': node['geofence_lat'], 'lng': node['geofence_lng'],
+               'radius_m': node.get('geofence_radius_m')}
+
+    # EVERY scan of the day, not only the ones inside the window: a scan that
+    # missed by four minutes or by forty metres is the whole answer, and
+    # filtering it out leaves "nothing happened", which is a lie about the day.
+    # Each one carries the distance the scan server measured it at and whether
+    # it clears the gate, asked of scan_satisfies - the ONE predicate.
+    # qr_scans_between is the judge's HISTORY read and selects three columns;
+    # this needs the position and the proof, so it goes through the per-node
+    # query instead. Its bounds are arguments, and the ones passed here are the
+    # whole day rather than the window - which is the point.
+    scans = []
+    for sc in storage.qr_scans_in_window(
+            node['id'], qr_judge._utc_iso(ymd, '00:00'),
+            qr_judge._utc_iso(qr_judge._date_plus(ymd, 2), '00:00')):
+        dist = None
+        if loc and sc.get('lat') is not None:
+            dist = round(qr_judge.haversine_m(sc['lat'], sc['lng'],
+                                              node['geofence_lat'], node['geofence_lng']))
+        scans.append(dict(sc, distance_m=dist,
+                          local_time=_scan_local_hhmm(sc['scanned_at']),
+                          in_window=open_iso <= sc['scanned_at'] <= close_iso,
+                          satisfies=bool(qr_judge.scan_satisfies(node, sc))))
+
+    r_due = qr_judge.routine_deadline(node, flow, ymd) if flow else None
+    settings = qr_judge.charge_settings()
+    return {
+        'node_id': node['id'], 'label': node['label'], 'date': ymd,
+        'applies': applies, 'active': bool(node.get('active')),
+        'proof_mode': node.get('proof_mode') or 'link',
+        'window': {'start': start, 'end': end, 'offset_days': offset,
+                   'close_date': close_date, 'from': source,
+                   'closed': now >= qr_judge._local_dt(close_date, end)},
+        'pawn': {'minutes': pawn_min, 'steps': pawned,
+                 'applied': bool(pawn_min) and not override},
+        'routine': None if not flow else {
+            'name': flow['name'], 'id': flow['id'],
+            'deadline': r_due.strftime('%H:%M') if r_due else None,
+            'completed_at': flow.get('completed_at')},
+        'location': loc,
+        'scans': scans,
+        'judged': storage.qr_node_day_state(node['id'], ymd)['judged'],
+        'stake_cents': qr_judge.node_charge_cents(node, settings),
+        'live': settings['live'] and not settings['dryrun'],
+        'tags': _tag_payloads(node['id']),
+        'pending_changes': storage.qr_get_pending_changes(node['id']),
+    }
+
+
+def _scan_local_hhmm(iso):
+    # UTC with a trailing Z into the wall clock the window is written in. The
+    # process timezone is the app's one lever (_apply_timezone), so
+    # fromtimestamp follows it with no zone threaded through.
+    try:
+        dt = datetime.strptime(iso[:19], '%Y-%m-%dT%H:%M:%S')
+    except ValueError:
+        return None
+    return datetime.fromtimestamp(
+        dt.replace(tzinfo=timezone.utc).timestamp()).strftime('%H:%M')
+
+
+def _schedule_label(node):
+    if not node.get('source_uid'):
+        return ''
+    resolve, _ = storage.schedule_resolver()
+    src = resolve(node['source_uid'])
+    if not src:
+        return ''
+    try:
+        return schedule.describe(src, resolve)
+    except schedule.Cycle:
+        return 'broken: this schedule refers to itself'
+
+
+@app.route('/api/accountability/nodes/<int:id>/day', methods=['GET'])
+def accountability_node_day(id):
+    ymd = request.args.get('date') or date_cls.today().isoformat()
+    if not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    node = next((n for n in storage.qr_get_nodes() if n['id'] == id), None)
+    if not node:
+        return jsonify({'error': 'no such gate'}), 404
+    return jsonify(_gate_day_payload(node, ymd))
 
 
 @app.route('/api/accountability/outcomes', methods=['GET'])

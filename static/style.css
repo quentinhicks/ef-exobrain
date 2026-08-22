@@ -2964,6 +2964,91 @@ body.calendar-minimized #review-modal {
 }
 
 /* invisible anchor at the deadline time — the pill label is the drag target */
+/* THE GATE READ-OUT (2026-08-21). A popup rather than a sheet, and the
+   difference is the point: a sheet takes the bottom of the screen and covers
+   the timeline, and this exists to be read AGAINST the day it describes. It is
+   anchored to the pill, capped at the phone column's width, and scrolls inside
+   itself when a day has a lot of scans to account for.
+
+   z 190: over the calendar overlay (140/150) and the global bar (170), under
+   the sheet band (200) — nothing here writes, so a sheet always wins. */
+#gate-pop-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 189;
+  background: transparent;
+}
+
+#gate-pop {
+  position: fixed;
+  z-index: 190;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(560px, 78vh);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+  padding: 12px 14px 14px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.gp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.gp-title { font-size: 15px; font-weight: 600; flex: 1; min-width: 0; }
+
+/* A finger target, not a 10px ×. */
+.gp-close {
+  flex: none;
+  min-width: 36px;
+  min-height: 36px;
+  margin: -8px -8px -8px 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.gp-date { font: 11px var(--font-mono); color: var(--text-secondary); }
+
+.gp-sect {
+  margin-top: 12px;
+  font: 11px var(--font-mono);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.gp-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.gp-row:last-child { border-bottom: none; }
+.gp-k { flex: none; width: 92px; color: var(--text-secondary); }
+.gp-v { flex: 1; min-width: 0; }
+.gp-mono { font: 11px var(--font-mono); }
+
+/* The verdict words carry the meaning, so they carry the colour too. */
+.gp-ok { color: var(--success); }
+.gp-no { color: var(--danger); }
+
+.gp-note {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
 .tl-qr-line {
   position: absolute;
   left: 0;
