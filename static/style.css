@@ -36,6 +36,17 @@
 
   --gold: #d8cb96;
 
+  /* THE CALENDAR'S BOOKENDS (2026-08-22, from the Calendar Page design).
+     Wake and sleep are not events inside the day, they are its EDGES — the
+     view window is literally bounded by them — so they are drawn as bands at
+     the top and bottom rather than as hairlines floating in the grid. Named
+     here so the light appendix answers with the design's own values and no
+     second rule has to know about them. */
+  --gate-wake: #a83232;
+  --on-gate-wake: #ffffff;
+  --gate-sleep: #c9a24a;
+  --on-gate-sleep: #2b2000;
+
   --font-ui: 'Inter', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
@@ -1116,13 +1127,19 @@ select option {
 
 /* ── Timeline ────────────────────────────────────────────────── */
 
+/* ONE ROW, on a 430px phone. The design draws the nav and the three controls
+   on a single line; letting them wrap produced a four-line header that ate a
+   sixth of the day. Everything here is nowrap and the date label shrinks
+   rather than pushing. */
 .tl-header {
   display: flex;
   align-items: center;
-  padding: 8px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .tl-nav {
@@ -1153,9 +1170,48 @@ select option {
 #tl-date-label {
   font-size: 15px;
   font-weight: 700;
-  min-width: 104px;
-  text-align: center;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+
+/* The weekday is what you read, the date is what you check — the design's two
+   weights. 17px rather than the mock's 20px: the mock is 538px wide and this
+   column is 430, and at 20px "Wednesday" pushed the controls off the line. */
+#tl-date-label .tl-dow { font-size: 17px; font-weight: 700; color: var(--text-primary); }
+#tl-date-label .tl-dm {
+  margin-left: 6px;
+  font: 12px var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* The fetch status is the one thing in the header that may go missing: it is a
+   footnote, and it was taking a column of its own and wrapping to four lines. */
+/* WHAT GIVES WAY FIRST. The date is what the header is FOR, so it never
+   shrinks; the fetch note is a footnote and absorbs the whole squeeze, down to
+   nothing. Getting this backwards ellipsised "Saturday" to "Saturd..." while
+   "Last fetched: j..." kept its column. */
+#fetch-status {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-refresh-area {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.tl-nav { flex: none; }
+#tl-date-label { flex: none; }
 
 .tl-today-btn {
   font-size: 12px;
@@ -1365,12 +1421,14 @@ body.calendar-minimized #review-modal {
   align-items: flex-start;
 }
 
+/* The design's gutter: the hour reads down the left edge in mono, and the rule
+   starts clear of it at 56px rather than butting against the digits. */
 .tl-hour-label {
-  width: 44px;
-  padding-right: 6px;
-  font-size: 11px;
+  width: 56px;
+  padding-left: 12px;
+  font: 12px var(--font-mono);
   color: var(--text-secondary);
-  text-align: right;
+  text-align: left;
   margin-top: -7px;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
@@ -1399,12 +1457,22 @@ body.calendar-minimized #review-modal {
   z-index: 2;
 }
 
+/* The right padding RESERVES the event column (events start at 20% of the
+   body, which is most of the way across). Without it a block's label printed
+   underneath the events and was cut mid-word by an opaque box rather than
+   ellipsised — the label was still "there", just unreadable, which is the
+   worst of both. */
 .tl-block {
   position: absolute;
   left: 0;
   right: 0;
   border-radius: 2px;
   padding: 2px 6px 2px 18px;
+  /* Exactly the event column. The events layer and the blocks layer share a
+     left edge (48px), and events begin at 20% of it, so 80% is where a block's
+     label has to stop. At 72% it still ran a few characters under the first
+     event and was cut mid-word by an opaque box. */
+  padding-right: 81%;
   overflow: hidden;
   min-height: 16px;
 }
@@ -1473,28 +1541,41 @@ body.calendar-minimized #review-modal {
    nothing and nothing, since the events are already told apart by their fills
    and their rows. (It was also painting accent rather than the event's own
    colour: the shorthand here reset the border-left-color set above it.) */
+/* Events start at 20% and run to the edge (the design), which is a wider
+   column than the old 35% — a meeting title is the thing you are reading, and
+   it was being ellipsised into uselessness. The fill stays the calendar's own
+   hue (see the --ev-color rule above): the design draws one green because the
+   day it drew had one calendar, and flattening every calendar to that colour
+   would throw away which calendar an event is on. Square, not rounded: a row
+   of soft rectangles reads as chips floating over the day, and these ARE the
+   day. */
 .tl-gcal-event {
   position: absolute;
-  left: 35%;
-  right: 4px;
-  border-radius: 3px;
-  padding: 4px 10px;
+  left: 20%;
+  right: 14px;
+  padding: 2px 10px 2px 12px;
   overflow: hidden;
-  min-height: 16px;
+  min-height: 22px;
 }
 
 /* ── Shared event/block layout ───────────────────────────────── */
 
+/* Title left, time right, on ONE line — the design's row. The time is the
+   thing you check second, so it sits at the far edge where it can be scanned
+   down the column instead of interrupting each title. */
 .tl-event-row {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   overflow: hidden;
 }
 
 .tl-event-summary {
   display: block;
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.3;
   white-space: nowrap;
@@ -1523,11 +1604,13 @@ body.calendar-minimized #review-modal {
   padding-bottom: 0 !important;
 }
 
+/* Two pixels, not one: at one it read as another hour rule, and it is the only
+   line on the page that says WHERE YOU ARE. */
 #tl-current-time {
   position: absolute;
-  left: 44px;
+  left: 56px;
   right: 0;
-  height: 1px;
+  height: 2px;
   background: var(--accent);
   z-index: 10;
   pointer-events: none;
@@ -1688,9 +1771,9 @@ body.calendar-minimized #review-modal {
   content: '';
   position: absolute;
   left: -4px;
-  top: -3px;
-  width: 7px;
-  height: 7px;
+  top: -4px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--accent);
 }
@@ -3079,6 +3162,48 @@ body.calendar-minimized #review-modal {
 /* judged deadlines (window closed): green = satisfied, red = failed */
 .tl-qr-line.tl-qr-success .tl-qr-label {
   background: var(--block-green);
+}
+
+/* WAKE AND SLEEP ARE THE DAY'S EDGES (2026-08-22, the Calendar Page design).
+   They already sit at the top and bottom of the grid — the view window is
+   bounded by them — so the band is what they always were, drawn honestly. Same
+   element, same pill, same gestures: drag still moves the deadline, the ✕ still
+   greys it for the day, and a tap still opens the read-out. Only the paint
+   changes.
+
+   The band keeps the pill's own width (20% of the column, right-aligned) so
+   the hour gutter stays readable underneath it. */
+.tl-qr-line.tl-qr-band .tl-qr-label {
+  width: 20%;
+  min-width: 128px;
+  justify-content: center;
+  border-radius: 0;
+  padding: 5px 10px;
+  font: 700 12px var(--font-mono);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tl-qr-line.tl-qr-wake { --band-color: var(--gate-wake); --band-ink: var(--on-gate-wake); }
+.tl-qr-line.tl-qr-sleep { --band-color: var(--gate-sleep); --band-ink: var(--on-gate-sleep); }
+
+.tl-qr-line.tl-qr-wake .tl-qr-label,
+.tl-qr-line.tl-qr-sleep .tl-qr-label {
+  background: var(--band-color);
+  color: var(--band-ink);
+}
+
+/* A BOOKEND KEEPS ITS OWN COLOUR, and says how the day went in words instead.
+   Letting the outcome fill win made a failed WAKE a pale red band — the same
+   family as its identity colour, so "this is the wake gate" and "this day was
+   missed" became indistinguishable. The band is an identity; the verdict is a
+   ✓ or ✗ in the label, which also survives being read in a hurry. */
+.tl-qr-line.tl-qr-band.tl-qr-success .tl-qr-label,
+.tl-qr-line.tl-qr-band.tl-qr-partial .tl-qr-label,
+.tl-qr-line.tl-qr-band.tl-qr-failed .tl-qr-label {
+  background: var(--band-color);
+  color: var(--band-ink);
 }
 
 /* HALF MET (2026-08-22). Its own state, between the two: one of the scan and
@@ -6069,6 +6194,16 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    picked — see the ratios in the commit. The fill lightens a touch for the
    same reason: 14% of a pastel on white is nearly nothing to sit text on. */
 :root.theme-light .tl-allday-event,
+/* The Calendar Page design is drawn in light, so these are its values
+   verbatim; the dark ones above are the same hues carried onto the dark
+   surface. */
+:root.theme-light {
+  --gate-wake: #8f2020;
+  --on-gate-wake: #ffffff;
+  --gate-sleep: #c9a24a;
+  --on-gate-sleep: #2b2000;
+}
+
 :root.theme-light .tl-gcal-event {
   --ev-ink: #10141a;
   background: color-mix(in srgb, var(--ev-color, var(--accent)) 22%, transparent);

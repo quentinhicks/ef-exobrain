@@ -494,8 +494,12 @@ function renderGrid() {
   for (let h = Math.ceil(start / 60); h * 60 <= end; h++) {
     const pct = minutesToViewPercent(h * 60);
     if (pct < 1) continue;
+    // 24h, zero-padded — the design's gutter. Every hour is then the same
+    // width, which is the point of setting them in mono: the column reads as a
+    // ruler instead of a ragged list. (Event times stay 12h: they are read as
+    // words inside a sentence, not scanned down an edge.)
     const hh = h % 24;
-    const label = hh === 0 ? '12 AM' : hh < 12 ? `${hh} AM` : hh === 12 ? '12 PM' : `${hh - 12} PM`;
+    const label = `${String(hh).padStart(2, '0')}:00`;
     html += `<div class="tl-hour" style="top:${pct}%">
       <span class="tl-hour-label">${label}</span>
       <div class="tl-hour-line"></div>
@@ -506,7 +510,13 @@ function renderGrid() {
 
 function renderDateLabel() {
   const el = document.getElementById('tl-date-label');
-  if (el) el.textContent = formatDateLabel(state.currentDate);
+  // The weekday is what you read; the date is what you check. Two weights, the
+  // design's — and the date in mono so the digits line up as you page through.
+  if (el) {
+    const d = state.currentDate;
+    el.innerHTML = `<span class="tl-dow">${escHtml(_WEEKDAYS_LONG[d.getDay()])}</span>`
+      + `<span class="tl-dm">${d.getDate()} ${escHtml(_MONTHS_SHORT[d.getMonth()])}</span>`;
+  }
   updateNavButtons();
 }
 
@@ -9297,14 +9307,28 @@ function renderQrLayer() {
     // success / partial / failed — 'partial' is the half-met day the split
     // created (2026-08-22). Painting it red would say the routine you did do
     // counted for nothing, which is the opposite of the point.
+    //
+    // WAKE and SLEEP draw as the day's bookend bands rather than as hairlines
+    // (the Calendar Page design): the view window is bounded by them, so they
+    // are already at the top and bottom edges and the band is what they were
+    // all along. Same element and same gestures — only the paint differs.
+    const isWake = String(node.id) === String(state.settings.qr_wake_node_id);
+    const isSleep = String(node.id) === String(state.settings.qr_sleep_node_id);
     line.className = 'tl-qr-line' + (locked ? ' tl-qr-locked' : '') + (dismissed ? ' tl-qr-dismissed' : '')
-      + (outcome ? ` tl-qr-${outcome}` : '');
+      + (outcome ? ` tl-qr-${outcome}` : '')
+      + (isWake ? ' tl-qr-band tl-qr-wake' : '') + (isSleep ? ' tl-qr-band tl-qr-sleep' : '');
     line.style.top = `${pct}%`;
 
     const label = document.createElement('span');
     label.className = 'tl-qr-label';
     const labelText = document.createElement('span');
-    labelText.textContent = `${node.label} ${windowEnd}${offsetDays ? ' +1d' : ''}${locked ? ' 🔒︎' : ''}`;
+    // A bookend band carries its verdict as a mark rather than as a fill: its
+    // colour is its identity (see the band rules in style.css), and on a phone
+    // a glyph survives a glance that a hue does not.
+    const mark = (isWake || isSleep) && outcome
+      ? ({ success: ' ✓', partial: ' ½', failed: ' ✗' }[outcome] || '') : '';
+    labelText.textContent = `${node.label} ${windowEnd}${offsetDays ? ' +1d' : ''}${
+      locked ? ' 🔒︎' : ''}${mark}`;
     label.appendChild(labelText);
     line.appendChild(label);
     layer.appendChild(line);
