@@ -1151,14 +1151,24 @@ function defaultDomainId() {
 
 // ── Calendar navigation bounds ───────────────────────────────
 //
-// ±3 days normally: this is a DAY manager, and the timeline is the day you are
-// in, not a calendar to browse. A review pass widens it for its duration —
-// an explicit, bounded exception with an end, rather than a permanent
-// widening that would undo the scoping.
+// UNBOUNDED (2026-08-22, Quentin's instruction, removing the ±3-day clamp).
+// The clamp was there to say "this is a DAY manager, not a calendar to
+// browse" — but Engage's own day nav never had it, so the restriction only
+// applied to the surface that is literally a calendar, and the review pass
+// had to keep widening it to do the one job that needs a week either side.
+//
+// Nothing downstream needed the ceiling: blocks, gates and placements are
+// resolved per date by the server for any date you ask for. The FETCHED
+// calendar is the one thing with a real horizon — the iCal window is
+// GCAL_DAYS_BACK back and ~90 days forward — so far enough out the day is
+// real but has no events in it, which is the truth rather than a wall.
+//
+// A review pass still sets its own window: it needs `min`/`max` to count
+// "day 3/15" and to know when it has reached the end.
 const reviewPass = { active: false, from: null, to: null, step: null };
 
 function navBounds() {
-  if (!reviewPass.active) return { min: -3, max: 3 };
+  if (!reviewPass.active) return { min: -Infinity, max: Infinity };
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const off = iso => Math.round(
     (new Date(iso + 'T12:00:00').setHours(0, 0, 0, 0) - today) / 86400000);
@@ -13119,8 +13129,9 @@ function renderEngage() {
   header.querySelector('#eg-prev').addEventListener('click', () => shiftDay(-1));
   header.querySelector('#eg-next').addEventListener('click', () => shiftDay(1));
   // The day itself is the door to the timeline: open calendar view AT the
-  // viewed day (clamped to the timeline's ±3-day window). "Back to today" is
-  // the pill that appears only when you're elsewhere.
+  // viewed day. The clamp here is now only the review pass's window (navBounds
+  // is otherwise unbounded), so an ordinary day opens where you were standing.
+  // "Back to today" is the pill that appears only when you're elsewhere.
   header.querySelector('#eg-day-btn').addEventListener('click', async () => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const b = navBounds();
