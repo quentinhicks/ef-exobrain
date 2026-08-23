@@ -3227,6 +3227,28 @@ body.calendar-minimized #review-modal {
   cursor: ns-resize;
 }
 
+/* THE MINUTE, WHILE IT IS MOVING. Hidden by default and shown only during a
+   drag: the square's POSITION is what says when, which is enough at a glance
+   and not enough while you are choosing a minute. It sits to the left of the
+   square so the thing under your finger is not the thing you are reading. */
+.tl-qr-time {
+  position: absolute;
+  right: 34px;
+  top: -9px;
+  height: 18px;
+  display: none;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--pill-bg);
+  color: var(--pill-ink);
+  font: 700 10px var(--font-mono);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tl-qr-line.tl-qr-dragging .tl-qr-time { display: inline-flex; }
+
 /* THE SQUARE IS 18px AND THE TARGET IS 36px. A finger cannot hit 18, and
    growing the paint to meet it would undo the point of the change — so the hit
    area is an invisible ring around it. */

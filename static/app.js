@@ -9408,6 +9408,16 @@ function renderQrLayer() {
     const labelText = document.createElement('span');
     labelText.textContent = QR_GLYPH;
     label.title = qrPillTitle(node, windowEnd, offsetDays, locked, outcome);
+
+    // THE TIME, ONLY WHILE YOU ARE MOVING IT (2026-08-22, Quentin's
+    // instruction). The square says nothing about when — that is what its
+    // position against the hour gutter is for — but a deadline being DRAGGED
+    // is the one moment the exact minute matters and the gutter is too coarse
+    // to read it off. So a small readout appears to the left of the square for
+    // the duration of the drag and is not in the document's way otherwise.
+    const timeTag = document.createElement('span');
+    timeTag.className = 'tl-qr-time';
+    line.appendChild(timeTag);
     label.appendChild(labelText);
     line.appendChild(label);
     layer.appendChild(line);
@@ -9476,7 +9486,10 @@ function renderQrLayer() {
       const displayPct = Math.min(100, Math.max(0, minutesToViewPercent(mins)));
       line.style.top = `${displayPct}%`;
       setLabelEdge(displayPct);
-      labelText.textContent = qrPillText(clockHHMM(mins), mins >= DAY_MIN, false, '');
+      // Was written into the square's own label, which stopped existing when
+      // the square became a glyph — qrPillText went with it, so this line was
+      // a ReferenceError waiting for the next drag.
+      timeTag.textContent = `${clockHHMM(mins)}${mins >= DAY_MIN ? ' +1d' : ''}`;
     }
 
     async function onUp(clientY, e) {
