@@ -5963,6 +5963,11 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* Clears the Show-on time; only rendered while a time is set. */
 .cl-x { font-size: 12px; padding: 6px 4px; background: transparent; color: var(--text-secondary); }
 .cl-x:hover { color: var(--text-primary); }
+/* The carried-over show-on date says so and clears in one tap. It is wider
+   than a bare ✕ because it is also the LABEL for where the value came from,
+   and a suggestion that defers an item out of the pool has to be readable
+   before it is dismissed. min-height so the tap target survives on a phone. */
+#cl-show-date-x { min-height: 32px; white-space: nowrap; }
 
 /* The event sheet's When row, compact: native date/time inputs default wide
    enough to wrap the 430px column, and three of them plus a dash must read

@@ -13609,7 +13609,7 @@ async function renderNowFull() {
 // and takes an optional chase date.
 const clarifyView = {
   open: false, queue: [], total: 0, verb: 'defer',
-  action: '', tags: new Set(), showDate: '', showTime: '',
+  action: '', tags: new Set(), showDate: '', showTime: '', showDateFrom: '',
   projectId: null, projectName: '', who: '', chase: '',
   notes: '',          // support material, saved with the item on file
   due: '',            // hard deadline (YMD) — real ones only; '' = none
@@ -13858,31 +13858,81 @@ async function saveClarifyRecurring() {
   closeClarify();
 }
 
-// THE LAST DOMAIN YOU FILED INTO, for the rest of the day.
+// ── STICKY DEFAULTS: what the last item you clarified teaches the next ──
 //
-// Clarifying a queue is one sitting: an inbox is usually about one part of
-// your life at a time, so re-picking the domain on every item is a tax on the
-// common case. It expires at MIDNIGHT rather than persisting forever, because
-// "what I was working on" is a fact about a day — carrying yesterday's context
-// into this morning would file today's captures into last night's project.
+// Clarifying a queue is ONE SITTING. An inbox is usually about one part of
+// your life at a time and one stretch of calendar at a time, so re-picking
+// the same domain and re-typing the same show-on date for every item is a tax
+// on the common case. This is the ONE store for that, with the policy named
+// per field — the second instance (2026-08-23) is what made it a class rather
+// than a special case for the domain.
 //
-// Stored per-day so the expiry needs no timer and survives a restart. It is a
-// DEFAULT, never a decision: the Filing-to row still shows every domain, and
-// an item that already has an area (re-clarified from MAP/GTD/the pool) keeps
-// its own — a suggestion must not overwrite something already decided.
-function lastFiledDomain() {
+// Two policies, and the difference is what the field is a fact ABOUT:
+//   'day'   — valid only on the day it was learned. "What I was working on"
+//             is a fact about a day, so carrying yesterday's domain into this
+//             morning would file today's captures into last night's project.
+//   'idle'  — valid until STICKY_IDLE_MS pass with nobody using it. "The date
+//             I keep deferring to" is a fact about a sitting, not a calendar
+//             day: a queue worked at 23:50 and again at 00:10 is one sitting,
+//             and a queue picked up next week is not. Every USE renews it, so
+//             it dies of disuse rather than of age.
+//
+// Everything here is a DEFAULT, never a decision: a value the item already
+// carries always wins (an area, a defer date), and every field it fills stays
+// fully editable in the sheet. Stored with its stamp so expiry needs no timer
+// and survives a restart. localStorage like every other lens preference
+// (mapSort, the device override) — what THIS machine filed is a fact about
+// this machine.
+//
+// Adding a field is one STICKY_FIELDS line plus a stickyRemember() call at
+// the point the value is COMMITTED (what was actually written, not what
+// happened to be on screen) — and a field whose default could silently move
+// money or place a row on a day does not belong here at all. The show-on
+// TIME is the live example: a sticky time would ride a sticky date into a
+// real placement on a day you never chose.
+const STICKY_IDLE_MS = 24 * 60 * 60 * 1000;
+
+const STICKY_FIELDS = {
+  filedDomain: 'day',    // the domain the last filing actually landed in
+  showDate: 'idle',      // the show-on date the last defer was given
+};
+
+function stickyGet(field) {
   try {
-    const raw = JSON.parse(localStorage.getItem('lastFiled') || 'null');
-    if (raw && raw.date === wallDay()) return raw.domainId;
-  } catch (e) { /* unparseable = no memory, which is the safe answer */ }
-  return null;
+    const raw = JSON.parse(localStorage.getItem('sticky.' + field) || 'null');
+    if (!raw) return null;
+    if (STICKY_FIELDS[field] === 'day') {
+      if (raw.day !== wallDay()) return null;
+    } else if (Date.now() - (raw.at || 0) >= STICKY_IDLE_MS) {
+      return null;
+    }
+    return raw.value;
+  } catch (e) { return null; }  // unparseable = no memory, the safe answer
+}
+
+// Reading a sticky value is not using it — APPLYING it is, and only the
+// caller knows whether it did. An idle field that is offered and ignored for
+// a day should still expire.
+function stickyUse(field) {
+  const value = stickyGet(field);
+  if (value != null && value !== '') stickyRemember(field, value);
+  return value;
+}
+
+function stickyRemember(field, value) {
+  if (!(field in STICKY_FIELDS)) return;
+  if (value == null || value === '') return;
+  localStorage.setItem('sticky.' + field,
+    JSON.stringify({ value, day: wallDay(), at: Date.now() }));
+}
+
+function lastFiledDomain() {
+  return stickyUse('filedDomain');
 }
 
 function rememberFiledDomain(areaId) {
   if (!areaId) return;
-  localStorage.setItem('lastFiled', JSON.stringify({
-    domainId: domainIdForArea(areaId), date: wallDay(),
-  }));
+  stickyRemember('filedDomain', domainIdForArea(areaId));
 }
 
 // ── Recency memory for pickers with NO natural sort (2026-08-11) ──
@@ -13926,13 +13976,27 @@ function clarifyResetItem() {
   clarifyView.tags = new Set(item ? ownTags(item) : []);
   clarifyView.showDate = '';
   clarifyView.showTime = '';
+  clarifyView.showDateFrom = '';
   // A project's start date is a standing property, not a fresh decision, so
-  // unlike an action's it is PREFILLED — "Active" is then the explicit act of
+  // it is prefilled from the ROW where an action's is only ever a suggestion — "Active" is then the explicit act of
   // clearing it, and re-filing a parked project can't silently un-park it.
   if (clarifyView.project) {
     const parked = item.defer_until && item.defer_until > wallDay();
     clarifyView.verb = parked ? 'defer' : 'active';
     clarifyView.showDate = parked ? item.defer_until : '';
+  } else if (item) {
+    // An ACTION's show-on date: a date STILL IN FORCE is the item's own
+    // decision and wins (re-clarifying a deferred item must not overwrite
+    // it); a date already passed is spent, and gets the same blank the sheet
+    // always gave it. Only then does the sitting's sticky date fill in.
+    const deferred = item.defer_until && item.defer_until > wallDay();
+    clarifyView.showDate = deferred ? item.defer_until
+                                    : (stickyUse('showDate') || '');
+    // A SUGGESTED date is marked as one: it defers the item out of the pool,
+    // which is a real consequence for a value nobody typed, so the row says
+    // where it came from and carries a one-tap clear. A date the item owns
+    // gets neither — it is not a suggestion.
+    clarifyView.showDateFrom = (!deferred && clarifyView.showDate) ? 'sticky' : '';
   }
   clarifyView.projectId = null;
   clarifyView.projectName = '';
@@ -14152,6 +14216,9 @@ async function fileClarify(bucket, refListId) {
       if (startNow) body.started_at = new Date().toISOString();
       if (clarifyView.projectId) body.project_id = clarifyView.projectId;
       await patch(body);
+      // The date that was actually WRITTEN teaches the next item — a value
+      // left on screen and then cleared by the exit never learned anything.
+      stickyRemember('showDate', clarifyView.showDate);
       if (clarifyView.showDate && clarifyView.showTime) {
         // A time schedules it: the placement lands in THAT day's schedule.
         // Prior placements go first, so re-clarifying to a new slot never
@@ -14301,6 +14368,7 @@ async function fileClarifyExternal(bucket, refListId) {
         if (startNow) body.started_at = new Date().toISOString();
         if (clarifyView.projectId) body.project_id = clarifyView.projectId;
         await patch(body);
+        stickyRemember('showDate', clarifyView.showDate);
         if (clarifyView.showDate && clarifyView.showTime) {
           await apiSend('/api/engage/placements', 'POST', { item_id: created.id, date: clarifyView.showDate,
                                    minute: timeToMinutes(clarifyView.showTime) });
@@ -14467,7 +14535,8 @@ function renderClarify() {
         <input type="date" id="cl-show-date" class="cl-date"
           title="Date alone defers; adding a time places it into that day's schedule" value="${clarifyView.showDate}">
         <input type="time" id="cl-show-time" class="cl-date" value="${clarifyView.showTime}" title="A time schedules it into that day">
-        ${clarifyView.showTime ? '<button id="cl-show-time-x" class="cl-x" title="Clear the time — date alone just defers">✕</button>' : ''}`}
+        ${clarifyView.showTime ? '<button id="cl-show-time-x" class="cl-x" title="Clear the time — date alone just defers">✕</button>' : ''}
+        ${clarifyView.showDateFrom === 'sticky' ? '<button id="cl-show-date-x" class="cl-x" title="Carried over from the last item you deferred — tap to clear">✕ carried</button>' : ''}`}
         <span class="cl-label">Due</span>
         <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
       </div>`}
@@ -14692,7 +14761,17 @@ function renderClarify() {
     renderClarify();
   });
   const showDate = sheet.querySelector('#cl-show-date');
-  if (showDate) showDate.addEventListener('change', e => { clarifyView.showDate = e.target.value; });
+  if (showDate) showDate.addEventListener('change', e => {
+    clarifyView.showDate = e.target.value;
+    // Typed over: it is this item's date now, not a carried-over suggestion.
+    if (clarifyView.showDateFrom) { clarifyView.showDateFrom = ''; renderClarify(); }
+  });
+  const showDateX = sheet.querySelector('#cl-show-date-x');
+  if (showDateX) showDateX.addEventListener('click', () => {
+    clarifyView.showDate = '';
+    clarifyView.showDateFrom = '';
+    renderClarify();
+  });
   const showTime = sheet.querySelector('#cl-show-time');
   if (showTime) showTime.addEventListener('change', e => {
     clarifyView.showTime = e.target.value;
