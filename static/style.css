@@ -5021,6 +5021,11 @@ body.map-over-runner #map-overlay { z-index: 170; }
   font: 11px var(--font-mono);
   color: var(--accent);
   padding: 2px 4px;
+  /* The device split ("Clarify 3 · 2 pc") must stay on ONE line: wrapped, it
+     doubles the bar's height and pushes the capture input off the row. The
+     input is what gives here — it flexes. */
+  white-space: nowrap;
+  flex: none;
 }
 #eg-clarify:hover { text-decoration: underline; }
 

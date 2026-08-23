@@ -1248,7 +1248,7 @@ async function refreshInboxCount() {
   // The footer only exists while Engage is rendered; capture works from
   // anywhere, so this is a soft update rather than a re-render.
   const clarify = document.getElementById('eg-clarify');
-  if (clarify) clarify.textContent = `Clarify ${state.inbox.length}`;
+  if (clarify) clarify.textContent = clarifyBarLabel();
   renderInbox();
 }
 
@@ -1314,7 +1314,7 @@ function renderBarCounts(bar) {
   const undo = bar.querySelector('#eg-undo');
   const clarify = bar.querySelector('#eg-clarify');
   if (undo) undo.classList.toggle('hidden', !undoStack.length);
-  if (clarify) clarify.textContent = `Clarify ${state.inbox.length}`;
+  if (clarify) clarify.textContent = clarifyBarLabel();
 }
 
 function renderBar() {
@@ -1331,7 +1331,7 @@ function renderBar() {
     <span class="eg-cap-plus">+</span>
     <input type="text" id="eg-capture" placeholder="Capture anything…" autocomplete="off">
     <button id="eg-undo" class="${undoStack.length ? '' : 'hidden'}" title="Undo">↩︎</button>
-    <button id="eg-clarify" title="Process the inbox">Clarify ${state.inbox.length}</button>
+    <button id="eg-clarify" title="Process the inbox">${clarifyBarLabel()}</button>
     <button id="eg-hub" title="Everything else">≡</button>
   `;
 
@@ -1707,6 +1707,33 @@ function currentDevice() {
   return DEVICE_TAGS.includes(override) ? override : detectDevice();
 }
 
+// WHICH DEVICE DOES THIS ROW BELONG TO — asked by the pool's ▭ gate and by the
+// inbox queue, so it is answered ONCE. A tag is device-bound either by BEING
+// 'pc'/'phone' or by having been bound to one in the ctx sheet, so `email → pc`
+// gates exactly like `#pc` does without being named after the hardware.
+function deviceTagMap() {
+  const tagDev = {};
+  DEVICE_TAGS.forEach(t => { tagDev[t] = t; });
+  (state.tagDevices || []).forEach(b => { tagDev[b.tag] = b.device; });
+  return tagDev;
+}
+
+// No device tag = available everywhere (opt-in friction, not a classification
+// every row carries); both = everywhere too, which is why this reads "some
+// device tag matches" rather than "no foreign tag". `tagDev` is passed in by
+// callers that gate a whole list, so the map is built once per pass.
+function itemOnDevice(item, device, tagDev) {
+  const map = tagDev || deviceTagMap();
+  const devs = itemTags(item).map(t => map[t]).filter(Boolean);
+  return !devs.length || devs.includes(device);
+}
+
+// The devices a row is waiting for, for a count that names where it went.
+function itemDevices(item, tagDev) {
+  const map = tagDev || deviceTagMap();
+  return [...new Set(itemTags(item).map(t => map[t]).filter(Boolean))];
+}
+
 // AN ITEM'S CONTEXTS INCLUDE ITS PROJECT'S (2026-08-19, Quentin's
 // instruction). @errands on the project says the same thing about each action
 // under it, so this is what every READER asks: the pool's gates, MAP's lens,
@@ -1747,11 +1774,41 @@ function parseTags(text) {
 
 // ── Inbox ────────────────────────────────────────────────────
 
+// ── THE INBOX SPLITS BY DEVICE (2026-08-23, Quentin's instruction) ──
+//
+// A capture you can only do at the desk is noise on the phone: you read it,
+// decide nothing, and read it again tomorrow. So the ▭ gate the POOL already
+// applies is applied to the inbox too — the clarify queue on this device is
+// the captures this device can actually do something about, and a pc-tagged
+// capture waits for the pc.
+//
+// It is NOT hidden: the bar says how many are waiting and where ("Clarify 5 ·
+// 2 on pc"). Gating something as small as the inbox count silently is exactly
+// the trust leak the "never hide rows without showing a count" rule exists to
+// prevent, and the pool's silent gates bought their exception with a band of
+// chrome over a list read 30× a day. This is one word on a button.
+//
+// One label, three callers (renderInbox, renderBarCounts, refreshInboxCount),
+// because the count and the split have to agree everywhere they are printed.
+function clarifyBarLabel() {
+  const device = currentDevice();
+  const tagDev = deviceTagMap();
+  const away = state.inbox.filter(i => !itemOnDevice(i, device, tagDev));
+  const here = state.inbox.length - away.length;
+  if (!away.length) return `Clarify ${here}`;
+  const where = {};
+  away.forEach(i => itemDevices(i, tagDev).forEach(d => { where[d] = (where[d] || 0) + 1; }));
+  // Terse because it shares a 430px bar with the capture input: "3 · 2 pc"
+  // is the count that is here and the count that is waiting, named by where.
+  const parts = Object.keys(where).sort().map(d => `${where[d]} ${d}`);
+  return `Clarify ${here} · ${parts.join(' ')}`;
+}
+
 function renderInbox() {
   // The inbox is the capture bar's live count now; processing is the Clarify
   // sheet (openClarify). Callers that used to repaint the queue just bump N.
   const el = document.getElementById('eg-clarify');
-  if (el) el.textContent = `Clarify ${state.inbox.length}`;
+  if (el) el.textContent = clarifyBarLabel();
 }
 
 
@@ -12603,16 +12660,8 @@ function engagePoolGates(nowMin, isToday) {
   // day's fixed points are commitments and are never filtered — this is the
   // pool, same boundary the location gate keeps.
   const device = currentDevice();
-  // A tag is device-bound either by BEING 'pc'/'phone' or by having been bound
-  // to one in the ctx sheet — so `email → pc` gates exactly like `#pc` does,
-  // without the tag having to be named after the hardware.
-  const tagDev = {};
-  DEVICE_TAGS.forEach(t => { tagDev[t] = t; });
-  (state.tagDevices || []).forEach(b => { tagDev[b.tag] = b.device; });
-  const deviceOk = i => {
-    const devs = itemTags(i).map(t => tagDev[t]).filter(Boolean);
-    return !devs.length || devs.includes(device);
-  };
+  const tagDev = deviceTagMap();
+  const deviceOk = i => itemOnDevice(i, device, tagDev);
 
   // TIME gate: a tag bound to a SCHEDULE SOURCE only counts while you are
   // inside one of that source's occurrences. The server sends the intervals it
@@ -13686,8 +13735,13 @@ async function openClarify() {
   state.inbox = await fetch('/api/inbox').then(r => r.json());
   renderInbox();
   await clarifyLoadAux();
-  clarifyView.queue = [...state.inbox].sort((a, b) =>
-    (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
+  // This device's queue only: a capture handed to the other machine waits
+  // there, and clarifyBarLabel says how many, so nothing is silently gone.
+  const device = currentDevice();
+  const tagDev = deviceTagMap();
+  clarifyView.queue = [...state.inbox]
+    .filter(i => itemOnDevice(i, device, tagDev))
+    .sort((a, b) => (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
   clarifyView.total = clarifyView.queue.length;
   clarifyView.single = false;
   // An empty "in" doesn't mean an empty head: the cycle still ends (or, here,
@@ -14138,6 +14192,56 @@ function closeClarify() {
   if (after) after();
 }
 
+// HAND A CAPTURE TO THE OTHER MACHINE, undecided (2026-08-23).
+//
+// The gesture on a device chip is not "tag it and file it" — it is the one
+// thing the phone can honestly say about a capture it cannot do: this belongs
+// at the desk. The item stays in "in", unclarified, and simply leaves this
+// device's queue; the pc picks it up with every decision still open.
+//
+// Device tags are EXCLUSIVE here, like the estimates on the chip row: the
+// gesture is a statement about WHERE this gets done, so sending it to the pc
+// takes the phone tag off. Nothing else on the row is touched — a tag bound to
+// a device in the ctx sheet keeps binding, which can leave an item available
+// on both machines, and that is the truth about it rather than a bug.
+// Whether this sheet is a QUEUE OF CAPTURES — the only place the hand-off
+// gesture means anything, and the only place it is advertised. The external
+// step has no row to tag, a template sheet is not a capture, and `single` is
+// one row re-clarified from the day or MAP, where "hand it over and move on"
+// has no queue to move on to and the sheet would just close on you.
+function handOffAvailable() {
+  return !!clarifyView.queue.length && !clarifyView.external && !clarifyView.single
+    && !clarifyView.forRecurring && !clarifyView.forOccasion;
+}
+
+async function handOffToDevice(dev) {
+  const item = clarifyView.queue[0];
+  if (!item || clarifyView.filing || !handOffAvailable()) return;
+  const tags = ownTags(item).filter(t => !DEVICE_TAGS.includes(t)).concat([dev]);
+  undoablePatch(item, ['tags'], `sent "${item.content}" to the ${dev} inbox`);
+  await patchInboxItem(item.id, { tags: tags.join(' ') });
+  state.inbox = await fetch('/api/inbox').then(r => r.json()).catch(() => state.inbox);
+  // Re-read the row the SERVER now holds: effective_tags is derived up there,
+  // and the gate asks for the effective set.
+  const fresh = state.inbox.find(i => i.id === item.id);
+  if (fresh && !itemOnDevice(fresh, currentDevice())) {
+    clarifyView.queue.shift();
+    // It left THIS queue, so the "n of M" head counts one fewer — it is a
+    // position in the sitting, not a tally of what was captured.
+    clarifyView.total = Math.max(clarifyView.queue.length, clarifyView.total - 1);
+    toast(`Waiting on the ${dev}`);
+  } else {
+    if (fresh) clarifyView.queue[0] = fresh;
+    toast(`Marked ${dev}`);
+  }
+  renderInbox();
+  // The queue can empty: the cycle then ends where it always does, on the
+  // external step — the head isn't empty until the paper and the email are in.
+  if (!clarifyView.queue.length) clarifyView.external = true;
+  clarifyResetItem();
+  renderClarify();
+}
+
 async function fileClarify(bucket, refListId) {
   if (clarifyView.filing) return;          // in flight — ignore the double click
   // A project's "Active" IS the defer exit with no start date — the same
@@ -14522,7 +14626,8 @@ function renderClarify() {
   } else if (verb === 'defer' || doProgress) {
     middle = `
       ${doProgress ? doVariantChips() : ''}
-      <div class="cl-sec"><span class="cl-label">Contexts</span><span class="cl-hint">${clarifyView.tags.size} selected · pick any</span></div>
+      <div class="cl-sec"><span class="cl-label">Contexts</span><span class="cl-hint">${clarifyView.tags.size} selected · pick any${
+        handOffAvailable() ? ' · hold pc/phone to send it there' : ''}</span></div>
       <div class="cl-chips">
         ${clarifyView.tagVocab.map(t =>
           `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
@@ -14719,16 +14824,29 @@ function renderClarify() {
     toast('Deleted');
     closeClarify();
   });
-  sheet.querySelectorAll('.cl-chip[data-tag]').forEach(b => b.addEventListener('click', () => {
-    const t = b.dataset.tag;
-    if (clarifyView.tags.has(t)) clarifyView.tags.delete(t);
-    else {
-      // Estimates are exclusive: picking one duration unpicks the others.
-      if (EST_TAGS.includes(t)) EST_TAGS.forEach(e => clarifyView.tags.delete(e));
-      clarifyView.tags.add(t);
+  sheet.querySelectorAll('.cl-chip[data-tag]').forEach(b => {
+    b.addEventListener('click', () => {
+      const t = b.dataset.tag;
+      if (clarifyView.tags.has(t)) clarifyView.tags.delete(t);
+      else {
+        // Estimates are exclusive: picking one duration unpicks the others.
+        if (EST_TAGS.includes(t)) EST_TAGS.forEach(e => clarifyView.tags.delete(e));
+        clarifyView.tags.add(t);
+      }
+      renderClarify();
+    });
+    // A DEVICE chip has a second verb: hand this capture to that machine's
+    // inbox, undecided. Right-click on a mouse, 550ms long press on a finger —
+    // both wired, neither replacing the other (touch parity).
+    if (DEVICE_TAGS.includes(b.dataset.tag)) {
+      b.title = `Long-press or right-click to send this to the ${b.dataset.tag} inbox, unclarified`;
+      b.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        handOffToDevice(b.dataset.tag);
+      });
+      onLongPress(b, () => handOffToDevice(b.dataset.tag));
     }
-    renderClarify();
-  }));
+  });
   sheet.querySelectorAll('.cl-chip[data-who]').forEach(b => b.addEventListener('click', () => {
     clarifyView.who = clarifyView.who === b.dataset.who ? '' : b.dataset.who;
     renderClarify();
