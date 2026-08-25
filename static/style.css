@@ -517,6 +517,16 @@ select option {
   padding: 13px 20px;
 }
 
+/* WHERE THE REST OF THEM ARE. A list that holds fewer things than you have has
+   to say so and say where — the same bargain the pool's gates struck, in one
+   line under the heading rather than a band of chrome. */
+.be-note {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 20px 10px;
+}
+
 .be-hint {
   font-size: 12px;
   line-height: 1.5;

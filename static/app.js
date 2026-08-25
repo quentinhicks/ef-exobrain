@@ -2649,12 +2649,17 @@ function paintSettingsNav() {
 // submit time, so a field that only exists for some other field's value
 // (Recurring's day keys, a gate's per-day windows) can re-render freely.
 
-const seSheet = { kind: null, item: null, values: null, error: '' };
+const seSheet = { kind: null, item: null, values: null, error: '', returnTo: null };
 
-function openSeSheet(kind, item) {
+// `returnTo` is what a sheet opened FROM another sheet hands back to. The
+// gate-tag sheet hard-codes its way home because it has exactly one door; a
+// routine has two (its gate, or Settings → Recurring), so the door it came
+// through is passed in rather than guessed.
+function openSeSheet(kind, item, returnTo) {
   const spec = SETTINGS_SHEETS[kind];
   seSheet.kind = kind;
   seSheet.item = item || null;
+  seSheet.returnTo = returnTo || null;
   seSheet.values = item ? spec.load(item) : spec.blank();
   seSheet.error = '';
   // Folded on open: the steps are for the one evening you program a tag, not
@@ -2672,6 +2677,7 @@ function closeSeSheet() {
   seSheet.kind = null;
   seSheet.item = null;
   seSheet.values = null;
+  seSheet.returnTo = null;
   document.getElementById('se-sheet').classList.add('hidden');
   document.getElementById('se-sheet-backdrop').classList.add('hidden');
   document.getElementById('block-editor-modal').classList.remove('be-sheet-open');
@@ -2752,6 +2758,31 @@ const TAG_SETUP_INFO = [
       code: 'python ntag.py <e> <c> <meta-key> <file-key>' },
   ] },
 ];
+
+// One line about the routine this gate demands: what it is, and the two facts
+// you would otherwise open it to see.
+function gateRoutineLine(flowId) {
+  const f = (state.gateRoutines || []).find(x => String(x.id) === String(flowId));
+  if (!f) return 'its routine';
+  const bits = [flowWindowLabel(f) || (f.offset_min
+    ? `due ${f.offset_min > 0 ? '+' : ''}${f.offset_min}m from this deadline`
+    : 'due when this gate closes')];
+  if (f.as_task) bits.push('also a task');
+  return `${f.name} · ${bits.join(' · ')}`;
+}
+
+// Into the routine's own sheet, and back here when it is saved.
+function openRoutineFromGate(node, flowId) {
+  const f = (state.gateRoutines || []).find(x => String(x.id) === String(flowId));
+  if (!f) return;
+  openSeSheet('routine', f, async () => {
+    await renderQrManager();
+    const fresh = (state.accountabilityNodes || []).find(n => n.id === node.id);
+    if (fresh) { openSeSheet('gate', fresh); return; }
+    closeSeSheet();
+    renderSettingsIndex();
+  });
+}
 
 function gateTagRows(n) {
   const rows = (n.tags || []).map((t, i) => ({
@@ -3106,6 +3137,8 @@ async function submitSeSheet() {
   // A sheet that NAVIGATES has already opened the one you land on (a tag hands
   // back to its gate), so closing here would shut that. Same bargain as an
   // action row's keepOpen.
+  const back = seSheet.returnTo;
+  if (back) { await back(); return; }
   if (spec.navigates) return;
   closeSeSheet();
   renderSettingsIndex();
@@ -3115,6 +3148,8 @@ async function removeSeItem() {
   const spec = SETTINGS_SHEETS[seSheet.kind];
   if (spec.confirm && !confirm(spec.confirm(seSheet.item))) return;
   await spec.remove(seSheet.item);
+  const back = seSheet.returnTo;
+  if (back) { await back(); return; }
   if (spec.navigates) return;
   closeSeSheet();
   renderSettingsIndex();
@@ -3491,13 +3526,15 @@ const SETTINGS_SHEETS = {
         + 'every other easing.'
       : 'Delete this routine and its steps?'),
     blank: () => ({ name: '', period: 'day', source: '', sourceLabel: '',
-                    as_task: false, area: '', days: [] }),
+                    as_task: false, area: '', days: [], offset: '' }),
     load: f => ({
       name: f.name,
       period: f.period || 'day',
       source: f.source_uid || '', source0: f.source_uid || '',
       sourceLabel: flowWindowLabel(f) || '',
       as_task: !!f.as_task,
+      offset: f.offset_min == null ? '' : String(f.offset_min),
+      offset0: f.offset_min == null ? '' : String(f.offset_min),
       area: f.area_id || '',
       days: (f.days_of_week || '').split('').filter(d => d !== '').map(Number),
     }),
@@ -3510,7 +3547,7 @@ const SETTINGS_SHEETS = {
       ...(it ? [{ key: 'source', label: 'Window', kind: 'openpicker',
         text: v.sourceLabel || (it.qr_node_id ? 'the gate’s deadline' : 'no window'),
         hint: 'Its own open and due times. Without one, a gated routine is due '
-          + 'when its gate closes, ± the offset set on the gate.',
+          + 'when its gate closes, ± the offset below.',
         open: draft => openPicker({
           sourceUid: draft.source || null,
           onSaved: async (uid, src) => {
@@ -3522,6 +3559,17 @@ const SETTINGS_SHEETS = {
       ...(it && v.source ? [{ key: 'clearwindow', label: '', kind: 'action',
         text: 'Its own hours', action: 'Clear',
         run: async draft => { draft.source = ''; draft.sourceLabel = ''; renderSeSheet(); } }] : []),
+      // A ROUTINE IS CONFIGURED WHERE IT IS USED (2026-08-24, Quentin's
+      // instruction). One that gates a gate is reached from that gate and says
+      // so here; the offset is its field, because it is the routine's column
+      // and belongs beside the deadline it shifts, not on two surfaces at once.
+      ...(it && it.qr_node_id ? [{ key: 'gateline', label: 'Gates', kind: 'static',
+        text: ((state.accountabilityNodes || []).find(n => n.id === it.qr_node_id)
+               || {}).label || 'a gate' }] : []),
+      ...(it && it.qr_node_id && !v.source ? [{ key: 'offset', label: 'Due', kind: 'number',
+        half: true, suffix: 'min', placeholder: '0',
+        hint: 'Minutes from that gate\u2019s deadline — negative is before it. '
+          + 'Later waits 24h, like every other easing.' }] : []),
       { key: 'as_task', label: 'Also a task', kind: 'check',
         on: 'in the pool', off: 'off', rerender: true,
         hint: 'Seeds an ordinary next action on the days it runs, so a routine '
@@ -3547,6 +3595,9 @@ const SETTINGS_SHEETS = {
                      days_of_week: v.days.length ? v.days.slice().sort().join('') : null };
       if (v.source !== v.source0) body.source_uid = v.source || null;
       if (v.as_task) body.area_id = v.area || null;
+      if (String(v.offset) !== String(v.offset0)) {
+        body.offset_min = String(v.offset).trim() === '' ? null : parseInt(v.offset, 10);
+      }
       const res = await apiSend(`/api/flows/${it.id}`, 'PATCH', body);
       if (!res.ok) {
         const msg = await res.json().catch(() => ({}));
@@ -3821,8 +3872,7 @@ const SETTINGS_SHEETS = {
       : 'Delete this gate permanently? Its scan link stops working.'),
     blank: () => ({
       label: '', source: '', sourceLabel: '',
-      location: '', radius: '', stake: '', routine: '', routine_offset: '',
-      effective: '',
+      location: '', radius: '', stake: '', routine: '', effective: '',
     }),
     load: n => {
       // A gate with a pending deactivation reads as Inactive here, so turning
@@ -3845,8 +3895,6 @@ const SETTINGS_SHEETS = {
         stake: n.charge_cents == null ? '' : (n.charge_cents / 100).toFixed(2),
         routine: n.routine_id == null ? '' : String(n.routine_id),
         routine0: n.routine_id == null ? '' : String(n.routine_id),
-        routine_offset: n.routine_offset_min == null ? '' : String(n.routine_offset_min),
-        routine_offset0: n.routine_offset_min == null ? '' : String(n.routine_offset_min),
       };
     },
     fields: (v, it) => {
@@ -3888,14 +3936,24 @@ const SETTINGS_SHEETS = {
             (state.gateRoutines || []).map(f => ({ value: String(f.id), name: f.name }))),
           hint: 'Scanning alone won\'t pass this gate until the routine is done.'
             + ' Removing the requirement takes effect at once — unlike every other easing.' }] : []),
-        // THE OFFSET BELONGS TO THE GATE, not to the routine's own page
-        // (2026-08-24): it is minutes from THIS gate's deadline, so it only
-        // means anything beside the link that creates it. Pushing it later is
-        // an easing and waits 24h, which is why it says so here.
-        ...(it && v.routine ? [{ key: 'routine_offset', label: 'Due', kind: 'number',
-          half: true, suffix: 'min', placeholder: '0',
-          hint: 'Minutes from this gate\'s deadline — negative is before it. A '
-            + 'routine with its own window ignores this. Later waits 24h.' }] : []),
+        // AND THE DOOR INTO IT (2026-08-24, Quentin's instruction). A routine
+        // that gates a gate is CONFIGURED on that gate — its window, its days,
+        // whether it is also a task, the offset from this deadline — because
+        // asking "where is this set up?" should have one answer per routine,
+        // and for this one the answer is "here, where it is used". Settings →
+        // Recurring keeps the routines that gate nothing.
+        //
+        // It opens the routine's OWN sheet, the one editor either door reaches
+        // (the #oc-sheet bargain), and hands back here on save — the gate tag
+        // rows' idiom exactly.
+        ...(it && v.routine && v.routine === v.routine0 ? [{
+          key: 'routine_cfg', label: '', kind: 'action',
+          text: gateRoutineLine(v.routine),
+          action: 'Set up', keepOpen: true,
+          run: () => openRoutineFromGate(it, v.routine) }] : []),
+        ...(it && v.routine && v.routine !== v.routine0 ? [{
+          key: 'routine_cfg', label: '', kind: 'static',
+          text: 'Save the gate first, then its routine can be set up here.' }] : []),
         ...(it ? [{ key: 'stake', label: 'Stake', kind: 'number', step: '0.25', min: 0,
           half: true, placeholder: 'default',
           hint: 'What failing this gate costs. Blank uses the default in Billing below.'
@@ -4026,14 +4084,6 @@ const SETTINGS_SHEETS = {
         if (v.routine) {
           await apiSend(`/api/flows/${v.routine}`, 'PATCH', { qr_node_id: n.id });
         }
-      }
-      // The offset is the routine's column, set from here because it is
-      // measured from this gate. The server decides whether a later one waits
-      // 24h — this only sends it.
-      if (v.routine && String(v.routine_offset) !== String(v.routine_offset0)) {
-        const off = String(v.routine_offset).trim() === ''
-          ? null : parseInt(v.routine_offset, 10);
-        await apiSend(`/api/flows/${v.routine}`, 'PATCH', { offset_min: off });
       }
       if (v.location) {
         const loc = state.locations.find(l => String(l.id) === String(v.location));
@@ -4596,8 +4646,12 @@ function renderBeRecurring(tasks, areas, flows) {
   // The flows are ALWAYS passed by refreshRecurringList; refView.flows is the
   // fallback for a repaint that happens to come from the Lists surface.
   flows = flows || refView.flows || [];
+  // A routine that gates a gate is configured THERE (see below), so this page
+  // counts and lists the free ones.
+  const gated = flows.filter(f => f.qr_node_id);
+  const free = flows.filter(f => !f.qr_node_id);
   beCounts.recurring = tasks.filter(t => t.active).length;
-  beCounts.routines = flows.length;
+  beCounts.routines = free.length;
   const byId = Object.fromEntries(areas.map(p => [p.id, p]));
   const projectName = id => ((state.projects || []).find(p => p.id === id) || {}).content;
   list.innerHTML = tasks.map(t => beRow({
@@ -4617,8 +4671,19 @@ function renderBeRecurring(tasks, areas, flows) {
     // seeds an outcome, a routine runs a sequence — same question ("what comes
     // back, and when"), so the same page. Its STEPS stay on Lists, which is
     // where collections of things live.
+    //
+    // ONLY THE ONES THAT GATE NOTHING. A routine that holds a gate is set up on
+    // that gate, so it is not listed twice in two places with a different half
+    // of its settings in each — one routine, one home, decided by what it is
+    // FOR. The line below says where the others went, because a list that
+    // quietly holds fewer things than you have is the same trust leak as a
+    // filtered pool with no count.
     + '<div class="gtd-section-head">Routines</div>'
-    + flows.map(f => beRow({
+    + (gated.length ? `<div class="be-note">${gated.length} more ${
+      gated.length === 1 ? 'routine gates a gate' : 'routines gate gates'} — set ${
+      gated.length === 1 ? 'it' : 'them'} up under Gates: ${
+      escHtml(gated.map(f => f.name).join(', '))}</div>` : '')
+    + free.map(f => beRow({
       id: `flow-${f.id}`, name: f.name,
       meta: (f.period || 'day') === 'week' ? 'weekly' : 'daily',
       sub: [f.as_task ? 'also a task' : null,
@@ -4637,7 +4702,7 @@ function renderBeRecurring(tasks, areas, flows) {
       // routine, a bare id is a recurring task. Namespaced rather than
       // disambiguated by lookup, because two id spaces WILL collide.
       if (btn.dataset.row.startsWith('flow-')) {
-        const f = flows.find(x => String(x.id) === btn.dataset.row.slice(5));
+        const f = free.find(x => String(x.id) === btn.dataset.row.slice(5));
         if (f) openSeSheet('routine', f);
         return;
       }
