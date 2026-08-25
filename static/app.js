@@ -2797,10 +2797,13 @@ const TAG_SETUP_INFO = [
     { t: 'Back here: set Proof to “NFC tag only”. It refuses until the tag and '
        + 'its keys are in place — that refusal is the check working.' },
     { t: 'Tap it. You should get “Logged — <tag name>, read N”. If you do not, '
-       + "copy the e= and c= values out of the phone's address bar and run "
-       + 'this on the VM. It prints each stage, so you will see whether the '
-       + 'meta key is wrong (picc_data will not decrypt), the file key is wrong '
-       + '(cmac fails), or the counter mirror is off.',
+       + 'open this gate and read “Last taps” — every tap is recorded there, '
+       + 'refused ones with the reason, so a wrong meta key (picc_data will '
+       + 'not decrypt) reads differently from a wrong file key (cmac fails) '
+       + 'or a counter mirror that was never turned on.' },
+    { t: 'Nothing in Last taps at all means the tap never reached the VM — the '
+       + 'funnel or the URL, not the keys. To check the two mirrors by hand, '
+       + "copy e= and c= out of the phone's address bar:",
       code: 'python ntag.py <e> <c> <meta-key> <file-key>' },
   ] },
 ];
