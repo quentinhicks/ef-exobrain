@@ -145,21 +145,27 @@ def resolve_window(node, ymd, override=None):
                                     node.get('window_end_offset_days') or 0))
 
 
-# ── PAWNED WORK MOVES THE OPENING, NEVER THE CLOSE (2026-08-25, Quentin's
-# instruction, reversing "the DEADLINE comes earlier") ───────────────────────
+# ── WHAT A PAWN DOES TO A WINDOW (2026-08-25, Quentin's instruction) ─────────
 #
 # A step pushed onto a later routine takes its minutes with it, so that routine
-# has more to do. The old answer pulled the DEADLINE in, which punished you for
-# moving work by giving you less time to finish it — the same amount of work,
-# a shorter day, and a gate that got harder every time you rescheduled. The
-# honest answer is the other end: more to do means START EARLIER, and the time
-# it is due stays exactly where it was.
+# has more to do — and the three windows involved answer that differently. They
+# are three rules, not one, which is exactly why each is named:
 #
-# THE RULE IS SAID ONCE, HERE. Every window that a pawn touches — the routine's
-# own hours, the gate's scan window, and anything derived from either — goes
-# through `opened_earlier`, so a future window kind gets this behaviour by
-# asking rather than by remembering. What each caller supplies is only WHOSE
-# minutes to use (pawn_shift), which is the one thing that differs.
+#   the SCAN closes Y earlier      (closed_earlier) — the price. A scan is the
+#                                  claim that you are done, and carrying debt
+#                                  into a night means being done sooner.
+#   the ROUTINE opens Y earlier    (opened_earlier) — the room. More to do in
+#                                  the same evening means starting sooner.
+#   the ROUTINE'S DEADLINE stays   — by construction, not by exception: a
+#                                  derived deadline is "X after the scan
+#                                  closes", so on a pawned day it is X + Y
+#                                  after a close that already moved Y in. The
+#                                  arithmetic lands it exactly where it was.
+#
+# Each rule is written once and every window asks for it, so a future window
+# kind gets this behaviour by asking rather than by remembering. What a caller
+# supplies is only WHOSE minutes to use (pawn_shift / node_pawn_shift), which
+# is the one thing that differs between them.
 def pawn_shift(flow_id, ymd):
     """How many minutes earlier this routine has to open today. Never negative."""
     return max(0, storage.pawned_minutes_for_flow(flow_id, ymd))
@@ -171,40 +177,53 @@ def node_pawn_shift(node, ymd):
 
 
 def opened_earlier(start_min, end_min, minutes):
-    """(start, end) with the OPENING pulled back by `minutes`. The close never moves.
+    """(start, end) with the OPENING pulled back by `minutes`. The close stays.
 
     Clamped at midnight of the day being asked about: a window is expressed in
     minutes from that midnight, and a start before it would be a statement about
-    a day this window does not describe. That clamp is also what keeps the whole
-    mechanic from ever inverting a window — start can only move toward end, and
-    end does not move at all.
+    a day this window does not describe.
     """
     if not minutes:
         return start_min, end_min
     return max(0, start_min - minutes), end_min
 
 
+def closed_earlier(start_min, end_min, minutes):
+    """(start, end) with the CLOSE pulled in by `minutes`. The opening stays.
+
+    Never past the opening: a gate you could not satisfy at all is a broken
+    commitment, not a demanding one. That clamp is the only thing standing
+    between "pawning costs you time" and "pawning costs you the day".
+    """
+    if not minutes:
+        return start_min, end_min
+    return start_min, max(start_min, end_min - minutes)
+
+
 def _less_pawned(node, ymd, window):
-    """The gate's window with its OPENING moved earlier by the pawned minutes.
+    """The gate's SCAN window, with its close pulled in by the pawned minutes.
+
+    This is the half that costs something, and it is meant to: the scan says
+    you are done, so carrying work into the evening means being done sooner.
+    The routine's own deadline does NOT move with it — see routine_deadline,
+    which adds the same minutes back.
 
     Applied AFTER the source/weekly/default resolution but NOT after a date
     override: an override is a deliberate day-level decision about this gate, and
     the pawn is a consequence of what you moved, so the two compose — the override
-    picks the window and the pawn opens it earlier. (Callers reaching the override
+    picks the window and the pawn shortens it. (Callers reaching the override
     branch return before this, which is the one case where they do not compose;
     see the note in resolve_window.)
-
-    Note what this can no longer do: make a gate HARDER. Opening earlier only
-    ever adds time to scan in, and the deadline is untouched — so pawning work
-    into a gated routine cannot cost you money by itself, which is the point of
-    the reversal.
     """
     minutes = node_pawn_shift(node, ymd)
     if minutes <= 0:
         return window
     start, end, offset = window
-    start_min, _ = opened_earlier(_hhmm_min(start), 0, minutes)
-    return (f'{start_min // 60:02d}:{start_min % 60:02d}', end, offset)
+    start_min = _hhmm_min(start)
+    end_min = _hhmm_min(end) + int(offset or 0) * 24 * 60
+    _, end_min = closed_earlier(start_min, end_min, minutes)
+    new_offset, rest = divmod(end_min, 24 * 60)
+    return (start, f'{rest // 60:02d}:{rest % 60:02d}', new_offset)
 
 
 def _hhmm_min(hhmm):
@@ -306,8 +325,14 @@ def routine_deadline(node, flow, ymd, resolve=None):
     due = _local_dt(close_date_of(ymd, offset), end)
     # A "before X" routine is due when X closes, full stop; the offset belongs
     # to the gate it gates, not to a deadline it merely points at.
-    if not flow.get('before_node_id') and flow.get('offset_min'):
-        due += timedelta(minutes=flow['offset_min'])
+    if not flow.get('before_node_id'):
+        # "X after the scan closes" — and on a pawned day that close has
+        # already moved Y earlier (_less_pawned), so this is X + Y after it.
+        # The routine's deadline therefore lands exactly where it was: the
+        # pawn buys the evening more room and charges the SCAN for it, which
+        # is the whole shape of the mechanic (Quentin, 2026-08-25).
+        due += timedelta(minutes=(flow.get('offset_min') or 0)
+                                 + pawn_shift(flow.get('id'), ymd))
     return due
 
 

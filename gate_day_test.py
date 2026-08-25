@@ -124,10 +124,9 @@ check('...along with the step that arrived and where it came from',
 # 2026-08-25: pawned work moves the OPENING, never the close (qr_judge.
 # opened_earlier). The read-out shows the window the judge uses either way,
 # which is what this check is really for — the two must not disagree.
-check('...and the window the judge uses is the one that OPENED earlier',
-      d['window']['start'] == qr_judge.resolve_window(storage.qr_get_nodes()[0], TODAY)[0]
-      and d['window']['start'] == '05:40'
-      and d['window']['end'] == '10:00', d['window'])
+check('...and the deadline the judge uses is the SHORTENED one',
+      d['window']['end'] == qr_judge.resolve_window(storage.qr_get_nodes()[0], TODAY)[1]
+      and d['window']['end'] == '09:40', d['window'])
 check('the gating routine is named with its own deadline',
       d['routine'] and d['routine']['name'] == 'Morning routine', d.get('routine'))
 

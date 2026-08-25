@@ -6611,8 +6611,8 @@ function renderStepSheet() {
       </select>
       ${s.pawn_to_flow_id ? `<input type="number" min="0" class="fr-pawn-min" id="fr-pawn-min"
         value="${s.pawn_minutes || ''}" placeholder="min">
-        <span class="cl-hint">minutes it takes — the receiving routine opens
-        that much earlier on a day you pawn it, and is due when it always was</span>`
+        <span class="cl-hint">minutes it takes — on a day you pawn it, the receiving
+        routine opens that much earlier and its gate closes that much earlier</span>`
         : '<span class="cl-hint">a pawnable step can be pushed onto a later routine for the day</span>'}
     </div>
 
@@ -7638,7 +7638,7 @@ async function pawnStep(step) {
   }
   const to = flowName(step.pawn_to_flow_id);
   toast(step.pawn_minutes
-    ? `Pawned to ${to} — it opens ${step.pawn_minutes} min earlier`
+    ? `Pawned to ${to} — it opens ${step.pawn_minutes} min earlier, and its gate closes ${step.pawn_minutes} min earlier`
     : `Pawned to ${to}`);
   await afterPawnChange();
 }
@@ -7927,7 +7927,7 @@ function renderFlowRun() {
             : 'it comes round again at the end'}</div>` : ''}
       ${s.pawned_in ? `<div class="fr-note fr-pawned-in">pawned here from ${
         escHtml(flowName(s.from_flow_id))} — it costs this routine ${
-        s.pawn_minutes || 0} min, so tonight starts that much earlier</div>` : ''}</div>
+        s.pawn_minutes || 0} min: tonight starts that much earlier, and the scan closes that much earlier</div>` : ''}</div>
     <div class="fr-foot">
       <button id="fr-back" ${flowRunView.idx === 0 ? 'disabled' : ''}>‹ back</button>
       ${(s.kind === 'text' || s.kind === 'checklist') && s.requirement === 'soft'
@@ -7940,7 +7940,8 @@ function renderFlowRun() {
       ${s.pawn_to_flow_id && !credited && !s.pawned_in
         ? `<button id="fr-pawn" class="cl-pill" title="Do it in ${
           escHtml(flowName(s.pawn_to_flow_id))} instead — that routine opens ${
-          s.pawn_minutes || 0} min earlier, same deadline">→ ${escHtml(flowName(s.pawn_to_flow_id))}</button>` : ''}
+          s.pawn_minutes || 0} min earlier and its scan closes ${
+          s.pawn_minutes || 0} min earlier">→ ${escHtml(flowName(s.pawn_to_flow_id))}</button>` : ''}
       ${s.pawned_in && !credited
         ? `<button id="fr-unpawn" class="cl-pill" title="Send it back to ${
           escHtml(flowName(s.from_flow_id))} — this gate returns to its full length">← ${
@@ -9871,8 +9872,9 @@ function gatePopHtml(d) {
       `${escHtml(st.content || 'a step')}${st.from_routine
         ? ' · from ' + escHtml(st.from_routine) : ''}`)).join('');
     extra += `<div class="gp-note">${d.pawn.applied
-      ? `This opens ${d.pawn.minutes} minutes earlier than the schedule says,`
-        + ' because that work arrived here — the deadline is untouched.'
+      ? `The scan closes ${d.pawn.minutes} minutes earlier than the schedule says,`
+        + ' because that work arrived here — the routine still opens earlier by'
+        + ' the same minutes and is due when it always was.'
         + ' Un-pawning restores it by itself.'
       : 'This day has a window of its own, and a window set for one day stands as'
         + ' written — so these minutes do not move it.'}</div>`;
