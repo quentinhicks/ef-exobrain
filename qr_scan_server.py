@@ -159,6 +159,22 @@ def _tap_page(label, msg, ok, code):
                     mimetype='text/html', status=code)
 
 
+def _log_tap(*a, **kw):
+    """The tap log, which may never cost a tap.
+
+    qr_tap_attempt is a diagnostic — nothing judges it, nothing is charged on
+    it. So a failure to WRITE it must not turn a genuine tap into a 500: the
+    row is worth less than the tap it would be describing, and the two
+    services deploy separately (qpa-scan runs its own process), so this code
+    can legitimately be newer than the schema for a few seconds after a push.
+    The exception goes to the journal, where the other refusals already go.
+    """
+    try:
+        storage.qr_log_tap(*a, **kw)
+    except Exception as e:
+        print('tap log failed: %s' % e)
+
+
 @app.route('/t')
 def tap():
     """A VERIFIED TAP — the hard proof, and the only route that can write one.
@@ -199,13 +215,13 @@ def tap():
         # No keys configured at all: say so plainly. This is the state a fresh
         # tag is in before its keys are pasted into Settings, and it is not
         # something a stranger learns anything from.
-        storage.qr_log_tap(now_iso, False, 'no tag keys are configured yet')
+        _log_tap(now_iso, False, 'no tag keys are configured yet')
         return _tap_page('Tag', 'No tag keys are configured yet.', False, 503)
     try:
         uid, counter = ntag.identify(picc, cm, keys)
     except ntag.TapError as e:
         print('tap refused: %s' % e)
-        storage.qr_log_tap(now_iso, False, str(e))
+        _log_tap(now_iso, False, str(e))
         return _tap_page('Tag', 'Not a valid tap.', False, 403)
 
     tag = storage.qr_tag_by_uid(uid)
@@ -213,13 +229,13 @@ def tap():
         # A real tag whose keys are configured but which no gate claims. Worth
         # saying, because it is the state between programming a tag and adding
         # it in Settings.
-        storage.qr_log_tap(now_iso, False, 'verified, but no gate claims this tag',
+        _log_tap(now_iso, False, 'verified, but no gate claims this tag',
                            uid=uid, counter=counter)
         return _tap_page('Tag %s' % uid, 'This tag is not attached to a gate yet.',
                          False, 404)
     if not tag['active'] or not tag['node_active']:
         pend = storage.qr_tag_pending(tag['id'])
-        storage.qr_log_tap(now_iso, False,
+        _log_tap(now_iso, False,
                            ('this tag starts counting %s' % pend[:16].replace('T', ' '))
                            if pend else 'this tag is paused',
                            node_id=tag['node_id'], tag_id=tag['id'],
@@ -232,14 +248,14 @@ def tap():
         # The counter is not new: a refresh of the page, or a replay of a URL
         # someone kept. Either way this tap is already history, and it must not
         # log a second scan.
-        storage.qr_log_tap(now_iso, False, 'read %d was already logged — a refresh, '
+        _log_tap(now_iso, False, 'read %d was already logged — a refresh, '
                            'or a URL replayed' % counter, node_id=tag['node_id'],
                            tag_id=tag['id'], uid=uid, counter=counter)
         return _tap_page(tag['label'], 'Already logged — tap the tag again.', True, 200)
 
     storage.qr_log_scan(tag['node_id'], now_iso, None, None, None, None,
                         proof='tag', tag_id=tag['id'])
-    storage.qr_log_tap(now_iso, True, None, node_id=tag['node_id'], tag_id=tag['id'],
+    _log_tap(now_iso, True, None, node_id=tag['node_id'], tag_id=tag['id'],
                        uid=uid, counter=counter)
     return _tap_page(tag['node_label'], 'Logged — %s, read %d.' % (tag['label'], counter),
                      True, 200)

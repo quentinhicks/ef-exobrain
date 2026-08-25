@@ -35,7 +35,19 @@ fi
 NEW=$(git rev-parse HEAD)
 if git diff --name-only "$OLD" "$NEW" -- '*.py' static templates deploy | grep -q .; then
   echo "qpa-update: code changed ${OLD:0:7}..${NEW:0:7} — restarting"
+  # BOTH SERVICES. qpa-scan is a separate long-lived process running its own
+  # copy of qr_scan_server.py, and for a long time nothing here restarted it:
+  # every fix to the PUBLIC scan and tap routes reached the VM's disk and none
+  # of them reached the running process, silently, until someone bounced it by
+  # hand. It was found the first time a change there was supposed to be
+  # visible in the app (the tap log, 2026-08-25) and simply was not.
+  #
+  # productivity FIRST, and not only for taste: it is the process that runs
+  # storage.init_db(), so a schema the new scan-server code expects exists
+  # before that code starts serving. qpa-scan never migrates anything — it is
+  # internet-facing, and running migrations there is surface nobody needs.
   sudo -n systemctl restart productivity
+  sudo -n systemctl restart qpa-scan
 else
   # Docs/spec-only commits reach the VM too; no reason to bounce Flask.
   echo "qpa-update: no code change ${OLD:0:7}..${NEW:0:7} — no restart"

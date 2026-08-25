@@ -125,8 +125,19 @@ spec-only commit. It used to matter far more: the server itself committed
 `logs/` on every sync and `backups/` daily, and those came back around through
 GitHub, so without the test a phone log edit restarted the app.
 
-The timer runs as `ubuntu` and holds exactly one sudo right, from
-`/etc/sudoers.d/qpa-update`: `systemctl restart productivity`.
+**It restarts BOTH services**, `productivity` then `qpa-scan`. For a long time
+it restarted only the first, and `qr_scan_server.py` is a separate long-lived
+process — so every fix to the PUBLIC scan and tap routes landed on the VM's
+disk and never reached the running process until someone bounced it by hand.
+Nothing said so; it was found the day a scan-server change was supposed to
+show up in the app and did not. Order matters: `productivity` is what runs
+`storage.init_db()`, so a schema the new scan-server code expects exists
+before that code serves a request.
+
+The timer runs as `ubuntu` and holds exactly two sudo rights, from
+`/etc/sudoers.d/qpa-update`: `systemctl restart productivity` and
+`systemctl restart qpa-scan`. An existing VM needs that file updated by hand
+once — `deploy/server-setup.sh` writes both lines for a fresh one.
 
 ```
 systemctl list-timers productivity-update.timer   # when it next fires

@@ -41,13 +41,16 @@ sudo cp "$APP_DIR/deploy/productivity.service" /etc/systemd/system/
 sudo sed -i "s|__HOME__|$HOME|g" /etc/systemd/system/productivity.service
 
 # Auto-update: a timer pulls main every 5 min and restarts only when CODE
-# changed. The one sudo right it needs is that restart — spelled out here
-# rather than given as blanket NOPASSWD.
+# changed. The only sudo rights it needs are those restarts — spelled out
+# here rather than given as blanket NOPASSWD.
 sudo cp "$APP_DIR/deploy/productivity-update.service" \
         "$APP_DIR/deploy/productivity-update.timer" /etc/systemd/system/
 sudo sed -i "s|__HOME__|$HOME|g" /etc/systemd/system/productivity-update.service
-echo "$(id -un) ALL=(root) NOPASSWD: /usr/bin/systemctl restart productivity" \
-  | sudo tee /etc/sudoers.d/qpa-update > /dev/null
+# TWO rights, because auto-update.sh restarts two services. Still spelled
+# out one line each rather than given as blanket NOPASSWD.
+{ echo "$(id -un) ALL=(root) NOPASSWD: /usr/bin/systemctl restart productivity"
+  echo "$(id -un) ALL=(root) NOPASSWD: /usr/bin/systemctl restart qpa-scan"
+} | sudo tee /etc/sudoers.d/qpa-update > /dev/null
 sudo chmod 0440 /etc/sudoers.d/qpa-update
 sudo visudo -cf /etc/sudoers.d/qpa-update
 
