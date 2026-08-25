@@ -2117,6 +2117,7 @@ def _gate_day_payload(node, ymd, now=None):
                           satisfies=bool(qr_judge.scan_satisfies(node, sc))))
 
     r_due = qr_judge.routine_deadline(node, flow, ymd) if flow else None
+    r_open_min, r_due_min = qr_judge.flow_day_window(flow, ymd) if flow else (None, None)
     settings = qr_judge.charge_settings()
     # WHERE THE DAY STANDS, priced. The same ladder the judge charges on
     # (day_credit), asked of the scans inside the window — so an unjudged day
@@ -2133,14 +2134,31 @@ def _gate_day_payload(node, ymd, now=None):
         'node_id': node['id'], 'label': node['label'], 'date': ymd,
         'applies': applies, 'active': bool(node.get('active')),
         'proof_mode': node.get('proof_mode') or 'link',
+        # THE MINUTES ARE SERVED, not re-derived. The timeline draws four
+        # dotted lines from this payload — scan open/close and the routine's
+        # open/due — and every one of them is a resolution rule the judge owns:
+        # the window ladder, the offset, the pawn, the routine's own schedule
+        # or its offset from the gate. A client that recomputed any of them
+        # would draw a day the judge does not believe in.
+        #
+        # Minutes run from midnight of THIS date, so past 1440 means tomorrow
+        # (a +1d deadline, a routine due after midnight). Same convention as
+        # flow_day_window, and as the client's semantic minutes.
         'window': {'start': start, 'end': end, 'offset_days': offset,
                    'close_date': close_date, 'from': source,
+                   'start_min': qr_judge._hhmm_min(start),
+                   'end_min': qr_judge._hhmm_min(end) + int(offset or 0) * 1440,
                    'closed': now >= qr_judge._local_dt(close_date, end)},
         'pawn': {'minutes': pawn_min, 'steps': pawned,
                  'applied': bool(pawn_min) and not override},
         'routine': None if not flow else {
             'name': flow['name'], 'id': flow['id'],
             'deadline': r_due.strftime('%H:%M') if r_due else None,
+            # open_min is None for a routine with no schedule of its own: it
+            # has a deadline but no hour it starts at, and the timeline draws
+            # the line it has rather than inventing one.
+            'open_min': r_open_min, 'due_min': r_due_min,
+            'own_window': bool(r_open_min is not None),
             'completed_at': flow.get('completed_at')},
         'location': loc,
         'scans': scans,

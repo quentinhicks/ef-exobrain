@@ -149,6 +149,13 @@ const state = {
   review: { due: null, last: {} },
   accountabilityNodes: null,
   qrPageOverrides: {},
+  // THE SELECTED GATE and the day the SERVER resolved for it (2026-08-24,
+  // Quentin's instruction). One at a time; null means none. `day` is the
+  // /day payload verbatim — the same one the read-out renders — because the
+  // lines are resolution answers (the window ladder, the offset, the pawn,
+  // the routine's own schedule) and a client that recomputed them would draw
+  // a day the judge does not believe in.
+  gateSel: null,
   qrDismissed: {},
   qrOutcomes: {},
   locations: [],
@@ -497,7 +504,50 @@ function computeViewWindow() {
   let end = deadlineMin(sleep);
   // A sleep deadline at/before wake means past midnight, offset flag or not
   if (end <= start) end += DAY_MIN;
-  return { start, end };
+  return gateSelBounds({ start, end });
+}
+
+// A SELECTED GATE'S LINES ARE ALWAYS ON SCREEN (2026-08-24, asked for). The
+// day is clipped to wake→sleep, and a scan window that opens before you wake
+// or a routine due after you sleep would otherwise be marked off the top or
+// bottom edge — a dotted line you cannot see is not an explanation. So while
+// a gate is selected the window STRETCHES to the outermost line it draws, and
+// snaps back when the selection is dropped. Nothing is written: this is the
+// same view preference the wake/sleep clip already is.
+function gateSelBounds(win) {
+  const mins = gateSelLines().map(l => l.min);
+  if (!mins.length) return win;
+  // A hair of room, so a line ON the boundary is not half a pixel off it.
+  const pad = 10;
+  return {
+    start: Math.min(win.start, Math.min(...mins) - pad),
+    end: Math.max(win.end, Math.max(...mins) + pad),
+  };
+}
+
+// The lines the selected gate draws, in the order they read: the scan window
+// first (it is the gate), then the routine's. Empty unless a gate is selected
+// on the day being LOOKED AT — a selection is about one date, and browsing to
+// another must not stretch that day around a window it does not have.
+function gateSelLines() {
+  const sel = state.gateSel;
+  if (!sel || sel.date !== viewDay() || !sel.day) return [];
+  const w = sel.day.window || {};
+  const r = sel.day.routine || null;
+  const lines = [];
+  if (w.start_min != null) {
+    lines.push({ kind: 'scan-open', min: w.start_min, label: 'scan opens' });
+  }
+  if (w.end_min != null) {
+    lines.push({ kind: 'scan-close', min: w.end_min, label: 'scan closes' });
+  }
+  if (r && r.open_min != null) {
+    lines.push({ kind: 'routine-open', min: r.open_min, label: `${r.name} starts` });
+  }
+  if (r && r.due_min != null) {
+    lines.push({ kind: 'routine-due', min: r.due_min, label: `${r.name} due` });
+  }
+  return lines;
 }
 
 function minutesToViewPercent(mins) {
@@ -1109,24 +1159,34 @@ function renderReviewPassBar() {
 
 function initTimeline() {
   document.getElementById('nav-prev').addEventListener('click', async () => {
+    state.gateSel = null;   // a selection is about ONE day
     if (dayOffset(state.currentDate) <= navBounds().min) return;
     state.currentDate = new Date(state.currentDate.getTime() - 86400000);
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   });
   document.getElementById('nav-next').addEventListener('click', async () => {
+    state.gateSel = null;   // a selection is about ONE day
     if (dayOffset(state.currentDate) >= navBounds().max) return;
     state.currentDate = new Date(state.currentDate.getTime() + 86400000);
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   });
   document.getElementById('nav-today').addEventListener('click', async () => {
+    state.gateSel = null;   // a selection is about ONE day
     state.currentDate = new Date();
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   });
   document.getElementById('refresh-btn').addEventListener('click', refreshExternal);
   document.getElementById('tl-add-event').addEventListener('click', openEvSheet);
+
+  // Tap the day off a selected gate. The squares and the lines stop their own
+  // clicks, so anything reaching the body is "somewhere else".
+  document.getElementById('tl-body').addEventListener('click', e => {
+    if (e.target.closest('.tl-qr-line, .tl-gate-line')) return;
+    clearGateSel();
+  });
 
   // Ctrl+Z is global (see the undo core). Timeline dismissals register on the
   // same stack, so one keystroke walks back through everything in order.
@@ -5116,6 +5176,9 @@ function initHub() {
     // The gate read-out is the innermost layer wherever it is open (a popup
     // beside its pill, over the calendar), so it peels before anything else.
     if (gatePop.nodeId != null) { closeGatePop(); return; }
+    // A selected gate is transient state over the calendar — it peels after the
+    // read-out it opens and before the overlay it is drawn on.
+    if (clearGateSel()) return;
     if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
     // (MAP's rows open the clarify sheet, and the bail above lets the sheet
     // peel first; its filter menu peels just above, before the overlay loop.)
@@ -9569,12 +9632,247 @@ function gatePopHtml(d) {
     ${rows.join('')}${out}${scans}${extra}${verdict}${foot}`;
 }
 
+// ── ONE TAP SHOWS THE WINDOW, THE SECOND EXPLAINS IT (2026-08-24, Quentin's
+// instruction) ───────────────────────────────────────────────────────────────
+//
+// The square used to open the whole read-out on the first tap: a card of
+// scans, distances, halves and money over the day you were reading, when the
+// question is nearly always the small one — when does this open, when does it
+// close, and when is its routine due. So the first tap SELECTS: four dotted
+// lines against the same hour gutter everything else is read against. The
+// second tap opens the card, which is still the only place the detail lives.
+//
+// The lines come from the SERVER's resolution of that gate's day — the same
+// payload the card renders — so the two can never disagree about a window.
+async function selectGate(nodeId, date, anchor) {
+  // Tapping the gate that is already selected is the second tap: the card.
+  if (state.gateSel && state.gateSel.nodeId === nodeId && state.gateSel.date === date) {
+    openGatePop(nodeId, date, anchor);
+    return;
+  }
+  state.gateSel = { nodeId, date, day: null };
+  renderQrLayer();
+  let d = null;
+  try {
+    const r = await fetch(`/api/accountability/nodes/${nodeId}/day?date=${date}`);
+    d = r.ok ? await r.json() : null;
+  } catch (e) { d = null; }
+  // A second tap on another gate while this was in flight wins.
+  if (!state.gateSel || state.gateSel.nodeId !== nodeId || state.gateSel.date !== date) return;
+  if (!d) {
+    state.gateSel = null;
+    toast('Could not read this gate — nothing has changed');
+    renderQrLayer();
+    return;
+  }
+  state.gateSel.day = d;
+  // renderTimeline, not renderQrLayer: the window may have to STRETCH to hold
+  // a line outside it, and that repaints the grid and every other layer.
+  renderTimeline();
+}
+
+function clearGateSel() {
+  if (!state.gateSel) return false;
+  state.gateSel = null;
+  renderTimeline();
+  return true;
+}
+
+// The dotted lines themselves. Drawn into the gate layer so they share its
+// coordinate space, under the squares — a line is the explanation, the square
+// is still the thing you press.
+function renderGateSelLines(layer) {
+  const lines = gateSelLines();
+  if (!lines.length) return;
+  const sel = state.gateSel;
+  // TWO TAGS MAY NOT SHARE A LINE, the same rule the event boxes follow — and
+  // here the collision is the COMMON case, not the unlucky one: a routine with
+  // no offset is due exactly when the gate closes, so its tag would print
+  // straight over "scan closes" and neither would be readable. The lines
+  // themselves may coincide (that is the truth about the day); only the words
+  // move, and only downward, so a tag always sits below the line it names.
+  const bodyH = document.getElementById('tl-body').clientHeight || 600;
+  const rowPct = (14 / Math.max(bodyH, 1)) * 100;
+  const stack = [];
+  lines.forEach(l => {
+    const pct = minutesToViewPercent(l.min);
+    if (pct < -0.01 || pct > 100.01) return;   // gateSelBounds should prevent this
+    const el = document.createElement('div');
+    el.className = `tl-gate-line tl-gate-line-${l.kind}`;
+    el.style.top = `${pct}%`;
+    el.dataset.lineKind = l.kind;
+    el.dataset.lineMin = l.min;
+    const tag = document.createElement('span');
+    tag.className = 'tl-gate-line-tag';
+    const say = min => `${l.label} ${clockHHMM(min)}${min >= DAY_MIN ? ' +1d' : ''}`;
+    tag.textContent = say(l.min);
+    // A tag ON the top or bottom edge would print half off the body.
+    if (pct >= 97) tag.style.top = '-15px';
+    else {
+      const clash = stack.filter(p0 => Math.abs(p0 - pct) < rowPct).length;
+      stack.push(pct);
+      if (clash) tag.style.top = `${-8 + clash * 13}px`;
+    }
+    el.appendChild(tag);
+    // A line stops its own click: tapping one is aiming AT it, not tapping the
+    // day off the selection.
+    el.addEventListener('click', e => e.stopPropagation());
+    initGateLineDrag(el, l, say, sel);
+    layer.appendChild(el);
+  });
+}
+
+// EACH LINE IS A HANDLE (2026-08-24, Quentin's instruction). The window you can
+// see is the window you can change: drag a line and that boundary moves, with
+// the OTHER lines standing still — which is exactly what makes a window get
+// longer or shorter rather than slide.
+//
+// Every one of these writes through the door that already owns that fact: the
+// scan pair through the day override the square has always posted, the
+// routine's deadline through the routine's own offset — where pushing it LATER
+// is an easing and waits 24h, as it does everywhere else. Nothing here invents
+// a second way to change a window, and nothing here bypasses a lock.
+function initGateLineDrag(el, line, say, sel) {
+  const body = document.getElementById('tl-body');
+  const day = sel.day;
+  const w = day.window || {};
+  const r = day.routine || null;
+  const reason = gateLineRefusal(line, day);
+  el.title = reason || 'Drag to move this boundary';
+  if (reason) {
+    el.classList.add('tl-gate-line-fixed');
+    // A refusal has to be VISIBLE, and a dead line that says nothing is the
+    // worst version of one — so the press answers out loud.
+    el.addEventListener('click', () => toast(reason));
+    return;
+  }
+
+  // ≥ 0 LENGTH, which is his rule and the server's: a window that closes
+  // before it opens judges absent every day. Each line is bounded by its
+  // partner rather than by a fixed span.
+  const bounds = {
+    'scan-open': [0, w.end_min],
+    'scan-close': [w.start_min, 2875],
+    'routine-due': [r && r.open_min != null ? r.open_min : 0, 2875],
+  }[line.kind] || [0, 2875];
+
+  let curMin = line.min;
+  onPointerDrag(el, { start(e) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return null;
+    e.stopPropagation();
+    el.classList.add('tl-gate-line-dragging');
+    document.body.style.cursor = 'ns-resize';
+    if (e.pointerType !== 'mouse') el.dataset.lpDragged = '1';
+    const startY = e.clientY;
+    const startMin = line.min;
+
+    function calc(clientY) {
+      const rect = body.getBoundingClientRect();
+      const span = state.view.end - state.view.start;
+      const raw = startMin + ((clientY - startY) / rect.height) * span;
+      return Math.round(Math.min(bounds[1], Math.max(bounds[0], raw)) / 5) * 5;
+    }
+
+    return {
+      move(clientY) {
+        curMin = calc(clientY);
+        el.style.top = `${Math.min(100, Math.max(0, minutesToViewPercent(curMin)))}%`;
+        el.querySelector('.tl-gate-line-tag').textContent = say(curMin);
+      },
+      async end(clientY) {
+        el.classList.remove('tl-gate-line-dragging');
+        document.body.style.cursor = '';
+        curMin = calc(clientY);
+        if (curMin === startMin) { renderQrLayer(); return; }
+        await writeGateLine(line.kind, curMin, sel);
+      },
+    };
+  } });
+}
+
+// What cannot be dragged, and WHY — the sentence the line itself says when you
+// press it.
+function gateLineRefusal(line, day) {
+  const w = day.window || {};
+  const closeMs = new Date(`${w.close_date}T${w.end}:00`).getTime();
+  if (closeMs <= Date.now() + 24 * 60 * 60 * 1000) {
+    return 'Locked: this gate closes within 24h. Changes to a window that near'
+      + ' are what the 24h rule exists to refuse.';
+  }
+  if (line.kind === 'routine-open') {
+    return 'The routine starts when its own schedule says. Change that on the'
+      + ' routine, not here.';
+  }
+  if (line.kind === 'routine-due' && day.routine && day.routine.own_window) {
+    return 'This routine has its own window, so its deadline comes from that'
+      + ' schedule rather than from the gate.';
+  }
+  return null;
+}
+
+async function writeGateLine(kind, min, sel) {
+  const w = sel.day.window || {};
+  if (kind === 'routine-due') {
+    // The routine's deadline is the gate's close plus its offset, so the thing
+    // that actually moves is the OFFSET. Later is an easing and waits 24h —
+    // the server decides that, and the re-read below is what tells us.
+    const offset = min - w.end_min;
+    const res = await apiSend(`/api/flows/${sel.day.routine.id}`, 'PATCH', { offset_min: offset });
+    if (!res || !res.ok) { toast('Could not move the routine deadline'); renderQrLayer(); return; }
+    const before = sel.day.routine.due_min;
+    await refreshGateSel();
+    const after = state.gateSel && state.gateSel.day.routine
+      ? state.gateSel.day.routine.due_min : null;
+    if (after === before && before !== min) {
+      toast('A later deadline eases the gate — it takes effect in 24h');
+    }
+    return;
+  }
+  const endMin = kind === 'scan-close' ? min : w.end_min;
+  const startMin = kind === 'scan-open' ? min : w.start_min;
+  const res = await apiSend(`/api/accountability/nodes/${sel.nodeId}/overrides`, 'POST', {
+    date: sel.date,
+    window_start: clockHHMM(startMin),
+    window_end: clockHHMM(endMin),
+    window_end_offset_days: endMin >= DAY_MIN ? 1 : 0,
+  });
+  if (!res.ok) {
+    const msg = await res.json().catch(() => ({}));
+    toast(msg.error || `Could not move it (${res.status})`);
+    renderQrLayer();
+    return;
+  }
+  // The same cache the square's drag keeps, so a non-today page redraws in the
+  // right place without waiting for a round trip.
+  state.qrPageOverrides[`${sel.nodeId}:${sel.date}`] = {
+    date: sel.date, window_start: clockHHMM(startMin), window_end: clockHHMM(endMin),
+    window_end_offset_days: endMin >= DAY_MIN ? 1 : 0,
+  };
+  if (isToday(state.currentDate)) {
+    state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
+  }
+  await refreshGateSel();
+}
+
+// Re-read the selected gate's day: the lines are the SERVER's answer, so after
+// any write they are re-asked rather than patched into place.
+async function refreshGateSel() {
+  const sel = state.gateSel;
+  if (!sel) return;
+  try {
+    const r = await fetch(`/api/accountability/nodes/${sel.nodeId}/day?date=${sel.date}`);
+    if (r.ok && state.gateSel === sel) sel.day = await r.json();
+  } catch (e) { /* keep what we had — the day on screen is still the last truth */ }
+  renderTimeline();
+}
+
 function renderQrLayer() {
   const layer = document.getElementById('tl-qr-layer');
   if (!layer) return;
   layer.innerHTML = '';
+  renderGateSelLines(layer);
   const nodes = (state.accountabilityNodes || []).filter(n => n.active);
-  if (!nodes.length) return;
+  if (!nodes.length) return;   // the lines above stand on their own
 
   const body = document.getElementById('tl-body');
   const pageDate = viewDay();
@@ -9596,9 +9894,14 @@ function renderQrLayer() {
     // ±12h drag bounds in semantic minutes: a +1d deadline counts as end + 1440,
     // so dragging preserves the offset and can cross midnight in either direction
     const originalMinutes = windowEndMin(windowEnd, offsetDays);
-    // Never above the window's OPENING: a deadline before its own start is an
-    // empty window, which judges absent every day. The server refuses it too.
-    const minMinutes = Math.max(timeToMinutes(windowStart), originalMinutes - 720);
+    const startMinutes = timeToMinutes(windowStart);
+    // DRAGGING THE SQUARE MOVES THE WHOLE GATE (2026-08-24, Quentin's
+    // instruction). It used to move the deadline alone, which silently made
+    // the window longer every time you pushed a gate later — the length is a
+    // decision, and it should only change when you take hold of one END of it
+    // (which is what the dotted lines are for). So the window TRANSLATES, and
+    // the only floor is its opening reaching midnight.
+    const minMinutes = Math.max(originalMinutes - 720, originalMinutes - startMinutes);
     const maxMinutes = Math.min(originalMinutes + 720, 2875);
 
     const pct = minutesToViewPercent(originalMinutes);
@@ -9622,8 +9925,10 @@ function renderQrLayer() {
     // special-cased any more — they were briefly drawn as coloured bookend
     // bands, which meant the two most important gates were the two that did
     // NOT say how their day went.
+    const selected = !!state.gateSel && state.gateSel.nodeId === node.id
+      && state.gateSel.date === pageDate;
     line.className = 'tl-qr-line' + (locked ? ' tl-qr-locked' : '') + (dismissed ? ' tl-qr-dismissed' : '')
-      + (outcome ? ` tl-qr-${outcome}` : '');
+      + (outcome ? ` tl-qr-${outcome}` : '') + (selected ? ' tl-qr-selected' : '');
     line.style.top = `${pct}%`;
 
     const label = document.createElement('span');
@@ -9667,7 +9972,7 @@ function renderQrLayer() {
       if (e.target.closest('.tl-qr-x')) return;
       if (Date.now() - qrDragEndedAt < 500) return;   // the tail of a drag
       e.stopPropagation();
-      openGatePop(node.id, pageDate, label);
+      selectGate(node.id, pageDate, label);
     });
 
     if (locked) return;
@@ -9709,6 +10014,16 @@ function renderQrLayer() {
       const displayPct = Math.min(100, Math.max(0, minutesToViewPercent(mins)));
       line.style.top = `${displayPct}%`;
       setLabelEdge(displayPct);
+      // The gate's own lines travel WITH it while it is being dragged: the
+      // whole window is moving, and lines left behind would show a window this
+      // gate does not have at any point during the gesture.
+      if (selected) {
+        const shift = mins - originalMinutes;
+        layer.querySelectorAll('.tl-gate-line').forEach(ln => {
+          const at = parseInt(ln.dataset.lineMin) + shift;
+          ln.style.top = `${Math.min(100, Math.max(0, minutesToViewPercent(at)))}%`;
+        });
+      }
       // Was written into the square's own label, which stopped existing when
       // the square became a glyph — qrPillText went with it, so this line was
       // a ReferenceError waiting for the next drag.
@@ -9751,19 +10066,23 @@ function renderQrLayer() {
         // pill.
         const rect = label.getBoundingClientRect();
         renderQrLayer();
-        openGatePop(node.id, pageDate, rect);
+        selectGate(node.id, pageDate, rect);
         return;
       }
 
       const mins = calcMinutes(clientY);
       const newOffsetDays = mins >= DAY_MIN ? 1 : 0;
       const newEnd = clockHHMM(mins);
+      // The translation: the opening moves by exactly what the deadline moved,
+      // so the window keeps its length. calcMinutes' floor is what stops the
+      // opening being dragged through midnight.
+      const newStart = clockHHMM(startMinutes + (mins - originalMinutes));
 
       if (newEnd === windowEnd && newOffsetDays === offsetDays) return;
 
       const ovBody = {
         date: pageDate,
-        window_start: windowStart,
+        window_start: newStart,
         window_end: newEnd,
         window_end_offset_days: newOffsetDays,
       };
@@ -9785,6 +10104,9 @@ function renderQrLayer() {
       // Moving the wake/sleep deadline moves the view window itself
       const isWindowNode = String(node.id) === String(state.settings.qr_wake_node_id)
         || String(node.id) === String(state.settings.qr_sleep_node_id);
+      // A selected gate's lines are the server's answer, so they are re-asked
+      // rather than shifted locally — refreshGateSel repaints the timeline.
+      if (selected) { await refreshGateSel(); return; }
       if (isWindowNode) renderTimeline();
       else renderQrLayer();
     }

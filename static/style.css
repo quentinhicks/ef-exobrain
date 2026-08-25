@@ -3291,6 +3291,85 @@ body.calendar-minimized #review-modal {
   inset: -9px;
 }
 
+/* The selected gate's square: a ring, so the four dotted lines on screen are
+   obviously ABOUT this one when several gates share the day. */
+.tl-qr-selected .tl-qr-label {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--pill-bg);
+}
+
+/* ── THE SELECTED GATE'S WINDOW, DRAWN (2026-08-24, Quentin's instruction) ──
+   Four dotted lines across the day: when the scan window opens and closes, and
+   when the linked routine starts and is due. Dotted, not solid, because these
+   are BOUNDARIES rather than things occupying time — a solid rule reads as a
+   block, and the day already has enough of those.
+
+   The colour is the gate's own state colour, so the lines and the square that
+   opened them are visibly one object. */
+.tl-gate-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1px dashed var(--gate-open);
+  pointer-events: auto;
+  cursor: ns-resize;
+  z-index: 2;
+}
+
+/* The routine's pair is the same grammar in the quieter ink: the scan window
+   is the gate (it is what the money hangs on), the routine is what has to
+   happen inside it. */
+.tl-gate-line-routine-open,
+.tl-gate-line-routine-due {
+  border-top-style: dotted;
+  border-top-color: var(--text-secondary);
+}
+
+.tl-gate-line-tag {
+  position: absolute;
+  left: 10px;
+  top: -8px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--surface-low);
+  color: var(--text-secondary);
+  font: 600 9px var(--font-mono);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tl-gate-line-scan-open .tl-gate-line-tag,
+.tl-gate-line-scan-close .tl-gate-line-tag { color: var(--gate-open); }
+
+/* A line is 1px of paint and a finger is not. The grab area is an invisible
+   band around it — the same trick the square uses, in the one dimension a
+   horizontal line can be missed in.
+
+   It STOPS SHORT OF THE SQUARE. The scan-close line is drawn at exactly the
+   deadline the square marks, so a band running the full width sat on top of
+   the one control you press to open the read-out: the second tap never
+   reached it. The square keeps its own 36px ring, the line takes the rest of
+   the row, and neither has to guess which one you meant. */
+.tl-gate-line::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 52px;
+  top: -11px;
+  height: 22px;
+}
+
+.tl-gate-line.tl-gate-line-dragging { border-top-width: 2px; }
+
+/* A line that cannot be moved says so by looking inert — and says WHY out loud
+   when you press it (gateLineRefusal). A dead control that stays dressed as a
+   live one is the phone version of a button that does nothing. */
+.tl-gate-line-fixed { cursor: default; opacity: 0.75; }
+
+/* Belt and braces on the same collision: the gate squares stack above the
+   lines they opened. */
+#tl-qr-layer .tl-qr-line { z-index: 3; }
+
 /* ---- NOW panel ---- */
 
 /* Light-mode palette, scoped to the panel window only (index.html's body has
