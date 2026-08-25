@@ -4146,7 +4146,7 @@ const SETTINGS_SHEETS = {
           text: `✗ ${gateReason(it.today_state.judged.failure_reason)} · `
             + gateStatus(it.today_state.judged.charge_status) }]
           : it && it.today_state && it.today_state.scan ? [{ key: 'todayres', label: 'Today',
-            kind: 'static', text: `✓ scanned ${it.today_state.scan.scanned_at.slice(11, 16)}` }] : []),
+            kind: 'static', text: `✓ scanned ${it.today_state.scan.local_time}` }] : []),
         // HOW THIS GATE MAY BE PROVED. The soft answer is the link (plus the
         // geofence where one is set) — which proves a URL was opened, not that
         // you were there. The hard answer is a tap of one of this gate's NFC
@@ -11142,7 +11142,7 @@ function gateRowOpts(n) {
   if (st.judged && st.judged.failure_reason) {
     today = `✗ ${gateReason(st.judged.failure_reason)} · ${gateStatus(st.judged.charge_status)}`;
   } else if (st.scan) {
-    today = `✓ scanned ${st.scan.scanned_at.slice(11, 16)}`
+    today = `✓ scanned ${st.scan.local_time}`
       + (st.scan.geofence_pass === 0 ? ' — outside the geofence' : '');
   }
 

@@ -1812,9 +1812,20 @@ def _node_payload(node, today, routines=None):
                     p['new_label'] = schedule.describe(new_src, resolve)
                 except schedule.Cycle:
                     p['new_label'] = 'a schedule that refers to itself'
+    # THE SERVER RENDERS THE CLOCK TIME, both here and in the day read-out.
+    # qr_scan.scanned_at is UTC by design (the judge matches windows in UTC),
+    # and two client sites were slicing HH:MM straight out of it — so a tap at
+    # 01:21 local drew as "scanned 05:21" on a row describing a window written
+    # in local time. Same fix as everywhere else: one function resolves it, the
+    # client prints what it is given.
+    state_now = storage.qr_node_day_state(node['id'], today)
+    if state_now.get('scan'):
+        state_now = dict(state_now, scan=dict(
+            state_now['scan'],
+            local_time=_scan_local_hhmm(state_now['scan']['scanned_at'])))
     return dict(node,
                 today_override=ov,
-                today_state=storage.qr_node_day_state(node['id'], today),
+                today_state=state_now,
                 routine=rt['name'] if rt else None,
                 routine_id=rt['id'] if rt else None,
                 # The offset is set from the GATE sheet now (it is minutes from
