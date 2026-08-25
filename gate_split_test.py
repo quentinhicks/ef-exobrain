@@ -191,6 +191,26 @@ check('the fee still comes out of the amount owed ($1.00 owed - $0.50 fee)',
 check('...and the log keeps the $1.00 the day cost',
       row(nid, YESTERDAY)['amount_cents'] == 100, row(nid, YESTERDAY))
 
+# ...AND AGAIN ABOVE THE FLOOR, because the case above cannot fail. $1.00 owed
+# minus a $0.50 fee is $0.50, which Beeminder's $1 minimum lifts straight back
+# to $1.00 — the exact number the fee being ignored entirely would produce.
+# Deleting `bill = amount - s['fee_cents']` outright left every check in this
+# file green, on the real-money path. A $4.00 stake puts the remainder above
+# the floor, so the subtraction has nowhere to hide.
+sent.clear()
+fresh(live=True, fee=50)
+storage.set_setting('gate_charge_cents', '400')
+nid, fid = gate('tok-money-fee-above-floor')
+node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
+qr_judge.charge_for_failure(node, YESTERDAY, 'routine_late', sender=sender,
+                            window=('06:00', '08:00', 0), credit=0.5)
+check('above the floor the fee is visibly out of the bill ($2.00 owed - $0.50)',
+      sent and sent[-1]['amount'] == '1.50', sent[-1:])
+check('...while the log and the cap keep the whole $2.00 half',
+      row(nid, YESTERDAY)['amount_cents'] == 200
+      and storage.qr_weekly_spent_cents(YESTERDAY) == 200,
+      (row(nid, YESTERDAY), storage.qr_weekly_spent_cents(YESTERDAY)))
+
 # A half day under the cap must not be skipped as if it were a whole one.
 sent.clear()
 fresh(live=True, cap=150)
