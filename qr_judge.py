@@ -225,7 +225,20 @@ def _utc_iso(ymd, hhmm):
 # app draws it and the judge charges for it.
 
 
+# A ROUTINE IS RESOLVED AS IT STOOD ON THAT DAY (2026-08-24, Quentin: "it
+# changed the routine window settings in the past"). Its window fields are
+# dated — storage.record_revision keeps what they held before each change — so
+# every question about a DATE goes through here first and the day you already
+# lived keeps the deadline it actually had.
+#
+# One hop, at the two doors that read those fields (_flow_own_end and
+# routine_deadline), which is every path into flow_day_window as well.
+def _flow_on(flow, ymd):
+    return storage.flow_as_of(flow, ymd=ymd) or flow
+
+
 def _flow_own_end(flow, ymd, resolve=None):
+    flow = _flow_on(flow, ymd)
     uid = flow.get('source_uid')
     if not uid:
         return None
@@ -245,6 +258,7 @@ def _flow_own_end(flow, ymd, resolve=None):
 
 def routine_deadline(node, flow, ymd, resolve=None):
     """When the linked routine is due on this date, as a local datetime."""
+    flow = _flow_on(flow, ymd)
     own = _flow_own_end(flow, ymd, resolve)
     if own:
         return own
@@ -277,6 +291,7 @@ def routine_deadline(node, flow, ymd, resolve=None):
 # whole point, and what the tail-clipping lost.
 def flow_day_window(flow, ymd, resolve=None):
     """(open_min, due_min) for a routine on a date; either may be None."""
+    flow = _flow_on(flow, ymd)
     open_min = None
     own = _flow_own_end(flow, ymd, resolve)
     if own and flow.get('source_uid'):

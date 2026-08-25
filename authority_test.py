@@ -75,6 +75,18 @@ READS = {
         '"which day does it govern". Rounds UP off midnight, so a change '
         'landing mid-afternoon governs the NEXT day: overstating a loosening '
         'would show a gate as relaxed on a day still being judged.',
+    'flow_as_of':
+        'the SERVER decides, and only the calendar can move it: a routine\'s '
+        'window fields as they stood on that date, from row_revision. A client '
+        'cannot write a revision — they are recorded by storage at the door '
+        'that changes the field, from the value read before the write. It '
+        'makes the judge STRICTER about history, not looser: a day is resolved '
+        'against the rule that was in force then, which is the same principle '
+        'as a judged day being frozen.',
+    'record_revision':
+        'not a read — the writer of the above, called by storage itself with '
+        'the value a field held before it changed. Named here because the '
+        'scanner sees it in the same module; nothing in the judge calls it.',
     'row_as_of':
         'not data — layers dated changes onto a row for a FUTURE day, which is '
         'how the calendar draws Wednesday. Past and today cannot be affected: '

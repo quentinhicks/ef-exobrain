@@ -187,6 +187,34 @@ def init_db():
             allday INTEGER NOT NULL DEFAULT 0
         );
 
+        -- WHAT THIS ROW USED TO SAY, AND UNTIL WHEN (2026-08-24, Quentin:
+        -- "it changed the routine window settings in the past").
+        --
+        -- A standing rule resolved FOR A DATE was resolved against the rule as
+        -- it is NOW, so changing a routine's window this morning changed what
+        -- last Tuesday says it was due at. The day you already lived was
+        -- rewritten under you. Gates survive that by a different mechanism — a
+        -- judged day is frozen with the window it was judged against — but
+        -- that only covers days money ran on, and nothing covered routines.
+        --
+        -- easing_pending is the FUTURE half of the same question (a change
+        -- that has not landed yet, applied on read from its effective_date).
+        -- This is the PAST half: the value that was in force BEFORE that date.
+        -- `row_as_of` is the one function that layers both, so a caller keeps
+        -- asking one question — what did this row say on that day.
+        CREATE TABLE IF NOT EXISTS row_revision (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind           TEXT NOT NULL,
+            row_id         INTEGER NOT NULL,
+            field          TEXT NOT NULL,
+            old_value      TEXT,
+            effective_date TEXT NOT NULL,
+            recorded_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_row_revision_row
+            ON row_revision (kind, row_id, effective_date);
+
         CREATE TABLE IF NOT EXISTS gcal_recurring_seen (
             uid TEXT PRIMARY KEY
         );
@@ -5538,6 +5566,13 @@ def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node
         # Its own window applies at once. The 24h easing gate guards the GATE's
         # hours (the money window); a routine's deadline is the reference you
         # work to, and the gate still judges on completion at scan time.
+        #
+        # FROM TODAY, THOUGH. Yesterday's routine was due when yesterday's rule
+        # said, so the old value is recorded before it goes (row_revision) and
+        # every day before today still resolves to it.
+        was = conn.execute('SELECT source_uid FROM flow WHERE id = ?', (id,)).fetchone()
+        if was and (was['source_uid'] or None) != (source_uid or None):
+            record_revision(conn, 'flow', id, 'source_uid', was['source_uid'])
         conn.execute('UPDATE flow SET source_uid = ? WHERE id = ?', (source_uid or None, id))
     cur = conn.execute('SELECT qr_node_id, offset_min, period FROM flow WHERE id = ?',
                        (id,)).fetchone()
@@ -5581,6 +5616,11 @@ def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node
         if cur and cur['qr_node_id'] and new_off > old_off:
             _pend(conn, 'flow', id, 'offset_min', offset_min)
         else:
+            # Same rule as the window above: the past keeps the deadline it
+            # actually had.
+            if new_off != old_off:
+                record_revision(conn, 'flow', id, 'offset_min',
+                                cur['offset_min'] if cur else None)
             conn.execute('UPDATE flow SET offset_min = ? WHERE id = ?', (offset_min, id))
             _unpend(conn, 'flow', id, 'offset_min')
     if before_node_id is not _UNSET:
@@ -5802,11 +5842,64 @@ def falsy(v):
 _DELETE_FIELDS = ('__delete__', 'delete')
 
 
+# Record what a field USED TO hold, from the day the new value starts. Called
+# at the door that changes the field, with the value read BEFORE the write —
+# the same discipline undoablePatch keeps on the client.
+#
+# `effective_date` is the first day the NEW value governs; every day before it
+# resolves to `old_value`. A change made now governs from TODAY, which is why
+# that is the default: today is a day you are still living, and re-deciding it
+# is a decision, where re-deciding last Tuesday is a lie about it.
+def record_revision(conn, kind, row_id, field, old_value, effective_date=None):
+    # JSON, like easing_pending: a restored offset must come back an INT, or it
+    # reaches timedelta() as a string and the day it describes cannot be built.
+    old_value = None if old_value is None else json.dumps(old_value)
+    conn.execute(
+        '''INSERT INTO row_revision (kind, row_id, field, old_value, effective_date)
+           VALUES (?,?,?,?,?)''',
+        (kind, row_id, field, old_value,
+         effective_date or date_cls.today().isoformat()))
+
+
+def _past_revisions(conn, kind, row_id=None):
+    if row_id is None:
+        rows = conn.execute(
+            '''SELECT row_id, field, old_value, effective_date FROM row_revision
+               WHERE kind = ? ORDER BY effective_date, id''', (kind,)).fetchall()
+    else:
+        rows = conn.execute(
+            '''SELECT row_id, field, old_value, effective_date FROM row_revision
+               WHERE kind = ? AND row_id = ? ORDER BY effective_date, id''',
+            (kind, row_id)).fetchall()
+    return [{'field': r['field'], 'old_value': _pending_value(r['old_value']),
+             'effective_date': r['effective_date'], 'past': True} for r in rows]
+
+
 def row_as_of(row, revisions, ymd):
+    """What this row said on `ymd` — the FUTURE half and the PAST half.
+
+    A queued change (easing_pending) carries the value it will take and the
+    day it starts: it applies from that day forward. A recorded revision
+    (row_revision) carries the value the field HELD before that day: it
+    applies to every day before it, and the earliest such change is the one
+    that says what the field held on the day being asked about.
+
+    Both are the same question — what did this row say then — which is why
+    they are answered in one place rather than by each caller remembering to
+    ask twice.
+    """
     if not row:
         return None
     out = dict(row)
+    restored = set()
     for r in revisions:
+        if r.get('past'):
+            # Only changes that had NOT happened yet on that day, and only the
+            # first one per field: its old_value is what the field held then.
+            if r['effective_date'] > ymd and r['field'] not in restored:
+                out[r['field']] = r['old_value']
+                restored.add(r['field'])
+            continue
         if r['effective_date'] > ymd:
             continue
         if r['field'] in _DELETE_FIELDS:
@@ -5829,6 +5922,25 @@ def _pend_step(conn, id, field, value):
 
 def _clear_step_pending(conn, id, field):
     _unpend(conn, 'flow_step', id, field)
+
+
+# The window fields a routine resolves a DAY against — the ones a change to
+# must not reach backwards. Named, so adding a field is a decision.
+FLOW_DATED_FIELDS = ('source_uid', 'offset_min')
+
+
+def flow_as_of(conn_or_flow, flow=None, ymd=None):
+    """The routine as it stood on `ymd`. Callers pass (flow, ymd)."""
+    if flow is None:
+        flow, ymd = conn_or_flow, ymd
+    if not flow or not ymd:
+        return flow
+    conn = get_conn()
+    revs = _past_revisions(conn, 'flow', flow['id'])
+    conn.close()
+    if not revs:
+        return flow
+    return row_as_of(flow, revs, ymd)
 
 
 def apply_due_flow_pendings(conn):
@@ -5858,6 +5970,16 @@ def apply_due_flow_pendings(conn):
         allowed = (('qr_node_id', 'offset_min') if kind == 'flow'
                    else ('requirement', 'days_of_week'))
         if field in allowed:
+            # A queued change LANDING is still a change: the days before it
+            # keep what the field held, so the old value is recorded on its way
+            # out. Same call as the immediate path in update_flow — the pending
+            # store answers "from when", this answers "and before that, what".
+            if kind == 'flow' and field in FLOW_DATED_FIELDS:
+                was = conn.execute(f'SELECT {field} AS v FROM flow WHERE id = ?',
+                                   (row_id,)).fetchone()
+                if was is not None and str(was['v']) != str(value):
+                    record_revision(conn, 'flow', row_id, field, was['v'],
+                                    r['effective_date'] or None)
             conn.execute(f'UPDATE {kind} SET {field} = ? WHERE id = ?', (value, row_id))
         _unpend_row(conn, kind, row_id, field)
     conn.commit()

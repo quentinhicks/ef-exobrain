@@ -69,7 +69,13 @@ OVERRIDES = {
 # a fact about a day, and a rebuilt cache would make two runs of the same day
 # disagree. Named in the file's footer, so the exclusion is visible.
 SKIP = {'gcal_recurring_seen', 'sheets_inbox_item', 'todo_sync', 'qr_todo_push',
-        'timeline_dismissal', 'review_annotation', 'time_preset'}
+        'timeline_dismissal', 'review_annotation', 'time_preset',
+        # row_revision is not a fact about a day — it is what a SETTING used to
+        # say, so that the days it covers can be resolved correctly. Its rows
+        # are already visible through the thing they modify (a routine's window
+        # on that day's file), and listing them here as well would print the
+        # same change once per day it reaches back over.
+        'row_revision'}
 
 # The standing state a day carries beside its events, so the file is
 # self-contained: reading 2026-08-12 tells you what the system WAS, not only what

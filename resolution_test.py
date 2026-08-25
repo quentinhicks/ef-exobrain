@@ -54,6 +54,14 @@ RESOLUTIONS = {
     'recurring_task': (
         'storage._recurring_due',
         'evaluated server-side into the pool; recurrence.py answers the day.'),
+    'row_revision': (
+        'storage.row_as_of',
+        'not served on its own: it is the PAST half of "what did this row say '
+        'on that day", layered by the same function that layers the future '
+        'half (easing_pending). Every reader asks through the resolver of the '
+        'row it modifies — a routine through qr_judge.flow_day_window, which '
+        'calls storage.flow_as_of first — so nothing re-derives it and nothing '
+        'reads this table directly.'),
     'qr_node': (
         'qr_judge.resolve_window',
         'served: node.day_windows, keyed by exact DATE (nodeWindowForDate reads '
