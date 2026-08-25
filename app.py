@@ -2185,7 +2185,7 @@ def _gate_day_payload(node, ymd, now=None):
     }
 
 
-def _scan_local_hhmm(iso):
+def _scan_local_hhmm(iso, fmt='%H:%M'):
     # UTC with a trailing Z into the wall clock the window is written in. The
     # process timezone is the app's one lever (_apply_timezone), so
     # fromtimestamp follows it with no zone threaded through.
@@ -2194,7 +2194,7 @@ def _scan_local_hhmm(iso):
     except ValueError:
         return None
     return datetime.fromtimestamp(
-        dt.replace(tzinfo=timezone.utc).timestamp()).strftime('%H:%M')
+        dt.replace(tzinfo=timezone.utc).timestamp()).strftime(fmt)
 
 
 def _schedule_label(node):
@@ -3121,6 +3121,28 @@ def delete_accountability_tag_keys(tag_id):
     keys.pop(tag['uid'].upper(), None)
     _update_config({'ntag_keys': keys})
     return jsonify({'ok': True, 'keys_set': False})
+
+
+@app.route('/api/accountability/nodes/<int:id>/taps')
+def accountability_node_taps(id):
+    """DID THE TAP LAND — the last few, refused ones included.
+
+    A READ, and only a read. It exists because the tap is the one part of a
+    hard gate that happens away from the app: you hold a phone to a tag and
+    the app has nothing to say about it unless the tap verified. Refusals now
+    have somewhere to live (qr_tap_attempt), so this serves both halves in one
+    list, newest first, with the reason attached.
+
+    Nothing here is a judgment. The judge reads qr_scan and has never heard of
+    this table — a refusal that could reach the money path is a refusal that
+    could clear a gate.
+    """
+    if not any(n['id'] == id for n in storage.qr_get_nodes()):
+        return jsonify({'error': 'unknown gate'}), 404
+    out = []
+    for t in storage.qr_recent_taps(id):
+        out.append(dict(t, at=_scan_local_hhmm(t['tapped_at'], '%m-%d %H:%M')))
+    return jsonify(out)
 
 
 @app.route('/api/accountability/nodes/<int:id>/overrides', methods=['POST'])

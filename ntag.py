@@ -327,16 +327,29 @@ def identify(picc_hex, cmac_hex, keys):
     until one decrypts to a UID we know. Then the MAC is checked with THAT
     tag's file key, so a tag cannot borrow another's authority.
     """
+    # WHY each key was ruled out, kept rather than dropped. The refusal is the
+    # only thing a misprogrammed tag ever produces, and "no configured tag
+    # matches this tap" cannot tell a wrong meta key from a counter mirror that
+    # was never turned on — which is the whole question during setup. The
+    # per-key reason is the answer, so it travels with the exception instead of
+    # being thrown away here and hunted for at a terminal afterwards.
+    reasons = []
     for uid, (meta, mac) in keys.items():
         try:
             got_uid, counter = decode_picc(meta, picc_hex)
-        except TapError:
+        except TapError as e:
+            if str(e) not in reasons:
+                reasons.append(str(e))
             continue
         if got_uid != uid:
-            continue                    # decrypted, but not to this tag: keep looking
+            # Decrypted, but not to this tag: keep looking. Another key may own
+            # it, and only if none does is this worth reporting.
+            reasons.append('decrypted to %s, which is not a configured tag' % got_uid)
+            continue
         verify(meta, mac, picc_hex, cmac_hex)   # raises TapError on a bad MAC
         return uid, counter
-    raise TapError('no configured tag matches this tap')
+    raise TapError('no configured tag matches this tap'
+                   + (' — ' + '; '.join(reasons) if reasons else ''))
 
 
 if __name__ == '__main__':

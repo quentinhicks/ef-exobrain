@@ -85,6 +85,14 @@ document.getElementById("submitBtn").onclick = async () => {
 </script></body></html>'''
 
 
+def _utc_now_iso():
+    # UTC with a trailing Z, the shape qr_scan.scanned_at is written in and the
+    # one the judge matches window bounds against. Not local: this process
+    # never applies setting.timezone, so its idea of local is the VM's.
+    now = datetime.utcnow()
+    return now.strftime('%Y-%m-%dT%H:%M:%S.') + '%03dZ' % (now.microsecond // 1000)
+
+
 def _esc(s):
     return (str(s).replace('&', '&amp;').replace('<', '&lt;')
             .replace('>', '&gt;').replace('"', '&quot;'))
@@ -118,8 +126,7 @@ def scan(token):
     # UTC with a trailing Z — the format the Worker wrote and the format
     # qr_judge compares against. Writing local time here would make every scan
     # fall outside its own window.
-    now_iso = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.') + \
-        '%03dZ' % (datetime.utcnow().microsecond // 1000)
+    now_iso = _utc_now_iso()
     storage.qr_log_scan(node['id'], now_iso, lat, lng, geofence_pass, accuracy)
 
     if geofence_pass == 1 or geofence_pass is None:
@@ -179,16 +186,26 @@ def tap():
           or request.args.get('sdmmac') or '').strip()
     if not cm and len(picc) == 48:
         picc, cm = picc[:32], picc[32:]
+    # EVERY EXIT BELOW WRITES ONE ATTEMPT ROW, refusals included. The page a
+    # stranger sees stays vague on purpose ('Not a valid tap.'); the REASON
+    # goes to the db, where only the app can read it. That is the whole
+    # difference between a gate you can debug and a print() on a VM's stdout —
+    # a refused tap used to leave no trace at all, so "no taps yet" read the
+    # same whether you had never tapped or tapped ten times against a factory
+    # key, which is exactly the state a tag is in while being set up.
+    now_iso = _utc_now_iso()
     keys = ntag.load_keys()
     if not keys:
         # No keys configured at all: say so plainly. This is the state a fresh
         # tag is in before its keys are pasted into Settings, and it is not
         # something a stranger learns anything from.
+        storage.qr_log_tap(now_iso, False, 'no tag keys are configured yet')
         return _tap_page('Tag', 'No tag keys are configured yet.', False, 503)
     try:
         uid, counter = ntag.identify(picc, cm, keys)
     except ntag.TapError as e:
         print('tap refused: %s' % e)
+        storage.qr_log_tap(now_iso, False, str(e))
         return _tap_page('Tag', 'Not a valid tap.', False, 403)
 
     tag = storage.qr_tag_by_uid(uid)
@@ -196,24 +213,34 @@ def tap():
         # A real tag whose keys are configured but which no gate claims. Worth
         # saying, because it is the state between programming a tag and adding
         # it in Settings.
+        storage.qr_log_tap(now_iso, False, 'verified, but no gate claims this tag',
+                           uid=uid, counter=counter)
         return _tap_page('Tag %s' % uid, 'This tag is not attached to a gate yet.',
                          False, 404)
     if not tag['active'] or not tag['node_active']:
         pend = storage.qr_tag_pending(tag['id'])
+        storage.qr_log_tap(now_iso, False,
+                           ('this tag starts counting %s' % pend[:16].replace('T', ' '))
+                           if pend else 'this tag is paused',
+                           node_id=tag['node_id'], tag_id=tag['id'],
+                           uid=uid, counter=counter)
         return _tap_page(tag['label'],
                          ('This tag starts counting %s.' % pend[:16].replace('T', ' '))
                          if pend else 'This tag is paused.', False, 409)
 
-    now_iso = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.') + \
-        '%03dZ' % (datetime.utcnow().microsecond // 1000)
     if not storage.qr_accept_tap(tag['id'], counter, now_iso):
         # The counter is not new: a refresh of the page, or a replay of a URL
         # someone kept. Either way this tap is already history, and it must not
         # log a second scan.
+        storage.qr_log_tap(now_iso, False, 'read %d was already logged — a refresh, '
+                           'or a URL replayed' % counter, node_id=tag['node_id'],
+                           tag_id=tag['id'], uid=uid, counter=counter)
         return _tap_page(tag['label'], 'Already logged — tap the tag again.', True, 200)
 
     storage.qr_log_scan(tag['node_id'], now_iso, None, None, None, None,
                         proof='tag', tag_id=tag['id'])
+    storage.qr_log_tap(now_iso, True, None, node_id=tag['node_id'], tag_id=tag['id'],
+                       uid=uid, counter=counter)
     return _tap_page(tag['node_label'], 'Logged — %s, read %d.' % (tag['label'], counter),
                      True, 200)
 

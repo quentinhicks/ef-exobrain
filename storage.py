@@ -1075,6 +1075,32 @@ def init_db():
             active       INTEGER NOT NULL DEFAULT 1,
             created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
+    # EVERY TAP, VERIFIED OR NOT — the only place a REFUSED one is written.
+    #
+    # qr_scan holds taps that PROVED themselves, and the judge reads it. A tap
+    # that fails does not belong there at any price: a refusal the money path
+    # could see is a refusal that could clear a gate. But a refusal that is
+    # written nowhere is worse in a different way — it was a print() on the
+    # scan server's stdout, so "did my tag work?" had no answer inside the app,
+    # and "no taps yet" read identically whether you had never tapped or tapped
+    # ten times against the factory key. That is exactly the state a tag is in
+    # while being set up.
+    #
+    # So: its own table, nothing in qr_judge reads it, and it never decides
+    # anything. node_id and tag_id are NULL when the tap could not be
+    # attributed — a tap that does not decrypt belongs to no gate, which is
+    # precisely the failure worth showing.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_tap_attempt (
+            id        INTEGER PRIMARY KEY,
+            tapped_at TEXT NOT NULL,
+            node_id   INTEGER,
+            tag_id    INTEGER,
+            uid       TEXT,
+            counter   INTEGER,
+            ok        INTEGER NOT NULL,
+            reason    TEXT
+        )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS qr_override (
             id                     INTEGER PRIMARY KEY,
@@ -7445,6 +7471,56 @@ def qr_log_scan(node_id, scanned_at, lat, lng, geofence_pass, accuracy=None,
     scan_id = cur.lastrowid
     conn.close()
     return scan_id
+
+
+# HOW MANY REFUSALS ARE KEPT. /t is a PUBLIC route, so anyone who finds the
+# host can make rows here; the cap is what stops a diagnostic log becoming an
+# unbounded write into a db that gets dumped into backups/ and pushed. A few
+# hundred covers months of real tapping, and a flood is legible AS a flood.
+TAP_ATTEMPT_KEEP = 500
+
+
+def qr_log_tap(tapped_at, ok, reason=None, node_id=None, tag_id=None,
+               uid=None, counter=None):
+    """Record one tap of /t, however it ended.
+
+    LOCAL time, unlike qr_scan.scanned_at beside it. That column is UTC by
+    design because the judge matches scans against UTC window bounds; nothing
+    judges this table, so it follows the app's ordinary rule and is stamped in
+    local — which is also the only way it dates correctly in the daybook.
+    """
+    conn = get_conn()
+    conn.execute(
+        '''INSERT INTO qr_tap_attempt (tapped_at, node_id, tag_id, uid, counter, ok, reason)
+           VALUES (?,?,?,?,?,?,?)''',
+        (tapped_at, node_id, tag_id, uid, counter, 1 if ok else 0, reason))
+    conn.execute(
+        '''DELETE FROM qr_tap_attempt WHERE id <= COALESCE(
+             (SELECT MAX(id) FROM qr_tap_attempt) - ?, -1)''',
+        (TAP_ATTEMPT_KEEP,))
+    conn.commit()
+    conn.close()
+
+
+def qr_recent_taps(node_id, limit=8):
+    """The last taps this gate could have been cleared by.
+
+    Its own tags' taps AND the ones that belong to nobody. An unattributable
+    tap is not noise here: a tag whose keys are wrong decrypts to nothing, so
+    it names no gate, and filtering by node_id alone would hide the single
+    failure this read-out exists to show. They are marked, not merged —
+    `orphan` says the app could not tell whose tap it was.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT a.*, t.label AS tag_label
+             FROM qr_tap_attempt a
+             LEFT JOIN qr_tag t ON t.id = a.tag_id
+            WHERE a.node_id = ? OR a.node_id IS NULL
+            ORDER BY a.id DESC LIMIT ?''',
+        (node_id, limit)).fetchall()
+    conn.close()
+    return [dict(r, orphan=r['node_id'] is None) for r in rows]
 
 
 # ── The tags a gate accepts ───────────────────────────────────────────────

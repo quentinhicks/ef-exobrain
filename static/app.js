@@ -2709,6 +2709,7 @@ function openSeSheet(kind, item, returnTo) {
   document.getElementById('se-sheet-backdrop').classList.remove('hidden');
   document.getElementById('block-editor-modal').classList.add('be-sheet-open');
   renderSeSheet();
+  if (spec.onOpen) spec.onOpen(item);
   const first = document.querySelector('#se-sheet .se-input');
   if (first && !seSheet.item) first.focus();
 }
@@ -2892,6 +2893,55 @@ function generateTagKeys() {
   renderSeSheet();
 }
 
+// DID THE TAP LAND. The one part of a hard gate that happens away from the
+// app — you hold a phone to a tag and walk off — so the app owes an answer
+// afterwards. Both halves: a verified tap with its read counter, and a REFUSED
+// one with the reason, which lives nowhere else (the scan server used to
+// print() it to the VM's stdout and that was that).
+//
+// A tap that does not decrypt belongs to no gate, so the server sends those
+// too, marked. They are the ones worth seeing: a tag programmed with the
+// factory key produces a perfectly well-formed tap that names nobody.
+function tapLine(t) {
+  const who = t.orphan ? 'unidentified tag' : (t.tag_label || 'tag');
+  return `${t.ok ? '✓' : '✗'} ${t.at || '??'} · ${who} · `
+    + (t.ok ? `read ${t.counter}` : (t.reason || 'refused'));
+}
+
+async function loadGateTaps(nodeId) {
+  const had = (state.gateTaps || {}).nodeId === nodeId ? state.gateTaps.rows : null;
+  state.gateTaps = { nodeId, rows: had };
+  let rows = had;
+  try {
+    const r = await fetch(`/api/accountability/nodes/${nodeId}/taps`);
+    // A dead endpoint falls back to what was already on screen, never to an
+    // empty list — "no taps" is a claim, and one this read-out must not make
+    // on the strength of a failed fetch.
+    if (r.ok) rows = await r.json();
+  } catch (e) { /* keep what we had */ }
+  if ((state.gateTaps || {}).nodeId !== nodeId) return;   // another gate opened
+  state.gateTaps = { nodeId, rows: rows || [] };
+  if (seSheet.kind === 'gate' && (seSheet.item || {}).id === nodeId) renderSeSheet();
+}
+
+function gateTapRows(n) {
+  const cache = state.gateTaps || {};
+  const rows = cache.nodeId === n.id ? cache.rows : null;
+  const head = {
+    key: 'taps', label: 'Last taps', kind: 'action',
+    text: rows === null ? 'reading…'
+      : rows.length ? '' : 'nothing yet — tap the tag, then Refresh',
+    action: 'Refresh', keepOpen: true,
+    hint: 'Every tap of this gate, verified or refused. A refusal says which'
+        + ' stage failed, so a wrong meta key reads differently from a counter'
+        + ' mirror that was never turned on.',
+    run: () => loadGateTaps(n.id),
+  };
+  return [head].concat((rows || []).map(t => ({
+    key: `tap_${t.id}`, label: '', kind: 'static', mono: true, text: tapLine(t),
+  })));
+}
+
 function openGateTagSheet(node, tag) {
   tagSheetView.gate = node;
   tagSheetView.reveal = false;
@@ -2937,7 +2987,7 @@ function seFieldHtml(f, v) {
   const val = v[f.key];
   let control = '';
   if (f.kind === 'static') {
-    control = `<div class="se-static">${escHtml(f.text)}</div>`;
+    control = `<div class="se-static${f.mono ? ' se-mono' : ''}">${escHtml(f.text)}</div>`;
   } else if (f.kind === 'openpicker') {
     // The row states the schedule in words and hands the editing to the picker.
     // A consumer never grows fields of its own for "when does this run".
@@ -3979,6 +4029,9 @@ const SETTINGS_SHEETS = {
   // A gate loosened (wider window, larger radius) only takes effect in 24h —
   // the server answers with what it deferred, and the sheet says so.
   gate: {
+    // The tap read-out is FETCHED, so it starts here rather than from a render
+    // that would fire again on every keystroke.
+    onOpen: n => { if (n) loadGateTaps(n.id); },
     title: it => it ? it.label : 'Add gate',
     save: it => it ? 'Save gate' : 'Create gate',
     removeLabel: n => (n && n.active ? 'Delete gate (in 24h)' : 'Delete gate'),
@@ -4111,6 +4164,7 @@ const SETTINGS_SHEETS = {
         ...(it ? [{ key: 'tagsetup', kind: 'info', label: '',
           text: 'How to program a tag for hard mode', sections: TAG_SETUP_INFO }] : []),
         ...(it ? gateTagRows(it) : []),
+        ...(it ? gateTapRows(it) : []),
         ...(it ? [{ key: 'link', label: 'Scan link', kind: 'action',
           text: `${state.settings.gate_scan_url || ''}/scan/${it.token}`,
           action: 'Copy',

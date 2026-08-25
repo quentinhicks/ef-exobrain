@@ -46,7 +46,10 @@ TIME_COLS = ('date', 'captured_at', 'scanned_at', 'started_at', 'created_at')
 # qr_scan.scanned_at stays: the scan server writes UTC-with-Z BY DESIGN (the
 # judge matches scans against UTC window bounds), and no DEFAULT change will
 # ever alter that.
-UTC_COLS = {'scanned_at'}
+# qr_tap_attempt.tapped_at joins it for the same reason: the scan server
+# writes both, that process never applies setting.timezone, and a stamp it
+# called "local" would be the VM's local rather than the app's.
+UTC_COLS = {'scanned_at', 'tapped_at'}
 
 # Where inference is wrong or too crude. A column name, matched by DATE PREFIX
 # (which covers both a bare date and a naive local timestamp — every time column
@@ -62,6 +65,10 @@ OVERRIDES = {
     'habit_day': 'date',
     'inbox_item': 'captured_at',      # what was CAPTURED that day
     'occasion_mint': 'date',          # the actions an event brought with it
+    'qr_tap_attempt': 'tapped_at',    # every tap of a gate's tag, verified or
+                                      # refused — a fact about the day it was
+                                      # made on, and the refusals are the half
+                                      # that exists nowhere else
     'routine_item': 'done_date',      # ticked that day; done_date self-resets
 }
 
@@ -107,6 +114,7 @@ STATE_ALSO_DATED = {'inbox_item', 'routine_item'}
 # table name, which is the whole point of not requiring an entry.
 TITLES = {
     'easing_pending': 'Easings waiting out their 24h',
+    'qr_tap_attempt': 'Tag taps, accepted and refused',
     'inbox_item': 'Captured',
     'engage_placement': 'Placed on the day',
     'occasion_mint': 'Minted by an occasion',
