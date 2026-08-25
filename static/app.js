@@ -736,6 +736,10 @@ function initBlockBarDrag(layer, dateStr) {
       async function onUp() {
         document.body.style.cursor = '';
         if (!moved || (curS === origStart && curE === origEnd)) { renderTimeline(); return; }
+        // Read BEFORE the write: the inverse of this drop is the override the
+        // day had before it, and "none" is a delete of whatever the POST
+        // creates — see restoreBlockOverride.
+        const prevOv = state.overrides.find(o => o.block_id === blockId && o.date === dateStr) || null;
         const res = await apiSend('/api/overrides', 'POST', {
             block_id: blockId, date: dateStr, cancelled: false,
             start_time: clockHHMM(curS),
@@ -743,6 +747,8 @@ function initBlockBarDrag(layer, dateStr) {
           });
         if (res.ok) {
           const data = await res.json();
+          undoableBlockOverride(blockId, dateStr, prevOv, data.id,
+            `moved "${blockEl.querySelector('.tl-block-label')?.textContent || 'block'}"`);
           const idx = state.overrides.findIndex(o => o.block_id === blockId && o.date === dateStr);
           if (idx !== -1) state.overrides[idx] = data; else state.overrides.push(data);
           // The times on screen are the SERVER's resolution of this day, so a
@@ -1720,6 +1726,93 @@ async function snapshotItem(id) {
 
 function patchInboxItem(id, body) {
   return apiSend(`/api/inbox/${id}`, 'PATCH', body);
+}
+
+// ── A DRAG IS A BUTTON, AND EVERY BUTTON SHIPS ITS INVERSE (2026-08-24,
+// Quentin's instruction) ────────────────────────────────────────────────────
+//
+// The timeline's gestures write real facts — a block's hours for a day, a
+// gate's window on the money path — and none of them registered an undo,
+// because the undo rule was written for BUTTONS and these do not look like
+// buttons. They are: a drop is a commit, and a mis-drop of five pixels is the
+// most likely mistake on this surface, not the least.
+//
+// The inverse of a per-day override is the override that was there BEFORE —
+// including "there was none", which is a DELETE and not a zeroed row. That
+// distinction is the whole reason these live here rather than being written
+// out at each call site: an inverse that leaves an all-day override saying
+// "same as the default" is not an undo, it is a new decision that happens to
+// agree today and stops agreeing the moment the default moves.
+//
+// `undo_test.py` is the mechanical half: a drag that writes must reach one of
+// these, or say in the test why it does not.
+async function restoreGateWindow(nodeId, date, prev) {
+  const key = `${nodeId}:${date}`;
+  let res;
+  if (prev) {
+    res = await apiSend(`/api/accountability/nodes/${nodeId}/overrides`, 'POST', {
+      date, window_start: prev.window_start, window_end: prev.window_end,
+      window_end_offset_days: prev.window_end_offset_days || 0 });
+    if (res && res.ok) {
+      state.qrPageOverrides[key] = { date, window_start: prev.window_start,
+        window_end: prev.window_end,
+        window_end_offset_days: prev.window_end_offset_days || 0 };
+    }
+  } else {
+    res = await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${date}`, 'DELETE');
+    if (res && res.ok) delete state.qrPageOverrides[key];
+  }
+  // The 24h lock can refuse an undo, and silence would read as "done" while
+  // the window stayed where the drag left it.
+  if (!res || !res.ok) {
+    const msg = res ? await res.json().catch(() => ({})) : {};
+    toast(msg.error || 'Could not undo that window');
+    return;
+  }
+  if (isToday(state.currentDate)) {
+    state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
+  }
+  if (state.gateSel && state.gateSel.nodeId === nodeId && state.gateSel.date === date) {
+    await refreshGateSel();
+  } else {
+    renderTimeline();
+  }
+}
+
+function undoableGateWindow(nodeId, date, prev, label) {
+  pushUndo(label, () => restoreGateWindow(nodeId, date, prev));
+}
+
+// The routine's deadline is its OFFSET from the gate, so its inverse is the
+// offset it had. Putting a smaller one back also cancels the 24h easing the
+// forward drag queued — tightening applies at once and clears the pending, so
+// undoing a queued easing needs nothing else.
+function undoableRoutineOffset(flowId, prevOffset, label) {
+  pushUndo(label, async () => {
+    const res = await apiSend(`/api/flows/${flowId}`, 'PATCH', { offset_min: prevOffset });
+    if (!res || !res.ok) { toast('Could not undo the routine deadline'); return; }
+    if (state.gateSel) await refreshGateSel(); else renderTimeline();
+  });
+}
+
+async function restoreBlockOverride(blockId, date, prev, createdId) {
+  let res;
+  if (prev) {
+    res = await apiSend('/api/overrides', 'POST', {
+      block_id: blockId, date, cancelled: !!prev.cancelled,
+      start_time: prev.start_time, end_time: prev.end_time });
+  } else if (createdId != null) {
+    res = await apiSend(`/api/overrides/${createdId}`, 'DELETE');
+  } else {
+    return;
+  }
+  if (!res || !res.ok) { toast('Could not undo that block'); return; }
+  await fetchOverridesForDate(state.currentDate);
+  renderTimeline();
+}
+
+function undoableBlockOverride(blockId, date, prev, createdId, label) {
+  pushUndo(label, () => restoreBlockOverride(blockId, date, prev, createdId));
 }
 
 // The common case: a PATCH whose inverse is the same PATCH with the values
@@ -9817,8 +9910,11 @@ async function writeGateLine(kind, min, sel) {
     // that actually moves is the OFFSET. Later is an easing and waits 24h —
     // the server decides that, and the re-read below is what tells us.
     const offset = min - w.end_min;
+    const wasOffset = sel.day.routine.due_min - w.end_min;
     const res = await apiSend(`/api/flows/${sel.day.routine.id}`, 'PATCH', { offset_min: offset });
     if (!res || !res.ok) { toast('Could not move the routine deadline'); renderQrLayer(); return; }
+    undoableRoutineOffset(sel.day.routine.id, wasOffset,
+                          `moved "${sel.day.routine.name}" deadline`);
     const before = sel.day.routine.due_min;
     await refreshGateSel();
     const after = state.gateSel && state.gateSel.day.routine
@@ -9830,6 +9926,12 @@ async function writeGateLine(kind, min, sel) {
   }
   const endMin = kind === 'scan-close' ? min : w.end_min;
   const startMin = kind === 'scan-open' ? min : w.start_min;
+  // What was in force before this drop, for the inverse: the cached day
+  // override if there is one, else the gate had none and undoing DELETES.
+  const prevOv = state.qrPageOverrides[`${sel.nodeId}:${sel.date}`]
+    || (isToday(state.currentDate)
+        ? (state.accountabilityNodes.find(n => n.id === sel.nodeId) || {}).today_override
+        : null) || null;
   const res = await apiSend(`/api/accountability/nodes/${sel.nodeId}/overrides`, 'POST', {
     date: sel.date,
     window_start: clockHHMM(startMin),
@@ -9842,6 +9944,8 @@ async function writeGateLine(kind, min, sel) {
     renderQrLayer();
     return;
   }
+  undoableGateWindow(sel.nodeId, sel.date, prevOv,
+    `moved the ${kind === 'scan-open' ? 'opening' : 'deadline'} of "${sel.day.label}"`);
   // The same cache the square's drag keeps, so a non-today page redraws in the
   // right place without waiting for a round trip.
   state.qrPageOverrides[`${sel.nodeId}:${sel.date}`] = {
@@ -10088,6 +10192,9 @@ function renderQrLayer() {
       };
       const res = await apiSend(`/api/accountability/nodes/${node.id}/overrides`, 'POST', ovBody);
       if (res.ok) {
+        // `ov` is what was in force before this drop — null when the day had
+        // no override at all, which is what makes the inverse a DELETE.
+        undoableGateWindow(node.id, pageDate, ov, `moved "${node.label}"`);
         // Cache the override so non-today pages stay in the right position on re-render
         state.qrPageOverrides[cacheKey] = ovBody;
         if (viewingToday) {
