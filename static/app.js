@@ -406,7 +406,17 @@ function onPointerDrag(el, spec) {
     // same dispatch, and onLongPress reads it. Guarding a child against a
     // parent has to happen at POINTERDOWN; this is that rule, one level up.
     e.pointerDragClaim = true;
-    if (e.pointerType === 'mouse') { arm(e); if (live) e.preventDefault(); return; }
+    if (e.pointerType === 'mouse') {
+      arm(e);
+      // preventDefault on POINTERDOWN cancels the click that follows it. That
+      // is what a handle wants (the bar swallows clicks anyway) and exactly
+      // what a whole-element drag surface must not do: a press that never
+      // moves is still a TAP, and on an event box that tap opens its occasion.
+      // `keepClick` is how such a surface says so; the drag's own suppressor
+      // (lpDragged) still turns away the click that TRAILS a real drag.
+      if (live && !spec.keepClick) e.preventDefault();
+      return;
+    }
     // Touch: hold still for 550ms to grab it.
     sy = e.clientY;
     const sx = e.clientX;
@@ -869,8 +879,19 @@ function renderGcalLayer(bodyH = 600) {
 // the box still hide the event, which is why the bar exists at all.
 function initEventDrag(layer) {
   const body = document.getElementById('tl-body');
-  layer.querySelectorAll('.tl-gcal-event .tl-ev-bar').forEach(bar => {
-    const el = bar.parentElement;
+  // TWO SURFACES, because the two inputs have different collisions. A MOUSE
+  // drags the event from anywhere on it (2026-08-24, asked for): its press
+  // starts the drag immediately, a press that never moves is still a click, and
+  // hiding is right-click — nothing competes. A FINGER cannot have that: a
+  // 550ms hold on the box is already "hide from my day", so touch drags from
+  // the hairline bar, whose own hold means only this.
+  const surfaces = [];
+  layer.querySelectorAll('.tl-gcal-event').forEach(box => {
+    surfaces.push([box.querySelector('.tl-ev-bar'), box, 'both']);
+    surfaces.push([box, box, 'mouse']);   // keepClick: the tap still opens it
+  });
+  surfaces.forEach(([bar, el, inputs]) => {
+    if (!bar) return;
     const origStart = parseInt(el.dataset.startMin);
     const origEnd = parseInt(el.dataset.endMin);
     // The day this occurrence is drawn on: a write files under the day being
@@ -882,20 +903,30 @@ function initEventDrag(layer) {
       const edge = e.clientY - r.top < 10 || r.bottom - e.clientY < 10;
       bar.style.cursor = edge ? 'ns-resize' : 'grab';
     });
-    bar.addEventListener('click', e => e.stopPropagation());
-
-    // Putting it back is the BAR's right-click / long press, because the box's
-    // is already spoken for by hide.
-    if (el.classList.contains('tl-event-moved')) {
-      const restore = () => unmoveEvent(el.dataset.evUid, el.dataset.evStart);
-      bar.addEventListener('contextmenu', e => {
-        e.preventDefault(); e.stopPropagation(); restore();
-      });
-      onLongPress(bar, restore);
+    // Only the BAR swallows the click and owns the restore gestures. On the
+    // box they would take the tap that opens the occasion and the right-click
+    // that hides the event — the two things the box already means. What the
+    // box does need is the drag's own click suppressor, so a mouse drag that
+    // ends on it does not also open the occasion sheet.
+    if (inputs === 'both') {
+      bar.addEventListener('click', e => e.stopPropagation());
+      if (el.classList.contains('tl-event-moved')) {
+        const restore = () => unmoveEvent(el.dataset.evUid, el.dataset.evStart);
+        bar.addEventListener('contextmenu', e => {
+          e.preventDefault(); e.stopPropagation(); restore();
+        });
+        onLongPress(bar, restore);
+      }
+    } else {
+      bar.addEventListener('click', e => {
+        if (el.dataset.lpDragged === '1') { e.stopPropagation(); e.preventDefault(); }
+      }, true);
     }
 
-    onPointerDrag(bar, { start(e) {
+    onPointerDrag(bar, { keepClick: inputs === 'mouse', start(e) {
       if (e.pointerType === 'mouse' && e.button !== 0) return null;
+      // The box declines touch: that hold belongs to hide.
+      if (inputs === 'mouse' && e.pointerType !== 'mouse') return null;
       e.stopPropagation();
       const span = state.view.end - state.view.start;
       if (origEnd - origStart >= span) return null;
@@ -903,7 +934,8 @@ function initEventDrag(layer) {
       const touch = e.pointerType !== 'mouse';
       // Thirds for a finger, a 10px edge for a mouse, and below ~36px no third
       // is worth aiming at so the whole thing moves — the block bar's rule,
-      // and an event box is more often the small one.
+      // and an event box is more often the small one. (On the box itself the
+      // same edges resize: they are the edges of the event either way.)
       const mode = touch
         ? (r.height < 36 ? 'move'
           : e.clientY - r.top < r.height / 3 ? 'start'
@@ -939,7 +971,15 @@ function initEventDrag(layer) {
 
       async function onUp() {
         document.body.style.cursor = '';
-        if (!moved || (curS === origStart && curE === origEnd)) { renderTimeline(); return; }
+        // A PRESS THAT NEVER MOVED IS A TAP, and re-rendering here would eat
+        // it: the layer is rebuilt, the element the click is about to land on
+        // stops existing, and the occasion sheet never opens. (The gate pill
+        // hit the same wall from the other side — see qrDragEndedAt.) Nothing
+        // moved on screen either, so there is nothing to repaint.
+        if (!moved) return;
+        // A real drag that ended where it started still has inline top/height
+        // from the move, so that one does repaint.
+        if (curS === origStart && curE === origEnd) { renderTimeline(); return; }
         await moveEvent(el.dataset.evUid, el.dataset.evStart, el.dataset.evLabel,
                         dateStr, curS, curE);
       }
