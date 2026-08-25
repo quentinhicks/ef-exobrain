@@ -3033,10 +3033,15 @@ function wireSeSheet(fields) {
         renderSeSheet();
       });
     } else if (f.kind === 'openpicker') {
-      wrap.addEventListener('click', () => f.open(v));
+      // THE TWO HOOKS TAKE DIFFERENT THINGS, and it has bitten once: `open`
+      // gets the DRAFT (a picker writes back into the values you are editing),
+      // `run` gets the ITEM (an action row acts on the saved row). A row that
+      // needs the other one reaches for seSheet.values / seSheet.item by name
+      // rather than renaming its parameter and hoping.
+      wrap.addEventListener('click', () => f.open(v, seSheet.item));
     } else if (f.kind === 'action') {
       wrap.addEventListener('click', async () => {
-        await f.run(seSheet.item);
+        await f.run(seSheet.item, v);
         // Most action rows CLEAR something and are done with the sheet. A row
         // that opens another sheet instead says so, or the close below would
         // shut the sheet it just opened — one sheet at a time, and this is how
@@ -3596,9 +3601,17 @@ const SETTINGS_SHEETS = {
             renderSeSheet();
           },
         }) }] : []),
+      // `run` is handed the ITEM, never the draft (see the wiring in
+      // renderSeSheet) — so a row that edits the draft says so through
+      // seSheet.values, and `keepOpen` because clearing a field is not
+      // finishing with the sheet.
       ...(it && v.source ? [{ key: 'clearwindow', label: '', kind: 'action',
-        text: 'Its own hours', action: 'Clear',
-        run: async draft => { draft.source = ''; draft.sourceLabel = ''; renderSeSheet(); } }] : []),
+        text: 'Its own hours', action: 'Clear', keepOpen: true,
+        run: () => {
+          seSheet.values.source = '';
+          seSheet.values.sourceLabel = '';
+          renderSeSheet();
+        } }] : []),
       // A ROUTINE IS CONFIGURED WHERE IT IS USED (2026-08-24, Quentin's
       // instruction). One that gates a gate is reached from that gate and says
       // so here; the offset is its field, because it is the routine's column
@@ -3619,6 +3632,28 @@ const SETTINGS_SHEETS = {
         options: () => seAreaOptions(v.area) }] : []),
       ...(v.as_task ? [{ key: 'days', label: 'On', kind: 'days',
         hint: 'Which days the task appears. None lit means every day.' }] : []),
+      // The schedule says which days it APPEARS; this says "and I want it
+      // today". Same seeding, same ledger — so it can never mint a second
+      // action, and ticking one off still means what it meant.
+      ...(it && v.as_task ? [{ key: 'seednow', label: '', kind: 'action',
+        text: 'Not waiting for its day', action: 'Add to the pool now',
+        keepOpen: true,
+        run: async item => {
+          const res = await apiSend(`/api/flows/${item.id}/seed-task`, 'POST',
+                                    { date: wallDay() });
+          if (res.status === 201) {
+            const made = await res.json();
+            pushUndo(`added "${made.content}" to the pool`, async () => {
+              await apiSend(`/api/inbox/${made.id}`, 'DELETE');
+              await refreshEngage();
+            });
+            toast('In the pool');
+          } else {
+            const msg = await res.json().catch(() => ({}));
+            toast(msg.error || 'Could not add it');
+          }
+          await refreshEngage();
+        } }] : []),
     ],
     submit: async (v, it) => {
       if (!v.name.trim()) return 'A routine needs a name.';
@@ -6576,8 +6611,8 @@ function renderStepSheet() {
       </select>
       ${s.pawn_to_flow_id ? `<input type="number" min="0" class="fr-pawn-min" id="fr-pawn-min"
         value="${s.pawn_minutes || ''}" placeholder="min">
-        <span class="cl-hint">minutes it takes — the receiving routine's gate closes
-        that much earlier on a day you pawn it</span>`
+        <span class="cl-hint">minutes it takes — the receiving routine opens
+        that much earlier on a day you pawn it, and is due when it always was</span>`
         : '<span class="cl-hint">a pawnable step can be pushed onto a later routine for the day</span>'}
     </div>
 
@@ -7603,7 +7638,7 @@ async function pawnStep(step) {
   }
   const to = flowName(step.pawn_to_flow_id);
   toast(step.pawn_minutes
-    ? `Pawned to ${to} — its gate closes ${step.pawn_minutes} min earlier`
+    ? `Pawned to ${to} — it opens ${step.pawn_minutes} min earlier`
     : `Pawned to ${to}`);
   await afterPawnChange();
 }
@@ -7892,7 +7927,7 @@ function renderFlowRun() {
             : 'it comes round again at the end'}</div>` : ''}
       ${s.pawned_in ? `<div class="fr-note fr-pawned-in">pawned here from ${
         escHtml(flowName(s.from_flow_id))} — it costs this routine ${
-        s.pawn_minutes || 0} min, so tonight's gate closes that much earlier</div>` : ''}</div>
+        s.pawn_minutes || 0} min, so tonight starts that much earlier</div>` : ''}</div>
     <div class="fr-foot">
       <button id="fr-back" ${flowRunView.idx === 0 ? 'disabled' : ''}>‹ back</button>
       ${(s.kind === 'text' || s.kind === 'checklist') && s.requirement === 'soft'
@@ -7904,8 +7939,8 @@ function renderFlowRun() {
             because it was pawned in — a step is passed on once. */''}
       ${s.pawn_to_flow_id && !credited && !s.pawned_in
         ? `<button id="fr-pawn" class="cl-pill" title="Do it in ${
-          escHtml(flowName(s.pawn_to_flow_id))} instead — that routine's gate closes ${
-          s.pawn_minutes || 0} min earlier">→ ${escHtml(flowName(s.pawn_to_flow_id))}</button>` : ''}
+          escHtml(flowName(s.pawn_to_flow_id))} instead — that routine opens ${
+          s.pawn_minutes || 0} min earlier, same deadline">→ ${escHtml(flowName(s.pawn_to_flow_id))}</button>` : ''}
       ${s.pawned_in && !credited
         ? `<button id="fr-unpawn" class="cl-pill" title="Send it back to ${
           escHtml(flowName(s.from_flow_id))} — this gate returns to its full length">← ${
@@ -9828,7 +9863,7 @@ function gatePopHtml(d) {
       : '<span class="gp-no">not yet</span>');
   }
 
-  // The pawn is the one input that moves the deadline without writing anything
+  // The pawn is the one input that moves a window without writing anything
   // down, so it is invisible everywhere else — which is exactly why it is here.
   if (d.pawn && d.pawn.minutes) {
     extra += '<div class="gp-sect">Pawned onto this routine</div>';
@@ -9836,10 +9871,11 @@ function gatePopHtml(d) {
       `${escHtml(st.content || 'a step')}${st.from_routine
         ? ' · from ' + escHtml(st.from_routine) : ''}`)).join('');
     extra += `<div class="gp-note">${d.pawn.applied
-      ? `The deadline is ${d.pawn.minutes} minutes earlier than the schedule says,`
-        + ' because that time arrived here. Un-pawning restores it by itself.'
+      ? `This opens ${d.pawn.minutes} minutes earlier than the schedule says,`
+        + ' because that work arrived here — the deadline is untouched.'
+        + ' Un-pawning restores it by itself.'
       : 'This day has a window of its own, and a window set for one day stands as'
-        + ' written — so these minutes do not shorten it.'}</div>`;
+        + ' written — so these minutes do not move it.'}</div>`;
   }
 
   const cr = d.credit || {};

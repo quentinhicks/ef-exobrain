@@ -145,33 +145,66 @@ def resolve_window(node, ymd, override=None):
                                     node.get('window_end_offset_days') or 0))
 
 
-def _less_pawned(node, ymd, window):
-    """The window, minus the time pawned into the routine this gate gates.
+# ── PAWNED WORK MOVES THE OPENING, NEVER THE CLOSE (2026-08-25, Quentin's
+# instruction, reversing "the DEADLINE comes earlier") ───────────────────────
+#
+# A step pushed onto a later routine takes its minutes with it, so that routine
+# has more to do. The old answer pulled the DEADLINE in, which punished you for
+# moving work by giving you less time to finish it — the same amount of work,
+# a shorter day, and a gate that got harder every time you rescheduled. The
+# honest answer is the other end: more to do means START EARLIER, and the time
+# it is due stays exactly where it was.
+#
+# THE RULE IS SAID ONCE, HERE. Every window that a pawn touches — the routine's
+# own hours, the gate's scan window, and anything derived from either — goes
+# through `opened_earlier`, so a future window kind gets this behaviour by
+# asking rather than by remembering. What each caller supplies is only WHOSE
+# minutes to use (pawn_shift), which is the one thing that differs.
+def pawn_shift(flow_id, ymd):
+    """How many minutes earlier this routine has to open today. Never negative."""
+    return max(0, storage.pawned_minutes_for_flow(flow_id, ymd))
 
-    A step pushed onto a later routine takes its minutes with it, so that routine
-    has more to do inside the same window and the DEADLINE comes earlier. This is
-    a tightening, so it applies at once — every easing waits 24h, and nothing here
-    can ever lengthen a window.
+
+def node_pawn_shift(node, ymd):
+    """The same number for the gate that a routine gates."""
+    return max(0, storage.pawned_minutes_for_node(node['id'], ymd))
+
+
+def opened_earlier(start_min, end_min, minutes):
+    """(start, end) with the OPENING pulled back by `minutes`. The close never moves.
+
+    Clamped at midnight of the day being asked about: a window is expressed in
+    minutes from that midnight, and a start before it would be a statement about
+    a day this window does not describe. That clamp is also what keeps the whole
+    mechanic from ever inverting a window — start can only move toward end, and
+    end does not move at all.
+    """
+    if not minutes:
+        return start_min, end_min
+    return max(0, start_min - minutes), end_min
+
+
+def _less_pawned(node, ymd, window):
+    """The gate's window with its OPENING moved earlier by the pawned minutes.
 
     Applied AFTER the source/weekly/default resolution but NOT after a date
     override: an override is a deliberate day-level decision about this gate, and
     the pawn is a consequence of what you moved, so the two compose — the override
-    picks the window and the pawn shortens it. (Callers reaching the override
+    picks the window and the pawn opens it earlier. (Callers reaching the override
     branch return before this, which is the one case where they do not compose;
     see the note in resolve_window.)
+
+    Note what this can no longer do: make a gate HARDER. Opening earlier only
+    ever adds time to scan in, and the deadline is untouched — so pawning work
+    into a gated routine cannot cost you money by itself, which is the point of
+    the reversal.
     """
-    minutes = storage.pawned_minutes_for_node(node['id'], ymd)
+    minutes = node_pawn_shift(node, ymd)
     if minutes <= 0:
         return window
     start, end, offset = window
-    end_min = _hhmm_min(end) + int(offset or 0) * 24 * 60 - minutes
-    start_min = _hhmm_min(start)
-    # Never past the opening: a gate you could not satisfy at all is a broken
-    # commitment, not a demanding one.
-    if end_min <= start_min:
-        end_min = start_min
-    new_offset, rest = divmod(end_min, 24 * 60)
-    return (start, f'{rest // 60:02d}:{rest % 60:02d}', new_offset)
+    start_min, _ = opened_earlier(_hhmm_min(start), 0, minutes)
+    return (f'{start_min // 60:02d}:{start_min % 60:02d}', end, offset)
 
 
 def _hhmm_min(hhmm):
@@ -312,6 +345,11 @@ def flow_day_window(flow, ymd, resolve=None):
         return open_min, None
     base = date_cls.fromisoformat(ymd)
     due_min = ((due.date() - base).days * 1440) + due.hour * 60 + due.minute
+    # Work pawned IN opens the routine earlier and leaves its deadline alone —
+    # the same call the gate makes, so the two cannot drift apart.
+    if open_min is not None:
+        open_min, due_min = opened_earlier(open_min, due_min,
+                                           pawn_shift(flow.get('id'), ymd))
     return open_min, due_min
 
 

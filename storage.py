@@ -3182,6 +3182,55 @@ def seed_flow_tasks():
     conn.close()
 
 
+def seed_flow_task_now(flow_id, ymd=None):
+    """Put this routine's action in the pool for the CURRENT period, today.
+
+    seed_flow_tasks answers "which routines are owed today" from the calendar;
+    this answers "I want that one now", which is a different question and the
+    only reason it exists — a weekly routine you owe on Sunday is invisible on
+    Tuesday even when the week's run is still open.
+
+    Everything else is the same: one action per routine per period, recorded in
+    the SAME ledger, so this cannot mint a second one and ticking it off still
+    means something. Returns the item, or None when there is already a live one
+    or the period is finished.
+    """
+    day = date_cls.fromisoformat(ymd) if ymd else date_cls.today()
+    conn = get_conn()
+    f = conn.execute('SELECT * FROM flow WHERE id = ?', (flow_id,)).fetchone()
+    if not f:
+        conn.close()
+        return None
+    f = dict(f)
+    key = flow_period_key(f.get('period'), day)
+    live = conn.execute(
+        "SELECT id FROM inbox_item WHERE flow_id = ? AND status = 'active'",
+        (flow_id,)).fetchone()
+    done = conn.execute(
+        'SELECT completed_at FROM flow_run WHERE flow_id = ? AND date = ?',
+        (flow_id, key)).fetchone()
+    if live or (done and done['completed_at']):
+        conn.close()
+        return None
+    default_area = conn.execute(
+        """SELECT id FROM area WHERE is_default = 1 AND active = 1
+           AND type = 'standard' LIMIT 1""").fetchone()
+    area_id = f['area_id'] or (default_area['id'] if default_area else None)
+    if area_id is None:
+        conn.close()
+        return None
+    cur = conn.execute(
+        """INSERT INTO inbox_item (content, status, kind, area_id, flow_id)
+           VALUES (?, 'active', 'item', ?, ?)""", (f['name'], area_id, flow_id))
+    conn.execute(
+        'INSERT OR REPLACE INTO flow_task_seed (flow_id, date, item_id) VALUES (?, ?, ?)',
+        (flow_id, key, cur.lastrowid))
+    conn.commit()
+    row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (cur.lastrowid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
 def get_recurring_tasks():
     conn = get_conn()
     rows = conn.execute('SELECT * FROM recurring_task ORDER BY active DESC, name').fetchall()
@@ -5487,6 +5536,24 @@ def pawned_minutes_for_node(node_id, ymd):
         '  FROM flow_step s JOIN flow f ON f.id = s.pawn_to_flow_id'
         ' WHERE s.pawned_date = ? AND f.qr_node_id = ?',
         (ymd, node_id)).fetchone()
+    conn.close()
+    return int(row['m'] or 0)
+
+
+def pawned_minutes_for_flow(flow_id, ymd):
+    """Minutes pawned INTO this routine on this date.
+
+    The twin of pawned_minutes_for_node, and the one it is now written in terms
+    of: a gate's window moves because the ROUTINE it gates has more to do, so
+    there is one number and the gate borrows it rather than computing its own.
+    """
+    if not flow_id:
+        return 0
+    conn = get_conn()
+    row = conn.execute(
+        'SELECT COALESCE(SUM(pawn_minutes), 0) AS m FROM flow_step'
+        ' WHERE pawned_date = ? AND pawn_to_flow_id = ?',
+        (ymd, flow_id)).fetchone()
     conn.close()
     return int(row['m'] or 0)
 

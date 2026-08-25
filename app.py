@@ -2073,7 +2073,7 @@ def _gate_day_payload(node, ymd, now=None):
     else:
         source = 'the gate default'
 
-    # The pawn shortens the deadline by COMPUTATION, never as a written
+    # The pawn moves the OPENING earlier by COMPUTATION, never as a written
     # override, so it is invisible in every column — which is exactly why it
     # belongs here. An override stands as written and the pawn does not apply
     # (resolve_window returns before _less_pawned), so say that rather than
@@ -2710,6 +2710,23 @@ def patch_flow(id):
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     return jsonify(flow)
+
+
+# PUT IT IN THE POOL NOW (2026-08-25, asked for). A routine that is also a task
+# appears on the days its schedule says; this is the explicit "I want it today"
+# — the same seeding, the same ledger, one action per period either way. No date
+# default to argue about: the client sends the day it is looking at.
+@app.route('/api/flows/<int:id>/seed-task', methods=['POST'])
+def post_flow_seed_task(id):
+    d = request.get_json(silent=True) or {}
+    ymd = d.get('date')
+    if ymd and not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    item = storage.seed_flow_task_now(id, ymd)
+    if not item:
+        return jsonify({'error': 'it is already in the pool, or this period is '
+                                 'already finished'}), 409
+    return jsonify(item), 201
 
 
 @app.route('/api/flows/<int:id>', methods=['DELETE'])

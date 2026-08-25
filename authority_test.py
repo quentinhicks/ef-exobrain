@@ -43,6 +43,12 @@ READS = {
         'flow_run.completed_at — RECOMPUTED at the write: put_flow_run honours '
         'completed only after run_completion_ok re-checks today\'s day_steps '
         'and every hard metrics step (storage.run_completion_ok).',
+    'pawned_minutes_for_flow':
+        'the SERVER decides, and it is the number pawned_minutes_for_node is '
+        'written in terms of — one sum, from flow_step rows the pawn route '
+        'stamps with the RUN day. Since 2026-08-25 it can only move a '
+        'window OPENING earlier (qr_judge.opened_earlier), so no value it '
+        'returns can shorten a deadline or cost money.',
     'pawned_minutes_for_node':
         'flow_step.pawned_date — shortens a gate deadline, so it is a money '
         'input. Guarded at the write by pawn_flow_step refusing a step with no '

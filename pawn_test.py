@@ -6,8 +6,15 @@ naming the failure it prevents.
 This mechanic earns tests because it spans three things that are easy to get
 individually right and jointly wrong: which routine owns a step TODAY, what the
 receiving gate's window is, and the fact that both have to come back when the
-step is taken back. The gate shortening is derived rather than stored precisely
+step is taken back. The window change is derived rather than stored precisely
 so that last part cannot rot, and that is what is asserted here.
+
+2026-08-25, Quentin's instruction: pawned work moves the OPENING earlier and
+never the close. It used to pull the deadline in, which punished you for moving
+work — the same amount to do, in less time, on a gate that got harder every
+time you rescheduled. Both ends are asserted below: the opening moves, the
+deadline does not, and the routine's own window follows the identical rule
+through the identical function (qr_judge.opened_earlier).
 """
 
 import os
@@ -93,8 +100,8 @@ eq('pawned: the step leaves the routine it was pawned FROM',
 eq('pawned: and joins the one it was pawned TO, FIRST — carried debt is done'
    ' before the receiving routine\'s own steps, not against its deadline',
    due()['Night'], ['Tidy desk', 'Journal'])
-eq('pawned: the receiving gate closes 10 minutes earlier',
-   window(), ('22:00', '22:50', 0))
+eq('pawned: the receiving gate OPENS 10 minutes earlier, and closes when it did',
+   window(), ('21:50', '23:00', 0))
 eq('pawned: it is marked so the runner can say where it came from',
    [(s.get('pawned_in'), s.get('from_flow_id'))
     for f in storage.get_flows(TODAY) if f['name'] == 'Night'
@@ -155,11 +162,12 @@ storage.update_flow_step(111, pawn_to_flow_id=None)
 eq('clearing the destination takes the step home', due()['Morning'], ['Tidy desk', 'Meditate'])
 eq('clearing the destination restores the gate', window(), ('22:00', '23:00', 0))
 
-# A pawn can never make a gate unsatisfiable: the deadline stops at the opening.
+# A pawn can never invert a window: the opening stops at midnight and the close
+# is not touched at all, so there is no arithmetic here that can cross them.
 storage.update_flow_step(111, pawn_to_flow_id=102, pawn_minutes=5000)
 storage.pawn_flow_step(111)
-eq('an absurd cost clamps at the opening rather than inverting the window',
-   window(), ('22:00', '22:00', 0))
+eq('an absurd cost clamps at midnight rather than running into yesterday',
+   window(), ('00:00', '23:00', 0))
 storage.pawn_flow_step(111, on=False)
 storage.update_flow_step(111, pawn_minutes=10)
 
@@ -205,6 +213,36 @@ eq('a pawn filed under yesterday does not shorten TODAY\'s gate',
 eq('and the step is carried on the day it was pawned, not today',
    [s['content'] for s in storage.steps_pawned_into(102, YDAY)], ['Tidy desk'])
 eq('…not on today', [s['content'] for s in storage.steps_pawned_into(102, TODAY)], [])
+
+# ── THE ROUTINE'S OWN WINDOW obeys the same rule ─────────────────────────────
+#
+# The gate above is the scan window; this is the routine's own hours, which is
+# what "the routine starts earlier" actually means. Both go through
+# opened_earlier, so the pair cannot drift.
+storage.pawn_flow_step(111, on=False)
+storage.pawn_flow_step(112, on=False)
+storage.update_flow_step(111, pawn_minutes=20)
+src = storage.create_schedule_source(
+    'rule', title='night hours', start=f'{TODAY}T21:00:00', duration='PT2H',
+    recurrenceRules=[{'frequency': 'daily', 'interval': 1}])
+storage.update_flow(102, source_uid=src['uid'])
+night = [f for f in storage.get_flows() if f['id'] == 102][0]
+eq('at rest: the routine runs its own hours',
+   qr_judge.flow_day_window(night, TODAY), (21 * 60, 23 * 60))
+storage.pawn_flow_step(111)
+night = [f for f in storage.get_flows() if f['id'] == 102][0]
+eq('pawned: it OPENS 20 minutes earlier and is due at the same minute',
+   qr_judge.flow_day_window(night, TODAY), (20 * 60 + 40, 23 * 60))
+storage.pawn_flow_step(111, on=False)
+night = [f for f in storage.get_flows() if f['id'] == 102][0]
+eq('taken back: the routine returns to its own hours',
+   qr_judge.flow_day_window(night, TODAY), (21 * 60, 23 * 60))
+
+# The rule itself, in isolation — one function, so a new window kind gets this
+# behaviour by asking rather than by remembering.
+eq('opened_earlier moves only the start', qr_judge.opened_earlier(600, 700, 25), (575, 700))
+eq('…and does nothing with nothing pawned', qr_judge.opened_earlier(600, 700, 0), (600, 700))
+eq('…and stops at midnight', qr_judge.opened_earlier(30, 700, 90), (0, 700))
 
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)
