@@ -66,9 +66,13 @@ def scan(node_id, ymd, hhmm='07:00'):
                         None, None, None)
 
 
-def complete(flow_id, ymd, hhmm):
+def complete(flow_id, ymd, hhmm, day=None):
+    # `ymd` is the day the run is FILED under; `day` is the day the clock said
+    # when it was finished. They differ for a night routine finished after
+    # midnight, which is the whole point of flowRunView.date — the run belongs
+    # to the day it was opened on.
     storage.upsert_flow_run(flow_id, ymd, '{}', True)
-    local = dt.fromisoformat(f'{ymd}T{hhmm}:00')
+    local = dt.fromisoformat(f'{day or ymd}T{hhmm}:00')
     iso = dt.utcfromtimestamp(local.timestamp()).isoformat() + '+00:00'
     conn = storage.get_conn()
     conn.execute('UPDATE flow_run SET completed_at = ? WHERE flow_id = ? AND date = ?',
@@ -96,6 +100,12 @@ def judged(node_id, ymd):
     return storage.qr_node_day_state(node_id, ymd)['judged']
 
 
+# PAST THE SETTLE POINT, not the wall clock. Yesterday is not judgeable until
+# midnight plus ROUTINE_GRACE_HOURS, so a bare judge() here passed by day and
+# failed between midnight and 04:00 — a money tripwire that lies for four hours
+# a night is worse than one that is missing.
+SETTLED = dt.fromisoformat(f'{TODAY}T09:00:00')
+
 # ── the ladder, all five combinations ─────────────────────────────────────
 CASES = [
     # (label, scanned, routine done at, expected credit, expected reason)
@@ -113,7 +123,7 @@ for i, (label, did_scan, done_at, want_credit, want_reason) in enumerate(CASES):
         scan(nid, YESTERDAY)
     if done_at:
         complete(fid, YESTERDAY, done_at)
-    qr_judge.judge()
+    qr_judge.judge(now=SETTLED)
     j = judged(nid, YESTERDAY)
     got = (j or {}).get('credit_pct'), (j or {}).get('failure_reason')
     check('%s -> %d%% back, %s' % (label, want_credit, want_reason or 'nothing owed'),
@@ -123,13 +133,13 @@ for i, (label, did_scan, done_at, want_credit, want_reason) in enumerate(CASES):
 fresh()
 nid, _ = gate('tok-noflow-a', with_routine=False)
 scan(nid, YESTERDAY)
-qr_judge.judge()
+qr_judge.judge(now=SETTLED)
 check('no routine, scanned: nothing owed', (judged(nid, YESTERDAY) or {}).get('credit_pct') == 100,
       judged(nid, YESTERDAY))
 
 fresh()
 nid, _ = gate('tok-noflow-b', with_routine=False)
-qr_judge.judge()
+qr_judge.judge(now=SETTLED)
 j = judged(nid, YESTERDAY)
 check('no routine, not scanned: the WHOLE stake, not half',
       (j['credit_pct'], j['failure_reason']) == (0, 'absent'), j)
@@ -145,9 +155,36 @@ complete(fid, TODAY, '19:00')
 qr_judge.judge(now=dt.fromisoformat(f'{TODAY}T23:59:00'))
 check('...still not judged at 23:59', judged(nid, TODAY) is None, judged(nid, TODAY))
 qr_judge.judge(now=dt.fromisoformat(f'{TOMORROW}T00:01:00'))
+check('...nor at 00:01 — the grace is what lets an after-midnight finish land',
+      judged(nid, TODAY) is None, judged(nid, TODAY))
+qr_judge.judge(now=dt.fromisoformat(f'{TOMORROW}T04:01:00'))
 j = judged(nid, TODAY)
-check('...and once the day is over, the evening routine earned its half',
+check('...and once the grace is out, the evening routine earned its half',
       (j or {}).get('credit_pct') == 50, j)
+
+# THE CASE THE GRACE EXISTS FOR. A run belongs to the day it was OPENED on and
+# openFlowRun resumes yesterday's unfinished one, so a night routine finished
+# at 00:05 is a statement about YESTERDAY. Judging at midnight froze the day
+# five minutes before the half was earned: earned and unearnable at once.
+fresh()
+nid, fid = gate('tok-after-midnight')
+qr_judge.judge(now=dt.fromisoformat(f'{TODAY}T00:03:00'))
+check('a day whose routine can still be finished is not judged at 00:03',
+      judged(nid, YESTERDAY) is None, judged(nid, YESTERDAY))
+complete(fid, YESTERDAY, '00:05', day=TODAY)     # yesterday's run, resumed
+qr_judge.judge(now=dt.fromisoformat(f'{TODAY}T04:05:00'))
+j = judged(nid, YESTERDAY)
+check('...and finishing it at 00:05 still earns the routine half',
+      (j or {}).get('credit_pct') == 50, j)
+
+# The same day with the routine left undone: half the money, and the ONLY
+# difference is the finish at 00:05. Without it there is nothing to compare
+# against and the check above would pass on a gate that was never at risk.
+fresh()
+nid, fid = gate('tok-after-midnight-not')
+qr_judge.judge(now=dt.fromisoformat(f'{TODAY}T04:05:00'))
+check('...where never finishing it costs the whole stake',
+      (judged(nid, YESTERDAY) or {}).get('credit_pct') == 0, judged(nid, YESTERDAY))
 
 fresh()
 nid, _ = gate('tok-timing-noflow', with_routine=False)
@@ -225,7 +262,7 @@ check('a $1.00 half fits under a $1.50 cap that $2.00 would have breached',
 fresh()
 nid, fid = gate('tok-outcome')
 scan(nid, YESTERDAY)
-qr_judge.judge()
+qr_judge.judge(now=SETTLED)
 out = {(o['node_id'], o['date']): o['outcome']
        for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)}
 check('a half-met day draws as PARTIAL, not as failed',
@@ -233,7 +270,7 @@ check('a half-met day draws as PARTIAL, not as failed',
 
 fresh()
 nid, fid = gate('tok-outcome-2')
-qr_judge.judge()
+qr_judge.judge(now=SETTLED)
 out = {(o['node_id'], o['date']): o['outcome']
        for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)}
 check('a day with neither half still draws as failed',
@@ -243,7 +280,7 @@ fresh()
 nid, fid = gate('tok-outcome-3')
 scan(nid, YESTERDAY)
 complete(fid, YESTERDAY, '07:30')
-qr_judge.judge()
+qr_judge.judge(now=SETTLED)
 out = {(o['node_id'], o['date']): o['outcome']
        for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)}
 check('both halves draws as success', out.get((nid, YESTERDAY)) == 'success', out)
@@ -255,10 +292,14 @@ check('an old row with no credit reads as a plain failure',
 # ── the freeze still holds ────────────────────────────────────────────────
 fresh()
 nid, fid = gate('tok-freeze')
-qr_judge.judge()
+# An explicit `now` past the settle point, not the wall clock: yesterday is not
+# judgeable until midnight plus ROUTINE_GRACE_HOURS, so a bare judge() made
+# this block pass by day and fail between midnight and 04:00.
+SETTLED = dt.fromisoformat(f'{TODAY}T09:00:00')
+qr_judge.judge(now=SETTLED)
 first = judged(nid, YESTERDAY)
 complete(fid, YESTERDAY, '21:00')          # too late: the day is already judged
-qr_judge.judge()
+qr_judge.judge(now=SETTLED)
 check('a judged day is not re-opened by finishing the routine afterwards',
       judged(nid, YESTERDAY)['credit_pct'] == first['credit_pct'],
       (first, judged(nid, YESTERDAY)))

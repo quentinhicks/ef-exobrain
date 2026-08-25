@@ -443,20 +443,35 @@ def day_credit(node, ymd, flow, scans, now=None):
     return NONE, 'absent'
 
 
+# HOW FAR PAST MIDNIGHT A ROUTINE CAN STILL EARN ITS HALF (2026-08-25,
+# Quentin's instruction). Midnight alone contradicted a rule the app already
+# had: a run belongs to the day it was OPENED on, and openFlowRun deliberately
+# resumes yesterday's unfinished run — so a night routine finished at 00:05
+# credits a day the judge, which settles at 00:00 and runs every five minutes,
+# had already frozen. The half was earned and unearnable at the same time.
+#
+# Four hours, not twenty-four. A full day would keep Monday chargeable while
+# Tuesday's routine was already running, so two money days would be open at
+# once; this covers the finish-after-midnight case that actually happens and
+# closes the day before the next one starts.
+ROUTINE_GRACE_HOURS = 4
+
+
 def settle_after(node, ymd, flow, window):
     """The moment this day can be judged without the answer still moving.
 
     The scan window's close, and — where a routine is linked — the end of the
-    day itself, because the routine can earn its half right up to midnight.
-    Judging at the scan's close would charge the full stake for a routine that
-    was about to be done, and a judged day is FROZEN, so there is no second
-    look. This is the whole reason the split needs a timing rule at all.
+    day PLUS the grace above, because the routine can earn its half right up
+    to then. Judging at the scan's close would charge the full stake for a
+    routine that was about to be done, and a judged day is FROZEN, so there is
+    no second look. This is the whole reason the split needs a timing rule.
     """
     start, end, offset = window
     close = _local_dt(close_date_of(ymd, offset), end)
     if flow is None:
         return close
-    day_end = _local_dt(_date_plus(ymd, 1), '00:00')
+    day_end = (_local_dt(_date_plus(ymd, 1), '00:00')
+               + timedelta(hours=ROUTINE_GRACE_HOURS))
     return max(close, day_end)
 
 
