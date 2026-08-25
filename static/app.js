@@ -2731,7 +2731,7 @@ function closeSeSheet() {
 // deleting. Which gate a new tag belongs to is remembered here, because
 // openSeSheet takes a kind and an item and a tag being CREATED has no item to
 // carry its parent.
-const tagSheetView = { gate: null };
+const tagSheetView = { gate: null, reveal: false };
 
 function tagState(t) {
   if (!t.keys_set) return 'no keys yet';
@@ -2751,21 +2751,26 @@ const TAG_SETUP_INFO = [
   { h: 'Before you open NFC.cool', start: 1, items: [
     { t: 'Get the UID. Read the tag with NFC.cool — it shows the chip type and '
        + 'the UID. You want the 7-byte, 14-hex-character value.' },
-    { t: 'Generate the two keys yourself, as hex, somewhere you can read them. '
-       + 'NFC.cool will take a key as a passphrase, but this app needs the '
-       + 'actual key bytes — a passphrase whose hex you cannot see is a key you '
-       + 'cannot paste in here.',
-      code: "python -c \"import secrets; print('meta', secrets.token_hex(16)); "
-       + "print('file', secrets.token_hex(16))\"" },
-    { t: 'Copy the tap URL. The Tags row above prints it in full. The zeros are '
-       + 'placeholders — the tag overwrites them on every tap.',
+    { t: 'Add the tag here NOW: + Tag → name, UID, then Generate. The app picks '
+       + 'the two AES-128 keys and SHOWS them, one Copy button each, so they '
+       + 'can go straight into the writer. Adding it before programming means a '
+       + 'half-failed write never leaves you holding a configured tag whose '
+       + 'keys are nowhere.', sub: [
+      'Copy both while the sheet is open, or keep it open while you program: '
+        + 'once saved they are never shown again, the same contract the '
+        + 'Beeminder token keeps.',
+      'Lost them anyway? Generate a fresh pair and rewrite the tag. There is '
+        + 'no lookup, by design.',
+      'Pasting a pair the writer generated works too — but as HEX. NFC.cool '
+        + 'will take a key as a passphrase, and a passphrase whose bytes you '
+        + 'cannot see is a key you cannot enter here.',
+    ] },
+    { t: 'Copy the tap URL — the row above the tags has its own Copy button. '
+       + 'The zeros are placeholders; the tag overwrites them on every tap.',
       code: 'https://<host>:8443/t?e=000…000&c=0000000000000000' },
-    { t: 'Add the tag here NOW, keys and all: + Tag → name, UID, both keys. Do '
-       + 'it before programming, so a half-failed write does not leave you '
-       + 'holding a configured tag whose keys are only in your scrollback.' },
   ] },
-  { h: 'In NFC.cool Tools', start: 5, items: [
-    { t: 'Write the NDEF URL — the full tap URL from step 3, zeros included.' },
+  { h: 'In NFC.cool Tools', start: 4, items: [
+    { t: 'Write the NDEF URL — the full tap URL you copied, zeros included.' },
     { t: 'Turn on SUN / SDM on the NDEF file (file 02):', sub: [
       'Encrypted PICC data mirror positioned at the e= zeros, with UID '
         + 'mirroring and read-counter mirroring both on. Not the plain '
@@ -2787,7 +2792,7 @@ const TAG_SETUP_INFO = [
        + 'reconfigured.' },
     { t: 'Leave it in AES mode. If you see an LRP option, do not.' },
   ] },
-  { h: 'Then', start: 9, items: [
+  { h: 'Then', start: 8, items: [
     { t: 'Back here: set Proof to “NFC tag only”. It refuses until the tag and '
        + 'its keys are in place — that refusal is the check working.' },
     { t: 'Tap it. You should get “Logged — <tag name>, read N”. If you do not, '
@@ -2825,30 +2830,71 @@ function openRoutineFromGate(node, flowId) {
 }
 
 function gateTagRows(n) {
-  const rows = (n.tags || []).map((t, i) => ({
+  // THE TAP URL IS COPYABLE, like the scan link further down the sheet. It used
+  // to be printed inside the + Tag row's sentence, which made a 70-character
+  // string carrying two runs of placeholder zeros something you had to select
+  // by hand on a phone and retype into an NFC writer byte-perfect. That is a
+  // step that can only be done wrong.
+  const rows = n.tap_url ? [{
+    key: 'tap_url', label: 'Tap URL', kind: 'action', mono: true,
+    text: n.tap_url, action: 'Copy', keepOpen: true,
+    hint: 'Write this to the tag as its NDEF URL, zeros included — SDM overwrites'
+        + ' them with the encrypted PICC data and the MAC on every tap.',
+    run: () => copyAndSay(n.tap_url, 'Tap URL'),
+  }] : [];
+  const tags = (n.tags || []).map((t, i) => ({
     key: `tag_${t.id}`, label: i === 0 ? 'Tags' : '', kind: 'action',
     text: `${t.label} · ${t.uid} · ${tagState(t)}`,
     action: 'Edit', keepOpen: true,
     run: () => openGateTagSheet(n, t),
   }));
-  rows.push({
-    key: 'tag_add', label: rows.length ? '' : 'Tags', kind: 'action',
+  tags.push({
+    key: 'tag_add', label: tags.length ? '' : 'Tags', kind: 'action',
     text: n.tap_url
-      ? `write ${n.tap_url} to a tag`
+      ? 'name it, paste its UID, then generate or paste its two keys'
       : 'set a Scan URL in Connections first — a tag needs somewhere to point',
     action: '+ Tag', keepOpen: true,
-    hint: rows.length
+    hint: tags.length
       ? 'A tag belongs to this gate only. On a tag-only gate a NEW tag starts'
         + ' counting in 24h — it is another way to clear the gate.'
       : 'A tag proves you were AT the thing. Program the URL above into an NTAG'
-        + ' 424 DNA with SDM mirroring on, then paste its two keys here.',
+        + ' 424 DNA with SDM mirroring on, using the keys the tag sheet makes.',
     run: () => openGateTagSheet(n, null),
   });
-  return rows;
+  return rows.concat(tags);
+}
+
+// TWO AES-128 KEYS, FROM THE CSPRNG AND NOWHERE ELSE. Math.random() is not one
+// — it is seeded and predictable in bulk — and these keys are the entire reason
+// a captured tap URL is worthless, on the path that moves real money. If a
+// browser somehow has no crypto.getRandomValues, REFUSE: a weaker key looks
+// exactly like a strong one, and nothing downstream could ever tell.
+function randomTagKey() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+function generateTagKeys() {
+  if (!(window.crypto && crypto.getRandomValues)) {
+    seSheetRefuse('This browser has no cryptographic random source — paste keys'
+      + ' from your tag writer instead.');
+    return;
+  }
+  seSheet.values.meta = randomTagKey();
+  seSheet.values.mac = randomTagKey();
+  // SHOWN, not hidden. Everywhere else a key is write-only because reading one
+  // back has no honest use; here the tag is the other half of the pair and a
+  // key you cannot read is a key you cannot program. So the reveal is scoped to
+  // the sitting that generated it — the server still never hands one back, and
+  // reopening the sheet puts the password fields back.
+  tagSheetView.reveal = true;
+  renderSeSheet();
 }
 
 function openGateTagSheet(node, tag) {
   tagSheetView.gate = node;
+  tagSheetView.reveal = false;
   openSeSheet('gatetag', tag);
 }
 
@@ -2899,7 +2945,7 @@ function seFieldHtml(f, v) {
       <span>${escHtml(f.text || 'not set')}</span><span class="be-chev">›</span></button>`;
   } else if (f.kind === 'action') {
     // A state the sheet can only clear, not edit — a gate's today-only window.
-    control = `<div class="se-static">${escHtml(f.text)}</div>`
+    control = `<div class="se-static${f.mono ? ' se-mono' : ''}">${escHtml(f.text)}</div>`
       + `<button type="button" class="se-inline-act" data-f="${f.key}">${escHtml(f.action)}</button>`;
   } else if (f.kind === 'geocode') {
     // AN ADDRESS INSTEAD OF A TYPED LATITUDE. Two ways in, and the second is
@@ -4241,13 +4287,51 @@ const SETTINGS_SHEETS = {
         : [{ key: 'uid', label: 'UID', kind: 'text', placeholder: '7 bytes, 14 hex chars',
              hint: 'The tag\'s own serial — the app reads it out of the first tap it '
                  + 'verifies, so paste what the programming app shows.' }]),
-      { key: 'meta', label: 'Meta key', kind: 'password',
-        placeholder: it && it.keys_set ? '•••• set — blank leaves it' : '32 hex chars',
-        hint: 'The key the tag encrypts its UID and read counter with (SDM meta read key).' },
-      { key: 'mac', label: 'File key', kind: 'password',
-        placeholder: it && it.keys_set ? '•••• set — blank leaves it' : '32 hex chars',
-        hint: 'The key it signs each tap with (SDM file read key). Write-only: the app '
-            + 'says whether a key is set, never what it is.' },
+      // TWO STATES, one pair of keys. Pasted (what a tag writer generated): the
+      // fields are password inputs, because there is nothing to read back.
+      // Generated here: the same two values are SHOWN with a Copy each, because
+      // they have to reach the tag and this sitting is the only chance — the
+      // app will not show a stored key again, by the same rule that keeps the
+      // Beeminder token unreadable.
+      ...(tagSheetView.reveal ? [
+        { key: 'meta_show', label: 'Meta key', kind: 'action', mono: true,
+          text: v.meta, action: 'Copy', keepOpen: true,
+          hint: 'The key the tag encrypts its UID and read counter with (SDM meta read key).',
+          run: () => copyAndSay(v.meta, 'Meta key') },
+        { key: 'mac_show', label: 'File key', kind: 'action', mono: true,
+          text: v.mac, action: 'Copy', keepOpen: true,
+          hint: 'The key it signs each tap with (SDM file read key). Copy BOTH into your '
+              + 'tag writer before you save — once stored they are never shown again. '
+              + 'The way back is a new pair and a rewritten tag, not a lookup.',
+          run: () => copyAndSay(v.mac, 'File key') },
+      ] : [
+        { key: 'meta', label: 'Meta key', kind: 'password',
+          placeholder: it && it.keys_set ? '•••• set — blank leaves it' : '32 hex chars',
+          hint: 'The key the tag encrypts its UID and read counter with (SDM meta read key).' },
+        { key: 'mac', label: 'File key', kind: 'password',
+          placeholder: it && it.keys_set ? '•••• set — blank leaves it' : '32 hex chars',
+          hint: 'The key it signs each tap with (SDM file read key). Write-only: the app '
+              + 'says whether a key is set, never what it is.' },
+      ]),
+      { key: 'keygen', label: '', kind: 'action',
+        text: tagSheetView.reveal
+          ? 'a fresh pair means rewriting the tag with it'
+          : 'or let the app pick both keys',
+        action: tagSheetView.reveal ? 'Regenerate' : 'Generate', keepOpen: true,
+        hint: tagSheetView.reveal ? ''
+          : 'Two random AES-128 keys from this device’s cryptographic generator. '
+            + 'They are shown so you can copy them into the tag writer, and go into '
+            + 'config.json — never the db, which is dumped into backups and pushed.',
+        run: () => generateTagKeys() },
+      ...(tagSheetView.reveal ? [{ key: 'keydrop', label: '', kind: 'action',
+        text: 'or paste the pair your tag writer made',
+        action: 'Type them', keepOpen: true,
+        run: () => {
+          seSheet.values.meta = '';
+          seSheet.values.mac = '';
+          tagSheetView.reveal = false;
+          renderSeSheet();
+        } }] : []),
       ...(it ? [{ key: 'state', label: 'State', kind: 'static', text: tagState(it) }] : []),
       ...(it ? [seStateRow('Paused: taps are refused and cannot clear the gate. On a'
         + ' tag-only gate waking it up again waits 24h, like every other easing.')] : []),

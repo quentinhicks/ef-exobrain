@@ -622,8 +622,14 @@ select option {
 
 .se-select { cursor: pointer; }
 
+/* A read-out row. It carries URLs and 32-character keys with no spaces in
+   them, so it WRAPS rather than pushing the sheet sideways — the page body may
+   never scroll horizontally, and flex children do not shrink below their
+   content without min-width: 0. */
 .se-static {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 14px;
   color: var(--text-primary);
   padding: 4px 0;
