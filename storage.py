@@ -1249,6 +1249,7 @@ def init_db():
     conn.commit()
     _seed_review_flow(conn)
     _backfill_review_steps(conn)
+    _review_as_task(conn)
     _seed_tax_project(conn)
     _merge_review_next_actions(conn)
     # Reference lists NEST (2026-08-11): a list can live inside a list. The
@@ -5204,8 +5205,16 @@ def _seed_review_flow(conn):
     if _review_flow_id(conn):
         return
     pos = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM flow').fetchone()['p']
-    cur = conn.execute("INSERT INTO flow (name, position, period) VALUES (?, ?, 'week')",
-                       (REVIEW_FLOW_NAME, pos))
+    # AS A TASK, ON SUNDAY (2026-08-24, Quentin's instruction). The review was
+    # reachable only from a fold-out at the top of Lists, which meant the one
+    # routine with a day attached to it was the one you had to remember to go
+    # looking for. It seeds an ordinary next action like any other as_task
+    # routine, on the last day of the week it reviews ('6' — days run '0'=Mon),
+    # and an unfinished one STAYS in the pool: seed_flow_tasks only retires the
+    # action when the run completes.
+    cur = conn.execute(
+        """INSERT INTO flow (name, position, period, as_task, days_of_week)
+           VALUES (?, ?, 'week', 1, '6')""", (REVIEW_FLOW_NAME, pos))
     flow_id = cur.lastrowid
     by_kind = {}
     for i, (kind, content) in enumerate(REVIEW_FLOW_STEPS):
@@ -5235,6 +5244,26 @@ def _seed_review_flow(conn):
                         VALUES (?, ?, ?, ?)
                         ON CONFLICT(flow_id, date) DO NOTHING''',
                      (flow_id, row['week_start_date'], json.dumps(moved), row['completed_at']))
+    conn.commit()
+
+
+def _review_as_task(conn):
+    # ONCE, and recorded — the review_steps_offered idiom. `as_task` and the
+    # day are ordinary editable fields now (Settings → Recurring), so turning
+    # the task off must not be undone by the next start.
+    row = conn.execute(
+        "SELECT value FROM setting WHERE key = 'review_as_task_offered'").fetchone()
+    if row and row['value']:
+        return
+    flow_id = _review_flow_id(conn)
+    if flow_id:
+        conn.execute(
+            """UPDATE flow SET as_task = 1,
+                   days_of_week = COALESCE(NULLIF(days_of_week, ''), '6')
+               WHERE id = ?""", (flow_id,))
+    conn.execute(
+        """INSERT INTO setting (key, value) VALUES ('review_as_task_offered', '1')
+           ON CONFLICT(key) DO UPDATE SET value = '1'""")
     conn.commit()
 
 
@@ -5481,7 +5510,8 @@ def create_flow(name, period='day'):
 
 
 def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node_id=_UNSET,
-                source_uid=_UNSET, as_task=_UNSET, days_of_week=_UNSET, area_id=_UNSET):
+                source_uid=_UNSET, as_task=_UNSET, days_of_week=_UNSET, area_id=_UNSET,
+                period=_UNSET):
     conn = get_conn()
     # BEING A TASK is not an easing and has no money in it: it only decides
     # whether the routine also shows up in the pool. Applies at once, and
@@ -5521,6 +5551,19 @@ def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node
     if qr_node_id not in (_UNSET, None) and cur and (cur['period'] or 'day') != 'day':
         conn.close()
         raise ValueError('a weekly routine cannot gate a QR — gates judge one day')
+    # The same lock from the other side (2026-08-24): the period is editable now
+    # that routines are configured in Settings, and turning a GATING routine
+    # weekly would leave the judge looking for a run filed under the day while
+    # the routine files it under the week — a permanent "not done" on the money
+    # path. Two locks for one rule, because it is the money path.
+    if period is not _UNSET and (period or 'day') != 'day':
+        holds_gate = cur and cur['qr_node_id'] and qr_node_id is _UNSET
+        if holds_gate or (qr_node_id not in (_UNSET, None)):
+            conn.close()
+            raise ValueError('this routine gates a QR, and a gate judges one day '
+                             '— unlink it first')
+    if period is not _UNSET:
+        conn.execute('UPDATE flow SET period = ? WHERE id = ?', (period or 'day', id))
     if qr_node_id is not _UNSET:
         # UNLINKING a gated routine is the largest easing there is — the gate
         # stops judging on it entirely — so it waits 24h. Linking (or moving

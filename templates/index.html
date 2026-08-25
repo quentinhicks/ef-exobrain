@@ -180,22 +180,12 @@
       <span class="m-title" id="ref-title">Lists</span>
       <button class="modal-close-btn m-close" data-close="tab-lists">✕</button>
     </div>
-    <!-- THE WEEKLY REVIEW LIVES HERE (2026-08-16). The GTD tab is gone: its
-         four lists were MAP's lenses said twice, and the review is a ROUTINE,
-         so it belongs where the routines are. The fold-out keeps the live
-         counts paper cannot compute — chiefly the projects with no next
-         action — and ▶ runs the same flow_run the fold-out ticks into.
-         Hidden while a list or routine is open (renderRef owns that). -->
-    <button id="gtd-review-head" class="review-nav-item hidden">
-      <span>Weekly review</span>
-      <span id="gtd-review-prog" class="map-count"></span>
-      <!-- An SVG, not a ▶: U+25B6 is picked up by the emoji font on Windows,
-           which paints it blue whatever `color` says and sits it off the text's
-           baseline. Drawn here it takes currentColor and centres exactly. -->
-      <span id="gtd-review-run" class="gr-run" title="Run it as a routine — one step per page"><svg viewBox="0 0 12 12" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M2.5 1.2 L10.2 6 L2.5 10.8 Z"/></svg></span>
-      <span class="gtd-review-chevron">⌄</span>
-    </button>
-    <div id="review-panel" class="hidden"></div>
+    <!-- THE REVIEW IS NOT HERE ANY MORE (2026-08-24, Quentin's instruction).
+         Lists is for COLLECTIONS of things, not for what to do with them, and
+         the fold-out was a second surface for a routine that now seeds an
+         ordinary Sunday action in the pool — ▶ Run it opens the same run this
+         panel used to tick into. The runner renders the same REVIEW_KINDS
+         bindings and the same live counts, so nothing was lost with it. -->
     <div id="ref-body"></div>
   </div>
 

@@ -283,7 +283,7 @@ function renderAll() {
 function updateReviewNavDot() {
   // The due dot rides on the hub's LISTS icon and the review fold-out header —
   // the review moved into Lists when the GTD tab went (2026-08-16).
-  ['hub-lists-btn', 'gtd-review-head'].forEach(id => {
+  ['hub-lists-btn'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.classList.toggle('has-due', !!state.review.due);
   });
@@ -1085,13 +1085,16 @@ function startReviewPass(step) {
   });
 }
 
+// The way back from the calendar pass. It used to be the fold-out on Lists;
+// with that gone the review has ONE surface, so this is no longer a choice
+// between two — it reopens the run, which resumes at the first uncredited
+// step, i.e. the pass you just came from.
 async function returnToReview() {
   closeM('cal-overlay');
-  openM('tab-lists');
-  refView.open = null;
-  refView.openFlow = null;
-  await refreshRef();
-  await openGtdReview();
+  const id = (gtdReview && gtdReview.flow_id)
+    || await fetch('/api/gtd-review').then(r => r.json()).then(r => r.flow_id).catch(() => null);
+  if (id) await openFlowRun(id);
+  else toast('The review routine is missing');
 }
 
 function endReviewPass() {
@@ -2371,8 +2374,9 @@ const SETTINGS_SECTIONS = [
     desc: 'Rules are single patterns. Schedules gather rules, or follow something else.',
     summary: () => plural(beCounts.times, 'schedule') },
   { key: 'recurring', name: 'Recurring', group: 'Your week',
-    desc: 'Tasks that come back on a schedule.',
-    summary: () => plural(beCounts.recurring, 'task') },
+    desc: 'Tasks, projects and routines that come back on a schedule.',
+    summary: () => `${plural(beCounts.recurring, 'task')} · ${
+      plural(beCounts.routines, 'routine')}` },
   { key: 'occasions', name: 'Occasions', group: 'Your week',
     desc: 'Actions that arrive with a kind of calendar event.',
     summary: () => plural(beCounts.occasions, 'occasion') },
@@ -3460,6 +3464,111 @@ const SETTINGS_SHEETS = {
 
   // /api/areas PATCH takes ONE field per request (its handler is an if/elif
   // chain), so an edit sends one call per field that actually changed.
+  // ── A ROUTINE'S SCHEDULE IS A SETTING (2026-08-24, Quentin's instruction) ──
+  //
+  // Lists is for COLLECTIONS of things, and a routine's steps are one — so the
+  // step editor stays there. WHEN the routine is in effect, what window it
+  // runs in, whether it also lands in the pool as a task: none of that is a
+  // collection, and all of it was configured on the same page you went to to
+  // read the steps. It lives here now, beside the recurring tasks and projects
+  // it is the third kind of.
+  //
+  // The GATE link is not here either: it is on the gate (`gate.routine`),
+  // because the rule that decides ✓/✗ belongs on the thing it decides about.
+  //
+  // NO PAUSE, and that is a gap rather than a decision (see CLAUDE.md): a
+  // routine has no `active` column, and pausing one that gates a gate is the
+  // largest easing there is — it owes the 24h queue and an answer to what the
+  // judge does with the routine half of a split day. Until that is designed,
+  // the honest verbs are the days it runs on and Delete.
+  routine: {
+    title: it => it ? it.name : 'Add routine',
+    save: it => it ? 'Save routine' : 'Create routine',
+    removeLabel: 'Delete routine',
+    canRemove: it => !!it,
+    confirm: it => (it && it.qr_node_id
+      ? 'Delete this routine? It gates a QR, so the deletion waits 24h like '
+        + 'every other easing.'
+      : 'Delete this routine and its steps?'),
+    blank: () => ({ name: '', period: 'day', source: '', sourceLabel: '',
+                    as_task: false, area: '', days: [] }),
+    load: f => ({
+      name: f.name,
+      period: f.period || 'day',
+      source: f.source_uid || '', source0: f.source_uid || '',
+      sourceLabel: flowWindowLabel(f) || '',
+      as_task: !!f.as_task,
+      area: f.area_id || '',
+      days: (f.days_of_week || '').split('').filter(d => d !== '').map(Number),
+    }),
+    fields: (v, it) => [
+      { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Evening routine' },
+      { key: 'period', label: 'Files under', kind: 'select',
+        options: () => [{ value: 'day', name: 'a day' }, { value: 'week', name: 'a week' }],
+        hint: 'Which run a tick is filed under. A weekly routine may not gate a '
+          + 'gate — a gate judges one day.' },
+      ...(it ? [{ key: 'source', label: 'Window', kind: 'openpicker',
+        text: v.sourceLabel || (it.qr_node_id ? 'the gate’s deadline' : 'no window'),
+        hint: 'Its own open and due times. Without one, a gated routine is due '
+          + 'when its gate closes, ± the offset set on the gate.',
+        open: draft => openPicker({
+          sourceUid: draft.source || null,
+          onSaved: async (uid, src) => {
+            draft.source = uid;
+            draft.sourceLabel = src.label || '';
+            renderSeSheet();
+          },
+        }) }] : []),
+      ...(it && v.source ? [{ key: 'clearwindow', label: '', kind: 'action',
+        text: 'Its own hours', action: 'Clear',
+        run: async draft => { draft.source = ''; draft.sourceLabel = ''; renderSeSheet(); } }] : []),
+      { key: 'as_task', label: 'Also a task', kind: 'check',
+        on: 'in the pool', off: 'off', rerender: true,
+        hint: 'Seeds an ordinary next action on the days it runs, so a routine '
+          + 'you owe weekly is visible on the day you owe it. Finishing the run '
+          + 'takes the action away.' },
+      ...(v.as_task ? [{ key: 'area', label: 'In', kind: 'select', half: true,
+        options: () => seAreaOptions(v.area) }] : []),
+      ...(v.as_task ? [{ key: 'days', label: 'On', kind: 'days',
+        hint: 'Which days the task appears. None lit means every day.' }] : []),
+    ],
+    submit: async (v, it) => {
+      if (!v.name.trim()) return 'A routine needs a name.';
+      if (!it) {
+        const res = await apiSend('/api/flows', 'POST', { name: v.name.trim(),
+                                                          period: v.period });
+        if (!res.ok) return 'Could not create that routine.';
+        await refreshRecurringList();
+        await refreshRef();
+        return null;
+      }
+      const body = { name: v.name.trim(), period: v.period,
+                     as_task: !!v.as_task,
+                     days_of_week: v.days.length ? v.days.slice().sort().join('') : null };
+      if (v.source !== v.source0) body.source_uid = v.source || null;
+      if (v.as_task) body.area_id = v.area || null;
+      const res = await apiSend(`/api/flows/${it.id}`, 'PATCH', body);
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({}));
+        return msg.error || 'Could not save that routine.';
+      }
+      await refreshRecurringList();
+      await refreshRef();
+      // The pool seeds and retires the task, so the day has to re-read or the
+      // toggle looks like it did nothing.
+      await refreshEngage();
+      return null;
+    },
+    remove: async it => {
+      const res = await apiSend(`/api/flows/${it.id}`, 'DELETE');
+      const body = res.status === 200 ? await res.json().catch(() => null) : null;
+      if (body && body.pending) toast('It gates a gate — the deletion lands in 24h');
+      await refreshRecurringList();
+      await refreshRef();
+      await refreshEngage();
+    },
+  },
+
   area: {
     title: it => it ? 'Area' : 'Add area',
     save: it => it ? 'Save area' : 'Add area',
@@ -3712,7 +3821,8 @@ const SETTINGS_SHEETS = {
       : 'Delete this gate permanently? Its scan link stops working.'),
     blank: () => ({
       label: '', source: '', sourceLabel: '',
-      location: '', radius: '', stake: '', routine: '', effective: '',
+      location: '', radius: '', stake: '', routine: '', routine_offset: '',
+      effective: '',
     }),
     load: n => {
       // A gate with a pending deactivation reads as Inactive here, so turning
@@ -3735,6 +3845,8 @@ const SETTINGS_SHEETS = {
         stake: n.charge_cents == null ? '' : (n.charge_cents / 100).toFixed(2),
         routine: n.routine_id == null ? '' : String(n.routine_id),
         routine0: n.routine_id == null ? '' : String(n.routine_id),
+        routine_offset: n.routine_offset_min == null ? '' : String(n.routine_offset_min),
+        routine_offset0: n.routine_offset_min == null ? '' : String(n.routine_offset_min),
       };
     },
     fields: (v, it) => {
@@ -3776,6 +3888,14 @@ const SETTINGS_SHEETS = {
             (state.gateRoutines || []).map(f => ({ value: String(f.id), name: f.name }))),
           hint: 'Scanning alone won\'t pass this gate until the routine is done.'
             + ' Removing the requirement takes effect at once — unlike every other easing.' }] : []),
+        // THE OFFSET BELONGS TO THE GATE, not to the routine's own page
+        // (2026-08-24): it is minutes from THIS gate's deadline, so it only
+        // means anything beside the link that creates it. Pushing it later is
+        // an easing and waits 24h, which is why it says so here.
+        ...(it && v.routine ? [{ key: 'routine_offset', label: 'Due', kind: 'number',
+          half: true, suffix: 'min', placeholder: '0',
+          hint: 'Minutes from this gate\'s deadline — negative is before it. A '
+            + 'routine with its own window ignores this. Later waits 24h.' }] : []),
         ...(it ? [{ key: 'stake', label: 'Stake', kind: 'number', step: '0.25', min: 0,
           half: true, placeholder: 'default',
           hint: 'What failing this gate costs. Blank uses the default in Billing below.'
@@ -3906,6 +4026,14 @@ const SETTINGS_SHEETS = {
         if (v.routine) {
           await apiSend(`/api/flows/${v.routine}`, 'PATCH', { qr_node_id: n.id });
         }
+      }
+      // The offset is the routine's column, set from here because it is
+      // measured from this gate. The server decides whether a later one waits
+      // 24h — this only sends it.
+      if (v.routine && String(v.routine_offset) !== String(v.routine_offset0)) {
+        const off = String(v.routine_offset).trim() === ''
+          ? null : parseInt(v.routine_offset, 10);
+        await apiSend(`/api/flows/${v.routine}`, 'PATCH', { offset_min: off });
       }
       if (v.location) {
         const loc = state.locations.find(l => String(l.id) === String(v.location));
@@ -4206,7 +4334,9 @@ async function openBlockEditor() {
   renderBeDomains();
   renderBeBlocks(blocks);
   await renderQrManager();
-  renderBeRecurring(await apiGet('/api/recurring', []), projects);
+  // Routines are the third recurring kind now, and they have their own fetch —
+  // so the loader is asked for the section rather than being half-fed here.
+  await refreshRecurringList();
   renderBeOccasions(await apiGet('/api/occasions', []));
   // Loaded on OPEN, not only when the section is entered: the index states
   // "N metrics" beside the row, and a count that reads 0 until you tap it is
@@ -4451,18 +4581,23 @@ function recurringScheduleLabel(t) {
 }
 
 async function refreshRecurringList() {
-  const [tasks, areas] = await Promise.all([
+  const [tasks, areas, flows] = await Promise.all([
     fetch('/api/recurring').then(r => r.json()),
     fetch('/api/areas').then(r => r.json()),
+    fetch(`/api/flows?date=${viewDay()}`).then(r => r.json()).catch(() => []),
   ]);
   state.projects = await fetch('/api/projects').then(r => r.json());
-  renderBeRecurring(tasks, areas);
+  renderBeRecurring(tasks, areas, flows);
 }
 
-function renderBeRecurring(tasks, areas) {
+function renderBeRecurring(tasks, areas, flows) {
   const list = document.getElementById('be-recurring-list');
   if (!list) return;
+  // The flows are ALWAYS passed by refreshRecurringList; refView.flows is the
+  // fallback for a repaint that happens to come from the Lists surface.
+  flows = flows || refView.flows || [];
   beCounts.recurring = tasks.filter(t => t.active).length;
+  beCounts.routines = flows.length;
   const byId = Object.fromEntries(areas.map(p => [p.id, p]));
   const projectName = id => ((state.projects || []).find(p => p.id === id) || {}).content;
   list.innerHTML = tasks.map(t => beRow({
@@ -4476,13 +4611,36 @@ function renderBeRecurring(tasks, areas) {
     // is not the default. Paused wins the slot: it is the louder fact.
     badge: !t.active ? 'paused' : t.spawn === 'project' ? 'project' : '',
   })).join('') + beAddRow('Add recurring task')
-    + `<button class="be-add-row" data-add-project="1">+ Add recurring project</button>`;
+    + `<button class="be-add-row" data-add-project="1">+ Add recurring project</button>`
+    // ROUTINES ARE THE THIRD RECURRING KIND (2026-08-24, Quentin's
+    // instruction). A recurring task seeds an action, a recurring project
+    // seeds an outcome, a routine runs a sequence — same question ("what comes
+    // back, and when"), so the same page. Its STEPS stay on Lists, which is
+    // where collections of things live.
+    + '<div class="gtd-section-head">Routines</div>'
+    + flows.map(f => beRow({
+      id: `flow-${f.id}`, name: f.name,
+      meta: (f.period || 'day') === 'week' ? 'weekly' : 'daily',
+      sub: [f.as_task ? 'also a task' : null,
+            f.qr_node_id ? 'gates a gate' : null,
+            flowWindowLabel(f) || null].filter(Boolean).join(' · '),
+      badge: '',
+    })).join('')
+    + `<button class="be-add-row" data-add-routine="1">+ Add routine</button>`;
   // Two kinds, two editors, one per kind — an ACTION is a flat set of fields
   // (se-sheet) and an OUTCOME is decided in the clarify sheet, the way every
   // other project is. The row opens whichever one made it, so nothing has two
   // editors: the #oc-sheet bargain.
   list.querySelectorAll('[data-row]').forEach(btn => {
     btn.addEventListener('click', () => {
+      // Two datatypes on one page, so the row id says which: `flow-7` is a
+      // routine, a bare id is a recurring task. Namespaced rather than
+      // disambiguated by lookup, because two id spaces WILL collide.
+      if (btn.dataset.row.startsWith('flow-')) {
+        const f = flows.find(x => String(x.id) === btn.dataset.row.slice(5));
+        if (f) openSeSheet('routine', f);
+        return;
+      }
       const t = tasks.find(x => String(x.id) === btn.dataset.row);
       if (!t) return;
       if (t.spawn === 'project') openClarifyForRecurring(t, refreshRecurringList);
@@ -4494,6 +4652,8 @@ function renderBeRecurring(tasks, areas) {
   const addProj = list.querySelector('[data-add-project]');
   if (addProj) addProj.addEventListener('click',
     () => openClarifyForRecurring(null, refreshRecurringList));
+  const addRoutine = list.querySelector('[data-add-routine]');
+  if (addRoutine) addRoutine.addEventListener('click', () => openSeSheet('routine', null));
 }
 
 async function checkActiveBlock() {
@@ -4762,8 +4922,11 @@ async function openGtdReview() {
   gtdReview = review;
   gtdReview.habits = habits;
   gtdReview.flow = (Array.isArray(flows) ? flows : []).find(f => f.id === review.flow_id) || null;
+  // LOADER FIRST, painter second. The fold-out is gone, so this is what the
+  // runner calls to refresh the live counts an `act` may have just changed —
+  // renderGtdReview no-ops without a panel, and the runner repaints itself.
   renderGtdReview();
-  document.getElementById('review-panel').classList.remove('hidden');
+  if (flowRunView.open) renderFlowRun();
   updateReviewNavDot();
 }
 
@@ -4779,26 +4942,6 @@ async function setReviewTick(key, done) {
   if (run) gtdReview.flow.run = run;
   renderGtdReview();
   updateReviewNavDot();
-}
-
-function initGtdReviewFold() {
-  document.getElementById('gtd-review-head').addEventListener('click', () => {
-    const panel = document.getElementById('review-panel');
-    if (panel.classList.contains('hidden')) openGtdReview();
-    else panel.classList.add('hidden');
-  });
-  // RUN IT AS A ROUTINE: the same steps, one per page, in the runner every
-  // other routine uses. A span, not a button — it sits inside the fold-out's
-  // own button, and it must not toggle it.
-  const run = document.getElementById('gtd-review-run');
-  if (run) run.addEventListener('click', async e => {
-    e.preventDefault();
-    e.stopPropagation();
-    const id = (gtdReview && gtdReview.flow_id)
-      || await fetch('/api/gtd-review').then(r => r.json()).then(r => r.flow_id).catch(() => null);
-    if (id) openFlowRun(id);
-    else toast('The review routine is missing');
-  });
 }
 
 // The two review tallies. Two vocabularies on purpose, no shared words:
@@ -5599,14 +5742,6 @@ function renderRef() {
   const title = document.getElementById('ref-title');
   if (!body) return;
 
-  // The weekly review sits at the INDEX only — drilling into a list or a
-  // routine is a different job, and the fold-out would be a second thing
-  // competing for the top of a surface you came to read one list on.
-  const atIndex = refView.openFlow == null && refView.open == null;
-  const head = document.getElementById('gtd-review-head');
-  if (head) head.classList.toggle('hidden', !atIndex);
-  if (!atIndex) document.getElementById('review-panel').classList.add('hidden');
-
   const openFlow = refView.flows.find(f => f.id === refView.openFlow);
   if (openFlow) { renderFlowEditor(body, title, openFlow); return; }
 
@@ -5925,64 +6060,32 @@ function stepPending(s, field) {
   return all.sort((a, b) => String(a.apply_at).localeCompare(String(b.apply_at)))[0] || null;
 }
 
+// The routine's schedule in one sentence, and where to change it. A page that
+// simply dropped those fields would read as having lost them.
+function flowScheduleLine(f) {
+  const bits = [];
+  bits.push((f.period || 'day') === 'week' ? 'Files under the week' : 'Files under the day');
+  const w = flowWindowLabel(f);
+  if (w) bits.push(w);
+  if (f.qr_node_id) {
+    const n = (state.accountabilityNodes || []).find(x => x.id === f.qr_node_id);
+    bits.push(`gates ${n ? escHtml(n.label) : 'a gate'}`);
+  }
+  if (f.as_task) bits.push('also a task');
+  return `${bits.join(' · ')} — change that in Settings → Recurring${
+    f.qr_node_id ? ', and the gate link on the gate itself' : ''}.`;
+}
+
 function renderFlowEditor(body, title, f) {
   title.textContent = f.name;
-  const nodes = (state.accountabilityNodes || []).filter(n => n.active);
-  const nodeOpts = sel => `<option value="">—</option>` + nodes.map(n =>
-    `<option value="${n.id}"${n.id === sel ? ' selected' : ''}>${escHtml(n.label)}</option>`).join('');
+  // WHAT THIS PAGE IS FOR: the steps. A routine's schedule — when it runs, its
+  // window, whether it is also a task — moved to Settings → Recurring
+  // (2026-08-24, Quentin's instruction), and the gate it gates is set on the
+  // GATE. Lists is for collections of things; the steps are the collection,
+  // and everything else was configuration that happened to be stored here.
   body.innerHTML = `
     <button id="ref-back" class="log-back-btn">‹ All lists</button>
-    <div class="fr-link">
-      <span class="cl-label">Gate</span>
-      <select id="fr-qr" class="map-area">${nodeOpts(f.qr_node_id)}</select>
-      <input type="number" id="fr-offset" class="fr-offset" placeholder="±min"
-        title="Minutes relative to the gate deadline (negative = before)" value="${f.offset_min ?? ''}">
-      <span class="cl-label">or before</span>
-      <select id="fr-before" class="map-area">${nodeOpts(f.before_node_id)}</select>
-    </div>
-    <div class="fr-link-hint">Linked gates judge ✗ unless this routine completes for the day.</div>
-    ${/* THE ROUTINE'S OWN WINDOW (2026-08-12). A gate has an open and a due
-          time; a routine had only a deadline, derived from its gate's. So
-          "open at 7, due at a time I choose" could not be said. Its window is
-          a schedule source like everything else, which is what makes it
-          followable: pick "the work scan (gate)" in the picker's Follows row
-          and the routine's window is derived from that gate's hours. */''}
-    <div class="fr-link">
-      <span class="cl-label">Window</span>
-      <button class="cl-pill${f.source_uid ? ' cl-pill-on' : ''}" id="fr-window">${
-        f.source_uid ? escHtml(flowWindowLabel(f) || 'set') : 'set open + due…'}</button>
-      ${f.source_uid ? '<button class="cl-x" id="fr-window-x" title="Back to the gate\'s deadline">✕</button>' : ''}
-    </div>
-    <div class="fr-link-hint">${f.source_uid
-      ? 'Its own hours. Clear it to fall back to the gate deadline ± offset.'
-      : 'No window of its own — the deadline above is the gate\'s, ± the offset.'}</div>
-    ${/* ALSO A TASK (2026-08-16). Running a routine was only reachable from
-          here or the GTD fold-out's ▶, so a routine you do weekly was invisible
-          on the day you were meant to do it. This seeds an ordinary next action
-          on the days it runs — same pool, same clarify sheet, same undo as any
-          other action — and the action's sheet has the ▶ back into the runner.
-          Being a task and gating a QR are independent: a routine can be both. */''}
-    <div class="fr-link">
-      <span class="cl-label">Also a task</span>
-      <button class="cl-pill${f.as_task ? ' cl-pill-on' : ''}" id="fr-astask">${
-        f.as_task ? 'in the pool' : 'off'}</button>
-      ${f.as_task ? `<span class="cl-label">in</span>
-      <select id="fr-task-area" class="map-area">${
-        (state.areas || []).filter(a => a.active && a.type === 'standard').map(a =>
-          `<option value="${a.id}"${a.id === f.area_id ? ' selected' : ''}>${
-            escHtml(a.name)}</option>`).join('')}</select>` : ''}
-    </div>
-    ${f.as_task ? `
-    <div class="fr-link fr-sheet-days">
-      <span class="cl-label">On</span>
-      ${DAY_LETTERS.map((d, n) => `<button class="fr-day${
-        (f.days_of_week || '').includes(String(n)) ? ' fr-day-on' : ''}"
-        data-taskdow="${n}" title="${DAY_NAMES[n]}">${d}</button>`).join('')}
-      <span class="cl-hint">${f.days_of_week ? 'only the lit days' : 'every day'}</span>
-    </div>
-    <div class="fr-link-hint">One action per ${
-      (f.period || 'day') === 'week' ? 'week' : 'day'} — ticking it off is the
-      end of it until the next one, and finishing the routine takes it away.</div>` : ''}
+    <div class="fr-link-hint">${flowScheduleLine(f)}</div>
     <div class="ref-list">${(() => {
       // A HEADER is a label, not a step: storage drops it from `day_steps`, so
       // it is never run, never credited and never counted. It carries no
@@ -6028,25 +6131,6 @@ function renderFlowEditor(body, title, f) {
     <button id="fr-add-header" class="map-add-btn">+ header</button></div>
     <button class="fr-play fr-play-big" data-flow="${f.id}">${playMark()} Run</button>`;
 
-  const patchFlow = async body2 => {
-    await apiSend(`/api/flows/${f.id}`, 'PATCH', body2);
-    await refreshRef();
-    // The pool is what seeds and retires the action, so the day has to re-read
-    // or the toggle looks like it did nothing.
-    await refreshEngage();
-  };
-  body.querySelector('#fr-astask').addEventListener('click', () =>
-    patchFlow({ as_task: f.as_task ? 0 : 1 }));
-  const taskArea = body.querySelector('#fr-task-area');
-  if (taskArea) taskArea.addEventListener('change', e =>
-    patchFlow({ area_id: parseInt(e.target.value) || null }));
-  body.querySelectorAll('[data-taskdow]').forEach(b => b.addEventListener('click', () => {
-    const n = b.dataset.taskdow;
-    const cur = new Set([...(f.days_of_week || '')]);
-    if (cur.has(n)) cur.delete(n); else cur.add(n);
-    patchFlow({ days_of_week: [...cur].sort().join('') });
-  }));
-
   body.querySelector('#fr-add-step').addEventListener('click', () => openEntrySheet({
     title: `${f.name} · add step`, placeholder: 'What is the step?',
     add: async raw => {
@@ -6079,27 +6163,6 @@ function renderFlowEditor(body, title, f) {
     refView.openFlow = null;
     renderRef();
   });
-  const linkPatch = async patch => {
-    await apiSend(`/api/flows/${f.id}`, 'PATCH', patch);
-    await refreshRef();
-  };
-  body.querySelector('#fr-qr').addEventListener('change', e =>
-    linkPatch({ qr_node_id: e.target.value ? parseInt(e.target.value) : null }));
-  body.querySelector('#fr-offset').addEventListener('change', e =>
-    linkPatch({ offset_min: e.target.value === '' ? null : parseInt(e.target.value) }));
-  body.querySelector('#fr-before').addEventListener('change', e =>
-    linkPatch({ before_node_id: e.target.value ? parseInt(e.target.value) : null }));
-  // Consumer mode: the picker hands back a uid and the routine holds it. Follows
-  // is ALLOWED here (unlike a gate's picker) — a routine deriving its hours from
-  // the gate it serves is the point, and the gate's own window keeps the 24h
-  // protection whatever derives from it.
-  body.querySelector('#fr-window').addEventListener('click', () => openPicker({
-    sourceUid: f.source_uid || null,
-    onSaved: async uid => { await linkPatch({ source_uid: uid }); },
-  }));
-  const winX = body.querySelector('#fr-window-x');
-  if (winX) winX.addEventListener('click', () => linkPatch({ source_uid: null }));
-
   // Every SETTING is decided in the step sheet now (see openStepSheet) — the
   // row keeps only what a list alone can do: its order.
   body.querySelectorAll('.fr-open').forEach(b => b.addEventListener('click', () =>
@@ -9457,7 +9520,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initPanelToggle();
   initBlockEditor();
   initTimeline();
-  initGtdReviewFold();
   initLogsView();
   initPeopleModals();
   initHub();

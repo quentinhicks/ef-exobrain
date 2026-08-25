@@ -1817,6 +1817,9 @@ def _node_payload(node, today, routines=None):
                 today_state=storage.qr_node_day_state(node['id'], today),
                 routine=rt['name'] if rt else None,
                 routine_id=rt['id'] if rt else None,
+                # The offset is set from the GATE sheet now (it is minutes from
+                # this gate's deadline), so the gate has to carry it.
+                routine_offset_min=(rt.get('offset_min') if rt else None),
                 schedule_label=label,
                 day_windows=storage.qr_gate_day_windows(node),
                 pending_changes=pending,
@@ -2699,7 +2702,7 @@ def patch_flow(id):
         kwargs['before_node_id'] = data['before_node_id']
     if 'source_uid' in data:
         kwargs['source_uid'] = data['source_uid']
-    for f in ('as_task', 'days_of_week', 'area_id'):
+    for f in ('as_task', 'days_of_week', 'area_id', 'period'):
         if f in data:
             kwargs[f] = data[f]
     try:
