@@ -1577,9 +1577,42 @@ body.calendar-minimized #review-modal {
   position: absolute;
   left: 20%;
   right: 14px;
-  padding: 2px 10px 2px 12px;
+  padding: 2px 10px 2px 14px;
   overflow: hidden;
   min-height: 22px;
+}
+
+/* The event's grab bar — the manipulation surface, mirroring .tl-block-bar
+   (and through it the gate pills). It exists so a finger can have BOTH
+   gestures: a 550ms hold on the box hides the event, the same hold on this
+   drags it, and one element cannot arm two long presses. */
+.tl-ev-bar {
+  position: absolute;
+  left: 0;
+  top: 1px;
+  bottom: 1px;
+  width: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ev-color, var(--accent)) 55%, var(--block-mix));
+}
+.tl-ev-bar:hover { filter: brightness(1.35); }
+
+/* MOVED — this event is not where the calendar says it is (2026-08-24, asked
+   for). A darker, fuller edge in the event's OWN colour: against a 14% fill it
+   reads as a defined outline in both themes, where a mix toward the surface
+   would vanish into it on one of them. outline-offset:-1px keeps it inside the
+   box, so marking an event never nudges the ones beside it. */
+.tl-event-moved {
+  outline: 1px solid color-mix(in srgb, var(--ev-color, var(--accent)) 70%, #000);
+  outline-offset: -1px;
+}
+
+/* The same statement on the day's own list, where the row has no colour of its
+   own to deepen — so it borrows the ink the theme already trusts at this size
+   and stays a thin edge rather than a badge. */
+.eg-event-moved {
+  outline: 1px solid var(--text-secondary);
+  outline-offset: -1px;
 }
 
 /* ── Shared event/block layout ───────────────────────────────── */

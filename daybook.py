@@ -55,6 +55,10 @@ OVERRIDES = {
     'flow_run': 'date',               # a PERIOD key — _flow_run_rows widens it
     'gtd_review': 'week_start_date',  # the week containing the day
     'gcal_event': 'start',            # the day's calendar, by prefix
+    'gcal_move': 'start',             # dated by the event's ORIGINAL start:
+                                      # the decision was about that day's
+                                      # calendar, even when it pushed the
+                                      # event onto the next one
     'habit_day': 'date',
     'inbox_item': 'captured_at',      # what was CAPTURED that day
     'occasion_mint': 'date',          # the actions an event brought with it

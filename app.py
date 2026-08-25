@@ -1327,6 +1327,30 @@ def get_gcal():
     return jsonify(storage.get_gcal_events())
 
 
+# MOVING A FETCHED EVENT is a local nudge, never a write to Google (2026-08-24,
+# Quentin's instruction). Google stays the source of truth — the app may only
+# create and, as the undo, delete what it created — so the moved time lives
+# beside the mirror and the event draws with a darker outline to say the two
+# now disagree. No date default: the client sends the occurrence's own ISO
+# times, so there is no day for this route to guess.
+@app.route('/api/gcal/moves', methods=['POST', 'DELETE'])
+def gcal_move():
+    d = request.get_json(force=True) or {}
+    uid, start = d.get('uid'), d.get('start')
+    if not uid or not start:
+        return jsonify({'error': 'uid and start are required'}), 400
+    if request.method == 'DELETE':
+        storage.clear_gcal_move(uid, start)
+        return jsonify({'ok': True})
+    new_start, new_end = d.get('new_start'), d.get('new_end')
+    # Full ISO datetimes sort chronologically as strings — this is not the
+    # banned HH:MM comparison, which is only right inside one day.
+    if not new_start or not new_end or new_end <= new_start:
+        return jsonify({'error': 'new_start and new_end must be a real span'}), 400
+    storage.set_gcal_move(uid, start, new_start, new_end)
+    return jsonify({'ok': True})
+
+
 def _refresh_all_calendars():
     sources = storage.get_calendar_sources()
     if sources:

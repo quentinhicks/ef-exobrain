@@ -191,6 +191,28 @@ def init_db():
             uid TEXT PRIMARY KEY
         );
 
+        -- A LOCAL NUDGE to a fetched event's time (2026-08-24, Quentin asked
+        -- to be able to move events). gcal stays a read-only mirror: the row
+        -- in gcal_event keeps GOOGLE'S time, and this says where the day
+        -- actually put it, applied on read by get_gcal_events.
+        --
+        -- Keyed by (uid, the ORIGINAL start), the same per-occurrence key the
+        -- timeline's dismissals use — so it survives replace_source_events
+        -- (which deletes and re-inserts the mirror on every refresh), it moves
+        -- ONE occurrence of a recurring event rather than the series, and if
+        -- GOOGLE later moves that occurrence the key stops matching and the
+        -- feed's new time simply wins. That last part is deliberate: the
+        -- calendar changed under you, and a nudge you made against the old
+        -- time is not a claim about the new one.
+        CREATE TABLE IF NOT EXISTS gcal_move (
+            uid TEXT NOT NULL,
+            start TEXT NOT NULL,
+            new_start TEXT NOT NULL,
+            new_end TEXT NOT NULL,
+            moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (uid, start)
+        );
+
         CREATE TABLE IF NOT EXISTS calendar_source (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -3232,12 +3254,23 @@ def get_gcal_events():
     window_start = (today - timedelta(days=GCAL_DAYS_BACK)).isoformat()
     window_end = (today + timedelta(days=90)).isoformat()
     conn = get_conn()
+    # THE MOVE IS APPLIED HERE, once, so every surface reads the same day:
+    # `start`/`end` are where the event actually sits, `orig_start` is the key
+    # everything per-occurrence hangs off (dismissals included) and what the
+    # feed still says, and `moved` is what the outline draws from. The client
+    # renders this; it does not re-resolve it.
     rows = conn.execute(
-        '''SELECT e.uid, e.summary, e.start, e.end, e.allday, c.color
+        '''SELECT e.uid, e.summary,
+                  COALESCE(m.new_start, e.start) AS start,
+                  COALESCE(m.new_end, e.end)     AS end,
+                  e.start AS orig_start,
+                  CASE WHEN m.uid IS NULL THEN 0 ELSE 1 END AS moved,
+                  e.allday, c.color
            FROM gcal_event e
            JOIN calendar_source c ON e.source_id = c.id
+           LEFT JOIN gcal_move m ON m.uid = e.uid AND m.start = e.start
            WHERE c.active = 1 AND e.start >= ? AND e.start <= ?
-           ORDER BY e.start''',
+           ORDER BY start''',
         (window_start, window_end)
     ).fetchall()
     conn.close()
@@ -3248,6 +3281,25 @@ def get_gcal_events():
 # inserted locally so it renders before the (hours-stale) iCal feed catches
 # up. Same uid the feed will publish, so replace_source_events re-asserts it
 # rather than duplicating it on the next refresh.
+# Where the day actually put a fetched event. INSERT OR REPLACE, so moving the
+# same occurrence twice leaves one row and the undo of either is the same
+# delete. An all-day event has no time to nudge and never reaches here.
+def set_gcal_move(uid, start, new_start, new_end):
+    conn = get_conn()
+    conn.execute(
+        '''INSERT OR REPLACE INTO gcal_move (uid, start, new_start, new_end)
+           VALUES (?,?,?,?)''', (uid, start, new_start, new_end))
+    conn.commit()
+    conn.close()
+
+
+def clear_gcal_move(uid, start):
+    conn = get_conn()
+    conn.execute('DELETE FROM gcal_move WHERE uid = ? AND start = ?', (uid, start))
+    conn.commit()
+    conn.close()
+
+
 def insert_gcal_event(source_id, uid, summary, start, end):
     conn = get_conn()
     conn.execute(

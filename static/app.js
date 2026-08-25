@@ -335,6 +335,9 @@ function onLongPress(el, fn) {
   let t = null, sx = 0, sy = 0, fired = false;
   el.addEventListener('pointerdown', e => {
     if (e.pointerType === 'mouse') return;
+    // A descendant drag surface claimed this press (see onPointerDrag): the
+    // hold belongs to it, not to this element's long-press verb.
+    if (e.pointerDragClaim) return;
     fired = false;
     sx = e.clientX; sy = e.clientY;
     t = setTimeout(() => { fired = true; lastLongPressAt = Date.now(); fn(); }, 550);
@@ -387,6 +390,15 @@ function onPointerDrag(el, spec) {
   };
 
   el.addEventListener('pointerdown', e => {
+    // THIS PRESS IS CLAIMED. A drag surface is usually a child of something
+    // that long-presses for its own verb (a block's bar inside the block, an
+    // event's bar inside the event), and BOTH would arm on one 550ms hold: the
+    // finger dragged the thing and hid it in the same gesture. `spec.start`'s
+    // stopPropagation cannot prevent that — on touch it runs at 550ms, long
+    // after the pointerdown finished bubbling. The flag is set here, in the
+    // same dispatch, and onLongPress reads it. Guarding a child against a
+    // parent has to happen at POINTERDOWN; this is that rule, one level up.
+    e.pointerDragClaim = true;
     if (e.pointerType === 'mouse') { arm(e); if (live) e.preventDefault(); return; }
     // Touch: hold still for 550ms to grab it.
     sy = e.clientY;
@@ -437,6 +449,15 @@ function onPointerDrag(el, spec) {
       e.stopPropagation();
     }
   }, true);
+}
+
+// THE PER-OCCURRENCE KEY of a fetched event, and the one thing a local move
+// may not change: dismissals, moves and the drag all hang off it, so it is the
+// start GOOGLE published (`orig_start`), never where the day has since put it.
+// Rows fetched before moves existed carry no orig_start and fall back to start,
+// which is the same value for everything that was never moved.
+function eventKey(e) {
+  return `${e.uid}|${e.orig_start || e.start}`;
 }
 
 // Right-click a block / event / gate to drop it from the day's view. No backend
@@ -714,7 +735,7 @@ function renderGcalLayer(bodyH = 600) {
   const nextDate = new Date(state.currentDate.getTime() + 86400000);
   // Next-day events count when the view runs past midnight (sleep +1d)
   const dayEvents = state.gcalEvents.filter(e => !e.allday &&
-    !state.tlHidden.event[`${e.uid}|${e.start}`] &&
+    !state.tlHidden.event[eventKey(e)] &&
     (sameDay(state.currentDate, e.start) || (state.view.end > DAY_MIN && sameDay(nextDate, e.start))));
   // TWO TITLES MAY NOT SHARE A LINE. Events are positioned by their start, so
   // two that begin at the same minute land at the same top and print over each
@@ -736,7 +757,7 @@ function renderGcalLayer(bodyH = 600) {
     const top = Math.max(0, minutesToViewPercent(startMin));
     const bottom = Math.min(100, minutesToViewPercent(endMin));
     if (bottom - top <= 0) continue;
-    boxes.push({ e, startMin, top, bottom });
+    boxes.push({ e, startMin, endMin, top, bottom });
   }
   boxes.sort((a, b) => a.top - b.top || a.bottom - b.bottom);
   let lastTop = -Infinity;
@@ -745,14 +766,24 @@ function renderGcalLayer(bodyH = 600) {
     lastTop = box.top;
   }
 
-  layer.innerHTML = boxes.map(({ e, top, bottom }) => {
+  layer.innerHTML = boxes.map(({ e, top, bottom, startMin, endMin }) => {
     const height = Math.max(bottom - top, 2);
     const tight = (height * bodyH / 100) < 18;
     const timeStr = `${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`;
-    const inner = `<div class="tl-event-row"><span class="tl-event-summary">${escHtml(e.summary || '')}</span><span class="tl-event-time">${escHtml(timeStr)}</span></div>`;
+    // The bar is the manipulation surface, exactly as it is on a block: a long
+    // press on the BOX still hides the event, so the two touch gestures cannot
+    // both arm on the same 550ms hold.
+    const inner = `<div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${escHtml(e.summary || '')}</span><span class="tl-event-time">${escHtml(timeStr)}</span></div>`;
     const col = e.color || '#888888';
-    const key = `${e.uid}|${e.start}`;
-    return `<div class="tl-gcal-event${tight ? ' tl-event-tight' : ''}" data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}" style="pointer-events:auto;top:${top}%;height:${height}%;--ev-color:${col}">${inner}</div>`;
+    const key = eventKey(e);
+    const moved = e.moved
+      ? ` title="Moved here — the calendar still says ${escHtml(isoToAmPm(e.orig_start))}. Right-click or long-press the bar to put it back."`
+      : '';
+    return `<div class="tl-gcal-event${tight ? ' tl-event-tight' : ''}${e.moved ? ' tl-event-moved' : ''}"
+                 data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}"
+                 data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
+                 data-start-min="${startMin}" data-end-min="${endMin}"${moved}
+                 style="pointer-events:auto;top:${top}%;height:${height}%;--ev-color:${col}">${inner}</div>`;
   }).join('');
 
   // Read-only iCal events can't be deleted at source — right-click hides them
@@ -767,6 +798,141 @@ function renderGcalLayer(bodyH = 600) {
     // Same plain-tap meaning as the event row on Engage: open its occasion.
     el.addEventListener('click', () => openOccasionSheet(el.dataset.evLabel || ''));
   });
+
+  initEventDrag(layer);
+}
+
+// MOVING A FETCHED EVENT (2026-08-24, Quentin asked for it). The gesture is a
+// block's, on the event's own bar: drag the middle to move the whole thing,
+// the top or bottom third (a 10px edge on a mouse) to change one end.
+//
+// What it writes is a LOCAL nudge. gcal stays a read-only mirror — the row the
+// feed published keeps Google's time — so a moved event draws with a darker
+// outline to say the two now disagree, which is the whole reason the mark
+// exists. Right-click or long-press the BAR puts it back; the same gestures on
+// the box still hide the event, which is why the bar exists at all.
+function initEventDrag(layer) {
+  const body = document.getElementById('tl-body');
+  layer.querySelectorAll('.tl-gcal-event .tl-ev-bar').forEach(bar => {
+    const el = bar.parentElement;
+    const origStart = parseInt(el.dataset.startMin);
+    const origEnd = parseInt(el.dataset.endMin);
+    // The day this occurrence is drawn on: a write files under the day being
+    // LOOKED AT, sent explicitly, never the wall clock at drop time.
+    const dateStr = viewDay();
+
+    bar.addEventListener('mousemove', e => {
+      const r = bar.getBoundingClientRect();
+      const edge = e.clientY - r.top < 10 || r.bottom - e.clientY < 10;
+      bar.style.cursor = edge ? 'ns-resize' : 'grab';
+    });
+    bar.addEventListener('click', e => e.stopPropagation());
+
+    // Putting it back is the BAR's right-click / long press, because the box's
+    // is already spoken for by hide.
+    if (el.classList.contains('tl-event-moved')) {
+      const restore = () => unmoveEvent(el.dataset.evUid, el.dataset.evStart);
+      bar.addEventListener('contextmenu', e => {
+        e.preventDefault(); e.stopPropagation(); restore();
+      });
+      onLongPress(bar, restore);
+    }
+
+    onPointerDrag(bar, { start(e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return null;
+      e.stopPropagation();
+      const span = state.view.end - state.view.start;
+      if (origEnd - origStart >= span) return null;
+      const r = bar.getBoundingClientRect();
+      const touch = e.pointerType !== 'mouse';
+      // Thirds for a finger, a 10px edge for a mouse, and below ~36px no third
+      // is worth aiming at so the whole thing moves — the block bar's rule,
+      // and an event box is more often the small one.
+      const mode = touch
+        ? (r.height < 36 ? 'move'
+          : e.clientY - r.top < r.height / 3 ? 'start'
+          : r.bottom - e.clientY < r.height / 3 ? 'end' : 'move')
+        : ((e.clientY - r.top < 10) ? 'start' : (r.bottom - e.clientY < 10) ? 'end' : 'move');
+      const startY = e.clientY;
+      const bodyPx = body.getBoundingClientRect().height;
+      let moved = false;
+      let curS = origStart, curE = origEnd;
+      // A finger has already committed by holding still, so it does not also
+      // have to clear the mouse's 5px slop.
+      const slop = touch ? 0 : 5;
+
+      function onMove(clientY) {
+        if (!moved && Math.abs(clientY - startY) < slop) return;
+        moved = true;
+        // A drag is not a tap: swallow the click this press would otherwise
+        // send to the box, which opens the occasion sheet.
+        el.dataset.lpDragged = '1';
+        const deltaMin = Math.round(((clientY - startY) / bodyPx) * span / 5) * 5;
+        if (mode === 'move') {
+          const len = origEnd - origStart;
+          curS = Math.min(Math.max(state.view.start, origStart + deltaMin), state.view.end - len);
+          curE = curS + len;
+        } else if (mode === 'start') {
+          curS = Math.min(Math.max(state.view.start, origStart + deltaMin), origEnd - 15);
+        } else {
+          curE = Math.max(Math.min(state.view.end, origEnd + deltaMin), origStart + 15);
+        }
+        el.style.top = `${Math.max(0, minutesToViewPercent(curS))}%`;
+        el.style.height = `${Math.min(100, minutesToViewPercent(curE)) - Math.max(0, minutesToViewPercent(curS))}%`;
+      }
+
+      async function onUp() {
+        document.body.style.cursor = '';
+        if (!moved || (curS === origStart && curE === origEnd)) { renderTimeline(); return; }
+        await moveEvent(el.dataset.evUid, el.dataset.evStart, el.dataset.evLabel,
+                        dateStr, curS, curE);
+      }
+
+      document.body.style.cursor = mode === 'move' ? 'grabbing' : 'ns-resize';
+      return { move: onMove, end: onUp };
+    } });
+  });
+}
+
+// Semantic minutes back into the app's one datetime shape — naive local
+// `YYYY-MM-DDTHH:MM:SS`, the string the feed itself stores. Past DAY_MIN means
+// tomorrow, which is how this view already talks about a night that runs over,
+// so the DATE is walked forward rather than the clock being wrapped by hand.
+function isoAtMinute(dateStr, min) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setMinutes(d.getMinutes() + min);
+  return `${formatDateYMD(d)}T${clockHHMM(min)}:00`;
+}
+
+async function moveEvent(uid, start, label, dateStr, curS, curE) {
+  const res = await apiSend('/api/gcal/moves', 'POST', {
+    uid, start,
+    new_start: isoAtMinute(dateStr, curS),
+    new_end: isoAtMinute(dateStr, curE),
+  });
+  if (!res || !res.ok) { toast('Could not move it'); renderTimeline(); return; }
+  pushUndo(`moved "${label || 'event'}"`, async () => {
+    await apiSend('/api/gcal/moves', 'DELETE', { uid, start }).catch(() => {});
+    await refreshGcalEvents();
+  });
+  await refreshGcalEvents();
+}
+
+async function unmoveEvent(uid, start) {
+  const res = await apiSend('/api/gcal/moves', 'DELETE', { uid, start });
+  if (!res || !res.ok) { toast('Could not put it back'); return; }
+  toast('Back where the calendar has it');
+  await refreshGcalEvents();
+}
+
+// The events payload is the SERVER's resolution of where things sit, moves
+// applied, so both surfaces that draw events re-read it rather than patching a
+// local copy into agreement.
+async function refreshGcalEvents() {
+  state.gcalEvents = await fetch('/api/gcal').then(r => r.json())
+    .catch(() => state.gcalEvents);
+  renderTimeline();
+  renderEngage();
 }
 
 function updateCurrentTimeLine() {
@@ -12816,10 +12982,10 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   // Same dismissal set as the timeline: a right-clicked-away (or ⌘-clicked,
   // below) event is gone from the DAY, whichever surface shows it.
   state.gcalEvents.filter(e => !e.allday && sameDay(viewDate, e.start)
-      && !state.tlHidden.event[`${e.uid}|${e.start}`]).forEach(e => {
+      && !state.tlHidden.event[eventKey(e)]).forEach(e => {
     rows.push({ kind: 'event', minute: isoMin(e.start), endMin: isoMin(e.end),
-                label: e.summary || 'Event', ekey: `${e.uid}|${e.start}`,
-                color: e.color });
+                label: e.summary || 'Event', ekey: eventKey(e),
+                moved: !!e.moved, color: e.color });
   });
 
   const itemById = {};
@@ -12979,8 +13145,12 @@ function renderEngage() {
     if (r.kind === 'event') {
       // The source calendar's pastel rides along as an inset edge (inset
       // box-shadow, so no layout shift) — same identity the timeline shows.
-      return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
-        data-ekey="${escHtml(r.ekey)}" title="⌘-click / long-press to hide from the day"
+      // A MOVED event carries its mark here too: the day is the surface it is
+      // actually read on, so a mark that only existed on the calendar overlay
+      // would say nothing where it matters. Moving happens on the timeline —
+      // this row only reports it.
+      return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}${r.moved ? ' eg-event-moved' : ''}"${nowAttrs(r)}
+        data-ekey="${escHtml(r.ekey)}" title="${r.moved ? 'Moved here — the calendar has it elsewhere. ' : ''}⌘-click / long-press to hide from the day"
         ${r.color ? `style="box-shadow: inset 3px 0 0 ${escHtml(r.color)}"` : ''}>
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text eg-event-text">${escHtml(r.label)}</span>
