@@ -122,9 +122,12 @@ function initPanelToggle() {
 // top-level statements next to the surfaces they describe, and a `const` in
 // the middle of the file would still be in its temporal dead zone when the
 // first of them ran.
-const objectVerbProviders = [];
+const objectVerbProviders = new Map();
 
-function registerObjectVerbs(fn) { objectVerbProviders.push(fn); }
+// KEYED BY SURFACE, not appended: Engage rebuilds its verbs on every render
+// (they close over the day IT is showing), and a list would grow one stale
+// provider per repaint, each answering for a day that has since moved.
+function registerObjectVerbs(name, fn) { objectVerbProviders.set(name, fn); }
 
 const state = {
   currentDate: new Date(),
@@ -688,12 +691,9 @@ function renderBlocksLayer(bodyH = 600) {
     // refactor started from. A block has no read-out to open, so activating it
     // means "show me what I can do to this" — the same menu the right-click
     // and the long press open, which is also the only one of the three a
-    // finger reaches in a single motion.
-    el.addEventListener('click', e => {
-      const r = el.getBoundingClientRect();
-      openObjectMenu(e.clientX || r.left + r.width / 2, e.clientY || r.top + 8,
-                     'block', el.dataset.blockId, verbsFor('block', el.dataset.blockId, el));
-    });
+    // finger reaches in a single motion. `data-obj-tap` is that opt-in, and
+    // initObjectDoors is the one handler behind it.
+    el.dataset.objTap = '1';
   });
 
   // Hiding a block for the day used to BE the right-click. It is an item on
@@ -707,7 +707,7 @@ function renderBlocksLayer(bodyH = 600) {
 // THE TIMELINE'S OWN VERBS for a block, handed to the object menu. They need
 // the DAY being looked at, which is the surface's to know and not the menu's —
 // so the surface registers them rather than the menu reaching for a date.
-registerObjectVerbs((kind, id, el) => {
+registerObjectVerbs('timeline-block', (kind, id, el) => {
   if (kind !== 'block' || !el.closest('#tl-qr-layer, #tl-body')) return [];
   const dateStr = viewDay();
   const blockEl = el.closest('.tl-block') || el;
@@ -730,7 +730,7 @@ registerObjectVerbs((kind, id, el) => {
 // so it says which day it means and whether the 24h lock has already shut it —
 // the state is read off day_windows, which the server serves, rather than
 // decided here.
-registerObjectVerbs((kind, id, el) => {
+registerObjectVerbs('timeline-gate', (kind, id, el) => {
   if (kind !== 'gate' || !el.closest('#tl-qr-layer, #tl-body')) return [];
   const pageDate = viewDay();
   const node = (state.accountabilityNodes || []).find(n => String(n.id) === String(id));
@@ -5931,10 +5931,39 @@ function verbsFor(kind, id, el) {
   objectVerbProviders.forEach(fn => {
     try { (fn(kind, id, el) || []).forEach(v => out.push(v)); } catch (e) {}
   });
+  // Each provider answers only for its own surface, so an object drawn on two
+  // of them does not collect both surfaces' idea of "today".
   return out;
 }
 
 function initObjectDoors() {
+  // LEFT CLICK, where the object has nothing else for it to mean. Opt-in
+  // (`data-obj-tap`) rather than automatic: most artifacts that carry a door
+  // already do something on click — a pool row opens clarify, a run button
+  // runs the routine — and hijacking those would be the same overreach as
+  // taking a gesture that was already spoken for.
+  //
+  // A click that landed on a real control INSIDE the object is that control's,
+  // not the object's: the routine row opens its menu, and the ▶ on it still
+  // runs the routine.
+  document.addEventListener('click', e => {
+    // A MODIFIED click is somebody else's gesture, explicitly: Engage's blocks
+    // and events take ⌘-click and say so in their own titles. This handler is
+    // in the capture phase, so without the bail it would swallow them.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const el = e.target.closest('[data-obj-tap]');
+    if (!el) return;
+    if (e.target.closest('button, a, input, select, textarea') !== null
+        && e.target.closest('button, a, input, select, textarea') !== el) return;
+    const [kind, id] = String(el.dataset.obj || '').split(':');
+    if (!OBJECT_KINDS[kind]) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = el.getBoundingClientRect();
+    openObjectMenu(e.clientX || r.left + r.width / 2, e.clientY || r.top + 8,
+                   kind, id, verbsFor(kind, id, el));
+  }, true);
+
   // CAPTURE phase: the artifacts this covers have their own contextmenu and
   // long-press handlers that write, and the menu has to win the event rather
   // than arrive after the write has already happened.
@@ -14189,7 +14218,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
       // NOTHING here. Listing it under this hairline claimed a consequence
       // that does not exist.
       const flows = (engageView.flows || []).filter(fl => fl.qr_node_id === n.id);
-      rows.push({ kind: 'qr', minute, label: n.label, outcome });
+      rows.push({ kind: 'qr', minute, nodeId: n.id, label: n.label, outcome });
       // Each gating routine is its OWN row directly under the hairline, not a
       // chip crowded onto it — "Morning routine" is a thing you do, and it
       // reads as one when it has a line of its own. SAME minute as the gate:
@@ -14370,7 +14399,13 @@ function renderEngage() {
 
   const rowHtml = r => {
     if (r.kind === 'qr') {
-      return `<div class="eg-qr${r.outcome ? ` eg-qr-${r.outcome}` : ''}">
+      // THE HEADER IS THE OBJECT (2026-08-30, Quentin's instruction). Engage
+      // is where these are read thirty times a day, so the name of a gate is
+      // the most-seen instance of it anywhere in the app — and it was the one
+      // place with no way to reach what it names. Left click, right click and
+      // the long press all open its verbs.
+      return `<div class="eg-qr${r.outcome ? ` eg-qr-${r.outcome}` : ''}"
+        data-obj="gate:${r.nodeId}" data-obj-tap="1">
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-qr-label">${escHtml(r.label.toUpperCase())}</span>
         <span class="eg-qr-rule"></span>
@@ -14382,18 +14417,23 @@ function renderEngage() {
       // left like any other row, ▶ to run it, ✓ once today's run completed.
       // The link is what decides whether that gate judges ✓ or ✗, so it belongs
       // on the day rather than only inside the step editor.
-      return `<div class="eg-row eg-flow-row${r.done ? ' eg-flow-done' : ''}">
+      // The door is on the ROW, so the routine's NAME is what you reach for -
+      // it was on the ▶ button alone, which is the one part of this row that
+      // already means something else. `closest` finds the row from anywhere
+      // inside it, and the click guard leaves ▶ to run the routine.
+      return `<div class="eg-row eg-flow-row${r.done ? ' eg-flow-done' : ''}"
+        data-obj="routine:${r.flowId}" data-obj-tap="1">
         <span class="eg-time"></span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-qr-flow${r.done ? ' eg-qr-flow-done' : ''}" data-flow="${r.flowId}"
-          data-obj="routine:${r.flowId}"
           title="${r.done ? 'Completed today' : 'Run this routine'} — the gate above judges ✗ unless this completes">${
           r.done ? '✓ done' : playMark(9) + ' run'}</button>
       </div>`;
     }
     if (r.kind === 'block') {
       return `<div class="eg-row eg-block${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
-        data-block="${r.id}" data-obj="block:${r.id}" title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
+        data-block="${r.id}" data-obj="block:${r.id}" data-obj-tap="1"
+        title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <span class="eg-end">${hhmm(r.endMin)}</span>
@@ -14926,12 +14966,51 @@ function renderEngage() {
     await refreshEngage();
   };
 
+  // ENGAGE'S OWN DAY-LEVEL VERBS, registered fresh each render because they
+  // close over the day ENGAGE is showing — which browses independently of the
+  // calendar's, and filing a day-level write under the other surface's date is
+  // the exact bug the wallDay/viewDay/runDay split exists to prevent.
+  registerObjectVerbs('engage', (kind, id, el) => {
+    if (!el.closest('#engage-body')) return [];
+    if (kind === 'block') {
+      const ov = (engageView.overrides || [])
+        .find(o => o.block_id === parseInt(id) && o.date === dateStr);
+      const cancelled = ov && ov.cancelled === 1;
+      return [{ label: cancelled ? 'Restore for today' : 'Cancel for today',
+                danger: !cancelled,
+                run: () => egToggleBlockCancel(parseInt(id)) }];
+    }
+    if (kind === 'gate') {
+      const node = (state.accountabilityNodes || []).find(n => String(n.id) === String(id));
+      const entry = node && (node.day_windows || {})[dateStr];
+      if (!entry) return [];
+      const skipped = !!entry.skipped;
+      return [{
+        label: skipped ? 'Put this day back on' : 'Call this day off',
+        danger: !skipped,
+        run: () => setGateSkip(node.id, dateStr, !skipped).then(async done => {
+          if (!done) return;
+          toast(skipped ? `"${node.label}" is back on for this day`
+                        : `"${node.label}" is off for this day`);
+          undoableGateSkip(node.id, dateStr, skipped,
+                           skipped ? `put "${node.label}" back` : `called off "${node.label}"`);
+          await refreshEngage();
+        }),
+      }];
+    }
+    return [];
+  });
+
   body.querySelectorAll('.eg-block[data-block]').forEach(el => {
+    // ⌘-click stays: an explicit modifier is not a BARE click, and the row
+    // says so in its own title. The long press is the menu's now — it used to
+    // cancel the day with no way to see that coming, which is the same
+    // unlabelled gesture the timeline just lost.
     el.addEventListener('click', e => {
       if (!(e.metaKey || e.ctrlKey)) return;
+      e.stopPropagation();
       egToggleBlockCancel(parseInt(el.dataset.block));
     });
-    onLongPress(el, () => egToggleBlockCancel(parseInt(el.dataset.block)));
   });
   body.querySelectorAll('.eg-event[data-ekey]').forEach(el => {
     const hide = () => hideTimelineItem('event', el.dataset.ekey,
