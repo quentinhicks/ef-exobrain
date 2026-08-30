@@ -3220,6 +3220,41 @@ body.calendar-minimized #review-modal {
    day-level label can run long ("Too late to call this day off (within 24h)")
    inside a 360px popup, so the row wraps instead of squeezing the finger
    target below the 36px floor. */
+/* THE RECORD STRIP. One cell a day, oldest left, in the same four colours the
+   timeline pills use - the vocabulary is shared on purpose, so a day cannot
+   look like one thing on the calendar and another in the read-out. A day the
+   gate did not run is hollow rather than grey: absence of a verdict is not a
+   verdict. Cells shrink to fit a fortnight inside a 360px popup but keep a
+   real height, and the row scrolls rather than pushing the popup wide. */
+.gh-strip {
+  display: flex;
+  gap: 3px;
+  margin: 8px 0 10px;
+  overflow-x: auto;
+}
+
+.gh-d {
+  flex: 1 1 0;
+  min-width: 10px;
+  height: 18px;
+  border-radius: 3px;
+  background: var(--gate-dismissed);
+}
+
+.gh-success { background: var(--gate-met); }
+.gh-partial { background: var(--gate-half); }
+.gh-failed  { background: var(--gate-missed); }
+/* MEASURED, not eyeballed. --border put this edge at 1.26:1 on dark and 1.20:1
+   on light against the popup - the same failure CLAUDE.md already recorded for
+   --border on a control, one surface over. A hollow cell is CARRYING DATA (the
+   gate did not run that day), so an edge nobody can see reads as a gap in the
+   fortnight rather than as a fact about it. --text-secondary is the app's own
+   answer for an outline that has to be visible: 5.24:1 and 5.06:1. */
+.gh-off {
+  background: transparent;
+  border: 1px solid var(--text-secondary);
+}
+
 .gp-foot {
   margin-top: 14px;
   padding-top: 10px;

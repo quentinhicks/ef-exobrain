@@ -10220,6 +10220,32 @@ function gatePopHtml(d) {
   // Locked is SERVED (skip_locked), and the button says so rather than going
   // quiet: a dead button on the day you most want to press it is how the
   // original gesture read.
+  // HOW THIS GATE HAS BEEN GOING, in the four-word vocabulary the pills
+  // already speak: green met, amber the half-met day the 50/50 split created,
+  // red missed, and a hollow square for a day it did not run. The verdicts are
+  // the SERVER's (judged_outcome, read off frozen rows) - a strip that scored
+  // the days itself would be the same bug as a client re-deriving a window,
+  // one surface further out.
+  //
+  // Oldest on the left, so it reads like time. A day with no row is left out
+  // rather than drawn as anything: today has not been judged, and neither has
+  // any day before the gate existed.
+  let hist = '';
+  const h = d.history;
+  if (h && h.days.length) {
+    const cells = h.days.map(x => `<i class="gh-d gh-${x.outcome}" title="${
+      escHtml(x.date)}${x.amount_cents ? ' · $' + (x.amount_cents / 100).toFixed(2) : ''}"></i>`).join('');
+    const met = h.days.filter(x => x.outcome === 'success').length;
+    const ran = h.days.filter(x => x.outcome !== 'off').length;
+    hist = '<div class="gp-sect">The last 14 days</div>'
+      + `<div class="gh-strip">${cells}</div>`
+      + gpRow('Met', ran ? `${met} of ${ran} day${ran === 1 ? '' : 's'} it ran` : 'it has not run yet')
+      + gpRow('Cost so far', `<span class="gp-mono">$${(h.charged_cents / 100).toFixed(2)}</span>`);
+  } else if (h) {
+    hist = '<div class="gp-sect">The last 14 days</div>'
+      + '<div class="gp-note">Nothing judged yet — this gate has no record to show.</div>';
+  }
+
   // TWO VERBS, AND THEY SAY WHICH SURFACE THEY ARE. "Two surfaces, never
   // mixed" is about a control being AMBIGUOUS between this day and every day,
   // not about which screen you reach the permanent one from — so the day-level
@@ -10238,7 +10264,7 @@ function gatePopHtml(d) {
       <button class="gp-close" title="Close">✕</button>
     </div>
     <div class="gp-date">${escHtml(d.date)}</div>
-    ${rows.join('')}${out}${scans}${extra}${verdict}${foot}`;
+    ${rows.join('')}${out}${scans}${extra}${verdict}${hist}${foot}`;
 }
 
 // ── ONE TAP SHOWS THE WINDOW, THE SECOND EXPLAINS IT (2026-08-24, Quentin's

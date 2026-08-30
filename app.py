@@ -2063,6 +2063,11 @@ def accountability_nodes():
 #
 # The DATE is a read default (date_cls.today()); the client sends the day it is
 # looking at.
+# Two weeks: long enough to see a pattern rather than a mood, short enough to
+# stay one glanceable row inside a 360px popup.
+HISTORY_DAYS = 14
+
+
 def _gate_day_payload(node, ymd, now=None):
     now = now or datetime.now()
     override = storage.qr_get_override(node['id'], ymd)
@@ -2147,6 +2152,35 @@ def _gate_day_payload(node, ymd, now=None):
         credit = (judged.get('credit_pct') or 0) / 100.0
         credit_reason = judged.get('failure_reason')
     stake = qr_judge.node_charge_cents(node, settings)
+
+    # THIS GATE'S OWN RECORD (2026-08-30, Quentin's instruction). The billing
+    # panel answers "what did every gate cost me this week"; this answers "how
+    # is THIS gate going", which had no home - you could see today's verdict
+    # and nothing behind it. Same four-word vocabulary the pills already use,
+    # so the strip and the calendar cannot describe a day differently.
+    #
+    # READ BACK, never recomputed: a judged day is frozen, so recomputing one
+    # under today's config would show a day the judge does not believe in -
+    # which is the whole reason judged_outcome exists and is asked here rather
+    # than reimplemented. Days with no row (today, the future, days before the
+    # gate existed) are simply absent, and the client leaves them blank rather
+    # than inventing a verdict for them.
+    hist_from = qr_judge._date_plus(ymd, -HISTORY_DAYS + 1)
+    days = []
+    charged = 0
+    for r in storage.qr_judged_rows_for_node(node['id'], hist_from, ymd):
+        off = (r.get('charge_status') or '') == 'n/a'
+        days.append({
+            'date': r['date'],
+            # 'off' is not a verdict, it is the absence of one: the gate did
+            # not run that day (a non-run weekday, or one called off).
+            'outcome': 'off' if off else qr_judge.judged_outcome(r),
+            'amount_cents': r.get('amount_cents') or 0,
+        })
+        charged += r.get('amount_cents') or 0
+    history = {'from': hist_from, 'to': ymd, 'days': days,
+               'charged_cents': charged}
+
     return {
         'node_id': node['id'], 'label': node['label'], 'date': ymd,
         'applies': applies, 'active': bool(node.get('active')),
@@ -2172,6 +2206,7 @@ def _gate_day_payload(node, ymd, now=None):
                    'start_min': qr_judge._hhmm_min(start),
                    'end_min': qr_judge._hhmm_min(end) + int(offset or 0) * 1440,
                    'closed': now >= qr_judge._local_dt(close_date, end)},
+        'history': history,
         'pawn': {'minutes': pawn_min, 'steps': pawned,
                  'applied': bool(pawn_min) and not override},
         'routine': None if not flow else {

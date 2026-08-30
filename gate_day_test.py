@@ -179,6 +179,70 @@ check('a gate that does not exist is a 404',
 check('a malformed date is refused',
       c.get('/api/accountability/nodes/%s/day?date=tomorrow' % GID).status_code == 400)
 
+# -- THE GATE'S OWN RECORD (2026-08-30) -----------------------------------
+#
+# The billing panel answers "what did every gate cost me this week"; this
+# answers "how is THIS gate going". Both halves are READ BACK off frozen
+# judgment rows - the verdict from qr_judge.judged_outcome, the one authority -
+# because a strip that scored the days itself would be a client re-deriving a
+# resolution rule, one surface further out.
+storage.qr_ensure_charge_columns()
+conn = storage.get_conn()
+PLAN = [
+    # (days back, failure_reason, charge_status, amount, credit) -> expected
+    (2, None, 'skipped', 0, 100, 'success'),
+    (3, 'routine_late', 'would_fire', 250, 50, 'partial'),
+    (4, 'absent', 'succeeded', 500, 0, 'failed'),
+    (5, None, 'n/a', None, None, 'off'),
+]
+for back, reason, status, amt, credit, _want in PLAN:
+    d = (datetime.date.today() - datetime.timedelta(days=back)).isoformat()
+    conn.execute('INSERT INTO qr_charge_log (node_id, date, failure_reason, '
+                 'charge_status, amount_cents, credit_pct) VALUES (?,?,?,?,?,?)',
+                 (GID, d, reason, status, amt, credit))
+conn.commit()
+conn.close()
+
+h = day()['history']
+by_date = {x['date']: x for x in h['days']}
+for back, _r, _s, _a, _c, want in PLAN:
+    d = (datetime.date.today() - datetime.timedelta(days=back)).isoformat()
+    check('a %s day reads back as %s' % (want, want),
+          by_date.get(d, {}).get('outcome') == want, by_date.get(d))
+
+check('a day the gate did not run is NOT called a verdict',
+      by_date[(datetime.date.today() - datetime.timedelta(days=5)).isoformat()]
+      ['outcome'] == 'off')
+check('the money is totalled from the rows, not re-priced',
+      h['charged_cents'] == 750, h['charged_cents'])
+check('an unjudged day is absent rather than guessed at',
+      TODAY not in by_date, sorted(by_date))
+check('the window is the last 14 days, ending on the day being looked at',
+      h['to'] == TODAY
+      and h['from'] == (datetime.date.today() - datetime.timedelta(days=13)).isoformat(),
+      (h['from'], h['to']))
+
+# A day OUTSIDE the window must not be dragged in.
+old_day = (datetime.date.today() - datetime.timedelta(days=40)).isoformat()
+conn = storage.get_conn()
+conn.execute('INSERT INTO qr_charge_log (node_id, date, failure_reason, '
+             'charge_status, amount_cents, credit_pct) VALUES (?,?,?,?,?,?)',
+             (GID, old_day, 'absent', 'succeeded', 900, 0))
+conn.commit()
+conn.close()
+h2 = day()['history']
+check('a judgment older than the window stays out of it',
+      old_day not in {x['date'] for x in h2['days']})
+check('...and out of the total',
+      h2['charged_cents'] == 750, h2['charged_cents'])
+
+# A gate with nothing judged says so rather than showing an empty strip.
+fresh_gate = c.post('/api/accountability/nodes', json={
+    'label': 'Brand new', 'window_start': '06:00', 'window_end': '10:00'}).get_json()
+check('a gate with no record reports an empty one, not a missing one',
+      day(node=fresh_gate['id'])['history']['days'] == [])
+
+
 for line in ok + bad:
     print(line)
 print('\n%d passed, %d failed' % (len(ok), len(bad)))
