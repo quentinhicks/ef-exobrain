@@ -3220,41 +3220,47 @@ body.calendar-minimized #review-modal {
    day-level label can run long ("Too late to call this day off (within 24h)")
    inside a 360px popup, so the row wraps instead of squeezing the finger
    target below the 36px floor. */
-/* ── THE EDIT MODE ─────────────────────────────────────────────────────────
-   While it is armed, everything that declares itself with data-obj says so and
-   takes the tap. The outline is --text-secondary, not --border: this is an
-   INTERACTIVE affordance and owes 3:1, which --border does not clear on either
-   theme (1.26:1 measured, the failure CLAUDE.md already records).
+/* ── THE OBJECT MENU ───────────────────────────────────────────────────────
+   An object's verbs, named, at the pointer. It replaced an edit MODE - the
+   mode meant the same tap did different things depending on invisible state,
+   and a labelled item cannot be misread the way an overloaded gesture can.
 
-   THE MARK CHANGES NO LAYOUT, deliberately. The first version set
-   `position: relative` so a corner chevron could be hung on each object -
-   which silently clobbered `position: absolute` on the gate square and MOVED
-   it out from under the finger. These artifacts are positioned eleven
-   different ways across the app and the mode has to be safe on all of them, so
-   the mark is an outline and a tint: both paint inside the element's existing
-   box and neither can shift anything. The mode itself is the signal that these
-   are tappable, and the lit hub button says the mode is on.
+   Above the sheets (200), because a menu is always the innermost thing on
+   screen, and below the people timer (250) and dangerous writing (240), which
+   nothing may cover. */
+#obj-menu {
+  position: fixed;
+  z-index: 205;
+  min-width: 168px;
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+}
 
-   The outline is --text-secondary, not --border: this is an INTERACTIVE
-   affordance and owes 3:1, which --border does not clear on either theme
-   (1.26:1 measured, the failure CLAUDE.md already records). */
-body.obj-edit [data-obj] {
-  outline: 2px dashed var(--text-secondary);
-  outline-offset: -2px;
+/* 36px is the finger floor the touch-parity rules set, and a menu is the one
+   place every verb has room to meet it. */
+.om-item {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
   cursor: pointer;
 }
 
-/* Enough tint to read as "picked out" without hiding what the object says. */
-body.obj-edit [data-obj]:hover {
-  outline-color: var(--accent);
-}
+.om-item:hover,
+.om-item:focus-visible { background: var(--surface-2); }
 
-/* The hub button says the mode is on, since the hub is where it was armed and
-   where it is turned off again. */
-.hub-btn.hub-btn-on {
-  color: var(--on-accent);
-  background: var(--accent);
-}
+.om-danger { color: var(--block-red); }
 
 /* THE RECORD STRIP. One cell a day, oldest left, in the same four colours the
    timeline pills use - the vocabulary is shared on purpose, so a day cannot
@@ -6572,7 +6578,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   background: var(--surface-2);
   border: 1px solid var(--border-soft);
   border-radius: 8px;
-  color: var(--text);
+  color: var(--text-primary);
   font: 13px var(--font-mono);
   padding: 8px 10px;
 }

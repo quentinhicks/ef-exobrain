@@ -117,6 +117,15 @@ function initPanelToggle() {
   document.getElementById('panel-toggle').addEventListener('click', togglePanel);
 }
 
+// Surfaces register the DAY-LEVEL verbs their objects have, by kind. Declared
+// here rather than beside the menu that reads it: the registrations are
+// top-level statements next to the surfaces they describe, and a `const` in
+// the middle of the file would still be in its temporal dead zone when the
+// first of them ran.
+const objectVerbProviders = [];
+
+function registerObjectVerbs(fn) { objectVerbProviders.push(fn); }
+
 const state = {
   currentDate: new Date(),
   gcalEvents: [],
@@ -673,21 +682,74 @@ function renderBlocksLayer(bodyH = 600) {
   layer.innerHTML = blocksHtml + zonesHtml;
 
   layer.querySelectorAll('.tl-block:not(.tl-block-cont)').forEach(el => {
-    el.addEventListener('click', () => toggleBlockOverride(parseInt(el.dataset.blockId)));
+    // A BARE CLICK NO LONGER CANCELS YOUR DAY. Primary click is select or
+    // activate; a destructive, state-changing command belongs behind a menu,
+    // and "click the block, lose the block" was the norm violation this whole
+    // refactor started from. A block has no read-out to open, so activating it
+    // means "show me what I can do to this" — the same menu the right-click
+    // and the long press open, which is also the only one of the three a
+    // finger reaches in a single motion.
+    el.addEventListener('click', e => {
+      const r = el.getBoundingClientRect();
+      openObjectMenu(e.clientX || r.left + r.width / 2, e.clientY || r.top + 8,
+                     'block', el.dataset.blockId, verbsFor('block', el.dataset.blockId, el));
+    });
   });
 
-  layer.querySelectorAll('.tl-block').forEach(el => {
-    const hide = () => {
-      hideTimelineItem('block', `${el.dataset.blockId}:${dateStr}`,
-        el.querySelector('.tl-block-label')?.textContent || 'Block');
-      renderTimeline();
-    };
-    el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
-    onLongPress(el, hide);   // the touch right-click
-  });
-
+  // Hiding a block for the day used to BE the right-click. It is an item on
+  // the block's menu now, beside cancelling it and editing it — three verbs
+  // that were a click, a right-click and a five-tap walk through Settings, and
+  // are now one gesture and three named things. The gesture itself is wired
+  // once, on the document, by initObjectDoors.
   initBlockBarDrag(layer, dateStr);
 }
+
+// THE TIMELINE'S OWN VERBS for a block, handed to the object menu. They need
+// the DAY being looked at, which is the surface's to know and not the menu's —
+// so the surface registers them rather than the menu reaching for a date.
+registerObjectVerbs((kind, id, el) => {
+  if (kind !== 'block' || !el.closest('#tl-qr-layer, #tl-body')) return [];
+  const dateStr = viewDay();
+  const blockEl = el.closest('.tl-block') || el;
+  const label = blockEl.querySelector('.tl-block-label')?.textContent || 'Block';
+  const ov = (state.overrides || []).find(o => o.block_id === parseInt(id) && o.date === dateStr);
+  const cancelled = ov && ov.cancelled === 1;
+  return [
+    { label: cancelled ? 'Restore for today' : 'Cancel for today',
+      danger: !cancelled,
+      run: () => toggleBlockOverride(parseInt(id)) },
+    { label: 'Hide for today',
+      run: () => {
+        hideTimelineItem('block', `${id}:${dateStr}`, label);
+        renderTimeline();
+      } },
+  ];
+});
+
+// THE TIMELINE'S OWN VERBS for a gate. Calling a day off is a MONEY decision,
+// so it says which day it means and whether the 24h lock has already shut it —
+// the state is read off day_windows, which the server serves, rather than
+// decided here.
+registerObjectVerbs((kind, id, el) => {
+  if (kind !== 'gate' || !el.closest('#tl-qr-layer, #tl-body')) return [];
+  const pageDate = viewDay();
+  const node = (state.accountabilityNodes || []).find(n => String(n.id) === String(id));
+  if (!node) return [];
+  const entry = (node.day_windows || {})[pageDate];
+  if (!entry) return [];
+  const skipped = !!entry.skipped;
+  return [{
+    label: skipped ? 'Put this day back on' : 'Call this day off',
+    danger: !skipped,
+    run: () => setGateSkip(node.id, pageDate, !skipped).then(done => {
+      if (!done) return;
+      toast(skipped ? `"${node.label}" is back on for this day`
+                    : `"${node.label}" is off for this day`);
+      undoableGateSkip(node.id, pageDate, skipped,
+                       skipped ? `put "${node.label}" back` : `called off "${node.label}"`);
+    }),
+  }];
+});
 
 // The color bar is the manipulation surface (mirrors gate pills): top/bottom
 // edges resize, the middle moves the whole block — each writes a one-day
@@ -5778,34 +5840,141 @@ async function openObjectSheet(kind, id, returnTo) {
   return true;
 }
 
-// The mode itself. Not undoable and not a data change — it is the same kind of
-// thing as the theme toggle, and CLAUDE.md keeps those off the undo stack.
-const objEdit = { on: false };
+// ── THE OBJECT MENU: an object's verbs, named ────────────────────────────
+//
+// This replaced an edit MODE (2026-08-30, Quentin's instruction, and he was
+// right). The mode was verb-noun — declare "I am editing", then hunt for the
+// thing — which is the model noun-verb replaced thirty years ago, and a mode
+// is a mode: the same tap did different things depending on invisible state.
+//
+// The norm is a CONTEXT MENU, and it dissolves the objection that sent me to a
+// mode in the first place. I had argued no gesture was free because every one
+// of them already WROTE, and that overloading one would make a control which
+// sometimes edits forever and sometimes changes today — but a menu ITEM IS
+// LABELLED, so the ambiguity was an artifact of trying to say two things with
+// one gesture. "Cancel for today" and "Edit block…" cannot be confused.
+//
+// It is better on the money path too: calling a gate's day off used to be an
+// unlabelled right-click, and is now a named item you read before you pick it.
+//
+// The trigger is the platform norm and the app's own touch rule: right-click,
+// or a 550ms long press. The DECLARATION is unchanged — `data-obj="kind:id"`
+// still says what a thing is, so every artifact that had a door keeps it.
+const objMenu = { open: false };
 
-function setObjEdit(on) {
-  objEdit.on = !!on;
-  document.body.classList.toggle('obj-edit', objEdit.on);
-  const btn = document.getElementById('hub-edit-btn');
-  if (btn) btn.classList.toggle('hub-btn-on', objEdit.on);
-  return objEdit.on;
+// `…` means "opens further UI", the convention every desktop menu uses. The
+// day-level verbs a surface supplies come first and the editor last, because
+// the frequent thing should not be under the rare one.
+function objectMenuItems(kind, extra) {
+  const spec = OBJECT_KINDS[kind];
+  const items = (extra || []).slice();
+  if (spec && SETTINGS_SHEETS[kind]) {
+    items.push({ label: `Edit ${spec.noun}…`, edit: true });
+  }
+  return items;
 }
 
-// ONE delegated handler, in the CAPTURE phase: the artifacts that carry a door
-// all have their own click handlers that WRITE, so the mode has to win the
-// event before it reaches them rather than after.
+function closeObjectMenu() {
+  const el = document.getElementById('obj-menu');
+  if (el) el.remove();
+  objMenu.open = false;
+}
+
+// Opened AT THE POINTER (Fitts), and kept on screen: a menu that opens under
+// the thumb or off the bottom edge is a menu you cannot read on a phone, which
+// is the same rule placeGatePop follows.
+function openObjectMenu(x, y, kind, id, extra) {
+  closeObjectMenu();
+  const items = objectMenuItems(kind, extra);
+  if (!items.length) return false;
+  const el = document.createElement('div');
+  el.id = 'obj-menu';
+  el.innerHTML = items.map((it, i) =>
+    `<button class="om-item${it.danger ? ' om-danger' : ''}" data-i="${i}">${escHtml(it.label)}</button>`).join('');
+  document.body.appendChild(el);
+
+  const pad = 8;
+  const w = el.offsetWidth, h = el.offsetHeight;
+  el.style.left = `${Math.max(pad, Math.min(x, window.innerWidth - w - pad))}px`;
+  el.style.top = `${Math.max(pad, Math.min(y, window.innerHeight - h - pad))}px`;
+  objMenu.open = true;
+
+  el.querySelectorAll('.om-item').forEach(btn => {
+    btn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const it = items[parseInt(btn.dataset.i)];
+      closeObjectMenu();
+      if (it.edit) openObjectSheet(kind, id);
+      else if (it.run) it.run();
+    });
+  });
+  // Any tap elsewhere dismisses, like every menu. Deferred by a frame or the
+  // very click that opened it would close it again.
+  setTimeout(() => document.addEventListener('pointerdown', function once(ev) {
+    if (ev.target.closest && ev.target.closest('#obj-menu')) {
+      document.addEventListener('pointerdown', once, { once: true });
+      return;
+    }
+    closeObjectMenu();
+  }, { once: true }), 0);
+  return true;
+}
+
+// ONE delegated pair of triggers for every declared artifact. A surface that
+// wants day-level verbs in the menu registers them by kind+id through
+// `objectVerbs`; everything else gets the editor alone, which is still one
+// gesture instead of five taps through Settings.
+function verbsFor(kind, id, el) {
+  // (objectVerbProviders is declared at the top of the file: surfaces register
+  // into it while the script is still evaluating, long before this runs.)
+  const out = [];
+  objectVerbProviders.forEach(fn => {
+    try { (fn(kind, id, el) || []).forEach(v => out.push(v)); } catch (e) {}
+  });
+  return out;
+}
+
 function initObjectDoors() {
-  document.addEventListener('click', e => {
-    if (!objEdit.on) return;
+  // CAPTURE phase: the artifacts this covers have their own contextmenu and
+  // long-press handlers that write, and the menu has to win the event rather
+  // than arrive after the write has already happened.
+  document.addEventListener('contextmenu', e => {
     const el = e.target.closest('[data-obj]');
     if (!el) return;
+    const [kind, id] = String(el.dataset.obj).split(':');
+    if (!OBJECT_KINDS[kind]) return;
     e.preventDefault();
     e.stopPropagation();
-    const [kind, id] = String(el.dataset.obj).split(':');
-    // The mode is spent on the thing you picked: leaving it armed under an
-    // open sheet means the next tap edits something instead of using it.
-    setObjEdit(false);
-    openObjectSheet(kind, id);
+    openObjectMenu(e.clientX, e.clientY, kind, id, verbsFor(kind, id, el));
   }, true);
+
+  // The finger's way in, and the same 550ms the rest of the app uses. Bound
+  // once on the document rather than per element, so an artifact rendered
+  // later is covered without being wired.
+  let lpTimer = null, lpAt = null;
+  document.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse') return;
+    const el = e.target.closest('[data-obj]');
+    if (!el) return;
+    const [kind, id] = String(el.dataset.obj).split(':');
+    if (!OBJECT_KINDS[kind]) return;
+    lpAt = { x: e.clientX, y: e.clientY };
+    lpTimer = setTimeout(() => {
+      lpTimer = null;
+      // A drag that armed on the same press owns it — onPointerDrag claims the
+      // press at pointerdown, and the menu stands down exactly like onLongPress.
+      if (e.pointerDragClaim) return;
+      openObjectMenu(lpAt.x, lpAt.y, kind, id, verbsFor(kind, id, el));
+    }, 550);
+  }, true);
+  const cancelLp = e => {
+    if (lpTimer && lpAt && e.clientX != null
+        && Math.hypot(e.clientX - lpAt.x, e.clientY - lpAt.y) < 8) return;
+    clearTimeout(lpTimer); lpTimer = null;
+  };
+  document.addEventListener('pointermove', cancelLp, true);
+  document.addEventListener('pointerup', () => { clearTimeout(lpTimer); lpTimer = null; }, true);
+  document.addEventListener('pointercancel', () => { clearTimeout(lpTimer); lpTimer = null; }, true);
 }
 
 // ── OPEN B OVER A, AND COME BACK ─────────────────────────────
@@ -5912,9 +6081,9 @@ function initHub() {
     // The gate read-out is the next layer in (a popup beside its pill, over
     // the calendar), so it peels before anything under it.
     if (gatePop.nodeId != null) { closeGatePop(); return; }
-    // The edit mode is armed OVER whatever you were looking at and changes
-    // nothing by itself, so Esc disarms it before it starts closing surfaces.
-    if (objEdit.on) { setObjEdit(false); return; }
+    // A menu is always the innermost thing on screen and closing it is free,
+    // so it peels before anything else Esc could reach.
+    if (objMenu.open) { closeObjectMenu(); return; }
     // A selected gate is transient state over the calendar — it peels after the
     // read-out it opens and before the overlay it is drawn on.
     if (clearGateSel()) return;
@@ -6023,10 +6192,6 @@ function initHub() {
         renderLogs();
       }
       else if (dest === 'settings') { openBlockEditor(); }
-      // ARMS THE DOOR and gets out of the way: the point of the mode is to
-      // edit something you can SEE, so it closes the hub and leaves you on the
-      // surface you were on rather than opening one.
-      else if (dest === 'edit') { setObjEdit(!objEdit.on); }
     });
   });
 }
@@ -10830,22 +10995,12 @@ function renderQrLayer() {
       // arms a drag at all — but a mouse has no such separation.
       if (moved && !skipped) qrDragEndedAt = Date.now();
       if (!moved || skipped) {
-        if (e && e.button === 2 && !touch) {
-          // Was hideTimelineItem — a VIEW dismissal the judge never read, so
-          // the pill vanished and the day charged anyway. It calls the day off
-          // for real now, and says so: a silent money write is not a gesture
-          // anyone can check.
-          const want = !skipped;
-          setGateSkip(node.id, pageDate, want).then(done => {
-            if (!done) return;
-            toast(want ? `"${node.label}" is off for this day`
-                       : `"${node.label}" is back on for this day`);
-            undoableGateSkip(node.id, pageDate, skipped,
-                             want ? `called off "${node.label}"`
-                                  : `put "${node.label}" back`);
-          });
-          return;
-        }
+        // The right button used to call the day off from here, unlabelled. On
+        // the real-money path that was the weakest place for it to live: it is
+        // a named item on the gate's menu now, which initObjectDoors opens, so
+        // this branch simply stands aside and lets the contextmenu event
+        // through.
+        if (e && e.button === 2 && !touch) return;
         // A press that never moved is a TAP: read the gate out. The rect is
         // taken BEFORE the re-render — a detached element measures as zero, and
         // the popup would open in the top-left corner instead of beside its
