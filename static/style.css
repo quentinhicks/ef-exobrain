@@ -3258,15 +3258,30 @@ body.calendar-minimized #review-modal {
 .tl-qr-line.tl-qr-partial { --pill-bg: var(--gate-half); }
 .tl-qr-line.tl-qr-failed  { --pill-bg: var(--gate-missed); }
 
-.tl-qr-line.tl-qr-dismissed {
+/* CALLED OFF for this day. Not merely greyed: the gate is still drawn, still
+   tappable and still the only way back on, so it has to read as a decision
+   rather than as a dim gate. The rule through the square is what says so —
+   grey alone is what "locked" already means two lines down. */
+.tl-qr-line.tl-qr-skipped {
   --pill-bg: var(--gate-dismissed);
   --pill-ink: var(--on-gate-dismissed);
 }
 
-.tl-qr-line.tl-qr-dismissed .tl-qr-label,
+.tl-qr-line.tl-qr-skipped .tl-qr-label::after {
+  content: '';
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 50%;
+  height: 2px;
+  background: var(--on-gate-dismissed);
+  pointer-events: none;
+}
+
+.tl-qr-line.tl-qr-skipped .tl-qr-label,
 .tl-qr-line.tl-qr-locked .tl-qr-label { cursor: default; }
 
-.tl-qr-line:not(.tl-qr-dismissed):not(.tl-qr-locked) .tl-qr-label:hover,
+.tl-qr-line:not(.tl-qr-skipped):not(.tl-qr-locked) .tl-qr-label:hover,
 .tl-qr-line.tl-qr-dragging .tl-qr-label {
   filter: brightness(1.15);
 }

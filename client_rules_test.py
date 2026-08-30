@@ -56,6 +56,20 @@ BANNED = [
     (re.compile(r'(?<![\w.])1440(?![\w])'),
      'DAY_MIN, or spanEndMin / windowEndMin / clockHHMM',
      'const DAY_MIN = 1440;'),
+    # THE VIEW STORE MAY NOT SWALLOW A MONEY-PATH OBJECT. hideTimelineItem
+    # files a timeline_dismissal row — a view preference the judge has no
+    # reason to read, and the right answer for a block or a fetched event,
+    # neither of which can cost anything. A GATE went through it too, so
+    # right-clicking one made the pill vanish for good while qr_judge charged
+    # the day exactly as before: the calendar said the gate was gone and the
+    # money said it was not. Calling a gate's day off is a real write now
+    # (setGateSkip -> qr_override.skipped -> applies_on), and this bans the
+    # literal text of the bug. A future surface that wants to hide a gate owes
+    # the same question: does the judge see it?
+    (re.compile(r"""hideTimelineItem\(\s*['"]qr['"]"""),
+     "setGateSkip() — a gate's day is a fact the judge has to see, not a view "
+     'preference',
+     None),
 ]
 
 # ── The day a RUN's work is filed under ──────────────────────
@@ -129,7 +143,8 @@ def main():
             if not pattern.search(line):
                 continue
             owner = owning_function(lines, n)
-            if allowed_in in owner or allowed_in in line:
+            # None: there is no legitimate use anywhere, so nothing is exempt.
+            if allowed_in is not None and (allowed_in in owner or allowed_in in line):
                 continue
             fails.append((n + 1, stripped[:88], instead))
 
@@ -165,6 +180,7 @@ midnight, a paused row, or a config change.""")
     print('  past midnight spanEndMin / windowEndMin / clockHHMM / DAY_MIN')
     print("  a run's day   %d function(s) file a dated fact, none from the clock"
           % len(dated))
+    print('  money path    no gate is hidden through the view-dismissal store')
     return 0
 
 

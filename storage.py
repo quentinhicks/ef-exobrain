@@ -1109,6 +1109,15 @@ def init_db():
             window_start           TEXT NOT NULL,
             window_end             TEXT NOT NULL,
             window_end_offset_days INTEGER DEFAULT 0,
+            -- THE DAY IS OFF. A day-level statement that this gate does not run
+            -- on this date: qr_judge.applies_on refuses it, so the judge lands
+            -- 'n/a' exactly like a non-run weekday and no money moves. The
+            -- window columns are still filled on a skip -- with the window the
+            -- day RESOLVED to when it was skipped -- so the row says what was
+            -- called off, and override_locked can still find the close it locks
+            -- against. Skipping is a LOOSENING and takes the same 24h lock the
+            -- window drag does; un-skipping re-commits the day and does not.
+            skipped                INTEGER NOT NULL DEFAULT 0,
             UNIQUE(node_id, date)
         )''')
     conn.execute('''
@@ -1180,6 +1189,27 @@ def init_db():
             used_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
+    # A day-level "this gate does not run today". See the qr_override schema
+    # above for why the window columns stay filled on a skip.
+    try:
+        conn.execute('SELECT skipped FROM qr_override LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE qr_override ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0')
+        conn.commit()
+    # ONE-TIME: the gate half of timeline_dismissal is retired. Right-clicking a
+    # gate used to file it there — a VIEW-only store the judge has no reason to
+    # read — so the pill vanished for good while the day was judged and charged
+    # exactly as before. The gesture writes a real skip now. The stale rows have
+    # to go: nothing renders them any more, so a gate hidden under the old
+    # meaning would stay invisible with no surface left to bring it back.
+    # Recorded rather than done silently, like every other one-time repair —
+    # re-running it would delete skips a person made on purpose. NEVER clear it.
+    if not conn.execute("SELECT value FROM setting WHERE key = "
+                        "'qr_dismissals_retired'").fetchone():
+        conn.execute("DELETE FROM timeline_dismissal WHERE type = 'qr'")
+        conn.execute("INSERT OR REPLACE INTO setting (key, value) "
+                     "VALUES ('qr_dismissals_retired', '1')")
+        conn.commit()
     _migrate_time_presets(conn)
     _repair_time_preset_conversion(conn)
     _migrate_journal_metrics(conn)
@@ -1686,11 +1716,18 @@ def qr_gate_day_windows(node, days=17, start=None):
         # and nothing claims a deadline the gate will not have.
         if not as_of or falsy(as_of.get('active', 1)):
             continue
-        if not qr_judge.applies_on(as_of, day):
+        # A CALLED-OFF DAY STILL DRAWS. applies_on refuses it, so the judge
+        # will land 'n/a' and no money moves — but dropping it from the map
+        # would take the pill off the timeline entirely, and the pill is the
+        # only door back to un-skipping it. So the day is served with the mark
+        # instead: struck through, undraggable, and still tappable.
+        ov = qr_get_override(node['id'], day)
+        skipped = bool(ov and ov.get('skipped'))
+        if not skipped and not qr_judge.applies_on(as_of, day, ov):
             continue
         w = qr_judge.resolve_window(as_of, day)
         out[day] = {'window_start': w[0], 'window_end': w[1],
-                    'window_end_offset_days': w[2]}
+                    'window_end_offset_days': w[2], 'skipped': skipped}
         # Named so a surface can SAY the day is different, instead of quietly
         # drawing a time nobody scheduled.
         if any(r['effective_date'] <= day for r in revisions):
@@ -7732,17 +7769,25 @@ def qr_get_override(node_id, date):
     return dict(row) if row else None
 
 
-def qr_set_override(node_id, date, window_start, window_end, offset_days=0):
+# `skipped=None` means the caller is saying nothing about the day being off —
+# dragging a window must not quietly re-commit a day that was called off, and
+# calling a day off must not disturb the window it resolved to. Two questions,
+# one row, so each write only answers its own.
+def qr_set_override(node_id, date, window_start, window_end, offset_days=0,
+                    skipped=None):
     conn = get_conn()
     conn.execute(
         '''INSERT INTO qr_override (node_id, date, window_start, window_end,
-                                    window_end_offset_days)
-           VALUES (?,?,?,?,?)
+                                    window_end_offset_days, skipped)
+           VALUES (?,?,?,?,?,COALESCE(?,0))
            ON CONFLICT(node_id, date) DO UPDATE SET
              window_start = excluded.window_start,
              window_end = excluded.window_end,
-             window_end_offset_days = excluded.window_end_offset_days''',
-        (node_id, date, window_start, window_end, offset_days))
+             window_end_offset_days = excluded.window_end_offset_days,
+             skipped = COALESCE(?, qr_override.skipped)''',
+        (node_id, date, window_start, window_end, offset_days,
+         None if skipped is None else int(bool(skipped)),
+         None if skipped is None else int(bool(skipped))))
     conn.commit()
     conn.close()
 

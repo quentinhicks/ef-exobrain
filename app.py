@@ -2066,7 +2066,8 @@ def accountability_nodes():
 def _gate_day_payload(node, ymd, now=None):
     now = now or datetime.now()
     override = storage.qr_get_override(node['id'], ymd)
-    applies = qr_judge.applies_on(node, ymd)
+    applies = qr_judge.applies_on(node, ymd, override)
+    skipped = bool(override and override.get('skipped'))
     start, end, offset = qr_judge.resolve_window(node, ymd, override)
     close_date = qr_judge.close_date_of(ymd, offset)
     open_iso = qr_judge._utc_iso(ymd, start)
@@ -2075,7 +2076,9 @@ def _gate_day_payload(node, ymd, now=None):
     # WHY the window is what it is. The pill shows one time; which of the four
     # layers produced it is the first thing you need when it is not the time you
     # expected. Same ladder as resolve_window, in the same order.
-    if override:
+    if skipped:
+        source = 'the day it was called off at'
+    elif override:
         source = 'this day only (dragged on the timeline)'
     elif qr_judge.source_window_for(node, ymd):
         source = 'the schedule: ' + (_schedule_label(node) or 'its own rule')
@@ -2147,6 +2150,12 @@ def _gate_day_payload(node, ymd, now=None):
     return {
         'node_id': node['id'], 'label': node['label'], 'date': ymd,
         'applies': applies, 'active': bool(node.get('active')),
+        # THE DAY OFF, and whether it can still be turned on or off. Both are
+        # resolutions the judge owns (applies_on, override_locked) and the
+        # read-out renders them — a client deciding for itself whether the 24h
+        # lock had bitten would draw a verb the server is about to refuse.
+        'skipped': skipped,
+        'skip_locked': qr_judge.override_locked(node, ymd, now),
         'proof_mode': node.get('proof_mode') or 'link',
         # THE MINUTES ARE SERVED, not re-derived. The timeline draws four
         # dotted lines from this payload — scan open/close and the routine's
@@ -3163,7 +3172,33 @@ def post_accountability_override(id):
     nodes = {n['id']: n for n in storage.qr_get_nodes()}
     if id not in nodes or not _YMD_RE.match(date):
         return jsonify({'error': 'unknown node or bad date'}), 400
-    if qr_judge.override_locked(nodes[id], date):
+    node = nodes[id]
+
+    # CALLING THE DAY OFF is a day-level statement, so it is made here — on the
+    # gate's day surface — and not with the view-only dismissal the timeline
+    # hands blocks and events. Those have no money path; this one does, and a
+    # gesture that hid the pill without telling the judge left the day charging
+    # while the calendar said it was gone.
+    #
+    # The window is RESOLVED SERVER-SIDE and stamped onto the row: the client
+    # does not get to say which window it is calling off, and the row records
+    # what was actually skipped. A skip on a day that already carries a dragged
+    # window keeps that window, because resolve_window reads the override first.
+    if 'skipped' in d:
+        want = bool(d['skipped'])
+        # Skipping LOOSENS — same 24h lock the drag takes, so tonight's gate
+        # cannot be dodged tonight. Un-skipping re-commits the day, which is a
+        # tightening, and tightening is always allowed to land at once. It
+        # cannot reach backwards either: a day the judge has already frozen as
+        # 'n/a' stays 'n/a' (qr_judgment_exists), so re-committing a past day
+        # is inert rather than retroactively chargeable.
+        if want and qr_judge.override_locked(node, date):
+            return jsonify({'error': 'Locked — deadline within 24h'}), 403
+        w = qr_judge.resolve_window(node, date)
+        storage.qr_set_override(id, date, w[0], w[1], w[2], skipped=want)
+        return jsonify({'ok': True, 'skipped': want})
+
+    if qr_judge.override_locked(node, date):
         return jsonify({'error': 'Locked — deadline within 24h'}), 403
     offset = d.get('window_end_offset_days') or 0
     # A deadline dragged above its own opening is an unsatisfiable gate — the
@@ -3182,8 +3217,11 @@ def delete_accountability_override(id, date):
     if id not in nodes or not _YMD_RE.match(date):
         return jsonify({'error': 'unknown node or bad date'}), 400
     # Removal is gated too: dropping an override that made a day HARDER would
-    # otherwise be a loophole back to the slacker default.
-    if qr_judge.override_locked(nodes[id], date):
+    # otherwise be a loophole back to the slacker default. A SKIPPED day is the
+    # one exception — deleting that row puts the gate back on duty, which is a
+    # tightening, and refusing it would be refusing to re-commit.
+    existing = storage.qr_get_override(id, date)
+    if not (existing and existing.get('skipped'))             and qr_judge.override_locked(nodes[id], date):
         return jsonify({'error': 'Locked — deadline within 24h'}), 403
     storage.qr_delete_override(id, date)
     return jsonify({'ok': True})

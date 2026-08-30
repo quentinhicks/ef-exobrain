@@ -231,7 +231,21 @@ def _hhmm_min(hhmm):
     return int(h) * 60 + int(m)
 
 
-def applies_on(node, ymd):
+def applies_on(node, ymd, override=None):
+    # THE DAY OFF WINS OVER EVERY SCHEDULE. A skip is a deliberate day-level
+    # decision made on the day-level surface, so it is asked first and answered
+    # here rather than at each of the four callers — this function is the ONE
+    # place "does this gate run on this date" is answered, and the judge, the
+    # outcomes, the drawn windows and the read-out all reach it. A skipped day
+    # therefore lands 'n/a' by the same road a non-run weekday does: judged,
+    # frozen, and never charged.
+    #
+    # `override` mirrors resolve_window's parameter exactly: outcomes() has the
+    # whole range prefetched and must not go back to the db per day.
+    if override is None:
+        override = storage.qr_get_override(node['id'], ymd)
+    if override and override.get('skipped'):
+        return False
     # With a source, "does it run today" is whether the source has an occurrence
     # — days_of_week is only the fallback for a gate that has no source yet.
     # A gate RUNS on a date when its schedule has an occurrence STARTING that
@@ -609,7 +623,7 @@ def outcomes(from_date, to_date, now=None):
     for node in storage.qr_get_nodes(active_only=True):
         ymd = from_date
         while ymd <= to_date:
-            if not applies_on(node, ymd):
+            if not applies_on(node, ymd, overrides.get((node['id'], ymd))):
                 ymd = _date_plus(ymd, 1)
                 continue
             start, end, offset = resolve_window(

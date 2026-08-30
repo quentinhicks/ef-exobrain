@@ -156,7 +156,6 @@ const state = {
   // the routine's own schedule) and a client that recomputed them would draw
   // a day the judge does not believe in.
   gateSel: null,
-  qrDismissed: {},
   qrOutcomes: {},
   locations: [],
   // Location-bound tags (tag_location) + the last geolocation fix. FAIL-OPEN:
@@ -175,9 +174,13 @@ const state = {
   geo: { ok: false },
   settings: {},
   view: { start: 0, end: DAY_MIN },
-  // Right-click day-level view dismissals: blocks/qr keyed `id:date`, events
+  // Right-click day-level view dismissals: blocks keyed `id:date`, events
   // keyed `uid|start`. Undo lives on the global stack (see pushUndo).
-  tlHidden: { block: {}, event: {}, qr: {} },
+  // Blocks and events only. A GATE used to be dismissible here too, which
+  // made the pill vanish while the judge charged the day exactly as before:
+  // this is a VIEW store, and a gate's day-level state is a fact the judge has
+  // to see. Calling a gate's day off is a real write now (setGateSkip).
+  tlHidden: { block: {}, event: {} },
 };
 
 // Every fetch here catches, and that is load-bearing rather than defensive:
@@ -241,7 +244,7 @@ async function loadAll() {
   }
   state.qrOutcomes = {};
   (Array.isArray(qrOutcomes) ? qrOutcomes : []).forEach(o => { state.qrOutcomes[`${o.node_id}:${o.date}`] = o.outcome; });
-  state.tlHidden = { block: {}, event: {}, qr: {} };
+  state.tlHidden = { block: {}, event: {} };
   (Array.isArray(dismissals) ? dismissals : []).forEach(d => {
     if (!state.tlHidden[d.type]) return;
     state.tlHidden[d.type][d.key] = true;
@@ -1824,6 +1827,45 @@ async function restoreGateWindow(nodeId, date, prev) {
 
 function undoableGateWindow(nodeId, date, prev, label) {
   pushUndo(label, () => restoreGateWindow(nodeId, date, prev));
+}
+
+// CALLING A GATE'S DAY OFF, and putting it back. One store behind two doors
+// (the pill's right-click / long-press and the read-out's button), because a
+// day-level statement about a gate belongs on the gate's day surface — the
+// timeline — and both gestures had better write the same thing.
+//
+// The server owns both halves of the judgment: which window is being called
+// off (it resolves and stamps it) and whether the 24h lock refuses the skip.
+// So a refusal is READ BACK and toasted rather than predicted here.
+async function setGateSkip(nodeId, date, want) {
+  const res = want
+    ? await apiSend(`/api/accountability/nodes/${nodeId}/overrides`, 'POST',
+                    { date, skipped: true })
+    : await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${date}`, 'DELETE');
+  if (!res || !res.ok) {
+    const msg = res ? await res.json().catch(() => ({})) : {};
+    toast(msg.error || (want ? 'Could not call that day off' : 'Could not put that day back'));
+    return false;
+  }
+  // day_windows carries the mark, so the pill cannot redraw correctly until
+  // the nodes are re-read. The judge's own answer, not a local guess.
+  state.accountabilityNodes = await apiGet('/api/accountability/nodes',
+                                           state.accountabilityNodes);
+  renderTimeline();
+  return true;
+}
+
+// A GESTURE IS A BUTTON, and this one moves money — calling a day off is the
+// difference between a charge and an 'n/a'. Its inverse is the state the day
+// was in, so undoing a skip re-commits the day and undoing an un-skip calls it
+// off again. Un-skipping is a tightening and the lock never refuses it, so the
+// undo of a skip always lands.
+function undoableGateSkip(nodeId, date, wasSkipped, label) {
+  pushUndo(label, async () => {
+    if (await setGateSkip(nodeId, date, wasSkipped)) {
+      if (state.gateSel) await refreshGateSel();
+    }
+  });
 }
 
 // The routine's deadline is its OFFSET from the gate, so its inverse is the
@@ -9867,7 +9909,10 @@ function qrPillTitle(node, endHHMM, offsetDays, locked, outcome) {
 // SERVED, never mirrored. Every value comes from /api/accountability/nodes/:id
 // /day, which resolves through qr_judge's own functions, so the read-out cannot
 // tell you a story the judge disagrees with. The client formats; it decides
-// nothing — which is also why nothing here writes.
+// nothing. It does now WRITE one thing — calling the day off — and that is the
+// same rule kept, not broken: the button sends the intent and the server
+// decides both which window is being called off and whether the 24h lock
+// refuses it.
 const gatePop = { nodeId: null, date: null };
 
 // When a deadline drag last finished. A drag's trailing click must not open the
@@ -9900,16 +9945,18 @@ async function openGatePop(nodeId, date, anchorEl) {
   el.innerHTML = gatePopHtml(d);
   placeGatePop(el, anchorEl);
   el.querySelector('.gp-close').addEventListener('click', closeGatePop);
-  // The only thing in here that CHANGES anything, and it changes only what you
-  // can SEE: greying the square for this day is a view preference, not a fact
-  // about the gate, so it stays session-local like it always was.
-  const hide = el.querySelector('#gp-hide');
-  if (hide) hide.addEventListener('click', () => {
-    const key = `${nodeId}:${date}`;
-    if (state.qrDismissed[key]) delete state.qrDismissed[key];
-    else state.qrDismissed[key] = true;
-    renderQrLayer();
-    openGatePop(nodeId, date, anchorEl);
+  // THE ONE THING IN HERE THAT WRITES, and it writes a fact rather than a
+  // view preference: calling this gate's day off is a statement the judge
+  // reads (qr_override.skipped -> applies_on -> 'n/a'). Everything else on
+  // this popup is still read-only, and the day it describes is re-read
+  // afterwards rather than patched locally.
+  const skip = el.querySelector('#gp-skip');
+  if (skip) skip.addEventListener('click', async () => {
+    const was = !!d.skipped;
+    if (!await setGateSkip(nodeId, date, !was)) return;
+    undoableGateSkip(nodeId, date, was,
+                     was ? `put "${d.label}" back` : `called off "${d.label}"`);
+    openGatePop(nodeId, date, anchorEl);   // re-read: the day it describes moved
   });
 }
 
@@ -10060,9 +10107,20 @@ function gatePopHtml(d) {
     verdict += gpRow('Proof', 'a verified NFC tap, and nothing else');
   }
 
-  const greyed = !!state.qrDismissed[`${d.node_id}:${d.date}`];
-  const foot = `<div class="gp-foot"><button id="gp-hide" class="se-inline-act">${
-    greyed ? 'Show it again' : 'Grey it out for this day'}</button></div>`;
+  // THE ONE VERB IN HERE, and it is a real one. There used to be a cosmetic
+  // "grey it out for this day" sitting where this button is, next to a
+  // right-click that also only greyed things — two look-alike gestures on a
+  // money-path object, neither of which the judge could see. A gate's day is
+  // either on or off; there is no third, decorative state for it to be in.
+  //
+  // Locked is SERVED (skip_locked), and the button says so rather than going
+  // quiet: a dead button on the day you most want to press it is how the
+  // original gesture read.
+  const foot = `<div class="gp-foot"><button id="gp-skip" class="se-inline-act"${
+    d.skipped || !d.skip_locked ? '' : ' disabled'}>${
+    d.skipped ? 'Put this day back on'
+      : d.skip_locked ? 'Too late to call this day off (within 24h)'
+        : 'Call this day off'}</button></div>`;
   return `<div class="gp-head">
       <span class="gp-title">${escHtml(d.label)}</span>
       <button class="gp-close" title="Close">✕</button>
@@ -10334,7 +10392,6 @@ function renderQrLayer() {
     // today_override from the API is only for the Worker's local today.
     // For other dates, use the client-side cache populated by drag saves.
     const cacheKey = `${node.id}:${pageDate}`;
-    if (state.tlHidden.qr[cacheKey]) return;
     const ov = viewingToday ? node.today_override : (state.qrPageOverrides[cacheKey] || null);
     const def = nodeWindowForDate(node, pageDate);
     const windowStart = ov ? ov.window_start : def.window_start;
@@ -10365,7 +10422,12 @@ function renderQrLayer() {
     // pills, so the question never came up. Now that the verb lives in the
     // read-out — which opens on every gate, locked included — leaving it in
     // made the button dead on exactly the gates you look at most.
-    const dismissed = !!state.qrDismissed[cacheKey];
+    // CALLED OFF for this day: served by the server (day_windows carries the
+    // mark), never decided here — it is the same answer applies_on gives the
+    // judge, and a client that decided it separately would draw a day the
+    // judge does not believe in.
+    const dayEntry = (node.day_windows || {})[pageDate];
+    const skipped = !!(dayEntry && dayEntry.skipped);
 
     const line = document.createElement('div');
     // outcome colors the pill for judged (closed) windows: green/red
@@ -10377,7 +10439,7 @@ function renderQrLayer() {
     // NOT say how their day went.
     const selected = !!state.gateSel && state.gateSel.nodeId === node.id
       && state.gateSel.date === pageDate;
-    line.className = 'tl-qr-line' + (locked ? ' tl-qr-locked' : '') + (dismissed ? ' tl-qr-dismissed' : '')
+    line.className = 'tl-qr-line' + (locked ? ' tl-qr-locked' : '') + (skipped ? ' tl-qr-skipped' : '')
       + (outcome ? ` tl-qr-${outcome}` : '') + (selected ? ' tl-qr-selected' : '');
     line.style.top = `${pct}%`;
 
@@ -10440,7 +10502,6 @@ function renderQrLayer() {
     // hold. Hiding for the day is the pill's ✕ on touch, which is why only the
     // drag needed a touch path.
     onPointerDrag(label, { start(e) {
-      if (dismissed) return null;
       if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 2) return null;
       dragging = true;
       dragStartY = e.clientY;
@@ -10460,6 +10521,12 @@ function renderQrLayer() {
 
     function onMove(clientY) {
       if (!dragging) return;
+      // A DAY THAT IS OFF HAS NO DEADLINE TO MOVE — but declining the press
+      // outright (returning null from start) also throws away the TAP, which
+      // rides out of onUp, and the read-out that tap opens is the only door
+      // back to putting the day on. So the press is claimed and the movement
+      // is what is refused.
+      if (skipped) return;
       const mins = calcMinutes(clientY);
       const displayPct = Math.min(100, Math.max(0, minutesToViewPercent(mins)));
       line.style.top = `${displayPct}%`;
@@ -10503,11 +10570,22 @@ function renderQrLayer() {
       // marked pill has been replaced by a fresh one. The guard therefore
       // lives outside the DOM. A finger is already covered — its tap never
       // arms a drag at all — but a mouse has no such separation.
-      if (moved) qrDragEndedAt = Date.now();
-      if (!moved) {
+      if (moved && !skipped) qrDragEndedAt = Date.now();
+      if (!moved || skipped) {
         if (e && e.button === 2 && !touch) {
-          hideTimelineItem('qr', cacheKey, node.label);
-          renderQrLayer();
+          // Was hideTimelineItem — a VIEW dismissal the judge never read, so
+          // the pill vanished and the day charged anyway. It calls the day off
+          // for real now, and says so: a silent money write is not a gesture
+          // anyone can check.
+          const want = !skipped;
+          setGateSkip(node.id, pageDate, want).then(done => {
+            if (!done) return;
+            toast(want ? `"${node.label}" is off for this day`
+                       : `"${node.label}" is back on for this day`);
+            undoableGateSkip(node.id, pageDate, skipped,
+                             want ? `called off "${node.label}"`
+                                  : `put "${node.label}" back`);
+          });
           return;
         }
         // A press that never moved is a TAP: read the gate out. The rect is
