@@ -2749,7 +2749,23 @@ function openSeSheet(kind, item, returnTo) {
   seSheet.infoOpen = {};
   document.getElementById('se-sheet').classList.remove('hidden');
   document.getElementById('se-sheet-backdrop').classList.remove('hidden');
-  document.getElementById('block-editor-modal').classList.add('be-sheet-open');
+  // The LAYER is the sheet, not the instance: a sheet handing over to another
+  // sheet (a gate's routine, a gate's tag) is still one thing raised over the
+  // index, so it must not stack a second time and need closing twice.
+  //
+  // AND THE HOST IS NOT ASSUMED. `be-sheet-open` dims the settings modal
+  // behind the sheet, which is the right thing when the sheet was opened from
+  // the settings index and meaningless when it was opened from the calendar.
+  // The sheet itself is `position: fixed` and lives outside the modal in the
+  // DOM, so it never needed the modal — only this one class did.
+  if (!overIsOpen('se-sheet')) {
+    const modal = document.getElementById('modal-overlay');
+    const hosted = modal && !modal.classList.contains('hidden');
+    openOver('se-sheet', hosted ? {
+      raise: () => document.getElementById('block-editor-modal').classList.add('be-sheet-open'),
+      lower: () => document.getElementById('block-editor-modal').classList.remove('be-sheet-open'),
+    } : {});
+  }
   renderSeSheet();
   if (spec.onOpen) spec.onOpen(item);
   const first = document.querySelector('#se-sheet .se-input');
@@ -2763,7 +2779,7 @@ function closeSeSheet() {
   seSheet.returnTo = null;
   document.getElementById('se-sheet').classList.add('hidden');
   document.getElementById('se-sheet-backdrop').classList.add('hidden');
-  document.getElementById('block-editor-modal').classList.remove('be-sheet-open');
+  closeOver('se-sheet');
 }
 
 // ── A gate's NFC tags ─────────────────────────────────────────
@@ -5684,6 +5700,55 @@ function renderGtdReview() {
   }
 }
 
+// ── OPEN B OVER A, AND COME BACK ─────────────────────────────
+//
+// One surface raised above another, then put back down where you left off.
+// This was written three times before it existed as a thing:
+// `be-sheet-open` (the settings sheet over the settings modal),
+// `crm-over-runner` (People over the routine runner) and `map-over-runner`
+// (MAP over that same runner) — the third arriving with a comment telling it
+// to copy the second, which is the sound a missing abstraction makes. Each
+// invented its own z-bump, its own way back down and its own rung on the Esc
+// ladder, and the ladder had to be edited by hand every time.
+//
+// (`clarifySnapshot` is NOT one of these. It restores one sheet's half-made
+// state when that sheet is re-entered, which is a different question — no
+// z-layer, no ladder. It COMPOSES with this through `back` rather than being
+// absorbed by it.)
+//
+// One stack, innermost last. A layer names itself and says how to raise and
+// lower itself; `back` is what to do once it is down — re-read the surface it
+// was covering, restore a snapshot, reopen a popup. `lower` is the Z-LAYER
+// only: closing the SURFACE stays the surface's own job, because a layer that
+// closed its own overlay would fight the overlay's close handler for who goes
+// first.
+const overLayers = [];
+
+function openOver(name, spec) {
+  const { raise, lower, back } = spec || {};
+  if (raise) raise();
+  overLayers.push({ name, lower, back });
+}
+
+function overIsOpen(name) {
+  return overLayers.some(l => l.name === name);
+}
+
+// Put ONE layer down: the innermost, or the innermost carrying this name.
+// Returns whether anything came down, so Esc can tell "I handled it" from
+// "nothing of mine was up" without asking a second question first.
+function closeOver(name) {
+  let i = -1;
+  for (let n = overLayers.length - 1; n >= 0; n--) {
+    if (!name || overLayers[n].name === name) { i = n; break; }
+  }
+  if (i < 0) return false;
+  const layer = overLayers.splice(i, 1)[0];
+  if (layer.lower) layer.lower();
+  if (layer.back) layer.back();
+  return true;
+}
+
 // ── Hub rail + mobile overlays (9c) ──────────────────────────
 // The day is the whole screen; every reference surface is a full-screen
 // overlay reached from the ≡ hub in the capture bar. One surface at a time.
@@ -5700,11 +5765,9 @@ function closeM(id) {
   const el = document.getElementById(id);
   el.classList.add('hidden');
   // The CRM raised above the runner returns to its own layer, and the routine
-  // step it was opened from re-reads the night before it repaints.
-  if (id === 'tab-people' && document.body.classList.contains('crm-over-runner')) {
-    document.body.classList.remove('crm-over-runner');
-    if (flowRunView.open) refreshCrmNight();
-  }
+  // step it was opened from re-reads the night before it repaints (the
+  // layer's own `back`).
+  if (id === 'tab-people') closeOver('crm-over-runner');
   renderBar();
 }
 
@@ -5732,18 +5795,22 @@ function initHub() {
     // without this bail it would close the overlay out from under it.
     if (clarifyView.open) return;
     flushOpenNotes();
-    // The gate read-out is the innermost layer wherever it is open (a popup
-    // beside its pill, over the calendar), so it peels before anything else.
+    // A SETTINGS SHEET IS ALWAYS INNERMOST. It is z-200 against the read-out's
+    // 190, and now that a gate's sheet opens FROM the read-out (see
+    // openSeSheetOver), checking the popup first would close the surface the
+    // open sheet is standing on. Settings peels the way it navigates (11a):
+    // sheet, then section, then the panel itself.
+    if (seSheet.kind) { closeSeSheet(); return; }
+    // The gate read-out is the next layer in (a popup beside its pill, over
+    // the calendar), so it peels before anything under it.
     if (gatePop.nodeId != null) { closeGatePop(); return; }
     // A selected gate is transient state over the calendar — it peels after the
     // read-out it opens and before the overlay it is drawn on.
     if (clearGateSel()) return;
     if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
     // (MAP's rows open the clarify sheet, and the bail above lets the sheet
-    // peel first; its filter menu peels just above, before the overlay loop.)
-    // Settings peels the way it navigates (11a): sheet, then section, then the
-    // panel itself — so Esc is Back, not Close, until there is nothing left.
-    if (seSheet.kind) { closeSeSheet(); return; }
+    // peel first; its filter menu peels just above, before the overlay loop.
+    // The settings sheet itself peels at the TOP of this ladder.)
     // MAP's filter menu is a transient layer again (23a) — it peels before the
     // MAP overlay in the loop below, the way every sheet peels before what
     // opened it.
@@ -5790,7 +5857,7 @@ function initHub() {
     }
     // …except the CRM the runner itself raised above it: innermost first, so
     // Esc puts the People surface back down before it touches the routine.
-    if (document.body.classList.contains('crm-over-runner')) {
+    if (overIsOpen('crm-over-runner')) {
       closeM('tab-people');
       return;
     }
@@ -8411,10 +8478,14 @@ function renderFlowRun() {
   const crmOpen = el.querySelector('#fr-crm-open');
   if (crmOpen) crmOpen.addEventListener('click', () => {
     openM('tab-people');
-    // Over the runner (165) for as long as the routine holds it open; the class
-    // comes off in closeM, so the z-ladder is back to normal the moment you
-    // leave. Nothing else moves.
-    document.body.classList.add('crm-over-runner');
+    // Over the runner (165) for as long as the routine holds it open. The
+    // layer comes down in closeM, which is also where the step it was opened
+    // from re-reads the night — that is the `back` half.
+    openOver('crm-over-runner', {
+      raise: () => document.body.classList.add('crm-over-runner'),
+      lower: () => document.body.classList.remove('crm-over-runner'),
+      back: () => { if (flowRunView.open) refreshCrmNight(); },
+    });
     openPeopleSurface();
     startPeopleSession({ force: true });
   });
@@ -9950,6 +10021,39 @@ async function openGatePop(nodeId, date, anchorEl) {
   // reads (qr_override.skipped -> applies_on -> 'n/a'). Everything else on
   // this popup is still read-only, and the day it describes is re-read
   // afterwards rather than patched locally.
+  // THE SAME EDITOR, A SECOND DOOR (the #oc-sheet precedent). Not a copy of
+  // the gate's fields rendered into the popup: one thing with two editors is
+  // how they start disagreeing, and SETTINGS_SHEETS.gate already owns the
+  // three verbs, the state row and the 24h wording. `returnTo` brings the
+  // read-out back, re-read, so the detour costs nothing.
+  const edit = el.querySelector('#gp-edit');
+  if (edit) edit.addEventListener('click', () => {
+    const node = (state.accountabilityNodes || []).find(n => n.id === nodeId);
+    if (!node) { toast('That gate is gone'); return; }
+    // THE READ-OUT STAYS STANDING UNDERNEATH (190 against the sheet's 200).
+    // Closing it here made the detour free only if you SAVED: `returnTo` runs
+    // on save, so cancelling with Esc dropped you on a bare calendar having
+    // silently shut the surface you came from. Leaving it up means Esc peels
+    // the sheet and puts you back exactly where you were, which is what the
+    // ladder does everywhere else.
+    //
+    // The anchor is measured NOW, as a rect: saving re-renders the timeline,
+    // and a detached element measures as zero, which would reopen the popup
+    // in the top-left corner instead of beside its pill.
+    const rect = anchorEl && anchorEl.getBoundingClientRect
+      ? anchorEl.getBoundingClientRect() : anchorEl;
+    openSeSheet('gate', node, async () => {
+      closeSeSheet();
+      // The sheet may have moved the window, paused the gate or queued a 24h
+      // easing, so the day is re-read rather than redrawn from what the popup
+      // was holding before.
+      state.accountabilityNodes = await apiGet('/api/accountability/nodes',
+                                               state.accountabilityNodes);
+      renderTimeline();
+      openGatePop(nodeId, date, rect);
+    });
+  });
+
   const skip = el.querySelector('#gp-skip');
   if (skip) skip.addEventListener('click', async () => {
     const was = !!d.skipped;
@@ -10116,11 +10220,19 @@ function gatePopHtml(d) {
   // Locked is SERVED (skip_locked), and the button says so rather than going
   // quiet: a dead button on the day you most want to press it is how the
   // original gesture read.
+  // TWO VERBS, AND THEY SAY WHICH SURFACE THEY ARE. "Two surfaces, never
+  // mixed" is about a control being AMBIGUOUS between this day and every day,
+  // not about which screen you reach the permanent one from — so the day-level
+  // verb keeps saying "this day" and the permanent one opens the gate's own
+  // settings sheet, where seWhenRow already asks from which date a change
+  // governs. One editor, reached from where the gate is drawn instead of
+  // through Settings -> Gates -> the row.
   const foot = `<div class="gp-foot"><button id="gp-skip" class="se-inline-act"${
     d.skipped || !d.skip_locked ? '' : ' disabled'}>${
     d.skipped ? 'Put this day back on'
       : d.skip_locked ? 'Too late to call this day off (within 24h)'
-        : 'Call this day off'}</button></div>`;
+        : 'Call this day off'}</button>`
+    + `<button id="gp-edit" class="se-inline-act">Edit gate ›</button></div>`;
   return `<div class="gp-head">
       <span class="gp-title">${escHtml(d.label)}</span>
       <button class="gp-close" title="Close">✕</button>
@@ -11939,7 +12051,12 @@ function mapVisibleItems(items, today) {
 async function openMapAtLens(lens, overRunner) {
   mapView.lens = lens;
   mapView.q = '';
-  if (overRunner) document.body.classList.add('map-over-runner');
+  if (overRunner && !overIsOpen('map-over-runner')) {
+    openOver('map-over-runner', {
+      raise: () => document.body.classList.add('map-over-runner'),
+      lower: () => document.body.classList.remove('map-over-runner'),
+    });
+  }
   await openMap();
 }
 
@@ -11949,7 +12066,8 @@ async function openMap() {
     const shut = () => {
       flushOpenNotes();
       overlay.classList.add('hidden');
-      document.body.classList.remove('map-over-runner');
+      // A no-op when MAP was opened on its own, which is most of the time.
+      closeOver('map-over-runner');
     };
     document.getElementById('map-close').addEventListener('click', shut);
     overlay.addEventListener('click', e => { if (e.target === overlay) shut(); });

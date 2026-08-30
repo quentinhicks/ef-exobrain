@@ -3215,12 +3215,20 @@ body.calendar-minimized #review-modal {
 /* The read-out's one verb. It sits at the foot, apart from the facts above it,
    because everything else in this popup is something the box knows and this is
    something you are doing. */
+/* Two verbs that are about DIFFERENT things - this day, and the gate itself -
+   so they sit at opposite ends rather than reading as a pair of options. The
+   day-level label can run long ("Too late to call this day off (within 24h)")
+   inside a 360px popup, so the row wraps instead of squeezing the finger
+   target below the 36px floor. */
 .gp-foot {
   margin-top: 14px;
   padding-top: 10px;
   border-top: 1px solid var(--border-soft);
   display: flex;
-  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .gp-foot button { min-height: 36px; }
