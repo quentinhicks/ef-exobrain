@@ -5162,36 +5162,6 @@ async function checkDayRollover() {
 // "every active project has a next action" is the review's load-bearing check
 // and it is not runnable by hand.
 
-// The inboxes "collect loose papers" actually means for THIS setup. Ticking
-// them is per-week state, stored as `collect:<slug>` in the review's own
-// {key: timestamp} blob — no migration, which is why that shape was chosen.
-//
-// EDIT THIS LIST. It is deliberately a plain constant rather than a table:
-// the set changes when your life changes, not often, and a table would need a
-// manager screen to earn itself. Counts in the hints are what was actually
-// sitting there on 2026-08-10.
-const COLLECT_INBOXES = [
-  { key: 'physical', label: 'Desk, bag, pockets, wallet, notebook',
-    hint: 'Anything paper or physical that is standing in for a thought.' },
-  { key: 'downloads', label: 'Downloads + Desktop',
-    hint: 'Files you saved meaning to do something with.' },
-  { key: 'drive', label: 'Google Drive root',
-    hint: '103 loose files as of 2026-08-10 — the biggest unprocessed pile you own.' },
-  { key: 'email_princeton', label: 'Princeton email' },
-  { key: 'email_sf', label: 'Sentient Futures email' },
-  { key: 'email_personal', label: 'Personal email' },
-  { key: 'slack', label: 'Slack — DMs, mentions, saved items' },
-  { key: 'asana', label: 'Asana' },
-  { key: 'github', label: 'GitHub notifications, review requests, open PRs' },
-  { key: 'granola', label: 'Granola meeting notes',
-    hint: 'Action items from the week\'s recordings.' },
-  { key: 'phone', label: 'Phone — notes, voice memos, screenshots, camera roll' },
-  { key: 'messages', label: 'Texts, WhatsApp, LinkedIn' },
-  { key: 'browser', label: 'Open browser tabs',
-    hint: 'A tab you have not closed is an undecided action.' },
-  { key: 'paper_mail', label: 'Physical mail' },
-];
-
 // THE WEEKLY REVIEW IS A ROUTINE (2026-08-12). Its steps are flow_step rows on
 // a period-'week' flow and its ticks live in that flow's flow_run, so the
 // fold-out below and the routine runner are two views of ONE run: tick a step
@@ -5611,24 +5581,6 @@ function renderGtdReview() {
       s.count === 'inbox' ? 'in "in"' : s.count === 'deferred' ? 'deferred' : 'maybe'}</span>`;
   };
 
-  // Sub-steps keep the same shape as steps: a key in the blob, ticked with a
-  // timestamp. Their own row so a half-done sweep is visible next week. The key
-  // is '<step_id>:<inbox>' now the run belongs to the routine.
-  const subKey = (s, b) => `${s.id}:${b.key}`;
-  const collectList = s => {
-    const swept = COLLECT_INBOXES.filter(b => ticks[subKey(s, b)]).length;
-    return `<div class="gr-sub">
-      <div class="gr-sub-head">${swept}/${COLLECT_INBOXES.length} swept</div>
-      ${COLLECT_INBOXES.map(b => `
-        <label class="gr-sub-item${ticks[subKey(s, b)] ? ' gr-sub-done' : ''}">
-          <input type="checkbox" class="gr-cb" data-step="${subKey(s, b)}"${
-            ticks[subKey(s, b)] ? ' checked' : ''}>
-          <span><span class="gr-sub-label">${escHtml(b.label)}</span>${
-            b.hint ? `<span class="gr-step-hint">${escHtml(b.hint)}</span>` : ''}</span>
-        </label>`).join('')}
-    </div>`;
-  };
-
   const rowList = (rows, meta) => (rows || []).length
     ? `<ul class="gr-list">${rows.map(r =>
         `<li><span>${escHtml(r.content)}</span><span class="gr-list-meta">${escHtml(meta(r))}</span></li>`
@@ -5659,7 +5611,6 @@ function renderGtdReview() {
         <span class="gr-step-body">
           <span class="gr-step-label">${escHtml(step.content)}${badge(s)}</span>
           ${s.hint ? `<span class="gr-step-hint">${escHtml(s.hint)}</span>` : ''}
-          ${s.collect ? collectList(step) : ''}
           ${s.act === 'clarify' ? `<button class="gr-act" data-act="clarify">Clarify ${
             counts.inbox} →</button>` : ''}
           ${s.act === 'sweep' ? `<button class="gr-act" data-act="sweep">${playMark(9)} 5-minute sweep</button>` : ''}
@@ -8222,6 +8173,31 @@ async function afterPawnChange() {
   if (lists && !lists.classList.contains('hidden')) await refreshRef();
 }
 
+// The collect step's inboxes, from the ref_list linked to it (2026-08-30).
+// A LINKED LIST, not a constant: the set changes when a life changes, and it is
+// editable in Lists like any other checklist. Ticks are per-RUN
+// (flowRunView.checks), never ref_item.done — sweeping an inbox is a statement
+// about THIS week, whereas ref_item.done is permanent. Deliberately renders the
+// same .ref-list/.ref-row/[data-chk] markup the 'checklist' kind uses, so the
+// existing per-run tick handler drives it with no second code path.
+function collectChecklistHtml(s) {
+  const list = (flowRunView.refLists || []).find(l => l.id === s.ref_list_id);
+  if (!list) {
+    return '<div class="fr-note">No inbox list linked — pick one in the step settings (›).</div>';
+  }
+  if (!list.items.length) return '<div class="gtd-empty">That list is empty.</div>';
+  const checks = flowRunView.checks[s.id] || {};
+  const swept = list.items.filter(i => checks[i.id]).length;
+  return `<div class="fr-note">${swept}/${list.items.length} swept</div>
+    <div class="ref-list">${list.items.map(i => `
+      <div class="ref-row">
+        <span class="eg-check ref-check${checks[i.id] ? ' ref-checked' : ''}"
+          data-chk="${i.id}">${checks[i.id] ? '✓' : ''}</span>
+        <span class="ref-text${checks[i.id] ? ' ref-done' : ''}">${escHtml(i.content)}</span>
+      </div>`).join('')}</div>`;
+}
+
+
 function renderFlowRun() {
   const el = document.getElementById('flow-run');
   if (!el || !flowRunView.open) return;
@@ -8443,6 +8419,7 @@ function renderFlowRun() {
       ${s.kind === 'review_sweep'
         ? '<button id="fr-rv-sweep" class="cl-pill">' + playMark(9) + ' 5-minute sweep</button>'
         : ''}
+      ${meta.collect ? collectChecklistHtml(s) : ''}
       ${meta.projects ? reviewProjectsHtml(counts) : ''}
       ${meta.waiting && (counts.waiting_list || []).length
         ? `<ul class="gr-list">${counts.waiting_list.map(r =>

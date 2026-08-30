@@ -1344,6 +1344,9 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE ref_list ADD COLUMN parent_id INTEGER')
         conn.commit()
+    # AFTER the ref_list migrations above: this seed WRITES a ref_list, so it
+    # must run against the finished table, not the one mid-migration.
+    _seed_collect_checklist(conn)
     # Habits v2 (2026-08-11). An EXPERIMENT is an object with an ending: it
     # runs (one at a time), resolves with a note, and is EVALUATED only at the
     # weekly review — extend / habit / drop. A HABIT is a standing commitment
@@ -5447,6 +5450,67 @@ def _backfill_review_steps(conn):
     conn.commit()
     if added:
         print('weekly review: added step(s) ' + ', '.join(added))
+
+
+# The inboxes "collect loose papers" means for THIS setup (2026-08-30, Quentin's
+# instruction). It used to be a hardcoded COLLECT_INBOXES constant in app.js
+# rendered by the review FOLD-OUT — and the fold-out is gone, so the step had
+# lost its checklist entirely and rendered as bare text. It is a ref_list now,
+# linked through flow_step.ref_list_id like any other checklist step, because
+# the set changes when a life changes and editing a constant means a deploy.
+# Grouping rides in the item TEXT: a step links ONE list and the runner renders
+# its items flat, so "Physical — " / "Digital — " prefixes are the grouping.
+COLLECT_LIST_NAME = 'Collect — inboxes'
+COLLECT_LIST_ITEMS = (
+    'Physical — room (surfaces cleared)',
+    'Physical — sticky notes',
+    'Physical — journal',
+    'Digital — Slack',
+    'Digital — message apps (iMessage, WhatsApp, Instagram, Discord, GroupMe, LinkedIn)',
+    'Digital — Notes',
+    'Digital — notifications',
+)
+
+
+def _seed_collect_checklist(conn):
+    # ONCE, and recorded — the review_steps_offered idiom. Both halves of what
+    # this writes are ordinary editable rows: the list can be renamed or emptied
+    # in Lists, and the link can be cleared in the step's settings. Without the
+    # ledger a list deliberately deleted would grow back on the next launch, and
+    # a link deliberately cleared would be re-made, so neither could ever be
+    # removed. Never clear this setting to "re-seed" — it would orphan the first
+    # list and silently relink the step to a second one.
+    if conn.execute(
+            "SELECT value FROM setting WHERE key = 'collect_checklist_offered'").fetchone():
+        return
+    step = conn.execute(
+        "SELECT id, ref_list_id FROM flow_step WHERE kind = 'review_collect' LIMIT 1").fetchone()
+    # Nothing to attach to, and nothing to remember: leaving the setting unwritten
+    # lets a db that has no review flow YET be seeded once it does.
+    if not step:
+        return
+    # An existing link is the user's, not ours to overwrite.
+    if step['ref_list_id']:
+        conn.execute(
+            "INSERT OR REPLACE INTO setting (key, value) VALUES ('collect_checklist_offered', ?)",
+            (str(step['ref_list_id']),))
+        conn.commit()
+        return
+    pos = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM ref_list').fetchone()['p']
+    cur = conn.execute('INSERT INTO ref_list (name, position) VALUES (?, ?)',
+                       (COLLECT_LIST_NAME, pos))
+    list_id = cur.lastrowid
+    for i, content in enumerate(COLLECT_LIST_ITEMS, start=1):
+        conn.execute(
+            'INSERT INTO ref_item (list_id, content, done, position) VALUES (?, ?, 0, ?)',
+            (list_id, content, i))
+    conn.execute('UPDATE flow_step SET ref_list_id = ? WHERE id = ?', (list_id, step['id']))
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('collect_checklist_offered', ?)",
+        (str(list_id),))
+    conn.commit()
+    print('weekly review: seeded "%s" (%d items) on the collect step'
+          % (COLLECT_LIST_NAME, len(COLLECT_LIST_ITEMS)))
 
 
 def _merge_review_next_actions(conn):
