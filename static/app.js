@@ -643,10 +643,14 @@ function renderBlocksLayer(bodyH = 600) {
     const proj = b.area_id ? projectsById[b.area_id] : null;
     const tight = (height * bodyH / 100) < 18;
     const labelSpan = `<span class="tl-block-label${cancelled ? ' tl-cancelled-text' : ''}">${escHtml(label)}</span>`;
-    const locLabel = b.location_name ? `<span class="tl-block-sublabel">📍︎ ${escHtml(b.location_name)}</span>` : '';
-    const inner = `<div class="tl-block-bar"></div>${labelSpan}${proj ? `<span class="tl-block-sublabel">${escHtml(proj.name)}</span>` : ''}${locLabel}`;
+    const locLabel = b.location_name
+      ? `<span class="tl-block-sublabel"${b.location_id ? ` data-obj="location:${b.location_id}"` : ''
+        }>📍︎ ${escHtml(b.location_name)}</span>` : '';
+    const inner = `<div class="tl-block-bar"></div>${labelSpan}${proj
+      ? `<span class="tl-block-sublabel" data-obj="area:${proj.id}">${escHtml(proj.name)}</span>` : ''}${locLabel}`;
     return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}"
-                 data-block-id="${b.id}" data-start-min="${startMin}" data-end-min="${endMin}"
+                 data-block-id="${b.id}" data-obj="block:${b.id}"
+                 data-start-min="${startMin}" data-end-min="${endMin}"
                  style="top:${top}%;height:${height}%;cursor:${cont ? 'default' : 'pointer'};
                         --block-color:${b.color}">${inner}</div>`;
   }).join('');
@@ -1289,7 +1293,7 @@ function segmentRow(s) {
   const loc = (state.locations || []).find(l => String(l.id) === String(s.location_id));
   return {
     b: { id: s.block_id, area_id: s.area_id, color: s.color,
-         location_name: loc ? loc.name : null },
+         location_id: s.location_id, location_name: loc ? loc.name : null },
     startMin: cont ? 0 : s.start,
     endMin: s.end,
     cancelled: !!s.cancelled,
@@ -4842,7 +4846,9 @@ function renderBeBlocks(blocks) {
   const list = document.getElementById('be-blocks-list');
   if (!list) return;
   // A block row's identity is its GROUP, which has no server id — index it.
-  const groups = groupBlocks(blocks).map((g, i) => ({ ...g, id: `g${i}` }));
+  // beBlockGroups is that numbering, shared with the object door so the two
+  // cannot disagree about which group `g3` is.
+  const groups = beBlockGroups();
   beCounts.blocks = groups.length;
   list.innerHTML = groups.map(g => {
     // A change dated forward is part of what this block IS from that day, so
@@ -5700,6 +5706,108 @@ function renderGtdReview() {
   }
 }
 
+// ── THE EDITOR IS REACHED FROM THE OBJECT, FOR EVERY DATATYPE ────────────
+//
+// (2026-08-30, Quentin's instruction.) An INDEX is for discovery; the OBJECT
+// is for maintenance. Editing a block meant the hub, Settings, the Blocks
+// list, the row, then the field — while the block itself was drawn in front of
+// you. The gate got its own door first, hand-wired into its read-out; wiring a
+// second one per datatype is how eleven slightly different doors get built, so
+// this is the door ONCE.
+//
+// A drawn artifact declares itself in the markup — `data-obj="kind:id"` — and
+// nothing else. No per-surface listener, no second control on the row, and a
+// new surface that draws a block inherits the door by carrying the attribute.
+// The same idiom as `data-hub`, `data-betab` and `data-row`.
+//
+// WHY A MODE rather than a gesture: on the artifacts that matter, every
+// gesture is already spoken for and every one of them WRITES — a block's click
+// cancels its day, its long-press hides it, its drag moves it; a gate's tap
+// selects, its right-click calls the day off. There is no free gesture left,
+// and taking one would mean a control that sometimes edits forever and
+// sometimes changes today, which is exactly the ambiguity "two surfaces, never
+// mixed" exists to forbid. So the door is a MODE you turn on: while it is on,
+// every artifact on screen shows a chevron and one delegated handler opens its
+// sheet. One grammar applied uniformly, instead of eleven exceptions.
+//
+// `find` may be async: some kinds have no reliable global (a routine, a
+// metric), and a door that only worked when some other surface had happened to
+// populate state would be a door that works most of the time.
+const OBJECT_KINDS = {
+  gate: { noun: 'gate',
+    find: id => (state.accountabilityNodes || []).find(n => String(n.id) === String(id)) },
+  area: { noun: 'area',
+    find: id => (state.areas || []).find(a => String(a.id) === String(id)) },
+  domain: { noun: 'domain',
+    find: id => (state.domains || []).find(d => String(d.id) === String(id)) },
+  location: { noun: 'location',
+    find: id => (state.locations || []).find(l => String(l.id) === String(id)) },
+  // A block ROW is what the timeline draws; a block SHEET edits the GROUP (the
+  // same block across its weekdays), which has no server id of its own. So the
+  // door resolves row -> group the way renderBeBlocks numbers them, rather
+  // than asking the timeline to know about grouping.
+  block: { noun: 'block', find: id => beBlockGroups()
+    .find(g => g.rows.some(r => String(r.id) === String(id))) },
+  routine: { noun: 'routine',
+    find: async id => (await apiGet('/api/flows', []))
+      .find(f => String(f.id) === String(id)) },
+  metric: { noun: 'metric',
+    find: async id => (((await apiGet('/api/metrics/overview', {})) || {}).metrics || [])
+      .find(m => String(m.id) === String(id)) },
+  recurring: { noun: 'recurring task',
+    find: async id => (await apiGet('/api/recurring', []))
+      .find(t => String(t.id) === String(id)) },
+};
+
+// The block list's own numbering, in one place so the settings index and the
+// door cannot disagree about which group `g3` is.
+function beBlockGroups() {
+  return groupBlocks(state.blocks || []).map((g, i) => ({ ...g, id: `g${i}` }));
+}
+
+// THE ONE OPENER. Every door goes through here, so "what happens when you ask
+// to edit a thing" is answered once: resolve the object, refuse in WORDS if it
+// has gone, and hand over to the sheet that already owns its three verbs.
+async function openObjectSheet(kind, id, returnTo) {
+  const spec = OBJECT_KINDS[kind];
+  if (!spec || !SETTINGS_SHEETS[kind]) { toast('Nothing edits that yet'); return false; }
+  let item = null;
+  try { item = await spec.find(id); } catch (e) { item = null; }
+  if (!item) { toast(`That ${spec.noun} is gone`); return false; }
+  openSeSheet(kind, item, returnTo);
+  return true;
+}
+
+// The mode itself. Not undoable and not a data change — it is the same kind of
+// thing as the theme toggle, and CLAUDE.md keeps those off the undo stack.
+const objEdit = { on: false };
+
+function setObjEdit(on) {
+  objEdit.on = !!on;
+  document.body.classList.toggle('obj-edit', objEdit.on);
+  const btn = document.getElementById('hub-edit-btn');
+  if (btn) btn.classList.toggle('hub-btn-on', objEdit.on);
+  return objEdit.on;
+}
+
+// ONE delegated handler, in the CAPTURE phase: the artifacts that carry a door
+// all have their own click handlers that WRITE, so the mode has to win the
+// event before it reaches them rather than after.
+function initObjectDoors() {
+  document.addEventListener('click', e => {
+    if (!objEdit.on) return;
+    const el = e.target.closest('[data-obj]');
+    if (!el) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const [kind, id] = String(el.dataset.obj).split(':');
+    // The mode is spent on the thing you picked: leaving it armed under an
+    // open sheet means the next tap edits something instead of using it.
+    setObjEdit(false);
+    openObjectSheet(kind, id);
+  }, true);
+}
+
 // ── OPEN B OVER A, AND COME BACK ─────────────────────────────
 //
 // One surface raised above another, then put back down where you left off.
@@ -5804,6 +5912,9 @@ function initHub() {
     // The gate read-out is the next layer in (a popup beside its pill, over
     // the calendar), so it peels before anything under it.
     if (gatePop.nodeId != null) { closeGatePop(); return; }
+    // The edit mode is armed OVER whatever you were looking at and changes
+    // nothing by itself, so Esc disarms it before it starts closing surfaces.
+    if (objEdit.on) { setObjEdit(false); return; }
     // A selected gate is transient state over the calendar — it peels after the
     // read-out it opens and before the overlay it is drawn on.
     if (clearGateSel()) return;
@@ -5912,6 +6023,10 @@ function initHub() {
         renderLogs();
       }
       else if (dest === 'settings') { openBlockEditor(); }
+      // ARMS THE DOOR and gets out of the way: the point of the mode is to
+      // edit something you can SEE, so it closes the hub and leaves you on the
+      // surface you were on rather than opening one.
+      else if (dest === 'edit') { setObjEdit(!objEdit.on); }
     });
   });
 }
@@ -6147,7 +6262,7 @@ function renderRef() {
       // `day_steps` is the server's one composition of today's run (pawns
       // included); the fallback is for a flow fetched without a date.
       const todaySteps = (f.day_steps || f.steps.filter(s => stepDueToday(s))).length;
-      return `<div class="ref-row" data-flow="${f.id}">
+      return `<div class="ref-row" data-flow="${f.id}" data-obj="routine:${f.id}">
         <span class="ref-name" title="Tap to edit steps · double-click to rename">${escHtml(f.name)}</span>
         ${due != null ? `<span class="fr-due">${done ? '✓ done'
           : (flowWindowLabel(f) || 'due ' + clockHHMM(due))}</span>`
@@ -8076,7 +8191,7 @@ function renderFlowRun() {
       ${pack.metrics.length ? `<div class="mt-list">${pack.metrics.map(m => {
         const e = m.entry || {};
         const num = e.value_num;
-        return `<div class="mt-row" data-metric="${m.id}">
+        return `<div class="mt-row" data-metric="${m.id}" data-obj="metric:${m.id}">
           <div class="mt-name">${escHtml(m.name)}${m.unit
             ? ` <span class="mt-unit">${escHtml(m.unit)}</span>` : ''}</div>
           ${m.prompt ? `<div class="mt-prompt">${escHtml(m.prompt)}</div>` : ''}
@@ -9918,6 +10033,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initLogsView();
   initPeopleModals();
   initHub();
+  initObjectDoors();
   initSwipe();
   initUndo();
   renderBar();
@@ -10583,6 +10699,10 @@ function renderQrLayer() {
 
     const label = document.createElement('span');
     label.className = 'tl-qr-label';
+    // ON THE LABEL, not on the line: the line is a zero-height rule across the
+    // timeline and the square is what a finger can actually hit, so a door
+    // hung on the line would be a door with no target.
+    label.dataset.obj = `gate:${node.id}`;
     const labelText = document.createElement('span');
     labelText.textContent = QR_GLYPH;
     label.title = qrPillTitle(node, windowEnd, offsetDays, locked, outcome);
@@ -11512,7 +11632,7 @@ function renderTracking() {
       ? m.entries.slice(-2).reverse().map(e =>
           `<span class="mx-quote">${escHtml((e.value_text || '').slice(0, 90))}</span>`).join('')
       : '';
-    return `<button class="mx-row" data-metric="${m.id}">
+    return `<button class="mx-row" data-metric="${m.id}" data-obj="metric:${m.id}">
       <span class="mx-top">
         <span class="mx-name">${escHtml(m.name)}</span>
         <span class="mx-right">${metricSpark(m)}${
@@ -14111,13 +14231,14 @@ function renderEngage() {
         <span class="eg-time"></span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-qr-flow${r.done ? ' eg-qr-flow-done' : ''}" data-flow="${r.flowId}"
+          data-obj="routine:${r.flowId}"
           title="${r.done ? 'Completed today' : 'Run this routine'} — the gate above judges ✗ unless this completes">${
           r.done ? '✓ done' : playMark(9) + ' run'}</button>
       </div>`;
     }
     if (r.kind === 'block') {
       return `<div class="eg-row eg-block${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
-        data-block="${r.id}" title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
+        data-block="${r.id}" data-obj="block:${r.id}" title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <span class="eg-end">${hhmm(r.endMin)}</span>

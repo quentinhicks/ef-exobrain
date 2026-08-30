@@ -130,11 +130,52 @@ def day_filing_functions(lines):
     return out
 
 
+# -- THE OBJECT DOOR ------------------------------------------
+#
+# A drawn artifact declares itself `data-obj="kind:id"` and one delegated
+# handler opens that kind's settings sheet. Nothing else wires it, which is the
+# point - and also the risk: a mistyped or invented kind is a door that leads
+# nowhere, on a surface nobody thinks to re-test. So every kind DECLARED in the
+# markup must have both halves, and this is a SCAN rather than a list, so a
+# door written next week is covered the day it is written.
+OBJ_DECL = re.compile(r'data-obj="([a-z]+):')
+OBJ_DECL_JS = re.compile(r'dataset\.obj = `([a-z]+):')
+
+
+def declared_kinds(body):
+    # Comments are skipped here for the same reason the banned-pattern loop
+    # skips them: the doc comment above OBJECT_KINDS spells the attribute out
+    # as `data-obj="kind:id"` to explain it, and a checker that reads prose as
+    # code fails on its own documentation.
+    code = chr(10).join(l for l in body.split(chr(10))
+                        if not l.strip().startswith(('//', '*')))
+    return set(OBJ_DECL.findall(code)) | set(OBJ_DECL_JS.findall(code))
+
+
+def object_door_fails(body):
+    out = []
+    for registry in ('OBJECT_KINDS', 'SETTINGS_SHEETS'):
+        m = re.search(r'const %s = \{(.*?)\n\};' % registry, body, re.S)
+        if not m:
+            out.append((0, 'const %s = {' % registry,
+                        'the registry the object door reads has gone'))
+            continue
+        known = set(re.findall(r'^  ([a-z]+): \{', m.group(1), re.M))
+        for kind in sorted(declared_kinds(body) - known):
+            out.append((0, 'data-obj="%s:..."' % kind,
+                        'add a `%s` entry to %s, or that door leads nowhere'
+                        % (kind, registry)))
+    return out
+
+
 def main():
+    with open(APP_JS, encoding='utf-8') as f:
+        body = f.read()
+    lines = body.split(chr(10))
     with open(APP_JS, encoding='utf-8') as f:
         lines = f.read().split('\n')
 
-    fails = []
+    fails = object_door_fails(body)
     for n, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('//') or stripped.startswith('*'):
@@ -181,6 +222,8 @@ midnight, a paused row, or a config change.""")
     print("  a run's day   %d function(s) file a dated fact, none from the clock"
           % len(dated))
     print('  money path    no gate is hidden through the view-dismissal store')
+    print('  object door   %d kind(s) declared, all of them editable'
+          % len(declared_kinds(body)))
     return 0
 
 
