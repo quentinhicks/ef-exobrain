@@ -134,15 +134,27 @@ def resolve_window(node, ymd, override=None):
         # dragging tonight's deadline would silently move again.
         return (override['window_start'], override['window_end'],
                 override.get('window_end_offset_days') or 0)
+    return _less_pawned(node, ymd, base_window(node, ymd))
+
+
+def base_window(node, ymd):
+    """The gate's window BEFORE any pawn: source > weekly > node defaults.
+
+    Named apart from resolve_window because two questions are asked of it —
+    what the window IS (resolve_window, pawn applied) and what the pawn
+    actually TOOK OFF it (pawn_giveback, which needs the before to subtract
+    from the after). Re-deriving the ladder in the second place is the shape
+    this codebase keeps banning.
+    """
     from_source = source_window_for(node, ymd)
     if from_source:
-        return _less_pawned(node, ymd, from_source)
+        return from_source
     weekly = weekly_window_for(node, ymd)
     if weekly:
-        return _less_pawned(node, ymd, (weekly['window_start'], weekly['window_end'],
-                                        weekly.get('window_end_offset_days') or 0))
-    return _less_pawned(node, ymd, (node['window_start'], node['window_end'],
-                                    node.get('window_end_offset_days') or 0))
+        return (weekly['window_start'], weekly['window_end'],
+                weekly.get('window_end_offset_days') or 0)
+    return (node['window_start'], node['window_end'],
+            node.get('window_end_offset_days') or 0)
 
 
 # ── WHAT A PAWN DOES TO A WINDOW (2026-08-25, Quentin's instruction) ─────────
@@ -209,11 +221,10 @@ def _less_pawned(node, ymd, window):
     which adds the same minutes back.
 
     Applied AFTER the source/weekly/default resolution but NOT after a date
-    override: an override is a deliberate day-level decision about this gate, and
-    the pawn is a consequence of what you moved, so the two compose — the override
-    picks the window and the pawn shortens it. (Callers reaching the override
-    branch return before this, which is the one case where they do not compose;
-    see the note in resolve_window.)
+    override: an override is a deliberate day-level decision about this gate and
+    stands exactly as written, so resolve_window returns before reaching here.
+    pawn_giveback answers the same question the other way round — what this took
+    off — and returns 0 on an override for that reason.
     """
     minutes = node_pawn_shift(node, ymd)
     if minutes <= 0:
@@ -229,6 +240,40 @@ def _less_pawned(node, ymd, window):
 def _hhmm_min(hhmm):
     h, m = str(hhmm).split(':')
     return int(h) * 60 + int(m)
+
+
+# WHAT THE CLOSE ACTUALLY LOST, which is not always what was pawned (fixed
+# 2026-08-30). routine_deadline gives the pawned minutes back so the routine's
+# deadline lands exactly where it stood unpawned — "X after a close that moved
+# Y in, plus Y". That arithmetic only holds when the close really moved Y, and
+# there are two live cases where it does not:
+#
+#   a DATE OVERRIDE stands as written and loses nothing (resolve_window returns
+#   before _less_pawned), so the raw add-back pushed the routine's deadline Y
+#   minutes PAST where it stood — pawning bought free time on the day you had
+#   already dragged the window;
+#   a cost LARGER than the window is only partly paid, because closed_earlier
+#   clamps at the opening — a 5000-minute step moved a 60-minute gate's close by
+#   60 and the deadline by 5000, four days later.
+#
+# Both are loosenings on the money path (the routine earns half the day's
+# credit), and both are ONE cause: a second place re-deriving what the close
+# did instead of asking. So it is asked here, once, and routine_deadline is
+# now a reader.
+def pawn_giveback(node, ymd, override=None):
+    """Minutes the pawn took OFF this gate's close on this date. Never negative."""
+    if override is None:
+        override = storage.qr_get_override(node['id'], ymd)
+    if override:
+        return 0
+    minutes = node_pawn_shift(node, ymd)
+    if minutes <= 0:
+        return 0
+    start, end, offset = base_window(node, ymd)
+    start_min = _hhmm_min(start)
+    end_min = _hhmm_min(end) + int(offset or 0) * 24 * 60
+    _, closed = closed_earlier(start_min, end_min, minutes)
+    return end_min - closed
 
 
 def applies_on(node, ymd, override=None):
@@ -341,12 +386,15 @@ def routine_deadline(node, flow, ymd, resolve=None):
     # to the gate it gates, not to a deadline it merely points at.
     if not flow.get('before_node_id'):
         # "X after the scan closes" — and on a pawned day that close has
-        # already moved Y earlier (_less_pawned), so this is X + Y after it.
-        # The routine's deadline therefore lands exactly where it was: the
-        # pawn buys the evening more room and charges the SCAN for it, which
-        # is the whole shape of the mechanic (Quentin, 2026-08-25).
+        # already moved in (_less_pawned), so this adds back exactly what it
+        # lost. The routine's deadline therefore lands where it stood unpawned:
+        # the pawn buys the evening more room and charges the SCAN for it,
+        # which is the whole shape of the mechanic (Quentin, 2026-08-25).
+        # ASK what the close lost (pawn_giveback) rather than assuming it was
+        # the pawned minutes — an override loses nothing and an absurd cost is
+        # clamped, and both used to push this deadline past where it began.
         due += timedelta(minutes=(flow.get('offset_min') or 0)
-                                 + pawn_shift(flow.get('id'), ymd))
+                                 + pawn_giveback(anchor, ymd))
     return due
 
 

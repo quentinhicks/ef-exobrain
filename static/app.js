@@ -7939,7 +7939,21 @@ const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
                       // in, not a fact about the day, and flow_run.steps is a
                       // map of CREDITS that the judge reads — writing anything
                       // else into it would look like one.
-                      skipped: {} };
+                      skipped: {}, skipSeq: 0 };
+
+// The skips re-applied to a freshly served list. `day_steps` comes back in the
+// server's order every time it is read, so without this a mid-run reload (a
+// pawn) would put a step you deliberately pushed to the end back in front of
+// you. Ordered by WHEN each was skipped, so two skips keep their relationship;
+// credited steps are left where the server put them, since the skip is about
+// what you still owe.
+function skipOrder(steps) {
+  const seq = flowRunView.skipped || {};
+  const kept = steps.filter(s => !seq[s.id] || flowRunView.steps[s.id]);
+  const pushed = steps.filter(s => seq[s.id] && !flowRunView.steps[s.id]);
+  pushed.sort((a, b) => seq[a.id] - seq[b.id]);
+  return kept.concat(pushed);
+}
 
 // MIDNIGHT RESUME. The run-day pin lived only in the memory of the session
 // that opened it, so a night routine half-done at 23:58 and reopened at 00:05
@@ -7963,6 +7977,21 @@ async function flowRunDate(flowId, today) {
 
 async function openFlowRun(flowId) {
   const today = await flowRunDate(flowId, wallDay());
+  // A fresh sitting: the per-run ticks and the order you skipped things into
+  // are session state, and this is where the session starts. loadFlowRun does
+  // NOT clear them, because a reload mid-run (a pawn) is the same sitting.
+  flowRunView.checks = {};
+  flowRunView.skipped = {};
+  flowRunView.skipSeq = 0;
+  return loadFlowRun(flowId, today);
+}
+
+// The runner's data, read for one DATE and rendered. Split out of openFlowRun
+// (2026-08-30) because a pawn changes what today's run holds and used to
+// answer that by CLOSING the runner — you pushed one step onto tonight and the
+// routine you were part-way through vanished, taking the page you were on with
+// it. Reloading in place is the same answer without the eviction.
+async function loadFlowRun(flowId, today) {
   const [flows, day, journal, habits, refLists, crmNight] = await Promise.all([
     apiGet(`/api/flows?date=${today}`, []),
     apiGet(`/api/social/day?date=${today}`, null),
@@ -7972,10 +8001,8 @@ async function openFlowRun(flowId) {
     apiGet(`/api/people/night?date=${today}`, null),
   ]);
   flowRunView.refLists = refLists;
-  flowRunView.checks = {};
-  flowRunView.skipped = {};
   const flow = flows.find(f => f.id === flowId);
-  if (!flow) return;
+  if (!flow) { closeFlowRun(); return; }
   // THE RUN IS TODAY'S STEPS, and the server composed that list once
   // (storage.get_flows: `day_steps` — due today, minus what was pawned away,
   // plus what was pawned in, carried debt first). Reading the field rather than
@@ -7985,9 +8012,13 @@ async function openFlowRun(flowId) {
   // Narrowing the flow HERE rather than at each use means resume, progress and
   // above all COMPLETION are about today: a Sunday-only step must not hold a
   // Tuesday's gate open.
-  const steps = flow.day_steps || flow.steps.filter(s => s.due);
+  // The credits first: skipOrder asks which steps are still owed, and the
+  // resume index below asks the same thing.
+  flowRunView.steps = flow.run ? JSON.parse(flow.run.steps || '{}') : {};
+  const steps = skipOrder(flow.day_steps || flow.steps.filter(s => s.due));
   if (!steps.length) {
     toast(flow.steps.length ? 'Nothing in this routine today' : 'No steps in this routine');
+    closeFlowRun();
     return;
   }
   flowRunView.flow = { ...flow, steps };
@@ -8005,7 +8036,6 @@ async function openFlowRun(flowId) {
   // today's run, so an ordinary routine pays nothing for it.
   flowRunView.review = steps.some(x => REVIEW_KINDS[x.kind])
     ? await apiGet('/api/gtd-review', null) : null;
-  flowRunView.steps = flow.run ? JSON.parse(flow.run.steps || '{}') : {};
   // Resume at the first uncredited step.
   const idx = steps.findIndex(s => !flowRunView.steps[s.id]);
   flowRunView.idx = idx === -1 ? 0 : idx;
@@ -8078,7 +8108,10 @@ function skipFlowStep() {
   }
   steps.splice(flowRunView.idx, 1);
   steps.push(step);
-  flowRunView.skipped[step.id] = true;
+  // A COUNTER, not a flag: skipOrder needs to know which of two skipped steps
+  // you pushed back first, and `true` cannot say. Still truthy, so every
+  // existing reader of this map is unchanged.
+  flowRunView.skipped[step.id] = ++flowRunView.skipSeq;
   // The next thing still owed, in the order that now stands. Never idx + 1:
   // the step that WAS next has just slid into this index.
   const next = steps.findIndex(x => !flowRunView.steps[x.id]);
@@ -8164,10 +8197,19 @@ async function unpawnStep(step) {
 // routines but NOT state.accountabilityNodes, whose day_windows carry the
 // shortened deadline — so without this the hairline keeps yesterday's answer and
 // only a full reload corrects it.
+//
+// AND IT DOES NOT EVICT YOU (2026-08-30). This used to closeFlowRun() first,
+// because the run's step list had genuinely changed underneath it — but the
+// answer to "the list changed" is to re-read the list, not to throw away the
+// sitting. On a gated routine being dropped back onto the day is the worst
+// possible response to a decision about how to FINISH it. loadFlowRun re-reads
+// the same date and keeps the per-run ticks and the skip order.
 async function afterPawnChange() {
-  closeFlowRun();
   state.accountabilityNodes = await fetch('/api/accountability/nodes')
     .then(r => r.json()).catch(() => state.accountabilityNodes);
+  if (flowRunView.open && flowRunView.flow) {
+    await loadFlowRun(flowRunView.flow.id, flowRunView.date);
+  }
   await refreshEngage();
   const lists = document.getElementById('tab-lists');
   if (lists && !lists.classList.contains('hidden')) await refreshRef();

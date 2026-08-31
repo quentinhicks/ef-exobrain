@@ -238,6 +238,65 @@ night = [f for f in storage.get_flows() if f['id'] == 102][0]
 eq('taken back: the routine returns to its own hours',
    qr_judge.flow_day_window(night, TODAY), (21 * 60, 23 * 60))
 
+# ── THE DEADLINE IS GIVEN BACK WHAT THE CLOSE LOST, never the raw minutes ────
+#
+# routine_deadline is "the gate's close, plus the offset, plus the minutes the
+# pawn took off that close" — so the routine lands where it stood unpawned. It
+# used to add the PAWNED minutes instead, which is the same number only when
+# the close really moved by them. Two live cases where it did not, and both
+# handed the routine free time on the money path (it earns half the day's
+# credit): a date override, which stands as written and loses nothing, and a
+# cost bigger than the window, which closed_earlier only pays down to the
+# opening. One cause — a second place re-deriving what the close did — so
+# pawn_giveback answers it once and this asserts the invariant, not the branch.
+storage.pawn_flow_step(111, on=False)
+storage.pawn_flow_step(112, on=False)
+storage.update_flow_step(111, pawn_minutes=10)
+storage.update_flow(102, source_uid=None)
+conn = sqlite3.connect(storage.DB_PATH)
+conn.execute('DELETE FROM qr_override')
+# Raw, deliberately: lengthening the offset on a GATED routine is an easing and
+# update_flow queues it for 24h (correctly). This test is about the pawn, not
+# about the queue, so the offset is simply put there.
+conn.execute('UPDATE flow SET offset_min = 60 WHERE id = 102')
+conn.commit()
+conn.close()
+
+
+def deadline(date=TODAY):
+    flow = [f for f in storage.get_flows() if f['id'] == 102][0]
+    return qr_judge.routine_deadline(NODE, flow, date)
+
+
+rest = deadline()
+eq('at rest: the routine is due its offset after the gate closes',
+   rest.strftime('%H:%M'), '00:00')
+storage.pawn_flow_step(111)
+eq('pawned: the gate closes 10 earlier and the deadline does not move',
+   (window(), deadline()), (('22:00', '22:50', 0), rest))
+
+storage.qr_set_override(9, TODAY, '21:00', '21:30', 0)
+eq('override + pawn: the close lost nothing, so the deadline gains nothing —'
+   ' pawning may not buy time on a day you already dragged',
+   (window(), deadline().strftime('%H:%M')), (('21:00', '21:30', 0), '22:30'))
+conn = sqlite3.connect(storage.DB_PATH)
+conn.execute('DELETE FROM qr_override')
+conn.commit()
+conn.close()
+
+storage.update_flow_step(111, pawn_minutes=5000)
+eq('an absurd cost clamps BOTH ends together: the close stops at the opening'
+   ' and the deadline is given back only what was actually taken',
+   (window(), deadline()), (('22:00', '22:00', 0), rest))
+storage.update_flow_step(111, pawn_minutes=10)
+storage.pawn_flow_step(111, on=False)
+eq('pawn_giveback is 0 with nothing pawned', qr_judge.pawn_giveback(NODE, TODAY), 0)
+storage.pawn_flow_step(111)
+eq('…and is what closed_earlier removed when there is',
+   qr_judge.pawn_giveback(NODE, TODAY), 10)
+storage.pawn_flow_step(111, on=False)
+
+
 # The rule itself, in isolation — one function, so a new window kind gets this
 # behaviour by asking rather than by remembering.
 eq('opened_earlier moves only the start', qr_judge.opened_earlier(600, 700, 25), (575, 700))

@@ -2098,6 +2098,10 @@ def _gate_day_payload(node, ymd, now=None):
     # (resolve_window returns before _less_pawned), so say that rather than
     # showing minutes that did nothing.
     pawn_min = storage.pawned_minutes_for_node(node['id'], ymd)
+    # What the close ACTUALLY lost — asked of the judge, never re-derived here.
+    # It is 0 on an override day and less than pawn_min when the cost was
+    # clamped at the opening, which is precisely the difference this row is for.
+    pawn_taken = qr_judge.pawn_giveback(node, ymd, override=override)
     flow = storage.gating_flow_for_node(node['id'], ymd)
     pawned = []
     if flow:
@@ -2208,7 +2212,7 @@ def _gate_day_payload(node, ymd, now=None):
                    'closed': now >= qr_judge._local_dt(close_date, end)},
         'history': history,
         'pawn': {'minutes': pawn_min, 'steps': pawned,
-                 'applied': bool(pawn_min) and not override},
+                 'taken_min': pawn_taken, 'applied': bool(pawn_taken)},
         'routine': None if not flow else {
             'name': flow['name'], 'id': flow['id'],
             'deadline': r_due.strftime('%H:%M') if r_due else None,
