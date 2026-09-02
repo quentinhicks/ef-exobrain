@@ -1170,7 +1170,10 @@ select option {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   gap: 8px;
-  flex-wrap: nowrap;
+  /* WRAPS, since 2026-09-02. nowrap was fine with two buttons and overlapped
+     "Today" the moment a third arrived — on a 430px column the header is the
+     one row with no spare width, so it has to fold rather than collide. */
+  flex-wrap: wrap;
   white-space: nowrap;
 }
 
@@ -6941,3 +6944,89 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* A tags metric's vocabulary grows from the runner, so the + sits with the
    chips rather than in Settings. Dashed to read as "not an answer". */
 .mt-chip-add { border-style: dashed; color: var(--text-secondary); }
+
+/* ── The plan layer: hours drawn on the day, before they are worked ───────
+   Under the blocks layer on purpose (z-index 0 against its 1): a block is a
+   commitment already made and a plan is an intention about the same hours, so
+   where they overlap the commitment stays legible and the plan tints behind
+   it. Colours are the accent mixed down — no new value, so the light appendix
+   already answers for both themes and nothing here can rot. */
+#tl-plan-layer {
+  position: absolute;
+  top: 0;
+  left: 48px;
+  right: 4px;
+  bottom: 0;
+  z-index: 0;
+}
+
+/* Only in draw mode does the empty track take the pointer. Off, the layer is
+   inert and every gesture on the timeline means exactly what it always did —
+   which is what makes the mode safe to have at all. */
+#tl-body.tl-planning #tl-plan-layer { pointer-events: auto; cursor: crosshair; }
+#tl-plan-layer { pointer-events: none; }
+#tl-plan-layer .tl-plan-span { pointer-events: auto; }
+
+/* While the mode is on, the day IS a drawing surface: the layers above stop
+   taking the pointer so a press on empty track reaches the plan layer under
+   them. They are still DRAWN — you draw against your blocks and events, which
+   is the whole point of drawing here rather than in a form — they are just not
+   grabbable, and the moment the mode is off they are again. Setting it on the
+   layer covers its children too; .tl-plan-span re-enables itself above because
+   it is the one thing in here you must still be able to grab. */
+#tl-body.tl-planning #tl-blocks-layer,
+#tl-body.tl-planning #tl-gcal-layer,
+#tl-body.tl-planning #tl-qr-layer { pointer-events: none; }
+
+.tl-plan-span {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-radius: 2px;
+  padding: 2px 6px 2px 14px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  touch-action: none;
+}
+
+.tl-plan-ghost { border-style: solid; pointer-events: none; }
+
+/* The grab handle, and a real finger target: the same 14px rail the block bar
+   uses, so the two surfaces are held the same way. */
+.tl-plan-bar-grip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  cursor: grab;
+  background: color-mix(in srgb, var(--accent) 38%, transparent);
+  border-radius: 2px 0 0 2px;
+}
+
+.tl-plan-label { display: block; line-height: 1.25; }
+
+/* The mode is VISIBLE while it is on — this bar, the pressed button and the
+   crosshair. That visibility is the whole difference between this and the
+   edit mode that was removed for being invisible state. */
+#tl-plan-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-mid));
+  font-size: 12px;
+}
+
+.tl-plan-sum { color: var(--text-primary); font-weight: 600; }
+.tl-plan-hint { color: var(--text-secondary); font-size: 11px; }
+.tl-refresh-btn.tl-plan-on { border-color: var(--text-secondary); color: var(--accent); }
+
+/* Raised over the runner for the morning plan step — the crm-over-runner
+   ladder, at the same layer, through the one openOver stack. */
+body.plan-over-runner #cal-overlay { z-index: 170; }

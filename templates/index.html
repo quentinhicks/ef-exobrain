@@ -93,14 +93,17 @@
           <button class="tl-today-btn" id="nav-today">Today</button>
         </div>
         <div class="tl-refresh-area">
+          <button class="tl-refresh-btn" id="tl-plan-mode" title="Draw the hours you plan to work">✎ Plan</button>
           <button class="tl-refresh-btn" id="tl-add-event">+ Event</button>
           <button class="tl-refresh-btn" id="refresh-btn" title="Refresh the calendar feed">↻</button>
           <span id="fetch-status"></span>
         </div>
       </div>
+      <div id="tl-plan-bar" class="hidden"></div>
       <div id="tl-allday-strip"></div>
       <div id="tl-body">
         <div id="tl-grid"></div>
+        <div id="tl-plan-layer"></div>
         <div id="tl-blocks-layer"></div>
         <div id="tl-gcal-layer"></div>
         <div id="tl-qr-layer"></div>

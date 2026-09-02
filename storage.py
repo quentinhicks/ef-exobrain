@@ -1142,6 +1142,31 @@ def init_db():
     # knows it (flowRunView.date), never inferred from the clock — this gate's
     # day runs to 04:00 the next morning, so the clock and the day disagree for
     # four hours every night, which is exactly the span it is written in.
+    # THE SPANS DRAWN ON A DAY (2026-09-02) — the PLAN half, and deliberately
+    # a different store from study_entry, which is the RECORD. A drawn span is
+    # a claim about the future; a logged minute is a claim about the past.
+    # Merging them would force the record to lie, because a plan later
+    # "confirmed" is not evidence that the work happened — and the comparison
+    # between the two is the entire reason for having both.
+    #
+    # NOTHING JUDGES THIS TABLE. qr_judge never reads it, so drawing five hours
+    # neither earns nor costs anything; the day is decided by study_entry alone.
+    # That is what keeps the plan free to be optimistic, which is what makes it
+    # worth drawing.
+    #
+    # start_min/end_min are minutes from midnight of `date` and end_min may
+    # exceed 1440 for a span running past it — the app's one convention for
+    # times, and never an HH:MM string, which only orders correctly inside a
+    # single day.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS plan_span (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT NOT NULL,
+            start_min  INTEGER NOT NULL,
+            end_min    INTEGER NOT NULL,
+            area_id    INTEGER REFERENCES area(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS study_entry (
             node_id    INTEGER NOT NULL REFERENCES qr_node(id),
@@ -8106,6 +8131,87 @@ def put_study_entry(node_id, ymd, minutes):
         (node_id, ymd, int(minutes)))
     conn.commit()
     conn.close()
+
+
+def get_plan_spans(ymd):
+    conn = get_conn()
+    rows = conn.execute(
+        'SELECT * FROM plan_span WHERE date = ? ORDER BY start_min, id',
+        (ymd,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_plan_span(id):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM plan_span WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def create_plan_span(ymd, start_min, end_min, area_id=None, id=None):
+    # `id` re-inserts an ORIGINAL id, which is what an undo of a delete needs:
+    # a re-create under a new id would leave the undo stack, and anything else
+    # holding the old one, pointing at a row that no longer exists — the
+    # inbox restore idiom.
+    conn = get_conn()
+    if id:
+        cur = conn.execute(
+            'INSERT INTO plan_span (id, date, start_min, end_min, area_id) VALUES (?,?,?,?,?)',
+            (id, ymd, int(start_min), int(end_min), area_id))
+    else:
+        cur = conn.execute(
+            'INSERT INTO plan_span (date, start_min, end_min, area_id) VALUES (?,?,?,?)',
+            (ymd, int(start_min), int(end_min), area_id))
+    conn.commit()
+    row_id = id or cur.lastrowid
+    conn.close()
+    return get_plan_span(row_id)
+
+
+def update_plan_span(id, start_min=_UNSET, end_min=_UNSET, area_id=_UNSET):
+    updates = {}
+    if start_min is not _UNSET:
+        updates['start_min'] = int(start_min)
+    if end_min is not _UNSET:
+        updates['end_min'] = int(end_min)
+    if area_id is not _UNSET:
+        updates['area_id'] = area_id or None
+    if updates:
+        conn = get_conn()
+        sets = ', '.join(f'{k} = ?' for k in updates)
+        conn.execute(f'UPDATE plan_span SET {sets} WHERE id = ?',
+                     list(updates.values()) + [id])
+        conn.commit()
+        conn.close()
+    return get_plan_span(id)
+
+
+def delete_plan_span(id):
+    conn = get_conn()
+    conn.execute('DELETE FROM plan_span WHERE id = ?', (id,))
+    conn.commit()
+    conn.close()
+
+
+def plan_minutes_for(ymd):
+    # What the day's drawn spans add up to. Overlaps are counted ONCE — two
+    # spans over the same hour are one hour of intended work, not two, and a
+    # plan that could exceed the day by overlapping itself would be a plan you
+    # could satisfy on paper without moving.
+    spans = get_plan_spans(ymd)
+    if not spans:
+        return 0
+    total, cursor = 0, None
+    for s in sorted(spans, key=lambda x: x['start_min']):
+        lo, hi = s['start_min'], s['end_min']
+        if cursor is not None:
+            lo = max(lo, cursor)          # the part already counted
+        if hi > lo:
+            total += hi - lo
+        if cursor is None or hi > cursor:
+            cursor = hi                   # the furthest minute covered so far
+    return total
 
 
 def qr_bucket_before(node_id, ymd):

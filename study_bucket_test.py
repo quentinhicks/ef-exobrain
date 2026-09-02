@@ -388,6 +388,95 @@ r = client.get('/api/accountability/nodes/%d/hours' % nid)
 check('the GET may default to today — a read of the wrong day only misinforms',
       r.status_code == 200 and r.get_json()['date'] == TODAY, r.get_json())
 
+# ── the PLAN half: drawn spans, and the union that sums them ────────────
+#
+# A different store from the entries above, and nothing here is on the money
+# path — qr_judge never reads plan_span. What is tested is the arithmetic the
+# banner shows and the guard rails on the route, because "3 hr 26 short" is a
+# sentence that has to be right.
+#
+# NO fresh() from here down: the Flask client opened above holds tracker.db, so
+# Windows refuses to delete it. Everything below uses its own gates and its own
+# days instead, which is the same isolation without the teardown.
+nid = hours_gate('tok-plan-suite')
+c2 = client
+
+check('an empty day plans nothing', storage.plan_minutes_for(TODAY) == 0)
+
+a = storage.create_plan_span(TODAY, 540, 660)       # 09:00-11:00
+b_ = storage.create_plan_span(TODAY, 780, 900)      # 13:00-15:00
+check('two separate spans add up', storage.plan_minutes_for(TODAY) == 240,
+      storage.plan_minutes_for(TODAY))
+
+# OVERLAP IS COUNTED ONCE. Two spans over the same hour are one hour of
+# intended work; summing them would let a plan satisfy itself on paper by
+# being drawn twice over the same stretch.
+storage.create_plan_span(TODAY, 600, 720)           # 10:00-12:00, overlaps `a`
+check('an overlap is counted once, not twice',
+      storage.plan_minutes_for(TODAY) == 300, storage.plan_minutes_for(TODAY))
+
+# A span fully inside another adds nothing at all.
+storage.create_plan_span(TODAY, 620, 640)
+check('a span swallowed by another adds nothing',
+      storage.plan_minutes_for(TODAY) == 300, storage.plan_minutes_for(TODAY))
+
+# The spans belong to their own day, and the day is sent, never defaulted.
+storage.create_plan_span(YESTERDAY, 540, 600)
+check('a span belongs to the day it was drawn on',
+      storage.plan_minutes_for(TODAY) == 300
+      and storage.plan_minutes_for(YESTERDAY) == 60)
+
+r = c2.post('/api/plan/spans', json={'date': TODAY, 'start_min': 1380, 'end_min': 1500})
+check('a span may run past midnight — end_min beyond 1440',
+      r.status_code == 200 and r.get_json()['end_min'] == 1500, r.get_json())
+
+# `bad` is the failure list this file prints at the end — a loop variable of
+# that name silently ate it.
+for span_body in ({'start_min': 60, 'end_min': 120},
+                  {'date': 'today', 'start_min': 60, 'end_min': 120},
+                  {'date': TODAY, 'start_min': 60, 'end_min': 62},
+                  {'date': TODAY, 'start_min': 60, 'end_min': 'noon'},
+                  {'date': TODAY, 'start_min': -10, 'end_min': 120}):
+    rr = c2.post('/api/plan/spans', json=span_body)
+    check('refused: %s' % span_body, rr.status_code == 400, rr.get_json())
+
+# DELETE and its undo replay: the row comes back with its ORIGINAL id, which is
+# what the client's inverse posts.
+gone = storage.get_plan_span(a['id'])
+c2.delete('/api/plan/spans/%d' % a['id'])
+check('a span can be removed', storage.get_plan_span(a['id']) is None)
+c2.post('/api/plan/spans', json={'id': gone['id'], 'date': gone['date'],
+                                 'start_min': gone['start_min'],
+                                 'end_min': gone['end_min']})
+back = storage.get_plan_span(gone['id'])
+check('and the undo restores it under the SAME id, not a copy',
+      back and back['start_min'] == gone['start_min'], back)
+
+# NOTHING JUDGES A PLAN. The gate's verdict must be identical with spans drawn
+# and with none — the whole reason the plan is a separate store. Two gates in
+# ONE database rather than two databases: the Flask client above holds the file
+# open, so a fresh() here cannot delete it, and judging one gate before the
+# spans exist and the other after is the same comparison without the teardown.
+nodeA = hours_gate('tok-plan-nomoney')
+storage.put_study_entry(nodeA, YESTERDAY, 120)
+qr_judge.judge(now=settled(YESTERDAY))
+without = row(nodeA, YESTERDAY)
+
+nodeB = hours_gate('tok-plan-nomoney2')
+storage.put_study_entry(nodeB, YESTERDAY, 120)
+for lo, hi in ((540, 660), (780, 960)):
+    storage.create_plan_span(YESTERDAY, lo, hi)
+check('spans exist on the day now being judged',
+      storage.plan_minutes_for(YESTERDAY) > 0)
+qr_judge.judge(now=settled(YESTERDAY))
+with_plan = row(nodeB, YESTERDAY)
+check('a drawn plan changes NOTHING about what the day is judged as',
+      (without['failure_reason'], without['req_minutes'],
+       without['minutes_logged'], without['bucket_after_minutes'])
+      == (with_plan['failure_reason'], with_plan['req_minutes'],
+          with_plan['minutes_logged'], with_plan['bucket_after_minutes']),
+      (without, with_plan))
+
 for line in ok + bad:
     print(line)
 print('\n%d passed, %d failed' % (len(ok), len(bad)))

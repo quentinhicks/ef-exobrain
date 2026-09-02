@@ -2307,6 +2307,68 @@ def accountability_node_day(id):
     return jsonify(_gate_day_payload(node, ymd))
 
 
+# THE PLAN HALF (2026-09-02): spans drawn on the day calendar. Nothing here is
+# on the money path — qr_judge never reads plan_span — which is what lets the
+# plan be optimistic. The GET may default to today; the writes carry the day
+# they are about, from the surface that drew them.
+@app.route('/api/plan/spans', methods=['GET'])
+def plan_spans():
+    ymd = request.args.get('date') or date_cls.today().isoformat()
+    if not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    return jsonify({'date': ymd, 'spans': storage.get_plan_spans(ymd),
+                    'planned_minutes': storage.plan_minutes_for(ymd)})
+
+
+@app.route('/api/plan/spans', methods=['POST'])
+def post_plan_span():
+    data = request.get_json(force=True) or {}
+    ymd = (data.get('date') or '').strip()
+    if not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    span, err = _plan_span_bounds(data)
+    if err:
+        return err
+    # `id` is only ever sent by an undo replaying a delete, and it restores the
+    # ORIGINAL row rather than making a new one.
+    return jsonify(storage.create_plan_span(ymd, span[0], span[1],
+                                            data.get('area_id') or None,
+                                            id=data.get('id') or None))
+
+
+@app.route('/api/plan/spans/<int:id>', methods=['PATCH', 'DELETE'])
+def plan_span(id):
+    if not storage.get_plan_span(id):
+        return jsonify({'error': 'no such span'}), 404
+    if request.method == 'DELETE':
+        storage.delete_plan_span(id)
+        return jsonify({'ok': True})
+    data = request.get_json(force=True) or {}
+    fields = {}
+    if 'start_min' in data or 'end_min' in data:
+        span, err = _plan_span_bounds(data)
+        if err:
+            return err
+        fields['start_min'], fields['end_min'] = span
+    if 'area_id' in data:
+        fields['area_id'] = data.get('area_id') or None
+    return jsonify(storage.update_plan_span(id, **fields))
+
+
+def _plan_span_bounds(data):
+    # MINUTES, and the same convention the timeline draws in: from midnight of
+    # the span's own date, so an end past 1440 is a span running into tomorrow.
+    # Never HH:MM — those only order correctly inside one day.
+    try:
+        start = int(data.get('start_min'))
+        end = int(data.get('end_min'))
+    except (TypeError, ValueError):
+        return None, (jsonify({'error': 'start_min and end_min must be whole minutes'}), 400)
+    if start < 0 or end > 2880 or end - start < 5:
+        return None, (jsonify({'error': 'a span runs at least 5 minutes, inside two days'}), 400)
+    return (start, end), None
+
+
 # THE HOURS GATE (2026-09-02). Two routes, not one with two methods, and the
 # split is the point: the READ may default to today, the WRITE may not. This
 # gate's day runs to 04:00 the next morning, so for four hours every night the
