@@ -1225,7 +1225,7 @@ def post_log_photo(name):
     data = f.read(LOG_PHOTO_MAX + 1)
     if len(data) > LOG_PHOTO_MAX:
         return jsonify({'error': 'too big'}), 413
-    rel = storage.save_log_photo(name, f.filename, data)
+    rel = storage.save_log_photo(name, f.filename, data, f.mimetype)
     if not rel:
         return jsonify({'error': 'not an image'}), 415
     return jsonify({'path': rel}), 201

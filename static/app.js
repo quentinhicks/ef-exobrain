@@ -9586,11 +9586,48 @@ function wireMdShortcuts(ta) {
   ta.addEventListener('paste', logPaste);
 }
 
+// AN IMAGE ON THE CLIPBOARD IS A PHOTO (2026-09-02, Quentin's instruction).
+// A screenshot pasted into a log used to do nothing at all and say nothing
+// about it: an image is not text, so it fell straight through the URL branch
+// below and the textarea had nothing to insert. It takes the SAME road the
+// `+ photo` button takes — uploadLogPhoto writes the file beside the log,
+// inserts the markdown link through logEdit (so the native Ctrl+Z still takes
+// the link back) and the strip picks it up on the `input` that fires.
+//
+// Only in the LOG EDITOR, and only with a log open: wireMdShortcuts puts this
+// handler on every markdown textarea in the app — clarify's notes, a project's
+// notes — and none of those has a log to store a file against. Everywhere else
+// an image paste is left alone rather than swallowed by a preventDefault.
+function clipboardImage(dt) {
+  for (const f of dt.files || []) {
+    if (String(f.type || '').startsWith('image/')) return f;
+  }
+  // Safari and older WebKit expose the bitmap only through `items`.
+  for (const it of dt.items || []) {
+    if (it.kind === 'file' && String(it.type || '').startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) return f;
+    }
+  }
+  return null;
+}
+
 // Pasting a bare URL over a selection links it — the one paste worth
 // intercepting, and the gesture that makes citing a source in a log free.
 function logPaste(e) {
   const ta = e.currentTarget;
-  if (ta.selectionStart === ta.selectionEnd || !e.clipboardData) return;
+  if (!e.clipboardData) return;
+  if (ta.id === 'log-editor' && logsView.open) {
+    const img = clipboardImage(e.clipboardData);
+    if (img) {
+      // Before the await: the default paste would otherwise land whatever text
+      // the clipboard also carries (a screenshot tool's file path) beside it.
+      e.preventDefault();
+      uploadLogPhoto(img);
+      return;
+    }
+  }
+  if (ta.selectionStart === ta.selectionEnd) return;
   const url = (e.clipboardData.getData('text') || '').trim();
   if (!/^(https?:\/\/|mailto:)\S+$/.test(url)) return;
   e.preventDefault();
@@ -9616,7 +9653,13 @@ async function uploadLogPhoto(file) {
   let path = null;
   try {
     const fd = new FormData();
-    fd.append('photo', file);
+    // A NAME, ALWAYS. A clipboard image is a File with an empty name, and a
+    // multipart part with no filename is not a file to Werkzeug at all —
+    // request.files comes back empty and the route answers 400. The server
+    // reads the extension off the content type when the name has none, so
+    // what matters here is only that the name is not blank.
+    fd.append('photo', file, file.name
+      || `pasted.${(String(file.type).split('/')[1] || 'png').replace('jpeg', 'jpg')}`);
     const r = await fetch(`/api/logs/${encodeURIComponent(logsView.open)}/photo`,
                           { method: 'POST', body: fd });
     if (r.ok) path = (await r.json()).path;

@@ -4057,9 +4057,19 @@ LOG_PHOTO_EXTS = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'}
 
 
 # -> the log-relative path to write into the markdown, or None if refused
-def save_log_photo(name, filename, data):
+# A clipboard image often arrives with no usable filename — some browsers send
+# "image.png", some send "blob", some send nothing at all — so the CONTENT TYPE
+# is the fallback for the extension. The filename still wins where it carries a
+# real one: it is what the person chose, and 'photo.jpeg' should stay .jpeg.
+LOG_PHOTO_TYPES = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif',
+                   'image/webp': 'webp', 'image/heic': 'heic', 'image/heif': 'heif'}
+
+
+def save_log_photo(name, filename, data, content_type=None):
     name = _log_name(name)
     ext = (filename or '').rsplit('.', 1)[-1].lower()
+    if ext not in LOG_PHOTO_EXTS:
+        ext = LOG_PHOTO_TYPES.get(str(content_type or '').split(';')[0].strip().lower())
     if not name or ext not in LOG_PHOTO_EXTS:
         return None
     os.makedirs(LOGS_MEDIA_DIR, exist_ok=True)
