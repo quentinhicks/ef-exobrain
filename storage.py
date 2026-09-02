@@ -5946,10 +5946,30 @@ def _pending_value(raw):
 # Stored rather than re-derived at read time: "is this a dated change or a 24h
 # easing" would otherwise be answered by inspecting whether apply_at happens to
 # be midnight, which is a rule two places would have to agree about forever.
-def effective_date_for(apply_at):
+def effective_date_for(apply_at, governs_min=None):
+    """The first DAY a change landing at `apply_at` is allowed to govern.
+
+    `governs_min` is the minute of that day the change would actually decide —
+    a gate's window OPENING. Given it, the change governs the same day whenever
+    it lands at or before that minute, which is the honest answer: a change
+    landing 03:00 on the 3rd is in force long before the 3rd's 06:00 gate opens.
+
+    Without it the answer stays conservative — any time at all rounds up to the
+    next day (2026-09-02: it used to round up ALWAYS, so a change made a clear
+    day and a half before a gate was told it governed from the day AFTER the
+    one it could plainly have governed). The conservative branch is kept for
+    callers with nothing to govern a time against; it is never the wrong
+    answer, only a late one, and this is the money path.
+    """
     dt = datetime.fromisoformat(apply_at) if isinstance(apply_at, str) else apply_at
     day = dt.date()
-    if dt.hour or dt.minute or dt.second or dt.microsecond:
+    if governs_min is None:
+        if dt.hour or dt.minute or dt.second or dt.microsecond:
+            day = day + timedelta(days=1)
+        return day.isoformat()
+    # A landing inside the minute the gate opens is still too late for it.
+    landed = dt.hour * 60 + dt.minute + (1 if dt.second or dt.microsecond else 0)
+    if landed > governs_min:
         day = day + timedelta(days=1)
     return day.isoformat()
 
@@ -6109,16 +6129,34 @@ def row_as_of(row, revisions, ymd):
     return out
 
 
-def _pend(conn, table, id, field, value):
-    _pend_row(conn, table, id, field, value)
+def _pend(conn, table, id, field, value, effective_from=None):
+    """Queue a routine easing, optionally DATED like a gate's.
+
+    A date is a FLOOR, never a bypass — the same sentence schedule_node_patch
+    lives by. `effective_from` can only push a landing later, so asking for
+    Sunday when Sunday is four days out gets Sunday, and asking for tomorrow
+    morning when the easing has 24h to run still gets the 24h.
+
+    Before this the routine half took no date at all (2026-09-02): every flow
+    and flow_step easing was now + 24h whatever was asked for, so a change
+    aimed at a day well beyond the delay was told "an easing waits 24h" and
+    landed somewhere else entirely.
+    """
+    apply_at = datetime.now() + timedelta(hours=24)
+    if effective_from:
+        want = datetime.combine(date_cls.fromisoformat(effective_from),
+                                datetime.min.time())
+        if want > apply_at:
+            apply_at = want
+    _pend_row(conn, table, id, field, value, apply_at.isoformat())
 
 
 def _unpend(conn, table, id, field):
     _unpend_row(conn, table, id, field)
 
 
-def _pend_step(conn, id, field, value):
-    _pend(conn, 'flow_step', id, field, value)
+def _pend_step(conn, id, field, value, effective_from=None):
+    _pend(conn, 'flow_step', id, field, value, effective_from)
 
 
 def _clear_step_pending(conn, id, field):
@@ -6189,7 +6227,8 @@ def apply_due_flow_pendings(conn):
 def update_flow_step(id, content=None, kind=None, requirement=None, position=None,
                      days_of_week=_UNSET, rrule=_UNSET,
                      pawn_to_flow_id=_UNSET, pawn_minutes=_UNSET,
-                     soft_content=_UNSET, ref_list_id=_UNSET, duration_min=_UNSET):
+                     soft_content=_UNSET, ref_list_id=_UNSET, duration_min=_UNSET,
+                     effective_from=None):
     conn = get_conn()
     # How long the step takes. It DESCRIBES the step, it does not demand
     # anything of it — no easing gate, so it applies at once even on a
@@ -6238,7 +6277,7 @@ def update_flow_step(id, content=None, kind=None, requirement=None, position=Non
         # REMOVING a day is an easing (fewer nights the gate demands this), so
         # on a gated routine it waits 24h; adding days tightens and applies now.
         if cur and cur['qr_node_id'] and (old - new):
-            _pend_step(conn, id, 'days_of_week', days_of_week or None)
+            _pend_step(conn, id, 'days_of_week', days_of_week or None, effective_from)
         else:
             conn.execute('UPDATE flow_step SET days_of_week = ? WHERE id = ?',
                          (days_of_week or None, id))
@@ -6258,7 +6297,7 @@ def update_flow_step(id, content=None, kind=None, requirement=None, position=Non
                               WHERE s.id = ?''', (id,)).fetchone()
         if (cur and cur['qr_node_id'] and requirement == 'soft'
                 and cur['requirement'] == 'hard'):
-            _pend_step(conn, id, 'requirement', 'soft')
+            _pend_step(conn, id, 'requirement', 'soft', effective_from)
         else:
             conn.execute('UPDATE flow_step SET requirement = ? WHERE id = ?',
                          (requirement, id))

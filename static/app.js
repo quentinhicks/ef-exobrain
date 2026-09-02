@@ -6930,7 +6930,11 @@ async function loadMetrics() {
 const METRIC_KIND_LABELS = { scale: 'likert scale', count: 'count',
                              yesno: 'yes / no', text: 'text' };
 
-const stepSheet = { id: null };
+// `effective` is the "Takes effect" date, the same question seWhenRow asks on
+// a gate's sheet. It qualifies whatever you change while it is set, because
+// this sheet commits per FIELD rather than on a save button — there is no one
+// save for a date row to sit above.
+const stepSheet = { id: null, effective: '' };
 
 // Badges say what the settings decided, in the order you scan for them. Only
 // the non-default states earn one: a daily hard text step is unremarkable and
@@ -7024,6 +7028,7 @@ async function refreshMetricsSettings() {
 
 function openStepSheet(id) {
   stepSheet.id = id;
+  stepSheet.effective = '';
   renderStepSheet();
 }
 
@@ -7043,7 +7048,8 @@ async function stepSheetPatch(patch, label) {
     await apiSend(`/api/flow-steps/${s.id}`, 'PATCH', prev);
     await refreshAfterUndo();
   });
-  await apiSend(`/api/flow-steps/${s.id}`, 'PATCH', patch);
+  await apiSend(`/api/flow-steps/${s.id}`, 'PATCH',
+    stepSheet.effective ? { ...patch, effective_from: stepSheet.effective } : patch);
   await refreshRef();
   renderStepSheet();
 }
@@ -7115,6 +7121,15 @@ function renderStepSheet() {
           : 'day change lands'} in ${pendingHours(p)}h`).join(', ')
         } — a gated routine eases on a 24h delay</span>
       <button class="cl-pill" id="fr-sheet-unpend">Cancel</button>
+    </div>` : ''}
+
+    ${f.qr_node_id ? `
+    <div class="cl-sec"><span class="cl-label">Takes effect</span></div>
+    <div class="cl-row">
+      <input type="date" class="cl-action" id="fr-sheet-eff"
+        value="${escHtml(stepSheet.effective || '')}">
+      <span class="cl-hint">Blank: as soon as the 24h easing allows. A date is a
+        FLOOR — pick a day further out and the change lands exactly there.</span>
     </div>` : ''}
 
     <div class="cl-sec"><span class="cl-label">Runs on</span></div>
@@ -7214,7 +7229,9 @@ function renderStepSheet() {
   sheet.querySelectorAll('[data-req]').forEach(b => b.addEventListener('click', () => {
     if (b.dataset.req === s.requirement) return;
     if (b.dataset.req === 'soft' && s.requirement === 'hard' && f.qr_node_id) {
-      toast('A gated routine eases on a 24h delay — soft lands tomorrow');
+      toast(stepSheet.effective
+        ? `A gated routine eases on a 24h delay — soft lands ${seWhenLabel(stepSheet.effective)}`
+        : 'A gated routine eases on a 24h delay — soft lands tomorrow');
     }
     stepSheetPatch({ requirement: b.dataset.req },
       `made "${s.content || stepKindLabel(s)}" ${b.dataset.req}`);
@@ -7227,6 +7244,15 @@ function renderStepSheet() {
   if (softTxt) softTxt.addEventListener('change', () => stepSheetPatch(
     { soft_content: softTxt.value },
     `named the smaller version of "${s.content || stepKindLabel(s)}"`));
+  const effIn = sheet.querySelector('#fr-sheet-eff');
+  // Stored, not sent: it qualifies the NEXT change made in this sheet. Setting
+  // it alone patches nothing, so picking a date and closing writes no easing.
+  if (effIn) effIn.addEventListener('change', () => {
+    stepSheet.effective = effIn.value || '';
+    toast(stepSheet.effective
+      ? `Changes below take effect ${seWhenLabel(stepSheet.effective)}`
+      : 'Changes below take effect as soon as the easing allows');
+  });
   const unpend = sheet.querySelector('#fr-sheet-unpend');
   if (unpend) unpend.addEventListener('click', async () => {
     await apiSend(`/api/flow-steps/${s.id}/pending`, 'DELETE');

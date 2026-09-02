@@ -2821,7 +2821,10 @@ def patch_flow_step(id):
         pawn_minutes=data.get('pawn_minutes', storage._UNSET),
         soft_content=data.get('soft_content', storage._UNSET),
         ref_list_id=data.get('ref_list_id', storage._UNSET),
-        duration_min=data.get('duration_min', storage._UNSET)))
+        duration_min=data.get('duration_min', storage._UNSET),
+        # The same 'from when' a gate's sheet asks. A FLOOR: it can push an
+        # easing later, never past the 24h it already owes.
+        effective_from=data.get('effective_from')))
 
 
 # Pawning is a DAY-level act, not a config edit, so it is its own route rather
