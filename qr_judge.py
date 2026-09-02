@@ -537,6 +537,25 @@ def settle_after(node, ymd, flow, window):
     return max(close, day_end)
 
 
+def run_settles_at(ymd):
+    """The moment a RUN opened on `ymd` stops being able to earn that day.
+
+    The runner pins its day (`flowRunView.date`) so a night routine ticked at
+    00:05 credits the night it started — but the pin has to end somewhere, or
+    every later write in the session files under a day that closed hours ago.
+    That end is the same grace the money path already uses: past it the day is
+    settled, judged and frozen, so nothing more can be earned on it.
+
+    Served to the client rather than mirrored there (`get_flows`), because a
+    client re-derivation of a rule the judge charges against is a bug even
+    while it agrees. No node and no window: this is the ROUTINE half's outer
+    bound, which settle_after takes the max with, so it is the same instant
+    for every routine whatever gate it hangs on.
+    """
+    return (_local_dt(_date_plus(ymd, 1), '00:00')
+            + timedelta(hours=ROUTINE_GRACE_HOURS))
+
+
 BACKFILL_MAX_DAYS = 14
 
 

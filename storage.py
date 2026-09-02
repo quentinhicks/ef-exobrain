@@ -5623,7 +5623,14 @@ def get_flows(date=None):
     if date:
         import qr_judge
         resolve, _ = schedule_resolver()
+        # The RUN's pin has an end, and it is served for the same reason the
+        # deadline is: the client pins this day when the runner opens, and
+        # deciding in app.js when the pin expires would re-derive the grace the
+        # judge settles on. Every flow gets one — the pin is a property of the
+        # RUN, not of whether the routine happens to gate anything.
+        settles_at = qr_judge.run_settles_at(date).isoformat(' ')
         for f in flows:
+            f['settles_at'] = settles_at
             if f.get('source_uid') or f.get('qr_node_id') or f.get('before_node_id'):
                 try:
                     f['window_open_min'], f['due_min'] = qr_judge.flow_day_window(

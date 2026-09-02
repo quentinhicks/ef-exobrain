@@ -5153,7 +5153,44 @@ async function checkDayRollover() {
   if (!engageView.date) await refreshEngage();
   const lists = document.getElementById('tab-lists');
   if (lists && !lists.classList.contains('hidden')) await refreshRef();
-  toast('New day — routines start over');
+  // A run that is still inside its grace is NOT starting over — it is last
+  // night's, being finished, and saying otherwise while the pin legitimately
+  // holds is what made the reset look total.
+  toast(pinnedRunStillLive()
+    ? "New day — last night's routine is still open"
+    : 'New day — routines start over');
+}
+
+// WHEN THE PIN LETS GO. `runDay()` answers with the run's day for as long as
+// the run is open, which is right while the night can still be earned and
+// wrong the moment it cannot: past the grace, yesterday is settled, judged and
+// frozen, so every later write — a metric, the journal, a social dose planned
+// for THIS morning — was filing under a day that closed hours ago.
+//
+// The boundary is SERVED (`settles_at`, pinned at open) rather than computed
+// here, and it is checked on the 60s tick rather than at the date change,
+// because it falls at 04:00 — hours after checkDayRollover has already run and
+// returned early.
+function parseLocalStamp(stamp) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(stamp || '');
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+}
+
+function pinnedRunStillLive() {
+  if (!flowRunView.open) return false;
+  const settles = parseLocalStamp(flowRunView.settlesAt);
+  // No served boundary (an older payload) leaves the pin alone: dropping a run
+  // the user is mid-way through is worse than a late pin, and the server half
+  // re-checks the day anyway.
+  return !settles || Date.now() < settles.getTime();
+}
+
+function releaseStaleRunPin() {
+  if (!flowRunView.open || pinnedRunStillLive()) return;
+  const name = (flowRunView.flow && flowRunView.flow.name) || 'routine';
+  closeFlowRun();
+  toast(`${name} closed — that day has settled`);
 }
 
 // ── Weekly Review (GTD) ──────────────────────────────────────
@@ -8050,6 +8087,11 @@ async function loadFlowRun(flowId, today) {
   // The day this run belongs to, pinned. Everything below files against it,
   // never against the wall clock — see creditFlowStep.
   flowRunView.date = today;
+  // AND WHEN THAT PIN ENDS. Served with the day it was fetched for
+  // (`settles_at`, qr_judge.run_settles_at), never computed here: the pin
+  // outliving its day is what filed a new morning's social dose under last
+  // night — see checkDayRollover, which is the one place that lets it go.
+  flowRunView.settlesAt = flow.settles_at || null;
   flowRunView.open = true;
   renderFlowRun();
 }
@@ -10261,7 +10303,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // the mechanic punishes. Same event, opposite meaning, on purpose.
   document.addEventListener('visibilitychange', () => {
     // Coming BACK is when a sleeping device notices midnight happened.
-    if (document.visibilityState !== 'hidden') { checkDayRollover(); return; }
+    if (document.visibilityState !== 'hidden') { releaseStaleRunPin(); checkDayRollover(); return; }
     if (dwView.phase === 'writing') { dwFail(); return; }
     flushOpenNotes();
     flushLogSave();
@@ -10272,7 +10314,7 @@ document.addEventListener('DOMContentLoaded', () => {
     flushLogSave();
   });
   loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); });
-  setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); }, 60000);
+  setInterval(() => { releaseStaleRunPin(); checkDayRollover(); checkActiveBlock(); paintNowRows(); }, 60000);
 });
 
 // ── Accountability ────────────────────────────────────────────
