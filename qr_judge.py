@@ -163,9 +163,17 @@ def base_window(node, ymd):
 # has more to do — and the three windows involved answer that differently. They
 # are three rules, not one, which is exactly why each is named:
 #
-#   the SCAN closes Y earlier      (closed_earlier) — the price. A scan is the
+#   the SCAN moves Y earlier       (moved_earlier) — the price. A scan is the
 #                                  claim that you are done, and carrying debt
-#                                  into a night means being done sooner.
+#                                  into a night means being done sooner. The
+#                                  whole window slides: its WIDTH is what the
+#                                  commitment actually promised you, and a
+#                                  price that ate it made a gate you could not
+#                                  satisfy rather than one that demanded more
+#                                  (2026-09-02, Quentin's instruction — it used
+#                                  to pull the close in and leave the opening,
+#                                  so a 60-minute window pawned 50 left ten
+#                                  minutes to hit).
 #   the ROUTINE opens Y earlier    (opened_earlier) — the room. More to do in
 #                                  the same evening means starting sooner.
 #   the ROUTINE'S DEADLINE stays   — by construction, not by exception: a
@@ -200,20 +208,30 @@ def opened_earlier(start_min, end_min, minutes):
     return max(0, start_min - minutes), end_min
 
 
-def closed_earlier(start_min, end_min, minutes):
-    """(start, end) with the CLOSE pulled in by `minutes`. The opening stays.
+def moved_earlier(start_min, end_min, minutes):
+    """(start, end) with the WHOLE window slid earlier by `minutes`. Width kept.
 
-    Never past the opening: a gate you could not satisfy at all is a broken
-    commitment, not a demanding one. That clamp is the only thing standing
-    between "pawning costs you time" and "pawning costs you the day".
+    Pawning costs you TIME OF DAY, never room: the close comes in because a
+    scan is the claim that you are done, and the opening comes with it because
+    the width is what the commitment promised. Pulling only the close in made
+    the price compound — a 60-minute window pawned 50 left ten minutes to hit,
+    and pawned 60 left none, which is a gate you cannot satisfy rather than one
+    that demands more.
+
+    Clamped at midnight of the day being asked about, the same bound and the
+    same reason as opened_earlier: a window is expressed in minutes from that
+    midnight, so a start before it would describe a different day. The width
+    survives the clamp — that is the whole point of it.
     """
     if not minutes:
         return start_min, end_min
-    return start_min, max(start_min, end_min - minutes)
+    width = end_min - start_min
+    start = max(0, start_min - minutes)
+    return start, start + width
 
 
 def _less_pawned(node, ymd, window):
-    """The gate's SCAN window, with its close pulled in by the pawned minutes.
+    """The gate's SCAN window, slid earlier by the pawned minutes.
 
     This is the half that costs something, and it is meant to: the scan says
     you are done, so carrying work into the evening means being done sooner.
@@ -232,9 +250,10 @@ def _less_pawned(node, ymd, window):
     start, end, offset = window
     start_min = _hhmm_min(start)
     end_min = _hhmm_min(end) + int(offset or 0) * 24 * 60
-    _, end_min = closed_earlier(start_min, end_min, minutes)
+    start_min, end_min = moved_earlier(start_min, end_min, minutes)
     new_offset, rest = divmod(end_min, 24 * 60)
-    return (start, f'{rest // 60:02d}:{rest % 60:02d}', new_offset)
+    return (f'{start_min // 60:02d}:{start_min % 60:02d}',
+            f'{rest // 60:02d}:{rest % 60:02d}', new_offset)
 
 
 def _hhmm_min(hhmm):
@@ -252,9 +271,10 @@ def _hhmm_min(hhmm):
 #   before _less_pawned), so the raw add-back pushed the routine's deadline Y
 #   minutes PAST where it stood — pawning bought free time on the day you had
 #   already dragged the window;
-#   a cost LARGER than the window is only partly paid, because closed_earlier
-#   clamps at the opening — a 5000-minute step moved a 60-minute gate's close by
-#   60 and the deadline by 5000, four days later.
+#   a cost larger than the DAY is only partly paid, because moved_earlier
+#   clamps the slide at midnight — a 5000-minute step cannot move a 23:00 close
+#   back more than the 1380 minutes there are before it, and giving back 5000
+#   put the deadline four days later.
 #
 # Both are loosenings on the money path (the routine earns half the day's
 # credit), and both are ONE cause: a second place re-deriving what the close
@@ -272,7 +292,7 @@ def pawn_giveback(node, ymd, override=None):
     start, end, offset = base_window(node, ymd)
     start_min = _hhmm_min(start)
     end_min = _hhmm_min(end) + int(offset or 0) * 24 * 60
-    _, closed = closed_earlier(start_min, end_min, minutes)
+    _, closed = moved_earlier(start_min, end_min, minutes)
     return end_min - closed
 
 

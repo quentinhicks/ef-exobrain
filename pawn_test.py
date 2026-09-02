@@ -100,8 +100,9 @@ eq('pawned: the step leaves the routine it was pawned FROM',
 eq('pawned: and joins the one it was pawned TO, FIRST — carried debt is done'
    ' before the receiving routine\'s own steps, not against its deadline',
    due()['Night'], ['Tidy desk', 'Journal'])
-eq('pawned: the receiving gate CLOSES 10 minutes earlier — the scan is the price',
-   window(), ('22:00', '22:50', 0))
+eq('pawned: the receiving gate MOVES 10 minutes earlier — the scan is the'
+   ' price, and the price is time of day, not width',
+   window(), ('21:50', '22:50', 0))
 eq('pawned: it is marked so the runner can say where it came from',
    [(s.get('pawned_in'), s.get('from_flow_id'))
     for f in storage.get_flows(TODAY) if f['name'] == 'Night'
@@ -162,12 +163,15 @@ storage.update_flow_step(111, pawn_to_flow_id=None)
 eq('clearing the destination takes the step home', due()['Morning'], ['Tidy desk', 'Meditate'])
 eq('clearing the destination restores the gate', window(), ('22:00', '23:00', 0))
 
-# A pawn can never invert a window: the opening stops at midnight and the close
-# is not touched at all, so there is no arithmetic here that can cross them.
+# A pawn can never invert a window: the slide stops at midnight and carries the
+# close with it, so the two ends keep their distance and no arithmetic here can
+# cross them. Nor can it ever reach zero width, which is the failure the old
+# close-only rule had — it clamped the close AT the opening.
 storage.update_flow_step(111, pawn_to_flow_id=102, pawn_minutes=5000)
 storage.pawn_flow_step(111)
-eq('an absurd cost clamps at the opening rather than inverting the window',
-   window(), ('22:00', '22:00', 0))
+eq('an absurd cost clamps at midnight rather than inverting or erasing the'
+   ' window',
+   window(), ('00:00', '01:00', 0))
 storage.pawn_flow_step(111, on=False)
 storage.update_flow_step(111, pawn_minutes=10)
 
@@ -272,8 +276,9 @@ rest = deadline()
 eq('at rest: the routine is due its offset after the gate closes',
    rest.strftime('%H:%M'), '00:00')
 storage.pawn_flow_step(111)
-eq('pawned: the gate closes 10 earlier and the deadline does not move',
-   (window(), deadline()), (('22:00', '22:50', 0), rest))
+eq('pawned: the whole gate window slides 10 earlier, keeping its width,'
+   ' and the deadline does not move',
+   (window(), deadline()), (('21:50', '22:50', 0), rest))
 
 storage.qr_set_override(9, TODAY, '21:00', '21:30', 0)
 eq('override + pawn: the close lost nothing, so the deadline gains nothing —'
@@ -285,14 +290,15 @@ conn.commit()
 conn.close()
 
 storage.update_flow_step(111, pawn_minutes=5000)
-eq('an absurd cost clamps BOTH ends together: the close stops at the opening'
-   ' and the deadline is given back only what was actually taken',
-   (window(), deadline()), (('22:00', '22:00', 0), rest))
+eq('an absurd cost slides to midnight and STOPS, width intact — the gate is'
+   ' made hard, never impossible — and the deadline is given back only what'
+   ' was actually taken',
+   (window(), deadline()), (('00:00', '01:00', 0), rest))
 storage.update_flow_step(111, pawn_minutes=10)
 storage.pawn_flow_step(111, on=False)
 eq('pawn_giveback is 0 with nothing pawned', qr_judge.pawn_giveback(NODE, TODAY), 0)
 storage.pawn_flow_step(111)
-eq('…and is what closed_earlier removed when there is',
+eq('…and is what the slide removed from the close when there is',
    qr_judge.pawn_giveback(NODE, TODAY), 10)
 storage.pawn_flow_step(111, on=False)
 
@@ -301,10 +307,14 @@ storage.pawn_flow_step(111, on=False)
 # behaviour by asking rather than by remembering.
 eq('opened_earlier moves only the start', qr_judge.opened_earlier(600, 700, 25), (575, 700))
 eq('…and stops at midnight', qr_judge.opened_earlier(30, 700, 90), (0, 700))
-eq('closed_earlier moves only the close', qr_judge.closed_earlier(600, 700, 25), (600, 675))
-eq('…and stops at the opening', qr_judge.closed_earlier(600, 700, 5000), (600, 600))
+eq('moved_earlier slides both ends', qr_judge.moved_earlier(600, 700, 25), (575, 675))
+eq('…keeping the width exactly',
+   [qr_judge.moved_earlier(600, 700, m)[1] - qr_judge.moved_earlier(600, 700, m)[0]
+    for m in (0, 25, 599, 600, 5000)], [100] * 5)
+eq('…and stops at midnight rather than eating the window',
+   qr_judge.moved_earlier(600, 700, 5000), (0, 100))
 eq('…and both do nothing with nothing pawned',
-   (qr_judge.opened_earlier(600, 700, 0), qr_judge.closed_earlier(600, 700, 0)),
+   (qr_judge.opened_earlier(600, 700, 0), qr_judge.moved_earlier(600, 700, 0)),
    ((600, 700), (600, 700)))
 
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
