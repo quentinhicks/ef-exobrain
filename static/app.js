@@ -10543,6 +10543,44 @@ function gpRow(k, v, cls) {
     + `<span class="gp-v${cls ? ' ' + cls : ''}">${v}</span></div>`;
 }
 
+// The hours ladder on the read-out. Every number here is SERVED — a judged day
+// comes off its frozen row, an open one through hours_satisfies, the same
+// predicate that charges — so this cannot describe a day the judge does not
+// believe in. It replaces the scan list rather than joining it: an hours gate
+// has no scans, and "nothing reached this gate" about a gate nothing is meant
+// to reach reads as a fault.
+function gatePopHoursHtml(hr) {
+  let s = '<div class="gp-sect">The hours it asks for</div>';
+  s += gpRow('Target', `<span class="gp-mono">${humanMinutes(hr.target_minutes)}</span> a day`);
+  // Absent on a judged day, and deliberately: the incoming bucket is not
+  // stored and is not recoverable from what is, so a figure here would be a
+  // guess at a number the judge actually used.
+  if (hr.bucket_minutes != null) {
+    s += gpRow('Carried in', hr.bucket_minutes
+      ? `<span class="gp-mono">${humanMinutes(hr.bucket_minutes)}</span> banked from the days before`
+      : 'nothing — the bucket is empty');
+  }
+  s += gpRow('This day owes', hr.required_minutes > 0
+    ? `<span class="gp-mono">${humanMinutes(hr.required_minutes)}</span>`
+    : '<span class="gp-ok">nothing — the bucket already covers it</span>');
+  s += gpRow('Logged', hr.logged_minutes
+    ? `<span class="gp-mono">${humanMinutes(hr.logged_minutes)}</span>`
+      + (hr.passes ? ' <span class="gp-ok">— enough</span>'
+                   : ` <span class="gp-no">— ${humanMinutes(
+                       hr.required_minutes - hr.logged_minutes)} short</span>`)
+    : '<span class="gp-no">nothing entered</span>');
+  s += gpRow('Carries forward', `<span class="gp-mono">${hr.bucket_after_minutes > 0
+    ? humanMinutes(hr.bucket_after_minutes) : 'nothing'}</span>`);
+  s += `<div class="gp-note">${hr.frozen
+    ? 'These are the numbers this day was JUDGED against, read back off its own row.'
+      + ' Correcting the hours now cannot move them — a judged day is frozen, which is'
+      + ' what stops a change today rewriting what a past day was charged for.'
+    : 'A met day banks whatever it worked beyond the target; a missed one still banks'
+      + ' half of what was worked, so missing never raises tomorrow’s bar. The bucket'
+      + ' needs no cap because a met day always spends the full target.'}</div>`;
+  return s;
+}
+
 function gatePopHtml(d) {
   const w = d.window;
   const rows = [];
@@ -10567,8 +10605,18 @@ function gatePopHtml(d) {
     out += gpRow('Radius', `<span class="gp-mono">${d.location.radius_m || 0}m</span>`);
   }
 
-  let scans = '<div class="gp-sect">Scans on this day</div>';
-  if (!d.scans.length) {
+  // AN HOURS GATE HAS NO SCANS, and saying "nothing reached this gate" about a
+  // gate nothing is supposed to reach would read as a fault. Its proof is the
+  // ladder below instead — every number of which is SERVED: a judged day comes
+  // off its frozen row, an open one through hours_satisfies, the same
+  // predicate that charges. A read-out that re-derived the requirement would
+  // show a day the judge does not believe in, which is the one thing this
+  // surface exists not to do.
+  let scans = d.hours ? gatePopHoursHtml(d.hours)
+                      : '<div class="gp-sect">Scans on this day</div>';
+  if (d.hours) {
+    // nothing further: an hours gate's proof is the ladder above
+  } else if (!d.scans.length) {
     scans += '<div class="gp-note">None. Nothing reached this gate on this day.</div>';
   } else {
     scans += d.scans.map(sc => {
@@ -10658,6 +10706,9 @@ function gatePopHtml(d) {
     + `${d.live ? '' : ' · not charging for real yet'}`);
   if (d.proof_mode === 'tag') {
     verdict += gpRow('Proof', 'a verified NFC tap, and nothing else');
+  }
+  if (d.proof_mode === 'hours') {
+    verdict += gpRow('Proof', 'the hours you report, on the honor system');
   }
 
   // THE ONE VERB IN HERE, and it is a real one. There used to be a cosmetic

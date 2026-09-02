@@ -7858,7 +7858,8 @@ def qr_node_day_state(node_id, date):
     judged = None
     try:
         judged = conn.execute(
-            '''SELECT failure_reason, charge_status, amount_cents, credit_pct
+            '''SELECT failure_reason, charge_status, amount_cents, credit_pct,
+                      req_minutes, minutes_logged, bucket_after_minutes
                FROM qr_charge_log
                WHERE node_id = ? AND date = ?''', (node_id, date)).fetchone()
     except sqlite3.OperationalError:

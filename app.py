@@ -2185,6 +2185,32 @@ def _gate_day_payload(node, ymd, now=None):
     history = {'from': hist_from, 'to': ymd, 'days': days,
                'charged_cents': charged}
 
+    # THE HOURS LADDER, for a gate whose proof is a number (2026-09-02). Same
+    # rule as everything else on this read-out: a JUDGED day is read back off
+    # its own row, an open one is resolved live through hours_satisfies — the
+    # judge's own predicate, never a second copy of the arithmetic.
+    #
+    # A judged day deliberately reports no incoming bucket. It is not stored,
+    # and it is not recoverable from what is: on a met day bucket_after is
+    # exactly logged - required whatever the bucket was, so any figure shown
+    # would be a guess. Better a gap than a number the judge never used.
+    hours = None
+    if qr_judge.is_hours_gate(node):
+        if judged and judged.get('req_minutes') is not None:
+            hours = {'required_minutes': judged['req_minutes'],
+                     'logged_minutes': judged['minutes_logged'],
+                     'bucket_after_minutes': judged['bucket_after_minutes'],
+                     'bucket_minutes': None, 'frozen': True,
+                     'passes': not judged.get('failure_reason')}
+        else:
+            bucket = storage.qr_bucket_before(node['id'], ymd)
+            passes, logged, req, after = qr_judge.hours_satisfies(
+                node, ymd, bucket_in=bucket)
+            hours = {'required_minutes': req, 'logged_minutes': logged,
+                     'bucket_after_minutes': after, 'bucket_minutes': bucket,
+                     'frozen': False, 'passes': passes}
+        hours['target_minutes'] = qr_judge.target_minutes(node)
+
     return {
         'node_id': node['id'], 'label': node['label'], 'date': ymd,
         'applies': applies, 'active': bool(node.get('active')),
@@ -2224,6 +2250,7 @@ def _gate_day_payload(node, ymd, now=None):
             'completed_at': flow.get('completed_at')},
         'location': loc,
         'scans': scans,
+        'hours': hours,
         'judged': judged,
         # The two halves, named. A single "failed" hid the half that WAS met,
         # which is the thing the split exists to make visible.
