@@ -498,13 +498,22 @@ def _completed_local(iso):
 FULL, HALF, NONE = 1.0, 0.5, 0.0
 
 
-def day_credit(node, ymd, flow, scans, now=None):
+def day_credit(node, ymd, flow, scans, now=None, hours=None):
     """How much of the stake this day earned back, and why. THE one answer.
 
     Returned as (credit, reason). `reason` is NULL when nothing is owed — a row
     with no failure_reason is a judged success, which is what the freeze made a
     row mean (see qr_reserve_judgment).
     """
+    if is_hours_gate(node):
+        # A number, not a scan — and there is no half to earn. The routine that
+        # HOSTS the entry step is deliberately not linked to this gate: if it
+        # were, day_credit would hand back half the day just for finishing the
+        # routine, and entering the hours IS finishing it, so every failed day
+        # would silently charge half the stake for both halves of one act.
+        passed = (hours or hours_satisfies(node, ymd))[0]
+        return (FULL, None) if passed else (NONE, 'hours_short')
+
     scan_ok = any(scan_satisfies(node, sc) for sc in scans)
     done = _completed_local(flow['completed_at']) if flow else None
     if flow is None:
@@ -645,7 +654,13 @@ def judge(now=None, verbose=False):
 
             scans = storage.qr_scans_in_window(
                 node['id'], _utc_iso(ymd, start), _utc_iso(close_date, end))
-            credit, reason = day_credit(node, ymd, flow, scans, now)
+            # Resolved ONCE and stamped on whichever row this day lands in. The
+            # bucket is a running total, so re-deriving it later would let a
+            # correction to last Tuesday rewrite what Wednesday was judged
+            # against — the credit_pct rule, for the same reason.
+            hrs = hours_satisfies(node, ymd) if is_hours_gate(node) else None
+            stamp = (hrs[2], hrs[1], hrs[3]) if hrs else None
+            credit, reason = day_credit(node, ymd, flow, scans, now, hours=hrs)
             tag = '' if ymd == today else ' (%s)' % ymd
             if reason is None:
                 # A ROW ON SUCCESS TOO (2026-08-17) — the FREEZE, reversing
@@ -662,20 +677,21 @@ def judge(now=None, verbose=False):
                 # is not proof.
                 storage.qr_reserve_judgment(node['id'], ymd, None, 'ok', None,
                                             window=(start, end, offset),
-                                            credit_pct=100)
+                                            credit_pct=100, hours=stamp)
                 continue
 
             if not money_reach:
                 # Judged, frozen, never charged — see _days_to_judge.
                 if storage.qr_reserve_judgment(node['id'], ymd, reason, 'stale', None,
                                                window=(start, end, offset),
-                                               credit_pct=int(credit * 100)):
+                                               credit_pct=int(credit * 100),
+                                               hours=stamp):
                     lines.append('X   %s (%s): %s -> stale (backfill)'
                                  % (node['label'], ymd, reason))
                 continue
 
             status = charge_for_failure(node, ymd, reason, window=(start, end, offset),
-                                        credit=credit)
+                                        credit=credit, hours=stamp)
             if status is None:
                 continue          # another tick reserved it first
             lines.append('X   %s%s: %s -> %s' % (node['label'], tag, reason, status))
@@ -733,9 +749,17 @@ def outcomes(from_date, to_date, now=None):
                 out.append({'node_id': node['id'], 'date': ymd,
                             'outcome': judged_outcome(j)})
             elif now >= _local_dt(close_date, end):
-                ok = any(
-                    open_iso <= s['scanned_at'] <= close_iso and scan_satisfies(node, s)
-                    for s in by_node.get(node['id'], []))
+                # A closed day the judge never reached. An hours gate is asked
+                # its own predicate here — the SAME function judge() uses, which
+                # is the point of there being one. Deriving it from scans would
+                # paint every such day failed, since an hours gate has no scans
+                # at all.
+                if is_hours_gate(node):
+                    ok = hours_satisfies(node, ymd)[0]
+                else:
+                    ok = any(
+                        open_iso <= s['scanned_at'] <= close_iso and scan_satisfies(node, s)
+                        for s in by_node.get(node['id'], []))
                 out.append({'node_id': node['id'], 'date': ymd,
                             'outcome': 'success' if ok else 'failed'})
             ymd = _date_plus(ymd, 1)
@@ -789,6 +813,61 @@ def scan_satisfies(node, scan):
     return node.get('geofence_lat') is None or scan.get('geofence_pass') == 1
 
 
+# ── The hours gate (2026-09-02, Quentin's design) ────────────────────────
+#
+# A THIRD kind of proof, and scan_satisfies' own docstring predicted it: the
+# answer was written twice and the copies agreed right up until a third kind
+# existed. So this is one function with the same two callers — judge() and
+# outcomes() — and nothing anywhere re-derives it.
+#
+# The commitment is an average, not a day: T minutes a day, with a BUCKET of
+# credit carried forward, so a long Saturday genuinely buys down Sunday.
+#
+#     R  = T - B                      what today owes
+#     pass (H >= R):  B' = B + H - T
+#     fail (H <  R):  B' = B + H // 2   and the stake is charged
+#
+# Two properties worth naming, because both are deliberate and neither is
+# obvious. A failed day still banks half of what was worked, so B never falls
+# on a miss and tomorrow's bar is never RAISED by failing — money settles a bad
+# day, not carried debt, which is what stops the unpayable spiral every
+# cumulative system dies of. And the bucket needs no cap, because a pass always
+# subtracts the full T: an overworked bucket drains at T a day on its own.
+#
+# INTEGER MINUTES throughout. 2400/7 = 342.857... has no exact float and
+# `H >= R` is a money decision made exactly at that boundary.
+DEFAULT_TARGET_MINUTES = 343          # 2400 a week / 7 = 5h43m
+
+
+def target_minutes(node):
+    v = node.get('target_minutes')
+    # NULL means the default, never zero — the charge_cents rule. A gate whose
+    # target read as 0 would pass every day forever without saying so.
+    return int(v) if v not in (None, '') else DEFAULT_TARGET_MINUTES
+
+
+def hours_satisfies(node, ymd, bucket_in=None):
+    """Did this day meet its requirement? (passed, logged, required, bucket_after).
+
+    All four in integer minutes. `bucket_in` is read from the last judged day
+    that carried one unless a caller already has it — never recomputed by
+    walking the history, because the whole point of stamping it is that a later
+    correction cannot reach back through it.
+    """
+    t = target_minutes(node)
+    b = storage.qr_bucket_before(node['id'], ymd) if bucket_in is None else bucket_in
+    req = t - b
+    logged = storage.study_entry_minutes(node['id'], ymd)
+    passed = logged >= req
+    # Floor on the failed half: the bucket never overstates the credit it holds.
+    after = (b + logged - t) if passed else (b + logged // 2)
+    return passed, logged, req, after
+
+
+def is_hours_gate(node):
+    return (node.get('proof_mode') or 'link') == 'hours'
+
+
 def is_loosening(field, current, nxt, node=None):
     if field == 'source_uid':
         # A source has no fields to compare, so the question is asked of the
@@ -803,6 +882,15 @@ def is_loosening(field, current, nxt, node=None):
             return schedule.demands_less(old, new, resolve, date_cls.today())
         except schedule.Cycle:
             return True                       # cannot prove it is tighter
+    if field == 'target_minutes':
+        # LOWERING the daily target is loosening — it is the requirement
+        # itself. Raising it is immediate: nothing about the delay exists to
+        # stop you committing harder. A blank resolves to the DEFAULT first,
+        # because that is what will actually be judged, exactly as clearing a
+        # stake does.
+        cur = target_minutes({'target_minutes': current})
+        new = target_minutes({'target_minutes': nxt})
+        return new < cur
     if field == 'charge_cents':
         # LOWERING the stake is loosening, so it waits 24h like every other
         # way of making a gate easier. Raising it is immediate: nothing about
@@ -1077,7 +1165,8 @@ def _http_get(url):
         return 200 <= r.status < 300, json.loads(r.read() or b'{}')
 
 
-def charge_for_failure(node, ymd, reason, sender=None, window=None, credit=0.0):
+def charge_for_failure(node, ymd, reason, sender=None, window=None, credit=0.0,
+                       hours=None):
     """The whole money path for one judged failure. Returns the status stored.
 
     Reserve BEFORE charging, and only the tick that won the reservation may
@@ -1099,7 +1188,7 @@ def charge_for_failure(node, ymd, reason, sender=None, window=None, credit=0.0):
     status = 'capped' if capped else ('charging' if will_charge else 'would_fire')
     won = storage.qr_reserve_judgment(
         node['id'], ymd, reason, status, amount if will_charge else None,
-        window=window, credit_pct=int(credit * 100))
+        window=window, credit_pct=int(credit * 100), hours=hours)
     if not won:
         return None          # another tick owns this day; do not touch money
 

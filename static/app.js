@@ -6708,6 +6708,7 @@ const FLOW_KINDS = { text: 'text', checklist: 'checklist',
                      metrics: 'metrics',
                      social_spec: 'social spec (planned)',
                      social_dose: 'social dose (done)',
+                     study_hours: 'hours worked',
                      journal_night: 'nightly journal', crm_fill: 'CRM fill' };
 
 // FLOW_KINDS is the PICKABLE set — what the Type chips offer. A review step's
@@ -6906,6 +6907,32 @@ function humanMinutes(m) {
   if (m < 60) return `${m} min`;
   const h = Math.floor(m / 60), r = m % 60;
   return r ? `${h} hr ${r}` : `${h} hr`;
+}
+
+// The hours gate's three sentences. humanMinutes answers '' for nothing and
+// counts a negative upward, and both are real states here — a day the bucket
+// already covers owes LESS than zero — so they are spelled out rather than
+// left to a formatter written for durations.
+function hoursText(m) {
+  return m > 0 ? humanMinutes(m) : 'nothing';
+}
+
+function hoursOwedText(h) {
+  const when = runDay() === wallDay() ? 'Today' : runDay();
+  if (h.required_minutes <= 0) {
+    return `${when} owes <b>nothing</b> — ${humanMinutes(h.bucket_minutes)} carried covers it`;
+  }
+  return `${when} owes <b>${humanMinutes(h.required_minutes)}</b>` + (h.bucket_minutes
+    ? ` — ${humanMinutes(h.target_minutes)} a day, less ${humanMinutes(h.bucket_minutes)} carried`
+    : '');
+}
+
+function hoursStandingText(h) {
+  if (h.passes) return `${hoursText(h.logged_minutes)} logged — the day is met ✓`;
+  const short = Math.max(0, h.required_minutes - h.logged_minutes);
+  return h.logged_minutes
+    ? `${humanMinutes(h.logged_minutes)} logged, ${humanMinutes(short)} short`
+    : `nothing logged yet — ${humanMinutes(short)} to go`;
 }
 
 // What the DUE steps of a routine add up to, and what is left in a run. Steps
@@ -8067,6 +8094,15 @@ async function loadFlowRun(flowId, today) {
     flowRunView.metrics[st.id] = await apiGet(`/api/metrics/step/${st.id}?date=${today}`,
       { date: today, metrics: [], complete: false });
   }
+  // The hours gate's day, RESOLVED by the server — target, bucket, what is
+  // owed. Prefetched per step like the metrics above, and for the RUN's date,
+  // which after midnight is still yesterday: the number typed at 01:00 belongs
+  // to the day that is closing, not the one that just started.
+  flowRunView.hours = {};
+  for (const st of steps.filter(x => x.kind === 'study_hours' && x.hours_node_id)) {
+    flowRunView.hours[st.id] = await apiGet(
+      `/api/accountability/nodes/${st.hours_node_id}/hours?date=${today}`, null);
+  }
   // The review steps read the SAME live counts the fold-out reads — one
   // endpoint that already exists, prefetched like the metrics above so
   // renderFlowRun stays sync. Fetched only when a review step is actually in
@@ -8435,6 +8471,22 @@ function renderFlowRun() {
     page = `<div class="fr-step-big">Social dose</div>
       <div class="fr-note">${day.total ?? 0} / ${day.d ?? '—'} point${(day.total ?? 0) === 1 ? '' : 's'}${
         okDose ? ' — the day is clear ✓' : ' — log what you actually did in ≡ Social'}</div>`;
+  } else if (s.kind === 'study_hours') {
+    // THE HOURS GATE'S OWN QUESTION (2026-09-02). Everything on this page is
+    // SERVED — the target, the bucket carried in, what today owes — because
+    // the same numbers decide money in qr_judge, and a client that worked out
+    // its own requirement would eventually disagree with the one that charges.
+    // The only thing typed here is the minutes.
+    const h = flowRunView.hours[s.id];
+    page = `<div class="fr-step-big">Hours worked</div>
+      ${!h ? '<div class="fr-note">No hours gate linked — pick one in the step settings (›)</div>'
+        : h.judged ? `<div class="fr-note">${hoursText(h.logged_minutes)} — that day is judged
+            and closed, so it can no longer be changed</div>`
+        : `<div class="fr-note">${hoursOwedText(h)}</div>
+           <input type="number" id="fr-hours" class="mt-input" inputmode="decimal" step="0.25"
+             min="0" max="24" placeholder="hours"
+             value="${h.logged_minutes ? +(h.logged_minutes / 60).toFixed(2) : ''}">
+           <div class="fr-note" id="fr-hours-say">${hoursStandingText(h)}</div>`}`;
   } else if (s.kind === 'metrics') {
     // Self-monitoring. Every metric this step asks, on one page — the runner is
     // one step per page and these are one question each, not one step each.
@@ -8755,6 +8807,32 @@ function renderFlowRun() {
         if (mark) body.mark = mark.dataset.mark;
         if (eff) body.effort = eff.dataset.effort;
         await apiSend(`/api/habits/${r.dataset.habit}/mark`, 'POST', body);
+      }
+    }
+    if (s.kind === 'study_hours') {
+      // The number is filed BEFORE the step is credited, and the credit waits
+      // on it: crediting a step whose write was refused would say the night
+      // was reported when it was not. The DAY is runDay() — the run's own,
+      // pinned when it opened — so 01:00 files the day that is closing.
+      const h = flowRunView.hours[s.id];
+      const box = el.querySelector('#fr-hours');
+      if (h && box) {
+        const hrs = parseFloat(box.value);
+        if (box.value.trim() === '' || isNaN(hrs) || hrs < 0 || hrs > 24) {
+          toast('Enter the hours worked, 0 to 24');
+          return;
+        }
+        const res = await apiSend(
+          `/api/accountability/nodes/${h.node_id}/hours`, 'PUT',
+          { date: runDay(), minutes: Math.round(hrs * 60) });
+        const out = await res.json().catch(() => null);
+        if (!res.ok) {
+          // A REFUSAL MUST BE VISIBLE ON A PHONE. The commonest one here is
+          // the 04:00 close, which is the deadline this gate is made of.
+          toast((out && out.error) || 'Could not save those hours');
+          return;
+        }
+        flowRunView.hours[s.id] = out;
       }
     }
     if (s.kind === 'journal_night') await saveJournalDraft(el);

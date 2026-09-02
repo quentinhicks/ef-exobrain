@@ -1128,6 +1128,28 @@ def init_db():
             new_value TEXT NOT NULL,
             apply_at  TEXT NOT NULL
         )''')
+    # THE MINUTES A DAY WAS WORKED (2026-09-02), for a gate whose proof is a
+    # NUMBER rather than a scan. One row per gate-day, revisable until that
+    # day's window closes and refused after — the close is the deadline, and
+    # that deadline is the whole accountability.
+    #
+    # MINUTES, never float hours. The target is 2400/7 = 342.857..., which has
+    # no exact float, and "worked >= required" is a money decision made exactly
+    # at that boundary: a day worked to the minute would pass or fail on a
+    # rounding artifact. The UI may render hours; nothing below it ever does.
+    #
+    # `date` is the day the work is ABOUT, sent explicitly by the surface that
+    # knows it (flowRunView.date), never inferred from the clock — this gate's
+    # day runs to 04:00 the next morning, so the clock and the day disagree for
+    # four hours every night, which is exactly the span it is written in.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS study_entry (
+            node_id    INTEGER NOT NULL REFERENCES qr_node(id),
+            date       TEXT NOT NULL,
+            minutes    INTEGER NOT NULL,
+            entered_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (node_id, date)
+        )''')
     # ONE EASING STORE (2026-08-17). The 24h delay had two implementations
     # wearing one name: this qr_pending_change table for gates, and a JSON blob
     # on flow / flow_step for routines. Two stores, two appliers, two cancel
@@ -1260,6 +1282,14 @@ def init_db():
                         ('soft_content', 'TEXT'),
                         ('ref_list_id', 'INTEGER'),
                         ('duration_min', 'INTEGER'),
+                        # WHICH hours gate a study_hours step files its minutes
+                        # under (2026-09-02). Deliberately NOT called
+                        # qr_node_id: on a flow that name means "gates this",
+                        # and this is the opposite — the step writes a number
+                        # the gate reads, and the routine holding it must stay
+                        # unlinked, or day_credit would refund half the stake
+                        # for finishing the routine that entered the number.
+                        ('hours_node_id', 'INTEGER'),
                         ('pending', 'TEXT')):
         try:
             conn.execute(f'SELECT {column} FROM flow_step LIMIT 1')
@@ -6189,7 +6219,8 @@ def apply_due_flow_pendings(conn):
 def update_flow_step(id, content=None, kind=None, requirement=None, position=None,
                      days_of_week=_UNSET, rrule=_UNSET,
                      pawn_to_flow_id=_UNSET, pawn_minutes=_UNSET,
-                     soft_content=_UNSET, ref_list_id=_UNSET, duration_min=_UNSET):
+                     soft_content=_UNSET, ref_list_id=_UNSET, duration_min=_UNSET,
+                     hours_node_id=_UNSET):
     conn = get_conn()
     # How long the step takes. It DESCRIBES the step, it does not demand
     # anything of it — no easing gate, so it applies at once even on a
@@ -6208,6 +6239,11 @@ def update_flow_step(id, content=None, kind=None, requirement=None, position=Non
     if ref_list_id is not _UNSET:
         conn.execute('UPDATE flow_step SET ref_list_id = ? WHERE id = ?',
                      (ref_list_id or None, id))
+    # Which hours gate this step reports to. A pointer, never a gate link — see
+    # the column's note in the migration.
+    if hours_node_id is not _UNSET:
+        conn.execute('UPDATE flow_step SET hours_node_id = ? WHERE id = ?',
+                     (hours_node_id or None, id))
     # Where this step may be pawned, and what carrying it costs the routine that
     # receives it. Clearing the destination un-pawns it too: a step that can no
     # longer be moved must not be left sitting somewhere it can't be sent.
@@ -7537,7 +7573,7 @@ def qr_create_node(label, token, window_start, window_end, offset_days=0,
 QR_NODE_FIELDS = ('label', 'window_start', 'window_end', 'window_end_offset_days',
                   'geofence_lat', 'geofence_lng', 'geofence_radius_m', 'active',
                   'days_of_week', 'weekly_windows', 'charge_cents', 'source_uid',
-                  'proof_mode')
+                  'proof_mode', 'target_minutes')
 
 # The pseudo-field a queued DELETION is filed under: deliberately not a column,
 # so nothing can ever UPDATE a node with it (qr_apply_due_pending_changes reads
@@ -7970,12 +8006,22 @@ def qr_ensure_charge_columns():
     # to read back, and a half-met day would be indistinguishable from a lost
     # one on every surface. NULL on rows written before the split, which is
     # exactly what those rows meant — the whole stake.
+    # req_minutes / minutes_logged / bucket_after_minutes are the HOURS LADDER
+    # (2026-09-02), stamped for the same reason credit_pct is: the bucket a day
+    # was judged against is not re-derivable later. It is a running total of
+    # every prior day, so re-deriving it would let a correction to last Tuesday
+    # silently rewrite what Wednesday's charge was owed against. The chain is
+    # read back off these columns and never recomputed.
     for table, col, decl in (('qr_charge_log', 'charge_id', 'TEXT'),
                              ('qr_charge_log', 'window_start', 'TEXT'),
                              ('qr_charge_log', 'window_end', 'TEXT'),
                              ('qr_charge_log', 'offset_days', 'INTEGER'),
                              ('qr_charge_log', 'credit_pct', 'INTEGER'),
-                             ('qr_node', 'charge_cents', 'INTEGER')):
+                             ('qr_charge_log', 'req_minutes', 'INTEGER'),
+                             ('qr_charge_log', 'minutes_logged', 'INTEGER'),
+                             ('qr_charge_log', 'bucket_after_minutes', 'INTEGER'),
+                             ('qr_node', 'charge_cents', 'INTEGER'),
+                             ('qr_node', 'target_minutes', 'INTEGER')):
         try:
             conn.execute(f'SELECT {col} FROM {table} LIMIT 1')
         except Exception:
@@ -7985,7 +8031,7 @@ def qr_ensure_charge_columns():
 
 
 def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cents=None,
-                        window=None, credit_pct=None):
+                        window=None, credit_pct=None, hours=None):
     # Returns True only if THIS call created the row. The insert is the
     # reservation: it happens before anything acts on the judgment, so a
     # concurrent or repeated tick backs off here instead of duplicating.
@@ -7998,14 +8044,19 @@ def qr_reserve_judgment(node_id, date, failure_reason, charge_status, amount_cen
     # judgment time, so the day can be read back rather than re-resolved.
     qr_ensure_charge_columns()
     ws, we, off = window or (None, None, None)
+    # (required, logged, bucket_after) in minutes for an hours gate; None for
+    # every other kind, which is what makes the bucket chain skip a day this
+    # gate did not run rather than reset it (see qr_bucket_before).
+    req, logged, bucket = hours or (None, None, None)
     conn = get_conn()
     cur = conn.execute(
         '''INSERT OR IGNORE INTO qr_charge_log
              (node_id, date, failure_reason, charge_status, amount_cents,
-              window_start, window_end, offset_days, credit_pct)
-           VALUES (?,?,?,?,?,?,?,?,?)''',
+              window_start, window_end, offset_days, credit_pct,
+              req_minutes, minutes_logged, bucket_after_minutes)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
         (node_id, date, failure_reason, charge_status, amount_cents, ws, we, off,
-         credit_pct))
+         credit_pct, req, logged, bucket))
     conn.commit()
     won = cur.rowcount > 0
     conn.close()
@@ -8022,6 +8073,55 @@ def qr_last_judged_date(node_id):
         (node_id,)).fetchone()
     conn.close()
     return row['d'] if row and row['d'] else None
+
+
+# ── The hours gate's store (2026-09-02) ─────────────────────────────────
+#
+# Three functions, and the judge reads all three. Nothing here decides
+# anything: the arithmetic is qr_judge.hours_satisfies, which is the ONE place
+# that answers "did this day pass", asked by judge() and outcomes() alike.
+
+def study_entry_minutes(node_id, ymd):
+    # No row means ZERO, deliberately — not "unknown", not "skip the day". A
+    # night that was never entered is a night that did not count, which is what
+    # makes a silent lapse cost the same as an honest short day.
+    qr_ensure_charge_columns()
+    conn = get_conn()
+    row = conn.execute(
+        'SELECT minutes FROM study_entry WHERE node_id = ? AND date = ?',
+        (node_id, ymd)).fetchone()
+    conn.close()
+    return int(row['minutes']) if row else 0
+
+
+def put_study_entry(node_id, ymd, minutes):
+    # UPSERT: the number is revisable all evening. Work more, say so again.
+    conn = get_conn()
+    conn.execute(
+        '''INSERT INTO study_entry (node_id, date, minutes) VALUES (?,?,?)
+           ON CONFLICT(node_id, date) DO UPDATE
+             SET minutes = excluded.minutes,
+                 entered_at = datetime('now','localtime')''',
+        (node_id, ymd, int(minutes)))
+    conn.commit()
+    conn.close()
+
+
+def qr_bucket_before(node_id, ymd):
+    # The bucket this day INHERITS: read off the last judged day that carried
+    # one, strictly before this date. Rows with a NULL bucket — a day the gate
+    # did not run ('n/a'), or any row written before this ladder existed — are
+    # skipped rather than treated as zero, so a day off carries the bucket
+    # across instead of wiping it.
+    qr_ensure_charge_columns()
+    conn = get_conn()
+    row = conn.execute(
+        '''SELECT bucket_after_minutes b FROM qr_charge_log
+           WHERE node_id = ? AND date < ? AND bucket_after_minutes IS NOT NULL
+           ORDER BY date DESC LIMIT 1''',
+        (node_id, ymd)).fetchone()
+    conn.close()
+    return int(row['b']) if row else 0
 
 
 # ── Gate charging: the money half, ported from the Worker 2026-08-11 ─────

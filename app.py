@@ -2280,6 +2280,81 @@ def accountability_node_day(id):
     return jsonify(_gate_day_payload(node, ymd))
 
 
+# THE HOURS GATE (2026-09-02). Two routes, not one with two methods, and the
+# split is the point: the READ may default to today, the WRITE may not. This
+# gate's day runs to 04:00 the next morning, so for four hours every night the
+# clock and the day disagree — and that is exactly when the number gets typed.
+# A read of the wrong day shows you something; a write to the wrong day charges
+# you for one.
+def _hours_node(id):
+    node = next((n for n in storage.qr_get_nodes() if n['id'] == id), None)
+    if not node:
+        return None, (jsonify({'error': 'no such gate'}), 404)
+    if not qr_judge.is_hours_gate(node):
+        return None, (jsonify({'error': 'not an hours gate'}), 400)
+    return node, None
+
+
+@app.route('/api/accountability/nodes/<int:id>/hours', methods=['GET'])
+def accountability_node_hours(id):
+    # Serves the day RESOLVED — target, bucket, requirement, what has been
+    # logged and whether that passes — so the client renders an answer it never
+    # computes.
+    node, err = _hours_node(id)
+    if err:
+        return err
+    ymd = request.args.get('date') or date_cls.today().isoformat()
+    if not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    return jsonify(_hours_day_payload(node, ymd))
+
+
+@app.route('/api/accountability/nodes/<int:id>/hours', methods=['PUT'])
+def put_accountability_node_hours(id):
+    # The day comes from the surface that knows it (flowRunView.date in the
+    # runner). There is no default here on purpose — see the note above.
+    node, err = _hours_node(id)
+    if err:
+        return err
+    data = request.get_json(force=True) or {}
+    ymd = (data.get('date') or '').strip()
+    if not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    try:
+        minutes = int(data.get('minutes'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'minutes must be a whole number'}), 400
+    if minutes < 0 or minutes > 1440:
+        return jsonify({'error': 'minutes must be between 0 and 1440'}), 400
+    # A judged day is FROZEN, and this is the door that could otherwise walk
+    # around that: a stale tab filing tonight's minutes under a day already
+    # charged. The window close is the deadline, and it is the whole
+    # accountability — refused here, not merely hidden in the UI.
+    if storage.qr_judgment_exists(id, ymd):
+        return jsonify({'error': 'that day is already judged'}), 409
+    start, end, offset = qr_judge.resolve_window(node, ymd)
+    # The judge's own resolution and the judge's own clock helper: a route that
+    # worked out its own close would be a second answer to "when does this day
+    # end", which is the one thing that must not disagree here.
+    close = qr_judge._local_dt(qr_judge.close_date_of(ymd, offset), end)
+    if datetime.now() > close:
+        return jsonify({'error': 'that day closed at ' + close.strftime('%Y-%m-%d %H:%M'),
+                        'closed': True}), 409
+    storage.put_study_entry(id, ymd, minutes)
+    return jsonify(_hours_day_payload(node, ymd))
+
+
+def _hours_day_payload(node, ymd):
+    bucket = storage.qr_bucket_before(node['id'], ymd)
+    passed, logged, req, after = qr_judge.hours_satisfies(node, ymd, bucket_in=bucket)
+    return {'date': ymd, 'node_id': node['id'],
+            'target_minutes': qr_judge.target_minutes(node),
+            'bucket_minutes': bucket,
+            'required_minutes': req, 'logged_minutes': logged,
+            'passes': passed, 'bucket_after_minutes': after,
+            'judged': bool(storage.qr_judgment_exists(node['id'], ymd))}
+
+
 @app.route('/api/accountability/outcomes', methods=['GET'])
 def accountability_outcomes():
     from_date = request.args.get('from', '')

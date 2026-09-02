@@ -110,6 +110,21 @@ READS = {
     'qr_judgment_exists': 'the judge\'s own rows — the anti-double-judge guard.',
     'qr_judgments_between': 'the judge\'s own rows — a closed day is read back.',
     'qr_last_judged_date': 'the judge\'s own rows — how far the backfill walks.',
+    'qr_bucket_before':
+        'the judge\'s own rows. The hours bucket is STAMPED on the judgment '
+        'that closed each day and read back off it, never re-derived by '
+        'walking the entries — a running total that was re-derived would let '
+        'a correction to last Tuesday silently change what Wednesday was '
+        'charged against. Nothing but qr_reserve_judgment writes the column.',
+    'study_entry_minutes':
+        'Quentin, on the honor system, and deliberately — the commitment is '
+        'made against his own report of the day. What the client does NOT '
+        'decide is anything downstream: the requirement, the bucket and the '
+        'verdict are all computed here from this number plus frozen rows, and '
+        'none of them is ever sent. The write route pins the day explicitly '
+        'and refuses one whose window has closed, so the single thing a stale '
+        'tab could do — file tonight\'s minutes under a day already judged — '
+        'is refused at the door.',
     'qr_weekly_spent_cents': 'the judge\'s own rows — the cap.',
     'qr_apply_due_pending_changes': 'lands easings that already waited 24h.',
     'qr_ensure_charge_columns': 'schema, not data.',
