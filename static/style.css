@@ -6985,7 +6985,13 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border-radius: 2px;
   padding: 2px 6px 2px 14px;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  /* MEASURED, not eyeballed. A span is draggable, so its outline is an
+     INTERACTIVE control's and owes 3:1 against the painted backdrop. At 55%
+     of the accent over transparent it measured 2.40:1 in light — the exact
+     shape of the 2026-08-17 finding, where the accent was fine and the
+     translucent edge was not. Blended with --text-secondary and fully opaque
+     instead, which is the rule's own answer for a control's outline. */
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--text-secondary));
   font-size: 11px;
   color: var(--text-secondary);
   overflow: hidden;
@@ -7003,7 +7009,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   bottom: 0;
   width: 14px;
   cursor: grab;
-  background: color-mix(in srgb, var(--accent) 38%, transparent);
+  /* The grip IS the control, so it owes 3:1 too; at 38% over transparent it
+     measured 2.31:1 dark and 1.62:1 light — nearly invisible on the theme it
+     was designed in. Opaque. */
+  background: color-mix(in srgb, var(--accent) 70%, var(--text-secondary));
   border-radius: 2px 0 0 2px;
 }
 
