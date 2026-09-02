@@ -1209,8 +1209,9 @@ function renderGcalLayer(bodyH = 600) {
     };
     el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
     onLongPress(el, hide);   // the touch right-click
-    // Same plain-tap meaning as the event row on Engage: open its occasion.
-    el.addEventListener('click', () => openOccasionSheet(el.dataset.evLabel || ''));
+    // Same plain-tap meaning as the event row on Engage: open its read-out —
+    // where it is and what the invite said. The occasion is in its foot.
+    el.addEventListener('click', () => openEventPop(el.dataset.evKey, el));
   });
 
   initEventDrag(layer);
@@ -6433,6 +6434,8 @@ function initHub() {
   // covers the screen, so the day stays visible behind what is describing it.
   document.getElementById('gate-pop-backdrop')
     .addEventListener('click', closeGatePop);
+  document.getElementById('event-pop-backdrop')
+    .addEventListener('click', closeEventPop);
   hub.addEventListener('click', e => { if (e.target === hub) hub.classList.add('hidden'); });
   document.querySelectorAll('.m-close').forEach(btn => {
     btn.addEventListener('click', () => closeM(btn.dataset.close));
@@ -6453,6 +6456,9 @@ function initHub() {
     // The gate read-out is the next layer in (a popup beside its pill, over
     // the calendar), so it peels before anything under it.
     if (gatePop.nodeId != null) { closeGatePop(); return; }
+    // The event read-out shares the gate read-out's layer, so it peels on the
+    // same rung — before the occasion sheet it can open, which sits above.
+    if (eventPop.key != null) { closeEventPop(); return; }
     // A menu is always the innermost thing on screen and closing it is free,
     // so it peels before anything else Esc could reach.
     if (objMenu.open) { closeObjectMenu(); return; }
@@ -7313,7 +7319,11 @@ async function loadMetrics() {
 const METRIC_KIND_LABELS = { scale: 'likert scale', count: 'count',
                              yesno: 'yes / no', text: 'text' };
 
-const stepSheet = { id: null };
+// `effective` is the "Takes effect" date, the same question seWhenRow asks on
+// a gate's sheet. It qualifies whatever you change while it is set, because
+// this sheet commits per FIELD rather than on a save button — there is no one
+// save for a date row to sit above.
+const stepSheet = { id: null, effective: '' };
 
 // Badges say what the settings decided, in the order you scan for them. Only
 // the non-default states earn one: a daily hard text step is unremarkable and
@@ -7407,6 +7417,7 @@ async function refreshMetricsSettings() {
 
 function openStepSheet(id) {
   stepSheet.id = id;
+  stepSheet.effective = '';
   renderStepSheet();
 }
 
@@ -7426,7 +7437,8 @@ async function stepSheetPatch(patch, label) {
     await apiSend(`/api/flow-steps/${s.id}`, 'PATCH', prev);
     await refreshAfterUndo();
   });
-  await apiSend(`/api/flow-steps/${s.id}`, 'PATCH', patch);
+  await apiSend(`/api/flow-steps/${s.id}`, 'PATCH',
+    stepSheet.effective ? { ...patch, effective_from: stepSheet.effective } : patch);
   await refreshRef();
   renderStepSheet();
 }
@@ -7498,6 +7510,15 @@ function renderStepSheet() {
           : 'day change lands'} in ${pendingHours(p)}h`).join(', ')
         } — a gated routine eases on a 24h delay</span>
       <button class="cl-pill" id="fr-sheet-unpend">Cancel</button>
+    </div>` : ''}
+
+    ${f.qr_node_id ? `
+    <div class="cl-sec"><span class="cl-label">Takes effect</span></div>
+    <div class="cl-row">
+      <input type="date" class="cl-action" id="fr-sheet-eff"
+        value="${escHtml(stepSheet.effective || '')}">
+      <span class="cl-hint">Blank: as soon as the 24h easing allows. A date is a
+        FLOOR — pick a day further out and the change lands exactly there.</span>
     </div>` : ''}
 
     <div class="cl-sec"><span class="cl-label">Runs on</span></div>
@@ -7597,7 +7618,9 @@ function renderStepSheet() {
   sheet.querySelectorAll('[data-req]').forEach(b => b.addEventListener('click', () => {
     if (b.dataset.req === s.requirement) return;
     if (b.dataset.req === 'soft' && s.requirement === 'hard' && f.qr_node_id) {
-      toast('A gated routine eases on a 24h delay — soft lands tomorrow');
+      toast(stepSheet.effective
+        ? `A gated routine eases on a 24h delay — soft lands ${seWhenLabel(stepSheet.effective)}`
+        : 'A gated routine eases on a 24h delay — soft lands tomorrow');
     }
     stepSheetPatch({ requirement: b.dataset.req },
       `made "${s.content || stepKindLabel(s)}" ${b.dataset.req}`);
@@ -7610,6 +7633,15 @@ function renderStepSheet() {
   if (softTxt) softTxt.addEventListener('change', () => stepSheetPatch(
     { soft_content: softTxt.value },
     `named the smaller version of "${s.content || stepKindLabel(s)}"`));
+  const effIn = sheet.querySelector('#fr-sheet-eff');
+  // Stored, not sent: it qualifies the NEXT change made in this sheet. Setting
+  // it alone patches nothing, so picking a date and closing writes no easing.
+  if (effIn) effIn.addEventListener('change', () => {
+    stepSheet.effective = effIn.value || '';
+    toast(stepSheet.effective
+      ? `Changes below take effect ${seWhenLabel(stepSheet.effective)}`
+      : 'Changes below take effect as soon as the easing allows');
+  });
   const unpend = sheet.querySelector('#fr-sheet-unpend');
   if (unpend) unpend.addEventListener('click', async () => {
     await apiSend(`/api/flow-steps/${s.id}/pending`, 'DELETE');
@@ -10037,11 +10069,48 @@ function wireMdShortcuts(ta) {
   ta.addEventListener('paste', logPaste);
 }
 
+// AN IMAGE ON THE CLIPBOARD IS A PHOTO (2026-09-02, Quentin's instruction).
+// A screenshot pasted into a log used to do nothing at all and say nothing
+// about it: an image is not text, so it fell straight through the URL branch
+// below and the textarea had nothing to insert. It takes the SAME road the
+// `+ photo` button takes — uploadLogPhoto writes the file beside the log,
+// inserts the markdown link through logEdit (so the native Ctrl+Z still takes
+// the link back) and the strip picks it up on the `input` that fires.
+//
+// Only in the LOG EDITOR, and only with a log open: wireMdShortcuts puts this
+// handler on every markdown textarea in the app — clarify's notes, a project's
+// notes — and none of those has a log to store a file against. Everywhere else
+// an image paste is left alone rather than swallowed by a preventDefault.
+function clipboardImage(dt) {
+  for (const f of dt.files || []) {
+    if (String(f.type || '').startsWith('image/')) return f;
+  }
+  // Safari and older WebKit expose the bitmap only through `items`.
+  for (const it of dt.items || []) {
+    if (it.kind === 'file' && String(it.type || '').startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) return f;
+    }
+  }
+  return null;
+}
+
 // Pasting a bare URL over a selection links it — the one paste worth
 // intercepting, and the gesture that makes citing a source in a log free.
 function logPaste(e) {
   const ta = e.currentTarget;
-  if (ta.selectionStart === ta.selectionEnd || !e.clipboardData) return;
+  if (!e.clipboardData) return;
+  if (ta.id === 'log-editor' && logsView.open) {
+    const img = clipboardImage(e.clipboardData);
+    if (img) {
+      // Before the await: the default paste would otherwise land whatever text
+      // the clipboard also carries (a screenshot tool's file path) beside it.
+      e.preventDefault();
+      uploadLogPhoto(img);
+      return;
+    }
+  }
+  if (ta.selectionStart === ta.selectionEnd) return;
   const url = (e.clipboardData.getData('text') || '').trim();
   if (!/^(https?:\/\/|mailto:)\S+$/.test(url)) return;
   e.preventDefault();
@@ -10067,7 +10136,13 @@ async function uploadLogPhoto(file) {
   let path = null;
   try {
     const fd = new FormData();
-    fd.append('photo', file);
+    // A NAME, ALWAYS. A clipboard image is a File with an empty name, and a
+    // multipart part with no filename is not a file to Werkzeug at all —
+    // request.files comes back empty and the route answers 400. The server
+    // reads the extension off the content type when the name has none, so
+    // what matters here is only that the name is not blank.
+    fd.append('photo', file, file.name
+      || `pasted.${(String(file.type).split('/')[1] || 'png').replace('jpeg', 'jpg')}`);
     const r = await fetch(`/api/logs/${encodeURIComponent(logsView.open)}/photo`,
                           { method: 'POST', body: fd });
     if (r.ok) path = (await r.json()).path;
@@ -10935,6 +11010,86 @@ function closeGatePop() {
   gatePop.date = null;
   document.getElementById('gate-pop').classList.add('hidden');
   document.getElementById('gate-pop-backdrop').classList.add('hidden');
+}
+
+// ── The EVENT read-out (2026-09-02, Quentin asked for it) ────
+//
+// What the calendar knows about the one event you tapped: where it is and what
+// the invite said. The gate read-out's twin, deliberately — same box, same
+// layer, same backdrop, and read-only in the same way. Nothing here writes.
+//
+// It TOOK the plain tap, which used to open the event's occasion. That is not a
+// loss: an occasion is about the KIND of event (it matches by title, across
+// every booking of it), and location and notes are about THIS ONE, so the
+// specific thing is what a tap on the specific row should answer with. The
+// occasion is one tap further, in the foot.
+//
+// Hiding is untouched: long-press, right-click and Cmd-click still drop the
+// event from the day.
+const eventPop = { key: null };
+
+function epLinkify(text) {
+  // Escaped FIRST, then linked: escaping cannot manufacture something that
+  // looks like a URL, so the pattern only ever sees the real text.
+  return escHtml(text).replace(/https?:\/\/[^\s<]+/g, u =>
+    `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+}
+
+function eventPopFind(key) {
+  return (state.gcalEvents || []).find(e => eventKey(e) === key) || null;
+}
+
+function openEventPop(key, anchorEl) {
+  const e = eventPopFind(key);
+  if (!e) return;
+  eventPop.key = key;
+  const el = document.getElementById('event-pop');
+  const back = document.getElementById('event-pop-backdrop');
+  const when = e.allday
+    ? 'All day'
+    : `${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`;
+  const day = formatTodoDate(new Date(e.start));
+  const bits = [];
+  if (e.location) {
+    bits.push(`<div class="ep-loc"><span class="ep-loc-mark">⌖</span>`
+      + `<span>${epLinkify(e.location)}</span></div>`);
+  }
+  if (e.description) bits.push(`<div class="ep-desc">${epLinkify(e.description)}</div>`);
+  // Saying nothing is an ANSWER here. A past event predates the columns and a
+  // refresh only rewrites from today forward, so "no location" and "we never
+  // read one" are different facts and the second one is the honest wording.
+  if (!bits.length) {
+    bits.push(`<div class="ep-none">${
+      (e.start || '') < wallDay()
+        ? 'Nothing was stored for this event — the feed only fills in today forward.'
+        : 'No location or notes on this event.'}</div>`);
+  }
+  el.innerHTML = `
+    <div class="gp-head">
+      <span class="gp-title">${escHtml(e.summary || 'Event')}</span>
+      <button class="gp-close" id="ep-close">✕</button>
+    </div>
+    <div class="ep-when">${escHtml(day)} · ${escHtml(when)}${
+      e.moved ? ' · moved here' : ''}</div>
+    ${bits.join('')}
+    <div class="ep-foot">
+      <button class="cl-pill" id="ep-occasion">Open occasion ›</button>
+    </div>`;
+  el.classList.remove('hidden');
+  back.classList.remove('hidden');
+  placeGatePop(el, anchorEl);
+  el.querySelector('#ep-close').addEventListener('click', closeEventPop);
+  el.querySelector('#ep-occasion').addEventListener('click', () => {
+    const summary = e.summary || '';
+    closeEventPop();
+    openOccasionSheet(summary);
+  });
+}
+
+function closeEventPop() {
+  eventPop.key = null;
+  document.getElementById('event-pop').classList.add('hidden');
+  document.getElementById('event-pop-backdrop').classList.add('hidden');
 }
 
 function gpRow(k, v, cls) {
@@ -15606,10 +15761,12 @@ function renderEngage() {
       el.querySelector('.eg-text')?.textContent);
     el.addEventListener('click', e => {
       if (e.metaKey || e.ctrlKey) { hide(); return; }
-      // A plain tap opens the event's OCCASION — the actions this kind of event
-      // always brings with it. ⌘-click and the long press still hide, and
+      // A plain tap opens the event's READ-OUT — what the calendar knows about
+      // this one booking. The occasion (the actions this KIND of event brings)
+      // is a button in its foot, since that is a fact about the title rather
+      // than about today's instance. ⌘-click and the long press still hide, and
       // onLongPress swallows the click a fired hold would otherwise send here.
-      openOccasionSheet(el.querySelector('.eg-text')?.textContent || '');
+      openEventPop(el.dataset.ekey, el);
     });
     onLongPress(el, hide);
   });

@@ -1028,9 +1028,40 @@ def schedule_node_patch(node, fields, effective_from=None, now=None):
         if at <= now:
             immediate[field] = value
         else:
-            pending[field] = {'value': value, 'apply_at': at.isoformat(),
-                              'effective_date': storage.effective_date_for(at)}
+            pending[field] = {
+                'value': value, 'apply_at': at.isoformat(),
+                'effective_date': storage.effective_date_for(
+                    at, _governs_min(node, fields, at))}
     return immediate, pending
+
+
+def _governs_min(node, fields, at):
+    """The minute of `at`'s day this gate starts deciding anything.
+
+    Its window OPENING, so effective_date_for can tell a change that is already
+    in force from one that arrived too late to be. Without this every pending
+    rounded up to the next day whatever the hour, which told a change made a
+    day and a half before a 06:00 gate that it governed from the day after the
+    one it could plainly have governed.
+
+    Conservative in both directions it can be: a window_start in the same patch
+    is taken at its EARLIEST reading, so a gate being moved earlier is judged
+    against the earlier opening and never claims a day it could not have
+    governed. Anything unresolvable returns None, which is the old
+    always-round-up answer — late, never wrong.
+    """
+    try:
+        start, _, _ = resolve_window(node, at.date().isoformat())
+        opens = _hhmm_min(start)
+    except Exception:
+        return None
+    want = (fields or {}).get('window_start')
+    if want:
+        try:
+            opens = min(opens, _hhmm_min(want))
+        except Exception:
+            pass
+    return opens
 
 
 def apply_node_patch(node, fields, now=None):

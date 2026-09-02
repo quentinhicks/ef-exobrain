@@ -3144,6 +3144,7 @@ body.calendar-minimized #review-modal {
 
    z 190: over the calendar overlay (140/150) and the global bar (170), under
    the sheet band (200) — nothing here writes, so a sheet always wins. */
+#event-pop-backdrop,
 #gate-pop-backdrop {
   position: fixed;
   inset: 0;
@@ -3151,6 +3152,7 @@ body.calendar-minimized #review-modal {
   background: transparent;
 }
 
+#event-pop,
 #gate-pop {
   position: fixed;
   z-index: 190;
@@ -6415,6 +6417,48 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* A metric with nowhere to be asked is a question that will never be put —
    the one state on this list worth colouring. */
 .be-list-row .be-row-sub.be-row-warn { color: var(--danger); }
+
+
+/* ── The event read-out ──────────────────────────────────────
+   Shares #gate-pop's box, layer and backdrop (see the two selector groups
+   above): one geometry, two read-outs, the same rule the sheets follow. Only
+   what an event has that a gate does not is written here. */
+.ep-when {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.ep-loc {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.ep-loc-mark { flex: none; color: var(--text-secondary); }
+
+/* A description is prose out of someone else's system: it keeps its own line
+   breaks (white-space: pre-wrap) and wraps a pasted meeting URL rather than
+   pushing the popup wide (overflow-wrap). */
+.ep-desc {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+  margin-top: 2px;
+}
+
+.ep-foot {
+  border-top: 1px solid var(--border-soft);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.ep-none { color: var(--text-secondary); font-style: italic; }
+
 
 /* ---- Light theme ---- */
 

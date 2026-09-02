@@ -1225,7 +1225,7 @@ def post_log_photo(name):
     data = f.read(LOG_PHOTO_MAX + 1)
     if len(data) > LOG_PHOTO_MAX:
         return jsonify({'error': 'too big'}), 413
-    rel = storage.save_log_photo(name, f.filename, data)
+    rel = storage.save_log_photo(name, f.filename, data, f.mimetype)
     if not rel:
         return jsonify({'error': 'not an image'}), 415
     return jsonify({'path': rel}), 201
@@ -1295,17 +1295,24 @@ def _build_occurrences(events):
         dtend = ev['dtend']
         rrule = ev['rrule']
         allday = 1 if ev.get('allday') else 0
+        # The location and the description belong to the EVENT, so every
+        # expanded occurrence carries the master's — and a modified instance
+        # (RECURRENCE-ID) brings its own, since it supersedes that occurrence
+        # here anyway. One dict shape, so replace_source_events reads the same
+        # keys whichever branch built the row.
+        extra = {'location': ev.get('location'), 'description': ev.get('description')}
         if rrule:
             duration = dtend - dtstart
             for s, e in aggregator.expand_rrule(rrule, dtstart, duration):
                 if (uid, s) in superseded:
                     continue
-                by_key.setdefault((uid, s), {'uid': uid, 'summary': summary, 'start': s, 'end': e, 'allday': allday})
+                by_key.setdefault((uid, s), dict(extra, uid=uid, summary=summary,
+                                                 start=s, end=e, allday=allday))
         else:
             start = aggregator._fmt(dtstart)
-            by_key[(uid, start)] = {'uid': uid, 'summary': summary,
-                                    'start': start, 'end': aggregator._fmt(dtend),
-                                    'allday': allday}
+            by_key[(uid, start)] = dict(extra, uid=uid, summary=summary,
+                                        start=start, end=aggregator._fmt(dtend),
+                                        allday=allday)
     return list(by_key.values())
 
 
@@ -2985,7 +2992,10 @@ def patch_flow_step(id):
         pawn_minutes=data.get('pawn_minutes', storage._UNSET),
         soft_content=data.get('soft_content', storage._UNSET),
         ref_list_id=data.get('ref_list_id', storage._UNSET),
-        duration_min=data.get('duration_min', storage._UNSET)))
+        duration_min=data.get('duration_min', storage._UNSET),
+        # The same 'from when' a gate's sheet asks. A FLOOR: it can push an
+        # easing later, never past the 24h it already owes.
+        effective_from=data.get('effective_from')))
 
 
 # Pawning is a DAY-level act, not a config edit, so it is its own route rather
