@@ -555,6 +555,16 @@ def init_db():
         conn.execute('DELETE FROM gcal_event')
         conn.execute('DELETE FROM gcal_recurring_seen')
         conn.commit()
+    # WHAT THE FEED SAID BESIDE THE TITLE (2026-09-02, Quentin asked to see it).
+    # Nothing is dropped to get them: they are nullable, and replace_source_events
+    # only rewrites from today forward, so a PAST event keeps the NULL it was
+    # stored with rather than pretending we captured a location we never read.
+    try:
+        conn.execute('SELECT location FROM gcal_event LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE gcal_event ADD COLUMN location TEXT')
+        conn.execute('ALTER TABLE gcal_event ADD COLUMN description TEXT')
+        conn.commit()
     conn.execute('DROP INDEX IF EXISTS idx_gcal_event_uid_start')
     conn.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_gcal_event_source_uid_start
         ON gcal_event (source_id, uid, start)''')
@@ -3409,7 +3419,7 @@ def get_gcal_events():
                   COALESCE(m.new_end, e.end)     AS end,
                   e.start AS orig_start,
                   CASE WHEN m.uid IS NULL THEN 0 ELSE 1 END AS moved,
-                  e.allday, c.color
+                  e.allday, c.color, e.location, e.description
            FROM gcal_event e
            JOIN calendar_source c ON e.source_id = c.id
            LEFT JOIN gcal_move m ON m.uid = e.uid AND m.start = e.start
@@ -3530,8 +3540,11 @@ def replace_source_events(source_id, occurrences, fetched_at):
         conn.execute('DELETE FROM gcal_event WHERE source_id = ? AND start >= ?',
                      (source_id, today))
         conn.executemany(
-            'INSERT INTO gcal_event (uid, summary, start, end, allday, source_id) VALUES (?,?,?,?,?,?)',
-            [(o['uid'], o['summary'], o['start'], o['end'], o['allday'], source_id) for o in occurrences]
+            '''INSERT INTO gcal_event (uid, summary, start, end, allday, source_id,
+                                       location, description)
+               VALUES (?,?,?,?,?,?,?,?)''',
+            [(o['uid'], o['summary'], o['start'], o['end'], o['allday'], source_id,
+              o.get('location'), o.get('description')) for o in occurrences]
         )
         conn.execute('UPDATE calendar_source SET last_fetched_at = ? WHERE id = ?', (fetched_at, source_id))
         conn.execute('COMMIT')

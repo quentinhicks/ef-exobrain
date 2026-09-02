@@ -60,6 +60,42 @@ def _download(url):
         return response.read().decode('utf-8')
 
 
+# A property may carry PARAMETERS before its value — DESCRIPTION;ALTREP="…":
+# is the common one, and Google sends LANGUAGE= on some calendars. The value is
+# everything after the first colon that is not inside a quoted parameter, so a
+# blind split(':', 1) would cut an ALTREP URL in half.
+def _prop_value(line):
+    quoted = False
+    for i, ch in enumerate(line):
+        if ch == '"':
+            quoted = not quoted
+        elif ch == ':' and not quoted:
+            return line[i + 1:]
+    return ''
+
+
+# RFC 5545 escaping, and the reason DESCRIPTION cannot be sliced like SUMMARY
+# is: a Google description is a paragraph, so its line breaks arrive as the two
+# characters backslash-n, and every comma and semicolon in it arrives
+# backslashed. The pair is read left to right, so an escaped backslash sitting
+# in front of an n is not then mistaken for a line break.
+_ICAL_ESCAPES = {'n': '\n', 'N': '\n', '\\': '\\', ',': ',', ';': ';'}
+
+
+def _ical_text(val):
+    out, i = [], 0
+    while i < len(val):
+        ch = val[i]
+        if ch == '\\' and i + 1 < len(val):
+            nxt = val[i + 1]
+            out.append(_ICAL_ESCAPES.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out).strip() or None
+
+
 def _parse_events(unfolded):
     events = []
     in_event = False
@@ -81,6 +117,8 @@ def _parse_events(unfolded):
                     'rrule': current.get('rrule'),
                     'allday': current.get('allday', False),
                     'recurrence_id': current.get('recurrence_id'),
+                    'location': current.get('location'),
+                    'description': current.get('description'),
                 })
         elif in_event:
             if line.startswith('DTSTART'):
@@ -98,6 +136,10 @@ def _parse_events(unfolded):
                 current['recurrence_id'] = _parse_dt(val, tzid.group(1) if tzid else None)
             elif line.startswith('SUMMARY:'):
                 current['summary'] = line[8:]
+            elif line.startswith('LOCATION'):
+                current['location'] = _ical_text(_prop_value(line))
+            elif line.startswith('DESCRIPTION'):
+                current['description'] = _ical_text(_prop_value(line))
             elif line.startswith('UID:'):
                 current['uid'] = line[4:]
             elif line.startswith('RRULE:'):

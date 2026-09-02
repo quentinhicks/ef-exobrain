@@ -1295,17 +1295,24 @@ def _build_occurrences(events):
         dtend = ev['dtend']
         rrule = ev['rrule']
         allday = 1 if ev.get('allday') else 0
+        # The location and the description belong to the EVENT, so every
+        # expanded occurrence carries the master's — and a modified instance
+        # (RECURRENCE-ID) brings its own, since it supersedes that occurrence
+        # here anyway. One dict shape, so replace_source_events reads the same
+        # keys whichever branch built the row.
+        extra = {'location': ev.get('location'), 'description': ev.get('description')}
         if rrule:
             duration = dtend - dtstart
             for s, e in aggregator.expand_rrule(rrule, dtstart, duration):
                 if (uid, s) in superseded:
                     continue
-                by_key.setdefault((uid, s), {'uid': uid, 'summary': summary, 'start': s, 'end': e, 'allday': allday})
+                by_key.setdefault((uid, s), dict(extra, uid=uid, summary=summary,
+                                                 start=s, end=e, allday=allday))
         else:
             start = aggregator._fmt(dtstart)
-            by_key[(uid, start)] = {'uid': uid, 'summary': summary,
-                                    'start': start, 'end': aggregator._fmt(dtend),
-                                    'allday': allday}
+            by_key[(uid, start)] = dict(extra, uid=uid, summary=summary,
+                                        start=start, end=aggregator._fmt(dtend),
+                                        allday=allday)
     return list(by_key.values())
 
 

@@ -930,8 +930,9 @@ function renderGcalLayer(bodyH = 600) {
     };
     el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
     onLongPress(el, hide);   // the touch right-click
-    // Same plain-tap meaning as the event row on Engage: open its occasion.
-    el.addEventListener('click', () => openOccasionSheet(el.dataset.evLabel || ''));
+    // Same plain-tap meaning as the event row on Engage: open its read-out —
+    // where it is and what the invite said. The occasion is in its foot.
+    el.addEventListener('click', () => openEventPop(el.dataset.evKey, el));
   });
 
   initEventDrag(layer);
@@ -6078,6 +6079,8 @@ function initHub() {
   // covers the screen, so the day stays visible behind what is describing it.
   document.getElementById('gate-pop-backdrop')
     .addEventListener('click', closeGatePop);
+  document.getElementById('event-pop-backdrop')
+    .addEventListener('click', closeEventPop);
   hub.addEventListener('click', e => { if (e.target === hub) hub.classList.add('hidden'); });
   document.querySelectorAll('.m-close').forEach(btn => {
     btn.addEventListener('click', () => closeM(btn.dataset.close));
@@ -6098,6 +6101,9 @@ function initHub() {
     // The gate read-out is the next layer in (a popup beside its pill, over
     // the calendar), so it peels before anything under it.
     if (gatePop.nodeId != null) { closeGatePop(); return; }
+    // The event read-out shares the gate read-out's layer, so it peels on the
+    // same rung — before the occasion sheet it can open, which sits above.
+    if (eventPop.key != null) { closeEventPop(); return; }
     // A menu is always the innermost thing on screen and closing it is free,
     // so it peels before anything else Esc could reach.
     if (objMenu.open) { closeObjectMenu(); return; }
@@ -10527,6 +10533,86 @@ function closeGatePop() {
   gatePop.date = null;
   document.getElementById('gate-pop').classList.add('hidden');
   document.getElementById('gate-pop-backdrop').classList.add('hidden');
+}
+
+// ── The EVENT read-out (2026-09-02, Quentin asked for it) ────
+//
+// What the calendar knows about the one event you tapped: where it is and what
+// the invite said. The gate read-out's twin, deliberately — same box, same
+// layer, same backdrop, and read-only in the same way. Nothing here writes.
+//
+// It TOOK the plain tap, which used to open the event's occasion. That is not a
+// loss: an occasion is about the KIND of event (it matches by title, across
+// every booking of it), and location and notes are about THIS ONE, so the
+// specific thing is what a tap on the specific row should answer with. The
+// occasion is one tap further, in the foot.
+//
+// Hiding is untouched: long-press, right-click and Cmd-click still drop the
+// event from the day.
+const eventPop = { key: null };
+
+function epLinkify(text) {
+  // Escaped FIRST, then linked: escaping cannot manufacture something that
+  // looks like a URL, so the pattern only ever sees the real text.
+  return escHtml(text).replace(/https?:\/\/[^\s<]+/g, u =>
+    `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+}
+
+function eventPopFind(key) {
+  return (state.gcalEvents || []).find(e => eventKey(e) === key) || null;
+}
+
+function openEventPop(key, anchorEl) {
+  const e = eventPopFind(key);
+  if (!e) return;
+  eventPop.key = key;
+  const el = document.getElementById('event-pop');
+  const back = document.getElementById('event-pop-backdrop');
+  const when = e.allday
+    ? 'All day'
+    : `${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`;
+  const day = formatTodoDate(new Date(e.start));
+  const bits = [];
+  if (e.location) {
+    bits.push(`<div class="ep-loc"><span class="ep-loc-mark">⌖</span>`
+      + `<span>${epLinkify(e.location)}</span></div>`);
+  }
+  if (e.description) bits.push(`<div class="ep-desc">${epLinkify(e.description)}</div>`);
+  // Saying nothing is an ANSWER here. A past event predates the columns and a
+  // refresh only rewrites from today forward, so "no location" and "we never
+  // read one" are different facts and the second one is the honest wording.
+  if (!bits.length) {
+    bits.push(`<div class="ep-none">${
+      (e.start || '') < wallDay()
+        ? 'Nothing was stored for this event — the feed only fills in today forward.'
+        : 'No location or notes on this event.'}</div>`);
+  }
+  el.innerHTML = `
+    <div class="gp-head">
+      <span class="gp-title">${escHtml(e.summary || 'Event')}</span>
+      <button class="gp-close" id="ep-close">✕</button>
+    </div>
+    <div class="ep-when">${escHtml(day)} · ${escHtml(when)}${
+      e.moved ? ' · moved here' : ''}</div>
+    ${bits.join('')}
+    <div class="ep-foot">
+      <button class="cl-pill" id="ep-occasion">Open occasion ›</button>
+    </div>`;
+  el.classList.remove('hidden');
+  back.classList.remove('hidden');
+  placeGatePop(el, anchorEl);
+  el.querySelector('#ep-close').addEventListener('click', closeEventPop);
+  el.querySelector('#ep-occasion').addEventListener('click', () => {
+    const summary = e.summary || '';
+    closeEventPop();
+    openOccasionSheet(summary);
+  });
+}
+
+function closeEventPop() {
+  eventPop.key = null;
+  document.getElementById('event-pop').classList.add('hidden');
+  document.getElementById('event-pop-backdrop').classList.add('hidden');
 }
 
 function gpRow(k, v, cls) {
@@ -15147,10 +15233,12 @@ function renderEngage() {
       el.querySelector('.eg-text')?.textContent);
     el.addEventListener('click', e => {
       if (e.metaKey || e.ctrlKey) { hide(); return; }
-      // A plain tap opens the event's OCCASION — the actions this kind of event
-      // always brings with it. ⌘-click and the long press still hide, and
+      // A plain tap opens the event's READ-OUT — what the calendar knows about
+      // this one booking. The occasion (the actions this KIND of event brings)
+      // is a button in its foot, since that is a fact about the title rather
+      // than about today's instance. ⌘-click and the long press still hide, and
       // onLongPress swallows the click a fired hold would otherwise send here.
-      openOccasionSheet(el.querySelector('.eg-text')?.textContent || '');
+      openEventPop(el.dataset.ekey, el);
     });
     onLongPress(el, hide);
   });
