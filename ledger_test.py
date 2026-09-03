@@ -73,6 +73,17 @@ LEDGERS = {
         None,
         'storage.qr_delete_node',
         ''),
+    'sheets_item_seed': (
+        'storage.seed_sheets_items',
+        'storage.seed_sheets_items',
+        'storage.clear_sheets_seeds',
+        'the retract loop at the end of the seeding pass: a key the tab no '
+        'longer offers as outstanding - ticked in the sheet, G||B&&!BLACK gone '
+        'false, or the row deleted - has its seeded ITEM deleted and its '
+        'ledger row dropped with it, so the row coming back in the sheet seeds '
+        'afresh instead of being remembered as already handled. The cascade is '
+        'per TAB, because the row numbers this table stores are addresses into '
+        'one tab and mean nothing once the app is pointed at another.'),
 }
 
 RECONCILE_WAIVED = {

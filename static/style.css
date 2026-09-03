@@ -2524,61 +2524,12 @@ body.calendar-minimized #review-modal {
 
 /* ── Sheets Inbox (Due items) ─────────────────────────────── */
 
-#sheets-inbox-section {
-  border-top: 1px solid var(--border);
-  padding: 10px 16px 6px;
-}
 
-.si-header {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-bottom: 6px;
-}
 
-.si-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
 
-.si-item {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 12px;
-  padding: 2px 0;
-  border-bottom: 1px solid var(--border);
-}
 
-.si-item:last-child {
-  border-bottom: none;
-}
 
-.si-course {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-  white-space: nowrap;
-}
 
-.si-title {
-  flex: 1;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.si-date {
-  font-size: 11px;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-  white-space: nowrap;
-}
 
 /* ==================== Review Tab & Nav ==================== */
 
@@ -5686,7 +5637,6 @@ button.eg-domain { cursor: pointer; }
 }
 
 #cal-strips { flex: none; }
-#cal-strips #sheets-inbox-section { padding: 0 10px; }
 
 /* GTD overlay: weekly-review fold-out at the top */
 #gtd-review-head {

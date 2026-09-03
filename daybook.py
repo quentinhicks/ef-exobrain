@@ -75,7 +75,14 @@ OVERRIDES = {
 # Excluded on purpose: caches, derived tables and retired ones. Nothing here is
 # a fact about a day, and a rebuilt cache would make two runs of the same day
 # disagree. Named in the file's footer, so the exclusion is visible.
-SKIP = {'gcal_recurring_seen', 'sheets_inbox_item', 'todo_sync', 'qr_todo_push',
+SKIP = {'gcal_recurring_seen', 'todo_sync', 'qr_todo_push',
+        # sheets_item_seed is an ADDRESS BOOK, not a fact about a day: which
+        # row of which tab each seeded item came from, rewritten every refresh
+        # as rows move. What it produced is an inbox_item, which the day file
+        # already carries both ways (dated by capture, and listed whole as
+        # state) - printing the addresses beside them would say the same thing
+        # in row numbers.
+        'sheets_item_seed',
         'timeline_dismissal', 'review_annotation', 'time_preset',
         # row_revision is not a fact about a day — it is what a SETTING used to
         # say, so that the days it covers can be resolved correctly. Its rows

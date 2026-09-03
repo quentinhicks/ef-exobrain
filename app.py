@@ -28,7 +28,8 @@ import aggregator
 import ntag
 import qr_judge
 import daybook
-from aggregator import fetch_gcal, fetch_sheets
+from aggregator import (fetch_gcal, fetch_sheets, fetch_sheets_tab,
+                        sheets_set_done)
 
 # THE DATA DIR. Everything the user owns — config.json, tracker.db, backups/,
 # logs/ — is cwd-relative (storage.py's DB_PATH / LOGS_DIR / BACKUPS_DIR), so
@@ -555,6 +556,25 @@ def post_inbox():
 
 @app.route('/api/inbox/<int:id>', methods=['DELETE'])
 def delete_inbox(id):
+    # A row the SHEET owns is ticked there first, and only deleted here if that
+    # succeeded. The order is the whole design: delete-then-write would lose
+    # the item on a failed write with nothing left pointing at the sheet row,
+    # and the app would quietly disagree with the source of truth forever.
+    # A failed write is therefore a VISIBLE refusal — the app's own rule that a
+    # write with no network fails loudly rather than pretending.
+    seed = storage.sheets_seed_for_item(id)
+    if seed and seed.get('row_number') and seed.get('done_col') is not None:
+        sheet_id, tab, creds, _area = _sheets_feed_conf()
+        missing = _sheets_missing(sheet_id, tab, creds)
+        if missing:
+            return jsonify({'error': missing}), 400
+        try:
+            sheets_set_done(creds, sheet_id, seed['tab'] or tab,
+                            seed['row_number'], seed['done_col'],
+                            seed['title_col'], seed['title'], True)
+        except Exception as exc:
+            return jsonify({'error': f'could not tick the sheet: {exc}'}), 502
+        storage.mark_sheets_written_back(id, True)
     storage.delete_inbox_item(id)
     _touch_and_sync_inbox()
     return '', 204
@@ -626,6 +646,25 @@ def post_inbox_restore():
     item = storage.restore_inbox_item(request.get_json())
     if not item:
         return jsonify({'error': 'bad snapshot'}), 400
+    # Undo owes the INVERSE, and for a sheet-owned row the forward act had two
+    # halves: the item went, and the sheet's box was ticked. Putting the item
+    # back without unticking would leave the app and the sheet disagreeing,
+    # and the next refresh would retract the restored item again — an undo the
+    # app undoes by itself sixty seconds later. restore re-inserts the ORIGINAL
+    # id, which is why the ledger row still finds it.
+    seed = storage.sheets_seed_for_item(item['id'])
+    if seed and seed.get('written_back') and seed.get('done_col') is not None:
+        sheet_id, tab, creds, _area = _sheets_feed_conf()
+        if not _sheets_missing(sheet_id, tab, creds):
+            try:
+                sheets_set_done(creds, sheet_id, seed['tab'] or tab,
+                                seed['row_number'], seed['done_col'],
+                                seed['title_col'], seed['title'], False)
+                storage.mark_sheets_written_back(item['id'], False)
+            except Exception as exc:
+                # The item IS back either way; say the half that failed rather
+                # than failing the restore the user already saw succeed.
+                print('sheet untick failed:', exc)
     _touch_and_sync_inbox()
     return jsonify(item), 201
 
@@ -1491,19 +1530,55 @@ def get_sheets():
     return jsonify(storage.get_deadlines())
 
 
-@app.route('/api/sheets/inbox')
-def get_sheets_inbox():
-    return jsonify(storage.get_sheets_inbox_items())
+# The academic feed (2026-09-03). Rows the sheet marks outstanding become real
+# pool items in their own area, and ticking one off in the app ticks the DONE
+# checkbox in the sheet.
+#
+# Config-gated on THREE keys because it needs all three to mean anything:
+# the file id, the tab, and the service-account JSON (shared with the sheet as
+# an EDITOR — read access cannot tick). Without them the route says what is
+# missing rather than failing somewhere further in.
+def _sheets_feed_conf():
+    return (config.get('sheets_id', ''), config.get('sheets_tab', ''),
+            config.get('gcal_credentials_path', 'credentials.json'),
+            config.get('sheets_area', ''))
+
+
+def _sheets_missing(sheet_id, tab, creds):
+    if not sheet_id or not tab:
+        return ('Sheet feed not configured: set sheets_id and sheets_tab in '
+                'Settings -> Connections')
+    if not os.path.exists(creds):
+        return (f'Sheet feed needs the service-account JSON at {creds}, and '
+                f'the sheet shared with that address as an Editor')
+    return None
 
 
 @app.route('/api/sheets/refresh', methods=['POST'])
 def refresh_sheets():
+    # The published-CSV feed still fills the deadline list; it needs no auth
+    # and nothing about it changed.
     url = config.get('sheets_url', '')
     if url:
-        rows = fetch_sheets(url)
-        storage.upsert_deadlines(rows)
-        storage.upsert_sheets_inbox_items(rows)
-    return jsonify(storage.get_sheets_inbox_items())
+        try:
+            storage.upsert_deadlines(fetch_sheets(url))
+        except Exception as exc:
+            print('sheets csv refresh failed:', exc)
+
+    sheet_id, tab, creds, area = _sheets_feed_conf()
+    missing = _sheets_missing(sheet_id, tab, creds)
+    if missing:
+        return jsonify({'error': missing, 'seeded': 0, 'retracted': 0}), 400
+    try:
+        feed = fetch_sheets_tab(creds, sheet_id, tab)
+    except Exception as exc:
+        return jsonify({'error': f'{type(exc).__name__}: {exc}'}), 502
+    storage.upsert_deadlines(feed['rows'])
+    result = storage.seed_sheets_items(feed, area)
+    _touch_and_sync_inbox()
+    if result.get('area_id') is None:
+        return jsonify(dict(result, error='no active area to file under')), 400
+    return jsonify(result)
 
 
 @app.route('/api/sheets/<int:row_index>/done', methods=['PATCH'])
@@ -1950,7 +2025,15 @@ CONFIG_KEYS = [
     {'key': 'app_url', 'label': 'App URL',
      'hint': 'the stable link to this app, shown in Settings -> About'},
     {'key': 'sheets_url', 'label': 'Sheets URL',
-     'hint': 'the spreadsheet the aggregator reads'},
+     'hint': 'published-CSV feed, read only (the deadline list)'},
+    {'key': 'sheets_id', 'label': 'Sheets file id',
+     'hint': 'the id out of the spreadsheet URL — needed to TICK rows back, '
+             'which a published CSV cannot do'},
+    {'key': 'sheets_tab', 'label': 'Sheets tab',
+     'hint': 'which tab the pool seeds from, e.g. TL26B'},
+    {'key': 'sheets_area', 'label': 'Sheets area',
+     'hint': 'the area seeded rows file under (its domain follows); blank = '
+             'the default area'},
     {'key': 'gcal_credentials_path', 'label': 'Google credentials',
      'hint': 'path to the service-account JSON'},
     {'key': 'gcal_write_calendar_id', 'label': 'Calendar to write to',
@@ -2016,6 +2099,15 @@ def patch_config():
     if cleared:
         values.update({k: '' for k in cleared})
     if values:
+        # CASCADE (ledger_test): sheets_item_seed rows are ADDRESSES into one
+        # tab. Point the app at a different tab and every remembered row number
+        # refers to a sheet nothing reads any more, so they are dropped before
+        # the new tab can seed over them. The seeded ITEMS stand — they are
+        # real outstanding work, and a config edit is not a reason to delete
+        # somebody's actions.
+        old_tab = (config.get('sheets_tab') or '').strip()
+        if 'sheets_tab' in values and values['sheets_tab'].strip() != old_tab:
+            storage.clear_sheets_seeds(old_tab)
         _update_config(values)
     return get_config()
 

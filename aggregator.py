@@ -242,6 +242,168 @@ def fetch_sheets(url):
     return rows
 
 
+# --- Sheets over the API: the same feed, but ADDRESSABLE -----------------
+#
+# fetch_sheets above reads a PUBLISHED CSV. That is fine for a read, and it is
+# why that path needs no auth — but a CSV export carries no row numbers, and
+# without a row number there is nothing to tick. The app's key is
+# course:title:due, which says WHICH row and not WHERE it lives.
+#
+# Same shape as the calendar half above: service account, lazy import,
+# config-gated so the app still runs where google-auth is not installed. It
+# needs the spreadsheets scope rather than the read-only one because ticking is
+# the entire point, and the sheet must be SHARED with the service-account
+# address as an Editor — holding the credentials is not access to a document
+# somebody else owns.
+#
+# Columns are found BY HEADER NAME, never by position. The tabs in this
+# spreadsheet do not agree on column order (T,C,DO on one, C,T,DO on another),
+# so a positional read would file the type as the course on half of them and
+# look right on the other half. Header text is normalised (upper, whitespace
+# stripped) because `G||B&&!BLACK` is a formula header a person retypes.
+SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets'
+
+# Normalised header -> the field it fills.
+SHEETS_COLUMNS = {
+    'TITLE': 'title',
+    'DUE': 'due_date',
+    'TIME': 'due_time',
+    'DONE': 'done',
+    'C': 'course',
+    'G||B&&!BLACK': 'due_yes',
+}
+
+
+def _sheets_session(creds_path):
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import AuthorizedSession
+    creds = service_account.Credentials.from_service_account_file(
+        creds_path, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+    return AuthorizedSession(creds)
+
+
+def _norm_header(val):
+    return re.sub(r'\s+', '', str(val or '')).upper()
+
+
+def col_letter(index):
+    # 0 -> A. Spreadsheet columns are base-26 with no zero digit, so the naive
+    # divmod loop is off by one at every boundary (Z, AZ, ZZ) without the -1.
+    letters = ''
+    n = int(index) + 1
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(ord('A') + rem) + letters
+    return letters
+
+
+def sheets_header_map(header_row):
+    """Header text -> column INDEX, for the columns this app reads."""
+    out = {}
+    for idx, cell in enumerate(header_row):
+        field = SHEETS_COLUMNS.get(_norm_header(cell))
+        if field and field not in out:
+            out[field] = idx
+    return out
+
+
+def fetch_sheets_tab(creds_path, sheet_id, tab):
+    """Every row of one tab, header-mapped, carrying its 1-based row number.
+
+    The row number is the whole reason this exists: it is the address the tick
+    writes to. It is re-read on every refresh rather than remembered, because
+    inserting a row in the sheet moves every row below it and a remembered
+    number would then address a neighbour.
+
+    The header is SEARCHED for rather than assumed to be row 1 — these tabs
+    carry spacer rows above the header, and hardcoding row 1 would read the
+    spacer as column names and map nothing.
+    """
+    sess = _sheets_session(creds_path)
+    resp = sess.get(
+        f'{SHEETS_API}/{urllib.parse.quote(sheet_id)}/values/'
+        f'{urllib.parse.quote(tab)}',
+        params={'valueRenderOption': 'UNFORMATTED_VALUE',
+                'dateTimeRenderOption': 'FORMATTED_STRING'},
+        timeout=20)
+    resp.raise_for_status()
+    values = resp.json().get('values') or []
+
+    header_at, cols = None, {}
+    for n, row in enumerate(values):
+        found = sheets_header_map(row)
+        if 'title' in found and 'done' in found:
+            header_at, cols = n, found
+            break
+    if header_at is None:
+        raise ValueError(f'no TITLE/DONE header row found in tab {tab!r}')
+
+    def cell(row, field):
+        idx = cols.get(field)
+        return row[idx] if idx is not None and idx < len(row) else ''
+
+    rows = []
+    for n, row in enumerate(values[header_at + 1:], start=header_at + 2):
+        title = str(cell(row, 'title')).strip()
+        if not title:
+            continue
+        rows.append({
+            'row_number': n,
+            'title': title,
+            'name': title,
+            'due_date': str(cell(row, 'due_date')).strip(),
+            'due_time': str(cell(row, 'due_time')).strip() or None,
+            'course': str(cell(row, 'course')).strip(),
+            'done': _parse_bool(cell(row, 'done')),
+            'due_yes': _parse_bool(cell(row, 'due_yes')),
+        })
+    return {'rows': rows, 'done_col': cols.get('done'),
+            'title_col': cols.get('title'), 'tab': tab}
+
+
+def sheets_read_cell(creds_path, sheet_id, tab, row_number, col_index):
+    sess = _sheets_session(creds_path)
+    ref = f'{tab}!{col_letter(col_index)}{int(row_number)}'
+    resp = sess.get(
+        f'{SHEETS_API}/{urllib.parse.quote(sheet_id)}/values/'
+        f'{urllib.parse.quote(ref)}',
+        params={'valueRenderOption': 'UNFORMATTED_VALUE'}, timeout=15)
+    resp.raise_for_status()
+    values = resp.json().get('values') or []
+    return values[0][0] if values and values[0] else ''
+
+
+def sheets_set_done(creds_path, sheet_id, tab, row_number, done_col,
+                    title_col, expect_title, value=True):
+    """Tick (or untick) one DONE checkbox, after proving it is the right row.
+
+    The guard is not optional. The row number was read at the last refresh; if
+    a row has been inserted or deleted in the sheet since, that number now
+    addresses a NEIGHBOUR, and ticking the wrong row off is a silent wrong
+    answer rather than a visible failure. So the title cell is read back first
+    and the write is refused when the two disagree.
+
+    USER_ENTERED, not RAW: a checkbox cell wants a real boolean, and RAW puts
+    the STRING "TRUE" in it, which renders as a ticked box without being one.
+    """
+    if title_col is not None and expect_title:
+        actual = str(sheets_read_cell(creds_path, sheet_id, tab, row_number,
+                                      title_col)).strip()
+        if actual != str(expect_title).strip():
+            raise ValueError(
+                f'row {row_number} of {tab} says {actual!r}, expected '
+                f'{expect_title!r} - the sheet moved, refusing to write')
+    sess = _sheets_session(creds_path)
+    ref = f'{tab}!{col_letter(done_col)}{int(row_number)}'
+    resp = sess.put(
+        f'{SHEETS_API}/{urllib.parse.quote(sheet_id)}/values/'
+        f'{urllib.parse.quote(ref)}',
+        params={'valueInputOption': 'USER_ENTERED'},
+        json={'values': [[bool(value)]]}, timeout=15)
+    resp.raise_for_status()
+    return True
+
+
 # --- Geocoding: an address instead of typed coordinates ------
 #
 # Nominatim (OpenStreetMap): no API key, no billing, no account — which is why

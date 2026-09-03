@@ -144,7 +144,6 @@ const state = {
   viewSegments: { date: null, segments: [] },
   inbox: [],
   projects: [],
-  sheetsInbox: [],
   activeBlock: null,
   // activeAreaId is the block calendar's current area; activeDomainId is that
   // area's domain, and the domain is what section 2 lists.
@@ -205,14 +204,13 @@ const state = {
 // that is already on screen; on first load the initialiser makes that [].
 async function loadAll() {
   const dateStr = viewDay();
-  const [blocks, projects, domains, gcal, overrides, inbox, sheetsInbox, reviewStatus, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments] = await Promise.all([
+  const [blocks, projects, domains, gcal, overrides, inbox, reviewStatus, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments] = await Promise.all([
     apiGet('/api/blocks', state.blocks),
     apiGet('/api/areas', state.areas),
     apiGet('/api/domains', state.domains),
     apiGet('/api/gcal', state.gcalEvents),
     apiGet(`/api/overrides?date=${dateStr}`, state.overrides),
     apiGet('/api/inbox', state.inbox),
-    apiGet('/api/sheets/inbox', state.sheetsInbox),
     apiGet('/api/gtd-review', ({})),
     apiGet('/api/accountability/nodes', []),
     apiGet('/api/calendars', []),
@@ -241,7 +239,6 @@ async function loadAll() {
   state.gcalEvents = gcal;
   state.overrides = overrides;
   state.inbox = inbox;
-  state.sheetsInbox = sheetsInbox;
   // The nav dot means "this week's review isn't filed yet".
   state.review = { due: !reviewStatus.completed_at };
   state.accountabilityNodes = Array.isArray(accountabilityNodes) ? accountabilityNodes : [];
@@ -291,7 +288,6 @@ async function loadAll() {
 
 function renderAll() {
   renderTimeline();
-  renderSheetsInbox();
   renderInbox();
 }
 
@@ -1432,7 +1428,14 @@ async function refreshExternal() {
   ]);
   if (gcalResult.status === 'fulfilled') state.gcalEvents = gcalResult.value;
   else fetchFailed = true;
-  if (sheetsResult.status === 'fulfilled') state.sheetsInbox = sheetsResult.value;
+  // The sheet refresh SEEDS and RETRACTS real pool items now rather than
+  // returning a strip to paint, so there is nothing to read off the response —
+  // refreshEngage() below re-reads /api/inbox/active, which is where seeded
+  // rows live (they are created ACTIVE, so they never touch the clarify
+  // queue). It is deliberately NOT counted into fetchFailed: the feed is
+  // config-gated and an unconfigured one 400s on every tick, which is not the
+  // same statement as being offline and must not raise the stale banner.
+  if (sheetsResult.status === 'rejected') console.warn('sheets refresh:', sheetsResult.reason);
   if (outcomesResult.status === 'fulfilled' && Array.isArray(outcomesResult.value)) {
     state.qrOutcomes = {};
     outcomesResult.value.forEach(o => { state.qrOutcomes[`${o.node_id}:${o.date}`] = o.outcome; });
@@ -1440,7 +1443,6 @@ async function refreshExternal() {
   if (!fetchFailed) localStorage.setItem('lastExternalRefresh', Date.now().toString());
   state.lastFetched = new Date();
   renderTimeline();
-  renderSheetsInbox();
   refreshEngage();
 }
 
@@ -1470,7 +1472,6 @@ function startReviewPass(step) {
   fetchOverridesForDate(state.currentDate).then(() => {
     openM('cal-overlay');
     renderTimeline();
-    renderSheetsInbox();
   });
 }
 
@@ -2579,40 +2580,6 @@ function renderInbox() {
   if (el) el.textContent = clarifyBarLabel();
 }
 
-
-// ── Sheets Inbox ─────────────────────────────────────────────
-
-function renderSheetsInbox() {
-  // The "Due" strip lives at the top of the Calendar overlay now.
-  const panel = document.getElementById('sheets-due-strip');
-  if (!panel) return;
-
-  let section = document.getElementById('sheets-inbox-section');
-  if (!section) {
-    section = document.createElement('div');
-    section.id = 'sheets-inbox-section';
-    panel.appendChild(section);
-  }
-
-  if (!state.sheetsInbox.length) {
-    section.innerHTML = '';
-    return;
-  }
-
-  const rowsHtml = state.sheetsInbox.map(item => {
-    const timeStr = item.due_time ? ` ${item.due_time}` : '';
-    return `<div class="si-item">
-      <span class="si-course">${escHtml(item.course)}</span>
-      <span class="si-title">${escHtml(item.title)}</span>
-      <span class="si-date">${escHtml(item.due_date)}${escHtml(timeStr)}</span>
-    </div>`;
-  }).join('');
-
-  section.innerHTML = `
-    <div class="si-header">Due</div>
-    <div class="si-list">${rowsHtml}</div>
-  `;
-}
 
 // ── Utilities ────────────────────────────────────────────────
 
@@ -6550,7 +6517,7 @@ function initHub() {
     btn.addEventListener('click', async () => {
       hub.classList.add('hidden');
       const dest = btn.dataset.hub;
-      if (dest === 'calendar') { openM('cal-overlay'); renderTimeline(); renderSheetsInbox(); }
+      if (dest === 'calendar') { openM('cal-overlay'); renderTimeline(); }
       else if (dest === 'lists') {
         refView.open = null;
         refView.openFlow = null;
@@ -15429,7 +15396,6 @@ function renderEngage() {
     await fetchOverridesForDate(state.currentDate);
     openM('cal-overlay');
     renderTimeline();
-    renderSheetsInbox();
   });
   const todayBtn = header.querySelector('#eg-today');
   if (todayBtn) todayBtn.addEventListener('click', () => {

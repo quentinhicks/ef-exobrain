@@ -268,14 +268,17 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
-        CREATE TABLE IF NOT EXISTS sheets_inbox_item (
+        CREATE TABLE IF NOT EXISTS sheets_item_seed (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sheets_key TEXT NOT NULL UNIQUE,
-            title TEXT NOT NULL,
-            course TEXT NOT NULL,
-            due_date TEXT NOT NULL,
-            due_time TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            item_id INTEGER,
+            tab TEXT NOT NULL DEFAULT '',
+            row_number INTEGER,
+            done_col INTEGER,
+            title_col INTEGER,
+            title TEXT NOT NULL DEFAULT '',
+            written_back INTEGER NOT NULL DEFAULT 0,
+            seeded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS yearly_review (
@@ -519,6 +522,13 @@ def init_db():
     if not exists:
         conn.execute("INSERT INTO domain (name, is_default) VALUES ('General', 1)")
         conn.commit()
+    # The Calendar overlay's "Due" strip is retired (2026-09-03). It read the
+    # SAME sheet feed the pool now seeds real items from, so it was one feed
+    # rendered in two places, disagreeing the moment either half refreshed -
+    # the shape CLAUDE.md calls a class, not a coincidence. Dropped rather
+    # than left dark: it held no user decision, only a copy of the sheet.
+    conn.execute('DROP TABLE IF EXISTS sheets_inbox_item')
+    conn.commit()
     try:
         conn.execute('SELECT domain_id FROM area LIMIT 1')
     except Exception:
@@ -4255,35 +4265,199 @@ def validate_no_overlap(day_of_week, start_time, end_time, exclude_id=None):
     return row['label'] if row else None
 
 
-def upsert_sheets_inbox_items(rows):
-    qualifying = [r for r in rows if r.get('due_yes') and not r.get('done')]
-    qualifying_keys = [f"{r['course']}:{r['title']}:{r['due_date']}" for r in qualifying]
-    conn = get_conn()
-    if qualifying_keys:
-        placeholders = ','.join('?' * len(qualifying_keys))
-        conn.execute(
-            f'DELETE FROM sheets_inbox_item WHERE sheets_key NOT IN ({placeholders})',
-            qualifying_keys
-        )
-        conn.executemany(
-            '''INSERT OR IGNORE INTO sheets_inbox_item (sheets_key, title, course, due_date, due_time)
-               VALUES (?, ?, ?, ?, ?)''',
-            [(f"{r['course']}:{r['title']}:{r['due_date']}", r['title'], r['course'], r['due_date'], r.get('due_time'))
-             for r in qualifying]
-        )
+def _sheets_key(row):
+    # Content, not position: the row number moves whenever a row is inserted
+    # above it, and a key that moved would re-seed the same reading as a new
+    # item every time the sheet was edited.
+    return f"{row['course']}:{row['title']}:{row['due_date']}"
+
+
+def sheets_area_id(conn, area_name=''):
+    """Which area seeded rows are filed under.
+
+    Named rather than numbered: the id of "Academics" is not knowable from
+    config on a machine whose db was built somewhere else, and a WRONG id is
+    silently the wrong area. An unmatched name falls back to the default area,
+    the same fallback seed_flow_tasks uses, because an item with no area is
+    invisible - the pool JOINs area.
+    """
+    name = (area_name or '').strip()
+    if name:
+        row = conn.execute(
+            'SELECT id FROM area WHERE active = 1 AND lower(name) = lower(?) LIMIT 1',
+            (name,)).fetchone()
+        if row:
+            return row['id']
+    row = conn.execute(
+        """SELECT id FROM area WHERE is_default = 1 AND active = 1
+           AND type = 'standard' LIMIT 1""").fetchone()
+    return row['id'] if row else None
+
+
+def _sheets_deadline(due):
+    # The sheet writes M/D with no year (1/25, 12/6). deadline is display and
+    # sort only - it gates nothing - so a best-effort parse is safe here, and
+    # anything unrecognised is left null rather than guessed into a wrong year.
+    text = (due or '').strip()
+    if not text:
+        return None
+    parts = text.replace('-', '/').split('/')
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return None
+    today = date_cls.today()
+    if len(nums) == 2:
+        month, day = nums
+        year = today.year
+        # A month far behind us is next year's, not a date eleven months past.
+        if month < today.month - 6:
+            year += 1
+    elif len(nums) == 3 and nums[0] > 31:
+        year, month, day = nums
+    elif len(nums) == 3:
+        month, day, year = nums
+        if year < 100:
+            year += 2000
     else:
-        conn.execute('DELETE FROM sheets_inbox_item')
+        return None
+    try:
+        return date_cls(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def delete_inbox_item_conn(conn, id):
+    # delete_inbox_item's body against a caller's connection. The seeding pass
+    # retracts inside its own transaction, and opening a second connection to
+    # the same file mid-write is how a session deadlocks on its own lock.
+    conn.execute("""UPDATE inbox_item
+                    SET project_id = (SELECT project_id FROM inbox_item WHERE id = ?)
+                    WHERE project_id = ?""", (id, id))
+    conn.execute("""UPDATE inbox_item
+                    SET after_id = (SELECT after_id FROM inbox_item WHERE id = ?)
+                    WHERE after_id = ?""", (id, id))
+    conn.execute('DELETE FROM inbox_item WHERE id = ?', (id,))
+    conn.execute('DELETE FROM engage_placement WHERE item_id = ?', (id,))
+
+
+def seed_sheets_items(feed, area_name=''):
+    """Make the sheet's outstanding rows real items, and retract what it drops.
+
+    The SHEET is the source of truth for which rows exist and whether they are
+    done; the app owns everything the sheet has no opinion about (area, tags,
+    notes, placement), which is why those survive a refresh untouched.
+
+    Qualifying is the sheet's own rule, unchanged: due_yes AND NOT done - the
+    `G||B&&!BLACK` column true, the DONE checkbox false.
+
+    Three cases, and the third is the one worth stating:
+      - key is new                 -> seed an item, remember the address
+      - key is known, item alive   -> refresh the ADDRESS only (rows move)
+      - key is known, item GONE    -> leave it alone. The item was finished or
+        trashed by hand; re-seeding it is exactly the loop the ledger exists to
+        break. occasion_mint's rule, for the same reason.
+    """
+    rows = feed.get('rows') or []
+    tab = feed.get('tab') or ''
+    done_col, title_col = feed.get('done_col'), feed.get('title_col')
+    qualifying = [r for r in rows if r.get('due_yes') and not r.get('done')]
+
+    conn = get_conn()
+    area_id = sheets_area_id(conn, area_name)
+    if area_id is None:
+        conn.close()
+        return {'seeded': 0, 'retracted': 0, 'area_id': None}
+
+    known = {r['sheets_key']: dict(r) for r in conn.execute(
+        'SELECT * FROM sheets_item_seed WHERE tab = ?', (tab,)).fetchall()}
+    seen, seeded = set(), 0
+
+    for r in qualifying:
+        key = _sheets_key(r)
+        seen.add(key)
+        if key in known:
+            # Address refresh. The row number is re-read every time precisely
+            # because it is the one field the sheet can change under us.
+            conn.execute(
+                """UPDATE sheets_item_seed
+                   SET row_number = ?, done_col = ?, title_col = ?, title = ?
+                   WHERE sheets_key = ?""",
+                (r['row_number'], done_col, title_col, r['title'], key))
+            continue
+        cur = conn.execute(
+            """INSERT INTO inbox_item (content, status, kind, area_id, deadline)
+               VALUES (?, 'active', 'item', ?, ?)""",
+            (r['title'], area_id, _sheets_deadline(r.get('due_date'))))
+        conn.execute(
+            """INSERT INTO sheets_item_seed
+                 (sheets_key, item_id, tab, row_number, done_col, title_col, title)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (key, cur.lastrowid, tab, r['row_number'], done_col, title_col,
+             r['title']))
+        seeded += 1
+
+    # RECONCILE. A key the sheet no longer offers has been ticked there, has
+    # lost its G||B&&!BLACK, or has been deleted outright - all three mean the
+    # same thing here: the sheet is no longer asking for it. The seeded item
+    # goes with it, and so does the ledger row, so that a row RESTORED in the
+    # sheet seeds afresh instead of being remembered as already done.
+    retracted = 0
+    for key, prior in known.items():
+        if key in seen:
+            continue
+        if prior['item_id'] is not None:
+            delete_inbox_item_conn(conn, prior['item_id'])
+        conn.execute('DELETE FROM sheets_item_seed WHERE sheets_key = ?', (key,))
+        retracted += 1
+
+    conn.commit()
+    conn.close()
+    return {'seeded': seeded, 'retracted': retracted, 'area_id': area_id}
+
+
+def sheets_seed_for_item(item_id):
+    """The sheet address of a seeded item, or None if it did not come from one."""
+    conn = get_conn()
+    row = conn.execute(
+        'SELECT * FROM sheets_item_seed WHERE item_id = ?', (item_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_sheets_seeded_ids():
+    """item_id -> sheets_key, so a surface can say which rows the sheet owns."""
+    conn = get_conn()
+    rows = conn.execute(
+        'SELECT item_id, sheets_key FROM sheets_item_seed WHERE item_id IS NOT NULL'
+    ).fetchall()
+    conn.close()
+    return {r['item_id']: r['sheets_key'] for r in rows}
+
+
+def mark_sheets_written_back(item_id, written):
+    conn = get_conn()
+    conn.execute('UPDATE sheets_item_seed SET written_back = ? WHERE item_id = ?',
+                 (1 if written else 0, item_id))
     conn.commit()
     conn.close()
 
 
-def get_sheets_inbox_items():
+def clear_sheets_seeds(tab):
+    """CASCADE: the tab stopped being this app's feed, so its memos are void.
+
+    Pointing the app at a different tab (or clearing the feed) leaves rows
+    addressing a sheet nothing reads any more - a stale row_number in a table
+    whose whole job is to be an accurate address. The seeded ITEMS are left
+    standing: they are real work that was really outstanding, and deleting
+    somebody's actions because a config field changed is not a cascade, it is
+    data loss.
+    """
     conn = get_conn()
-    rows = conn.execute(
-        'SELECT * FROM sheets_inbox_item ORDER BY due_date, due_time'
-    ).fetchall()
+    cur = conn.execute('DELETE FROM sheets_item_seed WHERE tab = ?', (tab,))
+    conn.commit()
     conn.close()
-    return [dict(r) for r in rows]
+    return cur.rowcount
 
 
 # --- Experiments ---
