@@ -5490,26 +5490,82 @@ button.eg-domain { cursor: pointer; }
 }
 .fr-title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .fr-meta { font: 11px var(--font-mono); color: var(--text-secondary); }
+/* ONE SCROLL, NOT A DECK OF PAGES (2026-09-02). The page used to hold exactly
+   one step and a foot of verbs; it holds every step of the run now, a plain one
+   as a checkbox row and a step that ASKS something as a card. The bottom
+   padding clears the global bar so the last row is reachable with a thumb. */
 .fr-page {
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 26px 18px;
+  gap: 10px;
+  padding: 14px 14px calc(26px + env(safe-area-inset-bottom));
 }
-.fr-step-big { font-size: 22px; font-weight: 600; color: var(--text-primary); }
-.fr-note { font: 12px var(--font-ui); color: var(--text-secondary); }
-.fr-note-hard { color: var(--danger); }
-.fr-foot {
+.fr-step { flex-shrink: 0; }
+/* A ROW is a finger-sized target end to end: the tick, the sentence, and the
+   step's own verbs if it has any. 44px is the floor, not the height - a long
+   step wraps and the row grows with it. */
+.fr-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 44px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.fr-row-main { flex: 1; min-width: 0; padding-top: 2px; }
+.fr-row-text { font-size: 15px; color: var(--text-primary); overflow-wrap: anywhere; }
+.fr-row-verbs { display: flex; gap: 6px; flex-shrink: 0; }
+.eg-check.fr-tick {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  /* The outline of a CONTROL owes 3:1, which --border does not carry
+     (2026-08-17) - so it takes --text-secondary, like every other one. */
+  border: 1px solid var(--text-secondary);
+}
+/* .eg-check:hover paints --tint, which is two classes deep and therefore beat a
+   bare .fr-tick-on: the ticked box came back accent-BORDERED but transparent,
+   with a dark ✓ on it that could not be seen. The on-state has to be at least
+   as specific as the hover it is overriding. */
+.eg-check.fr-tick-on,
+.eg-check.fr-tick-on:hover {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+/* A CARD is the old page, in place. */
+.fr-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.fr-card > * { flex-shrink: 0; }
+.fr-card-foot {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--border);
+  padding-top: 2px;
 }
-.fr-foot #fr-back { color: var(--text-secondary); }
-.fr-foot #fr-done { margin-left: auto; }
+.fr-card-foot .fr-done { margin-left: auto; }
+/* Done is DIM, not gone: the run is a list of what today asked, and a finished
+   step disappearing would make the list shorter every time you looked at it. */
+.fr-step-done { opacity: 0.5; }
+.fr-step-done .fr-row-text { text-decoration: line-through; }
+.fr-step-big { font-size: 17px; font-weight: 600; color: var(--text-primary); }
+.fr-note { font: 12px var(--font-ui); color: var(--text-secondary); }
+.fr-note-hard { color: var(--danger); }
 .fr-rating { display: flex; gap: 6px; }
 .fr-rate {
   width: 34px;
@@ -5524,10 +5580,11 @@ button.eg-domain { cursor: pointer; }
    phone that squeezed the nightly journal — the two textareas collapsed to a
    sliver and the experiment block below them was clipped — because the page is
    taller than the viewport and flex paid for it out of the children. Nothing
-   here may be compressed: the page SCROLLS instead (2026-08-15). */
+   here may be compressed: the page SCROLLS instead (2026-08-15). Still true of
+   the cards, which are flex columns of their own (.fr-card > *). */
 .fr-page > * { flex-shrink: 0; }
 /* .cl-notes is written for a sheet, which supplies its own 14px gutter; inside
-   the runner the page already has one, so it spans the width it is given. */
+   the runner the card already has one, so it spans the width it is given. */
 .fr-page .cl-notes { width: 100%; margin: 0; min-height: 68px; }
 .fr-exp { display: flex; flex-direction: column; gap: 8px; }
 .fr-exp-head { font-size: 13px; font-weight: 600; color: var(--text-primary); }

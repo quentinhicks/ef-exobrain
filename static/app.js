@@ -8219,18 +8219,41 @@ function renderEntrySheet() {
 // first, the way wireNotesAutosave flushes before anything can take the screen.
 // Crediting the step is a different statement (`#fr-done` makes it, and only
 // after the habit marks it demands), which is why this is not it.
-async function saveJournalDraft(el) {
-  const bottleneck = el.querySelector('#fr-jn-bottleneck');
-  if (!bottleneck) return;                       // not the journal page
+// WHAT IS IN THE BOXES RIGHT NOW, read out of the DOM. Null when this is not
+// the journal. Split from the save below because the two callers want
+// different halves: one writes it to the server, the other only needs it
+// mirrored into view state before a repaint.
+function frJournalEntry(el) {
+  const bottleneck = el && el.querySelector('#fr-jn-bottleneck');
+  if (!bottleneck) return null;                  // not the journal step
   // The 1-7 group only — `.fr-rate-on` alone would find a habit's mark once the
   // rating is unanswered, and parseInt('good') is not a rating.
   const rate = el.querySelector('[data-rate].fr-rate-on');
-  const entry = {
+  return {
     bottleneck: bottleneck.value,
     problem: el.querySelector('#fr-jn-problem').value,
     active_experiment: el.querySelector('#fr-jn-exp').value,
     rating: rate ? parseInt(rate.dataset.rate) : null,
   };
+}
+
+
+// HALF-TYPED TEXT IS DATA, and a full repaint of the runner would throw it
+// away. On a scroll the journal's boxes are mounted the whole time the run is
+// open, so anything that rebuilds the list — coming back from the CRM, a
+// review count refreshing — used to be able to wipe a night mid-sentence.
+// Synchronous and local: it mirrors the boxes into view state so the rebuild
+// paints them back. The SERVER write is still saveJournalDraft's job.
+function frSyncJournalDraft() {
+  const box = document.querySelector('#flow-run #fr-jn-bottleneck');
+  const entry = box && frJournalEntry(box.closest('.fr-step'));
+  if (entry) flowRunView.journal = Object.assign({}, flowRunView.journal || {}, entry);
+}
+
+
+async function saveJournalDraft(el) {
+  const entry = frJournalEntry(el);
+  if (!entry) return;
   // The RUN's day, not the clock's — the night belongs to the night even when it
   // is written after midnight (same rule as creditFlowStep).
   await apiSend(`/api/journal/${runDay()}`, 'PATCH', entry);
@@ -8406,21 +8429,7 @@ const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
                       // in, not a fact about the day, and flow_run.steps is a
                       // map of CREDITS that the judge reads — writing anything
                       // else into it would look like one.
-                      skipped: {}, skipSeq: 0 };
-
-// The skips re-applied to a freshly served list. `day_steps` comes back in the
-// server's order every time it is read, so without this a mid-run reload (a
-// pawn) would put a step you deliberately pushed to the end back in front of
-// you. Ordered by WHEN each was skipped, so two skips keep their relationship;
-// credited steps are left where the server put them, since the skip is about
-// what you still owe.
-function skipOrder(steps) {
-  const seq = flowRunView.skipped || {};
-  const kept = steps.filter(s => !seq[s.id] || flowRunView.steps[s.id]);
-  const pushed = steps.filter(s => seq[s.id] && !flowRunView.steps[s.id]);
-  pushed.sort((a, b) => seq[a.id] - seq[b.id]);
-  return kept.concat(pushed);
-}
+                      };
 
 // MIDNIGHT RESUME. The run-day pin lived only in the memory of the session
 // that opened it, so a night routine half-done at 23:58 and reopened at 00:05
@@ -8448,8 +8457,6 @@ async function openFlowRun(flowId) {
   // are session state, and this is where the session starts. loadFlowRun does
   // NOT clear them, because a reload mid-run (a pawn) is the same sitting.
   flowRunView.checks = {};
-  flowRunView.skipped = {};
-  flowRunView.skipSeq = 0;
   return loadFlowRun(flowId, today);
 }
 
@@ -8479,10 +8486,10 @@ async function loadFlowRun(flowId, today) {
   // Narrowing the flow HERE rather than at each use means resume, progress and
   // above all COMPLETION are about today: a Sunday-only step must not hold a
   // Tuesday's gate open.
-  // The credits first: skipOrder asks which steps are still owed, and the
-  // resume index below asks the same thing.
+  // The credits first: every row below draws from them (ticked or not), and
+  // the head counts them.
   flowRunView.steps = flow.run ? JSON.parse(flow.run.steps || '{}') : {};
-  const steps = skipOrder(flow.day_steps || flow.steps.filter(s => s.due));
+  const steps = flow.day_steps || flow.steps.filter(s => s.due);
   if (!steps.length) {
     toast(flow.steps.length ? 'Nothing in this routine today' : 'No steps in this routine');
     closeFlowRun();
@@ -8512,9 +8519,6 @@ async function loadFlowRun(flowId, today) {
   // today's run, so an ordinary routine pays nothing for it.
   flowRunView.review = steps.some(x => REVIEW_KINDS[x.kind])
     ? await apiGet('/api/gtd-review', null) : null;
-  // Resume at the first uncredited step.
-  const idx = steps.findIndex(s => !flowRunView.steps[s.id]);
-  flowRunView.idx = idx === -1 ? 0 : idx;
   flowRunView.day = day;
   flowRunView.journal = journal && journal.days
     ? journal.days.find(x => x.date === today) || null : null;
@@ -8536,6 +8540,15 @@ async function loadFlowRun(flowId, today) {
 }
 
 function closeFlowRun() {
+  // FLUSH THE JOURNAL FIRST. On a scroll the nightly journal's textareas sit
+  // open behind whatever you are doing, so leaving the runner with half a
+  // night typed into them is easy in a way it was not when the journal was a
+  // page you had to be standing on. Blur is not a save (wireNotesAutosave's
+  // rule); neither is closing. Fire-and-forget, because the close must not
+  // wait on the network — the write is idempotent and the draft is re-read
+  // when the run reopens.
+  const jn = document.querySelector('#flow-run #fr-jn-bottleneck');
+  if (jn) saveJournalDraft(jn.closest('.fr-step'));
   flowRunView.open = false;
   document.getElementById('flow-run').classList.add('hidden');
   refreshRef();
@@ -8556,49 +8569,22 @@ async function creditFlowStep(step, how) {
     closeFlowRun();
     return;
   }
-  const next = flowRunView.flow.steps.findIndex(s => !flowRunView.steps[s.id]);
-  flowRunView.idx = next === -1 ? flowRunView.idx : next;
-  renderFlowRun();
+  // The one section that changed, plus the count in the head. A full rebuild
+  // here would scroll the list back to the top on every tick, which on a
+  // ten-step routine is the friction the scroll exists to remove.
+  renderFlowStep(step.id);
 }
 
-// SKIP IT FOR NOW, and meet it at the end (2026-08-22, Quentin's instruction).
-// A step you cannot do at this minute used to leave two options: credit it
-// dishonestly, or abandon the run — and on a gated routine the second one costs
-// money. Skipping moves the step to the BACK of what is left; it does not
-// credit it, does not remove it, and does not change what completion requires.
-//
-// It is ORDER ONLY, which is what keeps it off the money path: `day_steps` is
-// the server's composition of what today owes and put_flow_run re-checks it, so
-// re-ordering the same set can neither add a step nor let one go unmet. That is
-// also why the skip is not a pawn — a pawn moves work to ANOTHER routine and
-// shortens that routine's gate, a decision with a price. This one is free.
-//
-// AND IT REFUSES WHEN IT IS THE LAST THING LEFT. "Come back at the end" needs
-// an end to come back to; with one step remaining, skipping would put it back
-// in front of you, which reads as a broken button. Being told that is the point
-// — the last step is the one the routine is actually asking for.
-function skipFlowStep() {
-  const steps = flowRunView.flow.steps;
-  const step = steps[flowRunView.idx];
-  const left = steps.filter(x => !flowRunView.steps[x.id]);
-  if (left.length <= 1) {
-    // A refusal that only renders in the foot reads as a dead button on a
-    // phone, where the keyboard sits there. Say it where it will be seen.
-    toast('Last one left — there is nothing to come back from.');
-    return;
-  }
-  steps.splice(flowRunView.idx, 1);
-  steps.push(step);
-  // A COUNTER, not a flag: skipOrder needs to know which of two skipped steps
-  // you pushed back first, and `true` cannot say. Still truthy, so every
-  // existing reader of this map is unchanged.
-  flowRunView.skipped[step.id] = ++flowRunView.skipSeq;
-  // The next thing still owed, in the order that now stands. Never idx + 1:
-  // the step that WAS next has just slid into this index.
-  const next = steps.findIndex(x => !flowRunView.steps[x.id]);
-  flowRunView.idx = next === -1 ? flowRunView.idx : next;
-  renderFlowRun();
-}
+// `skipFlowStep` lived here until 2026-09-02. It moved a step you could not do
+// this minute to the BACK of the run, which was the only way to see past it
+// when the runner showed one step at a time. The scroll answers the same need
+// by showing everything at once, and reordering rows under a finger on a
+// scroll is worse than the problem — so the verb went with the paging. It was
+// ORDER ONLY and never on the money path (`day_steps` is the server's
+// composition and put_flow_run re-checks it), so nothing that decides a day
+// notices. A pawn, which moves work to ANOTHER routine and shortens that
+// routine's gate, is untouched: that one has a price, which is why it stays.
+
 
 function flowName(flowId) {
   const f = (engageView.flows || []).find(x => x.id === flowId)
@@ -8721,31 +8707,12 @@ function collectChecklistHtml(s) {
 }
 
 
-function renderFlowRun() {
-  const el = document.getElementById('flow-run');
-  if (!el || !flowRunView.open) return;
-  const f = flowRunView.flow;
-  const s = f.steps[flowRunView.idx];
-  const day = flowRunView.day || {};
-  const due = flowDueMin(f);
-  const credited = flowRunView.steps[s.id];
-  // What is LEFT: the uncredited steps only. f.steps is already narrowed to
-  // what is due today, so this is the run's remaining work, not the routine's
-  // whole length. Steps with no estimate are counted apart (+2?) rather than
-  // folded in as zero — under-reporting the time left is the one thing a
-  // number like this must not do.
-  const left = stepsMinutes(f.steps.filter(x => !flowRunView.steps[x.id]));
-  const steps_left = f.steps.filter(x => !flowRunView.steps[x.id]).length;
-
+// The BODY of one step, by kind. Lifted out of renderFlowRun unchanged when
+// the runner became a scroll (2026-09-02) — the pages were never the
+// problem, the paging was.
+function frStepBody(s, day) {
   let page = '';
-  if (s.kind === 'text') {
-    page = `<div class="fr-step-big">${escHtml(s.content)}</div>
-      ${s.requirement === 'soft'
-        ? `<div class="fr-note">soft — ${s.soft_content
-            ? `“${escHtml(s.soft_content)}” still counts`
-            : 'a smaller version still counts'}</div>`
-        : '<div class="fr-note fr-note-hard">hard — the real thing</div>'}`;
-  } else if (s.kind === 'checklist') {
+  if (s.kind === 'checklist') {
     const list = (flowRunView.refLists || []).find(l => l.id === s.ref_list_id);
     const checks = flowRunView.checks[s.id] || {};
     page = `<div class="fr-step-big">${escHtml(s.content || (list ? list.name : 'Checklist'))}</div>
@@ -9006,76 +8973,215 @@ function renderFlowRun() {
     // strand the run (and, on a gated routine, the gate).
     page = `<div class="fr-step-big">${escHtml(s.content || stepKindLabel(s))}</div>`;
   }
+  return page;
+}
+
+
+// ── THE RUNNER IS A SCROLL, NOT A DECK OF PAGES ───────────────────
+//
+// (2026-09-02, Quentin's instruction: "it is really sucky to have routines
+// have multiple pages — too much friction".) One step per page charged a
+// tap-and-repaint for "Re-hydrate", which is a sentence and a tick, and it hid
+// what was still to come behind a number in the corner. The steps are one
+// scroll now: a plain step is a single checkbox row, and a step that ASKS
+// something — metrics, the nightly journal, a checklist, the hours — is a card
+// expanded in place, so nothing is more than a scroll away.
+//
+// What went with the paging: ‹ back, and "skip for now". Both were answers to
+// not being able to SEE the rest of the run. Skipping in particular reordered
+// the list, which on a scroll would slide rows out from under a finger — and
+// its own comment said it was order only, never a fact about the day, so
+// nothing on the money path notices it is gone. `day_steps` is still the
+// server's composition and put_flow_run still re-checks it.
+//
+// WHAT THIS COSTS, and it is the part to be careful about: every step's inputs
+// are mounted at once, so a repaint can destroy text somebody is in the middle
+// of typing. Repaints are therefore per SECTION (renderFlowStep), never the
+// whole scroll, and a section holding a focused input is left alone — the
+// checkActiveBlock rule, one surface along.
+
+// A step is SIMPLE when it is a sentence and a tick. Everything else asks a
+// question and needs room to ask it. Listed as the kinds that need a card, so
+// a NEW kind with no branch in frStepBody falls out as a row rather than as an
+// empty box.
+const FR_CARD_KINDS = ['checklist', 'journal_night', 'crm_fill', 'daily_contexts',
+                       'social_spec', 'social_dose', 'study_plan', 'study_hours',
+                       'metrics'];
+
+function frIsSimple(s) {
+  return !FR_CARD_KINDS.includes(s.kind) && !REVIEW_KINDS[s.kind];
+}
+
+
+// What is LEFT: the uncredited steps only. f.steps is already narrowed to what
+// is due today, so this is the run's remaining work, not the routine's whole
+// length. Steps with no estimate are counted apart (+2?) rather than folded in
+// as zero — under-reporting the time left is the one thing a number like this
+// must not do.
+function frMetaText() {
+  const f = flowRunView.flow;
+  const due = flowDueMin(f);
+  const owed = f.steps.filter(x => !flowRunView.steps[x.id]);
+  const left = stepsMinutes(owed);
+  return `${f.steps.length - owed.length}/${f.steps.length}${left.total
+    ? ` · ${humanMinutes(left.total)} left${left.unknown ? ` +${left.unknown}?` : ''}` : ''}${
+    due != null ? ` · due ${clockHHMM(due)}` : ''}`;
+}
+
+
+// The soft/pawn/unpawn verbs a step carries, which are the same three whether
+// it draws as a row or as a card.
+function frStepVerbs(s, credited) {
+  return `${(s.kind === 'text' || s.kind === 'checklist') && s.requirement === 'soft' && !credited
+      ? `<button class="cl-pill fr-soft">${s.soft_content
+          ? escHtml(s.soft_content) : 'Did a smaller version'}</button>` : ''}
+    ${/* PAWN: push this step onto a later routine for today only. Offered only
+          where the step's own setting says it may go somewhere, never on a step
+          already credited, and never on one that is already sitting here
+          because it was pawned in — a step is passed on once. */''}
+    ${s.pawn_to_flow_id && !credited && !s.pawned_in
+      ? `<button class="cl-pill fr-pawn" title="Do it in ${
+        escHtml(flowName(s.pawn_to_flow_id))} instead — that routine opens ${
+        s.pawn_minutes || 0} min earlier and its scan closes ${
+        s.pawn_minutes || 0} min earlier">→ ${escHtml(flowName(s.pawn_to_flow_id))}</button>` : ''}
+    ${s.pawned_in && !credited
+      ? `<button class="cl-pill fr-unpawn" title="Send it back to ${
+        escHtml(flowName(s.from_flow_id))} — this gate returns to its full length">← ${
+        escHtml(flowName(s.from_flow_id))}</button>` : ''}`;
+}
+
+
+function frStepNotes(s) {
+  return s.pawned_in ? `<div class="fr-note fr-pawned-in">pawned here from ${
+    escHtml(flowName(s.from_flow_id))} — it costs this routine ${
+    s.pawn_minutes || 0} min: tonight starts that much earlier, and the scan closes
+    that much earlier</div>` : '';
+}
+
+
+// A HARD step that cannot yet be honestly credited says so by being disabled,
+// exactly as it did on its own page. The gate behind it asks whether you
+// ANSWERED, never what you answered.
+function frDoneDisabled(s, day) {
+  return s.requirement !== 'soft'
+    && ((s.kind === 'social_spec' && day.specOk !== true)
+        || (s.kind === 'social_dose' && day.doseCleared !== true)
+        || (s.kind === 'metrics' && !(flowRunView.metrics[s.id] || {}).complete));
+}
+
+
+function frStepHtml(s, day) {
+  const credited = flowRunView.steps[s.id];
+  if (frIsSimple(s)) {
+    // ONE ROW: the tick IS the control, and a bare tap on it credits — the
+    // sanctioned kind of click, the same one a pool checkbox already has.
+    return `<span class="eg-check fr-tick${credited ? ' fr-tick-on' : ''}"
+        data-credit="done" role="button" tabindex="0"
+        aria-label="${credited ? 'Done' : 'Mark done'}">${credited ? '✓' : ''}</span>
+      <div class="fr-row-main">
+        <div class="fr-row-text">${escHtml(s.content || stepKindLabel(s))}</div>
+        ${s.requirement === 'soft' && !credited
+          ? `<div class="fr-note">soft — ${s.soft_content
+              ? `“${escHtml(s.soft_content)}” still counts`
+              : 'a smaller version still counts'}</div>` : ''}
+        ${frStepNotes(s)}
+      </div>
+      <div class="fr-row-verbs">${frStepVerbs(s, credited)}</div>`;
+  }
+  return `${frStepBody(s, day)}
+    ${frStepNotes(s)}
+    <div class="fr-card-foot">
+      ${frStepVerbs(s, credited)}
+      <button class="cl-pill cl-pill-on fr-done"${
+        frDoneDisabled(s, day) ? ' disabled' : ''}>${credited ? 'Done ✓' : 'Done ✓'}</button>
+    </div>`;
+}
+
+
+function frSectionHtml(s, day) {
+  return `<section class="${frSectionClass(s)}" data-step="${s.id}">${
+    frStepHtml(s, day)}</section>`;
+}
+
+
+function frSectionClass(s) {
+  return `fr-step ${frIsSimple(s) ? 'fr-row' : 'fr-card'}${
+    flowRunView.steps[s.id] ? ' fr-step-done' : ''}`;
+}
+
+
+function renderFlowRun() {
+  const el = document.getElementById('flow-run');
+  if (!el || !flowRunView.open) return;
+  const f = flowRunView.flow;
+  const day = flowRunView.day || {};
+  const keep = (el.querySelector('.fr-page') || {}).scrollTop || 0;
+  frSyncJournalDraft();
 
   el.innerHTML = `
     <div class="fr-head">
       <span class="fr-title">${escHtml(f.name)}</span>
-      <span class="fr-meta">${flowRunView.idx + 1}/${f.steps.length}${left.total
-        ? ` · ${humanMinutes(left.total)} left${left.unknown ? ` +${left.unknown}?` : ''}` : ''}${
-        due != null ? ` · due ${clockHHMM(due)}` : ''}</span>
+      <span class="fr-meta">${frMetaText()}</span>
       <button class="modal-close-btn" id="fr-close">✕</button>
     </div>
-    <div class="fr-page">${page}${credited ? '<div class="fr-note">✓ already credited</div>' : ''}
-      ${flowRunView.skipped[s.id] && !credited
-        ? `<div class="fr-note">skipped earlier — ${steps_left <= 1
-            ? 'and it is the last thing left, so this is where the routine ends'
-            : 'it comes round again at the end'}</div>` : ''}
-      ${s.pawned_in ? `<div class="fr-note fr-pawned-in">pawned here from ${
-        escHtml(flowName(s.from_flow_id))} — it costs this routine ${
-        s.pawn_minutes || 0} min: tonight starts that much earlier, and the scan closes that much earlier</div>` : ''}</div>
-    <div class="fr-foot">
-      <button id="fr-back" ${flowRunView.idx === 0 ? 'disabled' : ''}>‹ back</button>
-      ${(s.kind === 'text' || s.kind === 'checklist') && s.requirement === 'soft'
-        ? `<button id="fr-soft" class="cl-pill">${s.soft_content
-            ? escHtml(s.soft_content) : 'Did a smaller version'}</button>` : ''}
-      ${/* PAWN: push this step onto a later routine for today only. Offered only
-            where the step's own setting says it may go somewhere, never on a step
-            already credited, and never on one that is already sitting here
-            because it was pawned in — a step is passed on once. */''}
-      ${s.pawn_to_flow_id && !credited && !s.pawned_in
-        ? `<button id="fr-pawn" class="cl-pill" title="Do it in ${
-          escHtml(flowName(s.pawn_to_flow_id))} instead — that routine opens ${
-          s.pawn_minutes || 0} min earlier and its scan closes ${
-          s.pawn_minutes || 0} min earlier">→ ${escHtml(flowName(s.pawn_to_flow_id))}</button>` : ''}
-      ${s.pawned_in && !credited
-        ? `<button id="fr-unpawn" class="cl-pill" title="Send it back to ${
-          escHtml(flowName(s.from_flow_id))} — this gate returns to its full length">← ${
-          escHtml(flowName(s.from_flow_id))}</button>` : ''}
-      ${/* Not now, but still tonight. Hidden once the step is credited (there
-            is nothing to come back for) and never shown on the only step left
-            — see skipFlowStep, which refuses that case in words. */''}
-      ${!credited ? `<button id="fr-skip" class="cl-pill" title="${
-        steps_left <= 1 ? 'This is the last one left'
-          : 'Move it to the end of tonight\u2019s run'}">skip for now</button>` : ''}
-      <button id="fr-done" class="cl-pill cl-pill-on"${
-        s.requirement !== 'soft'
-          && ((s.kind === 'social_spec' && day.specOk !== true)
-              || (s.kind === 'social_dose' && day.doseCleared !== true)
-              // A HARD metrics step demands every metric it asks, exactly as a
-              // hard checklist demands every item and refuses to credit an
-              // empty or unlinked one. The gate behind it therefore asks
-              // whether you ANSWERED, never what you answered.
-              || (s.kind === 'metrics' && !(flowRunView.metrics[s.id] || {}).complete))
-          ? ' disabled' : ''}>Done ✓</button>
-    </div>`;
+    <div class="fr-page">${f.steps.map(s => frSectionHtml(s, day)).join('')}</div>`;
   el.classList.remove('hidden');
-
   el.querySelector('#fr-close').addEventListener('click', closeFlowRun);
-  el.querySelector('#fr-back').addEventListener('click', () => {
-    if (flowRunView.idx > 0) { flowRunView.idx--; renderFlowRun(); }
-  });
-  const skip = el.querySelector('#fr-skip');
-  if (skip) skip.addEventListener('click', skipFlowStep);
-  const soft = el.querySelector('#fr-soft');
+  f.steps.forEach(s => wireFlowStep(
+    el.querySelector(`.fr-step[data-step="${s.id}"]`), s, day));
+  el.querySelector('.fr-page').scrollTop = keep;
+}
+
+
+// ONE SECTION, not the scroll. Every handler below repaints through here, for
+// two reasons: rebuilding the whole list moves the rows under a finger that is
+// already reaching for one, and it destroys whatever is being typed into a
+// step further down. A section holding a focused input is not rebuilt at all
+// — the value is already saved, and the keyboard staying up is worth more than
+// a repaint (`checkActiveBlock`'s rule, one surface along).
+function renderFlowStep(id) {
+  const el = document.getElementById('flow-run');
+  if (!el || !flowRunView.open) return;
+  const sec = el.querySelector(`.fr-step[data-step="${id}"]`);
+  const s = (flowRunView.flow.steps || []).find(x => String(x.id) === String(id));
+  if (!sec || !s) { renderFlowRun(); return; }
+  renderFlowMeta();
+  const act = document.activeElement;
+  if (act && sec.contains(act) && /^(INPUT|TEXTAREA)$/.test(act.tagName)) return;
+  sec.className = frSectionClass(s);
+  sec.innerHTML = frStepHtml(s, flowRunView.day || {});
+  wireFlowStep(sec, s, flowRunView.day || {});
+}
+
+
+// The head is derived from the ticks, so it is patched rather than re-rendered
+// with them — the renderBarCounts idiom.
+function renderFlowMeta() {
+  const meta = document.querySelector('#flow-run .fr-meta');
+  if (meta) meta.textContent = frMetaText();
+}
+
+
+function wireFlowStep(sec, s, day) {
+  if (!sec) return;
+  const tick = sec.querySelector('[data-credit]');
+  if (tick) {
+    const fire = () => creditFlowStep(s, tick.dataset.credit);
+    tick.addEventListener('click', fire);
+    tick.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fire(); }
+    });
+  }
+  const soft = sec.querySelector('.fr-soft');
   if (soft) soft.addEventListener('click', () => creditFlowStep(s, 'soft'));
   // Per-RUN ticks: they live in flowRunView.checks, never on ref_item — the
   // list is a template you run again tomorrow, so writing its own `done`
   // (which is PERMANENT, unlike routine_item's daily flag) would consume it.
-  el.querySelectorAll('[data-chk]').forEach(c => c.addEventListener('click', () => {
+  sec.querySelectorAll('[data-chk]').forEach(c => c.addEventListener('click', () => {
     const marks = flowRunView.checks[s.id] = flowRunView.checks[s.id] || {};
     const id = parseInt(c.dataset.chk);
     if (marks[id]) delete marks[id]; else marks[id] = true;
-    renderFlowRun();
+    renderFlowStep(s.id);
   }));
   // Metric answers. Each write is its own small commit — the routine is often
   // half-done and interrupted, so an answer given at 07:02 must survive the
@@ -9100,11 +9206,11 @@ function renderFlowRun() {
       });
       flowRunView.metrics[s.id] = await apiGet(`/api/metrics/step/${s.id}?date=${date}`,
         flowRunView.metrics[s.id]);
-      if (flowRunView.open) renderFlowRun();
+      if (flowRunView.open) renderFlowStep(s.id);
     });
-    renderFlowRun();
+    renderFlowStep(s.id);
   };
-  el.querySelectorAll('.mt-chip').forEach(b => b.addEventListener('click', () => {
+  sec.querySelectorAll('.mt-chip').forEach(b => b.addEventListener('click', () => {
     const mid = parseInt(b.dataset.metric);
     const v = Number(b.dataset.val);
     const m = ((flowRunView.metrics[s.id] || {}).metrics || []).find(x => x.id === mid) || {};
@@ -9117,7 +9223,7 @@ function renderFlowRun() {
   // an empty string would read as "answered nothing" rather than "not asked".
   // That is why the vocabulary should carry a 'none' tag: it is how a night
   // with no interventions is said OUT LOUD, which a hard step can then credit.
-  el.querySelectorAll('[data-mtag]').forEach(b => b.addEventListener('click', () => {
+  sec.querySelectorAll('[data-mtag]').forEach(b => b.addEventListener('click', () => {
     const mid = parseInt(b.dataset.mtag);
     const tag = b.dataset.tag;
     const m = ((flowRunView.metrics[s.id] || {}).metrics || []).find(x => x.id === mid) || {};
@@ -9128,7 +9234,7 @@ function renderFlowRun() {
   // The vocabulary grows WHERE IT IS USED: starting a new intervention should
   // not mean a trip to Settings at 7am. Appending is a PATCH to the metric, so
   // the tag is there tomorrow too.
-  el.querySelectorAll('[data-mtagadd]').forEach(b => b.addEventListener('click', async () => {
+  sec.querySelectorAll('[data-mtagadd]').forEach(b => b.addEventListener('click', async () => {
     const mid = parseInt(b.dataset.mtagadd);
     const raw = (prompt('New tag (one word, same spelling every night)') || '').trim();
     const tag = raw.split(/\s+/)[0];
@@ -9143,12 +9249,12 @@ function renderFlowRun() {
     const cur = ((m.entry && m.entry.value_text) || '').split(' ').filter(Boolean);
     saveMetric(mid, cur.concat([tag]).join(' '));
   }));
-  el.querySelectorAll('.mt-input').forEach(inp => inp.addEventListener('change', () => {
+  sec.querySelectorAll('.mt-input').forEach(inp => inp.addEventListener('change', () => {
     saveMetric(parseInt(inp.dataset.metric), inp.value.trim() === '' ? null : inp.value.trim());
   }));
-  const pawn = el.querySelector('#fr-pawn');
+  const pawn = sec.querySelector('.fr-pawn');
   if (pawn) pawn.addEventListener('click', () => pawnStep(s));
-  const unpawn = el.querySelector('#fr-unpawn');
+  const unpawn = sec.querySelector('.fr-unpawn');
   if (unpawn) unpawn.addEventListener('click', () => unpawnStep(s));
   // MAP OVER THE RUN (2026-08-17). Clarify and the sweep below still close the
   // runner first — each takes the whole screen and owns the keyboard — but a
@@ -9162,7 +9268,7 @@ function renderFlowRun() {
   // its own return path (returnToReview) written for the fold-out, and pointing
   // it at the runner as an afterthought is how two surfaces start disagreeing
   // about where "back" is. It gets its own pass.
-  el.querySelectorAll('.fr-rv-act').forEach(b => b.addEventListener('click', () => {
+  sec.querySelectorAll('.fr-rv-act').forEach(b => b.addEventListener('click', () => {
     const act = b.dataset.act;
     if (act === 'map_projects') { openMapAtLens('projects', true); return; }
     if (act === 'map_someday') { openMapAtLens('someday', true); return; }
@@ -9174,16 +9280,19 @@ function renderFlowRun() {
   // the GTD fold-out offers, from the same registry. The runner closes first:
   // both open a full-screen surface of their own, and one over the other would
   // be two layers deep with no way back.
-  const rvClarify = el.querySelector('#fr-rv-clarify');
+  const rvClarify = sec.querySelector('.fr-rv-clarify');
   if (rvClarify) rvClarify.addEventListener('click', () => { closeFlowRun(); openClarify(); });
-  const rvSweep = el.querySelector('#fr-rv-sweep');
+  const rvSweep = sec.querySelector('.fr-rv-sweep');
   if (rvSweep) rvSweep.addEventListener('click', () => {
     const iso = runDay();
     closeFlowRun();
     openDangerousWriting({ goalKind: 'time', goalTime: 5, hardcore: false,
                            logName: `${iso} emptied`, autostart: true });
   });
-  el.querySelector('#fr-done').addEventListener('click', async () => {
+  // Only a CARD has a Done button; a simple step's tick is its own, and none
+  // of the guards below can apply to a kind that asks nothing.
+  const doneBtn = sec.querySelector('.fr-done');
+  if (doneBtn) doneBtn.addEventListener('click', async () => {
     // A HARD "get in to empty" means the inbox IS empty. Same rule as a hard
     // checklist: a step that credits with the work still sitting there is
     // checkbox theatre, and this one has a number to check against.
@@ -9213,7 +9322,7 @@ function renderFlowRun() {
       // Marks land per habit, on habit_day. A hard step demands every forming
       // habit be marked — viewing without answering is checkbox theatre; soft
       // lets a partial night through.
-      const rows = [...el.querySelectorAll('.fr-habit')];
+      const rows = [...sec.querySelectorAll('.fr-habit')];
       const unmarked = rows.filter(r => !r.querySelector('.fr-hb-mark .fr-rate-on'));
       if (unmarked.length && s.requirement !== 'soft') {
         toast(`Rate ${unmarked.length} habit${unmarked.length === 1 ? '' : 's'} first`);
@@ -9238,7 +9347,7 @@ function renderFlowRun() {
       // was reported when it was not. The DAY is runDay() — the run's own,
       // pinned when it opened — so 01:00 files the day that is closing.
       const h = flowRunView.hours[s.id];
-      const box = el.querySelector('#fr-hours');
+      const box = sec.querySelector('.fr-hours');
       if (h && box) {
         const hrs = parseFloat(box.value);
         if (box.value.trim() === '' || isNaN(hrs) || hrs < 0 || hrs > 24) {
@@ -9258,10 +9367,10 @@ function renderFlowRun() {
         flowRunView.hours[s.id] = out;
       }
     }
-    if (s.kind === 'journal_night') await saveJournalDraft(el);
+    if (s.kind === 'journal_night') await saveJournalDraft(sec);
     creditFlowStep(s, 'done');
   });
-  el.querySelectorAll('.fr-rate').forEach(b => b.addEventListener('click', () => {
+  sec.querySelectorAll('.fr-rate').forEach(b => b.addEventListener('click', () => {
     // Exclusive within the GROUP, not the page — the ledger page holds two
     // independent questions, and answering one must not clear the other.
     b.parentElement.querySelectorAll('.fr-rate').forEach(x => x.classList.remove('fr-rate-on'));
@@ -9277,17 +9386,17 @@ function renderFlowRun() {
   // and the page holds the night you were in the middle of writing. So the
   // draft is written to its own store first — which is not the same thing as
   // CREDITING the step: ending an experiment and starting the next must not
-  // require finishing the journal, and finishing the journal is what #fr-done
+  // require finishing the journal, and finishing the journal is what the card's Done
   // is for.
   const expRefresh = async () => {
-    await saveJournalDraft(el);
+    await saveJournalDraft(sec);
     flowRunView.habits = await fetch('/api/habits').then(r => r.json())
       .catch(() => flowRunView.habits);
-    renderFlowRun();
+    renderFlowStep(s.id);
   };
-  const expStart = el.querySelector('#fr-exp-start');
+  const expStart = sec.querySelector('.fr-exp-start');
   if (expStart) expStart.addEventListener('click', async () => {
-    const content = el.querySelector('#fr-exp-new').value.trim();
+    const content = sec.querySelector('.fr-exp-new').value.trim();
     if (!content) { toast('Name the experiment first'); return; }
     const res = await apiSend('/api/habit-experiments', 'POST', { content });
     if (!res.ok) { toast((await res.json()).error || 'could not start it'); return; }
@@ -9301,9 +9410,9 @@ function renderFlowRun() {
     toast(`running: ${content}`);
     await expRefresh();
   });
-  const expKeep = el.querySelector('#fr-exp-keep');
+  const expKeep = sec.querySelector('.fr-exp-keep');
   if (expKeep) expKeep.addEventListener('click', async () => {
-    const next = el.querySelector('#fr-exp-edit').value.trim();
+    const next = sec.querySelector('.fr-exp-edit').value.trim();
     if (!next) { toast('An experiment needs a name'); return; }
     if (next === expRunning.content) { toast('Still running — unchanged'); return; }
     const was = expRunning.content;
@@ -9317,14 +9426,14 @@ function renderFlowRun() {
   });
   // Both ends live in the one sheet, which also asks for tomorrow's experiment
   // — the night you end one is the night you decide the next.
-  const expEnd = el.querySelector('#fr-exp-end');
+  const expEnd = sec.querySelector('.fr-exp-end');
   if (expEnd) expEnd.addEventListener('click', async () => {
-    await saveJournalDraft(el);           // before the sheet takes the screen
+    await saveJournalDraft(sec);           // before the sheet takes the screen
     // The RUN's day, so a night finished after midnight resolves the night.
     endExperimentSheet(expRunning, runDay(), expRefresh);
   });
 
-  el.querySelectorAll('[data-dset]').forEach(b => b.addEventListener('click', async () => {
+  sec.querySelectorAll('[data-dset]').forEach(b => b.addEventListener('click', async () => {
     const row = b.closest('[data-dtag]');
     const tag = row.dataset.dtag;
     const want = b.dataset.dset === 'yes';
@@ -9339,14 +9448,14 @@ function renderFlowRun() {
       async () => {
         const back = await apiSend('/api/tag-daily/answer', 'POST', { tag, applies: prev === undefined ? null : prev, date }).then(r => r.json()).catch(() => null);
         if (back) state.tagDaily = { ...state.tagDaily, answers: back };
-        renderFlowRun();
+        renderFlowStep(s.id);
         renderEngage();
       });
-    renderFlowRun();
+    renderFlowStep(s.id);
     renderEngage();   // the pool and its 👤 count follow immediately
   }));
 
-  const crmOpen = el.querySelector('#fr-crm-open');
+  const crmOpen = sec.querySelector('.fr-crm-open');
   if (crmOpen) crmOpen.addEventListener('click', () => {
     openM('tab-people');
     // Over the runner (165) for as long as the routine holds it open. The
@@ -9364,7 +9473,7 @@ function renderFlowRun() {
   // The morning half: the calendar over the runner, draw mode already on. Same
   // ladder as crm_fill above — `back` re-reads the plan so the step's own
   // sentence ("you have drawn 3 hr") is true the moment you land on it again.
-  const planOpen = el.querySelector('#fr-plan-open');
+  const planOpen = sec.querySelector('.fr-plan-open');
   if (planOpen) planOpen.addEventListener('click', async () => {
     // The RUN's day, not the clock's: the morning routine resumed after
     // midnight is still planning the day it was opened on, and the calendar
@@ -9377,21 +9486,22 @@ function renderFlowRun() {
       lower: () => document.body.classList.remove('plan-over-runner'),
       back: async () => {
         state.planMode = false;
-        if (flowRunView.open) { await refreshPlan(runDay()); renderFlowRun(); }
+        if (flowRunView.open) { await refreshPlan(runDay()); renderFlowStep(s.id); }
       },
     });
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   });
 
-  const crm = el.querySelector('#fr-crm-fill');
+  const crm = sec.querySelector('.fr-crm-fill');
   if (crm) crm.addEventListener('click', async () => {
     const today = runDay();
     await apiSend('/api/people/night', 'POST', { kind: 'entries', date: today });
     flowRunView.crmFilled = true;
-    renderFlowRun();
+    renderFlowStep(s.id);
   });
 }
+
 
 // Shared inline rename for ref rows — same gesture as MAP's, same Esc rule
 // (stopPropagation, or the keydown peels the overlay behind the editor).
