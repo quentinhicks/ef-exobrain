@@ -3197,14 +3197,24 @@ const TAG_SETUP_INFO = [
   ] },
 ];
 
+function gateRoutineName(flowId) {
+  const f = (state.gateRoutines || []).find(x => String(x.id) === String(flowId));
+  return f ? f.name : 'its routine';
+}
+
+
 // One line about the routine this gate demands: what it is, and the two facts
 // you would otherwise open it to see.
-function gateRoutineLine(flowId) {
+function gateRoutineLine(flowId, noDeadline) {
   const f = (state.gateRoutines || []).find(x => String(x.id) === String(flowId));
   if (!f) return 'its routine';
-  const bits = [flowWindowLabel(f) || (f.offset_min
+  // On a ROUTINE gate there is no deadline to name: the commitment is the wall
+  // day. Its own window still says when the runner shows it due, so that is
+  // kept where it exists and the derived "due when this gate closes" — which
+  // describes a rule this kind of gate does not have — is not.
+  const bits = [flowWindowLabel(f) || (noDeadline ? 'any time that day' : (f.offset_min
     ? `due ${f.offset_min > 0 ? '+' : ''}${f.offset_min}m from this deadline`
-    : 'due when this gate closes')];
+    : 'due when this gate closes'))];
   if (f.as_task) bits.push('also a task');
   return `${f.name} · ${bits.join(' · ')}`;
 }
@@ -4518,6 +4528,7 @@ const SETTINGS_SHEETS = {
       // that change — but the row alone cannot say WHEN, and a pause dated to
       // Wednesday reading as a flat "Paused" is the ambiguity this whole
       // feature exists to remove. So the day goes in its hint.
+      const scanKind = v.proof !== 'routine' && v.proof !== 'hours';
       const pending = it ? (it.pending_changes || []).filter(p => p.field !== 'active') : [];
       const pausedFrom = it ? (it.pending_changes || [])
         .find(p => p.field === 'active' && falsyFlag(p.new_value)) : null;
@@ -4547,11 +4558,21 @@ const SETTINGS_SHEETS = {
         // editor, which put the rule that decides ✓/✗ on a different surface
         // from the gate it decides about — so a gate could be judged on a
         // condition that appeared nowhere in its own settings.
-        ...(it ? [{ key: 'routine', label: 'Requires routine', kind: 'select',
-          options: () => [{ value: '', name: '— presence only —' }].concat(
+        ...(it ? [{ key: 'routine',
+          label: v.proof === 'routine' ? 'The routine' : 'Requires routine',
+          kind: 'select',
+          options: () => [{ value: '',
+            name: v.proof === 'routine' ? '— none, and the gate cannot run —'
+                                        : '— presence only —' }].concat(
             (state.gateRoutines || []).map(f => ({ value: String(f.id), name: f.name }))),
-          hint: 'Scanning alone won\'t pass this gate until the routine is done.'
-            + ' Removing the requirement takes effect at once — unlike every other easing.' }] : []),
+          hint: v.proof === 'routine'
+            ? 'This routine IS the gate: finishing it on the day clears it, and'
+              + ' nothing else does. Leaving it unset would make a gate that could'
+              + ' never be cleared, so that is refused.'
+            : 'A scan gate is judged on its scan alone (2026-09-02) — this routine'
+              + ' is a deadline reference and a place in the runner, nothing more.'
+              + ' To put money on the routine itself, give it its own gate with'
+              + ' Proof set to the routine.' }] : []),
         // AND THE DOOR INTO IT (2026-08-24, Quentin's instruction). A routine
         // that gates a gate is CONFIGURED on that gate — its window, its days,
         // whether it is also a task, the offset from this deadline — because
@@ -4564,7 +4585,7 @@ const SETTINGS_SHEETS = {
         // rows' idiom exactly.
         ...(it && v.routine && v.routine === v.routine0 ? [{
           key: 'routine_cfg', label: '', kind: 'action',
-          text: gateRoutineLine(v.routine),
+          text: gateRoutineLine(v.routine, v.proof === 'routine'),
           action: 'Set up', keepOpen: true,
           run: () => openRoutineFromGate(it, v.routine) }] : []),
         ...(it && v.routine && v.routine !== v.routine0 ? [{
@@ -4574,14 +4595,23 @@ const SETTINGS_SHEETS = {
           half: true, placeholder: 'default',
           hint: 'What failing this gate costs. Blank uses the default in Billing below.'
             + ' Raising it applies now; lowering waits 24h, like any other easing.' }] : []),
-        // What this gate is actually judged ON. The routine half is configured
-        // in the routine editor, so without this line the rule that decides
-        // ✓/✗ appears nowhere on the gate it decides about.
+        // WHAT THIS GATE IS ACTUALLY JUDGED ON, in one line, on the gate it
+        // decides about. It used to read "you scan it inside the window, and
+        // ‹routine› is done first" for every gate that had a routine linked —
+        // the coupled rule, which stopped being true when the gates separated
+        // (2026-09-02). One proof per kind now, and a linked routine is named
+        // only where it IS the proof.
         ...(it ? [{ key: 'judged', label: 'Passes when', kind: 'static',
-          text: ['you scan it inside the window',
-            it.geofence_lat != null ? `within ${it.geofence_radius_m}m of the pinned place` : null,
-            it.routine ? `“${it.routine}” is done first` : null,
-          ].filter(Boolean).join(', and ') }] : []),
+          text: v.proof === 'routine'
+            ? (v.routine
+                ? `“${gateRoutineName(v.routine)}” is finished, any time that day`
+                : 'nothing — no routine is linked, so this gate does not run')
+            : v.proof === 'hours'
+            ? 'the hours you report meet the day’s requirement'
+            : [v.proof === 'tag' ? 'you tap one of its tags' : 'you scan it inside the window',
+               it.geofence_lat != null && v.proof !== 'tag'
+                 ? `within ${it.geofence_radius_m}m of the pinned place` : null,
+              ].filter(Boolean).join(', and ') }] : []),
         ...(it && it.today_state && it.today_state.judged
             && it.today_state.judged.failure_reason ? [{ key: 'todayres', label: 'Today',
           kind: 'static',
@@ -4589,25 +4619,43 @@ const SETTINGS_SHEETS = {
             + gateStatus(it.today_state.judged.charge_status) }]
           : it && it.today_state && it.today_state.scan ? [{ key: 'todayres', label: 'Today',
             kind: 'static', text: `✓ scanned ${it.today_state.scan.local_time}` }] : []),
-        // HOW THIS GATE MAY BE PROVED. The soft answer is the link (plus the
-        // geofence where one is set) — which proves a URL was opened, not that
-        // you were there. The hard answer is a tap of one of this gate's NFC
-        // tags: the tag holds keys it never gives up and re-signs every tap, so
-        // a captured link is worth nothing.
+        // HOW THIS GATE MAY BE PROVED — ONE WAY, not a set of them. The soft
+        // answer is the link (plus the geofence where one is set), which proves
+        // a URL was opened and not that you were there; the hard answer is a tap
+        // of one of this gate's NFC tags, which holds keys it never gives up and
+        // re-signs every tap, so a captured link is worth nothing. A gate can
+        // also be proved by its ROUTINE or by the HOURS reported (2026-09-02) —
+        // and those are whole commitments in themselves, never a second half
+        // bolted onto a scan. Changing this is an easing unless it is link →
+        // tag, so it waits 24h.
         ...(it ? [{ key: 'proof', label: 'Proof', kind: 'select',
           options: () => [{ value: 'link', name: 'Link + geofence' },
-                          { value: 'tag', name: 'NFC tag only' }],
-          hint: v.proof === 'tag'
+                          { value: 'tag', name: 'NFC tag only' },
+                          { value: 'routine', name: 'Its routine, finished' },
+                          { value: 'hours', name: 'Hours reported' }],
+          hint: v.proof === 'routine'
+            ? 'The routine below is the whole commitment, and there is no deadline'
+              + ' inside the day: finishing it at all earns the day, and the gate is'
+              + ' judged four hours after midnight. No scan is asked for.'
+            : v.proof === 'hours'
+            ? 'The number you report clears this gate — nothing else does. Its target'
+              + ' and its bucket live on the step that reports the hours.'
+            : v.proof === 'tag'
             ? 'Only a tap of a tag below clears this gate — a link or a geofence no'
               + ' longer counts. Going back to the link is an easing, so it waits 24h.'
             : 'A tap still counts on a link gate — it is stronger than what is asked.'
               + ' Switching to tag-only applies at once, and needs a live tag first.' }] : []),
+        // THE TAG APPARATUS AND THE SCAN LINK BELONG TO A GATE A SCAN CAN CLEAR.
+        // On a routine or hours gate they are not merely unused, they are a
+        // claim: a printed QR sitting on a gate no scan can satisfy reads as a
+        // way to clear it. Hidden, not disabled — switching Proof back brings
+        // the same link (the token never changed) straight back.
         // Sits under Proof, above the tags themselves — the order you do it in.
-        ...(it ? [{ key: 'tagsetup', kind: 'info', label: '',
+        ...(it && scanKind ? [{ key: 'tagsetup', kind: 'info', label: '',
           text: 'How to program a tag for hard mode', sections: TAG_SETUP_INFO }] : []),
-        ...(it ? gateTagRows(it) : []),
-        ...(it ? gateTapRows(it) : []),
-        ...(it ? [{ key: 'link', label: 'Scan link', kind: 'action',
+        ...(it && scanKind ? gateTagRows(it) : []),
+        ...(it && scanKind ? gateTapRows(it) : []),
+        ...(it && scanKind ? [{ key: 'link', label: 'Scan link', kind: 'action',
           text: `${state.settings.gate_scan_url || ''}/scan/${it.token}`,
           action: 'Copy',
           hint: 'The QR code to print. Anyone with this URL can satisfy the gate.',
@@ -11104,13 +11152,23 @@ function gatePopHoursHtml(hr) {
 
 function gatePopHtml(d) {
   const w = d.window;
+  const isRoutine = d.proof_mode === 'routine';
   const rows = [];
 
-  rows.push(gpRow('Window', `<span class="gp-mono">${escHtml(w.start)}–${escHtml(w.end)}`
+  rows.push(gpRow(isRoutine ? 'Drawn at' : 'Window',
+    `<span class="gp-mono">${escHtml(w.start)}–${escHtml(w.end)}`
     + `${w.offset_days ? ' +1d' : ''}</span>`));
   rows.push(gpRow('Set by', escHtml(w.from)));
-  if (!d.applies) rows.push(gpRow('Runs today', '<span class="gp-no">no — its schedule '
-    + 'has no occurrence on this day</span>'));
+  // A ROUTINE GATE'S WINDOW JUDGES NOTHING. It is where the pill sits on the
+  // timeline and nothing more, so the read-out says so next to the times
+  // rather than letting them read as the commitment they are on every other
+  // kind of gate.
+  if (isRoutine) rows.push(gpRow('', '<span class="gp-note">Where it sits on the day.'
+    + ' This gate has no deadline — the times judge nothing.</span>'));
+  if (!d.applies) rows.push(gpRow('Runs today', isRoutine && !d.routine
+    ? '<span class="gp-no">no — nothing is linked to it, so there is nothing it '
+      + 'could ask. Link a routine on its editor, or it will never run again.</span>'
+    : '<span class="gp-no">no — its schedule has no occurrence on this day</span>'));
   if (!d.active) rows.push(gpRow('Gate', '<span class="gp-no">paused</span>'));
 
   // THE PART THAT ANSWERS THE QUESTION. The pin, the radius, and then every
@@ -11134,9 +11192,12 @@ function gatePopHtml(d) {
   // show a day the judge does not believe in, which is the one thing this
   // surface exists not to do.
   let scans = d.hours ? gatePopHoursHtml(d.hours)
+                      : isRoutine ? ''
                       : '<div class="gp-sect">Scans on this day</div>';
-  if (d.hours) {
-    // nothing further: an hours gate's proof is the ladder above
+  if (d.hours || isRoutine) {
+    // Nothing further. An hours gate's proof is the ladder above and a routine
+    // gate's is the section below — and reporting "nothing reached this gate"
+    // about a gate nothing is supposed to reach reads as a fault.
   } else if (!d.scans.length) {
     scans += '<div class="gp-note">None. Nothing reached this gate on this day.</div>';
   } else {
@@ -11166,12 +11227,34 @@ function gatePopHtml(d) {
 
   let extra = '';
   if (d.routine) {
-    extra += '<div class="gp-sect">The routine it also demands</div>';
-    extra += gpRow('Routine', escHtml(d.routine.name));
-    extra += gpRow('Due', `<span class="gp-mono">${escHtml(d.routine.deadline || '—')}</span>`);
-    extra += gpRow('Done', d.routine.completed_at
-      ? `<span class="gp-ok">${escHtml(String(d.routine.completed_at).slice(11, 16))}</span>`
-      : '<span class="gp-no">not yet</span>');
+    // TWO DIFFERENT RELATIONSHIPS, said apart (2026-09-02). On a routine gate
+    // this routine IS the proof; on a scan gate it is a deadline reference and
+    // a place in the runner, and it stopped being half of that gate's price
+    // when the gates separated. One heading for both would have kept saying
+    // "it also demands" about a routine the judge no longer asks about.
+    if (isRoutine) {
+      extra += '<div class="gp-sect">The routine that clears it</div>';
+      extra += gpRow('Routine', escHtml(d.routine.name));
+      extra += gpRow('Done', d.routine.completed_at
+        ? `<span class="gp-ok">${escHtml(String(d.routine.completed_at).slice(11, 16))}</span>`
+        : '<span class="gp-no">not yet</span>');
+      if (d.routine.deadline) {
+        extra += gpRow('Usually by',
+          `<span class="gp-mono">${escHtml(d.routine.deadline)}</span>`);
+        extra += '<div class="gp-note">That is when the runner shows it due. It is not'
+          + ' a deadline for this gate — finishing later in the day still earns it.</div>';
+      }
+    } else {
+      extra += '<div class="gp-sect">A routine points at this gate</div>';
+      extra += gpRow('Routine', escHtml(d.routine.name));
+      extra += gpRow('Due', `<span class="gp-mono">${escHtml(d.routine.deadline || '—')}</span>`);
+      extra += gpRow('Done', d.routine.completed_at
+        ? `<span class="gp-ok">${escHtml(String(d.routine.completed_at).slice(11, 16))}</span>`
+        : '<span class="gp-no">not yet</span>');
+      extra += '<div class="gp-note">This gate is judged on its scan alone. The routine'
+        + ' takes its deadline from here; whether it was done costs nothing unless it'
+        + ' has a gate of its own.</div>';
+    }
   }
 
   // The pawn is the one input that moves a window without writing anything
@@ -11190,19 +11273,26 @@ function gatePopHtml(d) {
         + ' written — so these minutes do not move it.'}</div>`;
   }
 
-  const cr = d.credit || {};
+  const cr = d.verdict || {};
   let verdict = '<div class="gp-sect">The verdict</div>';
-  // THE TWO HALVES, each worth half the stake. Shown as the two statements
-  // they are, so a day that cost $1.00 says which half it lost.
-  if (cr.splits) {
-    verdict += gpRow('Scan half', cr.scan_half
+  // ONE PROOF, ONE STATEMENT (2026-09-02). This replaced two "half" rows that
+  // priced a scan and a routine against one stake. The row is named for the
+  // proof this gate actually asks for, because a Scan row on a gate that has
+  // never had a scan is a read-out describing a different gate.
+  if (isRoutine && !d.routine) {
+    // Nothing attached: applies_on has already stopped the gate running, so
+    // there is no verdict to state and nothing to charge. "not done yet" here
+    // would read as a debt against a gate that is asking nothing.
+    verdict += gpRow('Routine', '<span class="gp-no">none linked — this gate is asking '
+      + 'nothing, and cannot be cleared or charged until one is</span>');
+  } else if (isRoutine) {
+    verdict += gpRow('Routine', cr.met
+      ? '<span class="gp-ok">done — the day is earned</span>'
+      : '<span class="gp-no">not done yet</span>');
+  } else if (cr.proof !== 'hours') {
+    verdict += gpRow('Scan', cr.met
       ? '<span class="gp-ok">met — scanned inside the window</span>'
       : '<span class="gp-no">not met — no scan counted in the window</span>');
-    verdict += gpRow('Routine half', cr.routine_half
-      ? (cr.reason === 'routine_late'
-          ? '<span class="gp-no">done, but after its deadline</span>'
-          : '<span class="gp-ok">met — the routine was done</span>')
-      : '<span class="gp-no">not met — the routine has not been done</span>');
   }
   if (d.judged) {
     verdict += gpRow('Judged', d.judged.failure_reason
@@ -11210,14 +11300,19 @@ function gatePopHtml(d) {
       : '<span class="gp-ok">satisfied</span>');
     verdict += gpRow('Charge', escHtml(gateStatus(d.judged.charge_status))
       + (d.judged.amount_cents ? ` · $${(d.judged.amount_cents / 100).toFixed(2)}` : ''));
+  } else if (isRoutine && !d.routine) {
+    verdict += '<div class="gp-note">Link a routine on this gate’s editor and it'
+      + ' starts running again. Until then no day of it is judged at all.</div>';
+  } else if (isRoutine) {
+    // A routine gate has NO DEADLINE inside its day, so there is no window
+    // closing to point at — the settling instant is what to say instead, and
+    // it is SERVED (settle_after), never worked out here.
+    verdict += `<div class="gp-note">No deadline — doing it at all today earns the`
+      + ` day. It is judged once the day is over${cr.settles_at
+        ? `, at ${escHtml(cr.settles_at.slice(11))} tomorrow` : ''}.</div>`;
   } else if (!w.closed) {
     verdict += `<div class="gp-note">Still open. It is judged when the window closes at`
-      + ` ${escHtml(w.end)}${w.offset_days ? ' tomorrow' : ''}${cr.splits
-        ? ', and not before the day ends — the routine can still earn its half' : ''}.</div>`;
-  } else if (cr.splits) {
-    verdict += '<div class="gp-note">The window has closed, but the day has not:'
-      + ' finishing the routine still earns half the stake back, right up to'
-      + ' midnight.</div>';
+      + ` ${escHtml(w.end)}${w.offset_days ? ' tomorrow' : ''}.</div>`;
   } else {
     verdict += '<div class="gp-note">Closed, and the judge has not reached it yet.</div>';
   }
@@ -11231,6 +11326,9 @@ function gatePopHtml(d) {
   if (d.proof_mode === 'hours') {
     verdict += gpRow('Proof', 'the hours you report, on the honor system');
   }
+  if (d.proof_mode === 'routine') {
+    verdict += gpRow('Proof', 'its routine, finished at any point in the day');
+  }
 
   // THE ONE VERB IN HERE, and it is a real one. There used to be a cosmetic
   // "grey it out for this day" sitting where this button is, next to a
@@ -11242,8 +11340,9 @@ function gatePopHtml(d) {
   // quiet: a dead button on the day you most want to press it is how the
   // original gesture read.
   // HOW THIS GATE HAS BEEN GOING, in the four-word vocabulary the pills
-  // already speak: green met, amber the half-met day the 50/50 split created,
-  // red missed, and a hollow square for a day it did not run. The verdicts are
+  // already speak: green met, amber a half-met day frozen under the 50/50
+  // split (nothing writes one now), red missed, and a hollow square for a day
+  // it did not run. The verdicts are
   // the SERVER's (judged_outcome, read off frozen rows) - a strip that scored
   // the days itself would be the same bug as a client re-deriving a window,
   // one surface further out.
@@ -12084,7 +12183,10 @@ const GATE_REASONS = {
   geofence: 'scanned somewhere else',
   geofence_fail: 'scanned somewhere else',
   routine_incomplete: 'routine not done',
+  // Nothing writes routine_late any more — a routine gate has no deadline
+  // (2026-09-02). Kept because the rows that carry it are frozen.
   routine_late: 'routine done late',
+  hours_short: 'short of the hours',
   social_floor: 'social floor not met',
 };
 const GATE_STATUSES = {

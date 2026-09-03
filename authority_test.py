@@ -39,6 +39,15 @@ import storage          # noqa: E402
 # is not an answer is silence, which is what this file exists to prevent.
 READS = {
     # ── things a CLIENT can influence, and what re-decides them ──
+    'gate_has_routine':
+        'flow.qr_node_id — whether a routine is ATTACHED to a routine gate, '
+        'which decides whether that gate runs at all (qr_judge.applies_on). A '
+        'client CAN set the link, but only in the tightening direction: '
+        'storage.delete_flow and the unlink both queue as easings and land '
+        'through apply_due_flow_pendings, which this function calls before it '
+        'answers. Attaching one is immediate, and attaching a routine to a '
+        'gate can only make the gate run — it cannot clear a day, because '
+        'day_verdict still asks whether the RUN was completed.',
     'gating_flow_for_node':
         'flow_run.completed_at — RECOMPUTED at the write: put_flow_run honours '
         'completed only after run_completion_ok re-checks today\'s day_steps '

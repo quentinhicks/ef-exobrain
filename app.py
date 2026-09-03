@@ -2244,16 +2244,19 @@ def _gate_day_payload(node, ymd, now=None):
     r_due = qr_judge.routine_deadline(node, flow, ymd) if flow else None
     r_open_min, r_due_min = qr_judge.flow_day_window(flow, ymd) if flow else (None, None)
     settings = qr_judge.charge_settings()
-    # WHERE THE DAY STANDS, priced. The same ladder the judge charges on
-    # (day_credit), asked of the scans inside the window — so an unjudged day
+    # WHERE THE DAY STANDS, priced. The same predicate the judge charges on
+    # (day_verdict), asked of the scans inside the window — so an unjudged day
     # shows what it would cost if it ended now, and a judged one is read back
     # from its row rather than recomputed under a config that has since moved.
     in_window = [sc for sc in scans if sc['in_window']]
-    credit, credit_reason = qr_judge.day_credit(node, ymd, flow, in_window)
+    passed, verdict_reason = qr_judge.day_verdict(node, ymd, flow, in_window)
     judged = storage.qr_node_day_state(node['id'], ymd)['judged']
     if judged:
-        credit = (judged.get('credit_pct') or 0) / 100.0
-        credit_reason = judged.get('failure_reason')
+        # A frozen row decides its own day. `failure_reason` is what a row
+        # MEANS (a row is not a failure any more — see qr_reserve_judgment),
+        # so the pass is read off that and never off the amount.
+        verdict_reason = judged.get('failure_reason')
+        passed = not verdict_reason
     stake = qr_judge.node_charge_cents(node, settings)
 
     # THIS GATE'S OWN RECORD (2026-08-30, Quentin's instruction). The billing
@@ -2351,15 +2354,18 @@ def _gate_day_payload(node, ymd, now=None):
         'scans': scans,
         'hours': hours,
         'judged': judged,
-        # The two halves, named. A single "failed" hid the half that WAS met,
-        # which is the thing the split exists to make visible.
-        'credit': {
-            'pct': int(credit * 100),
-            'owed_cents': int(stake * (1 - credit)),
-            'reason': credit_reason,
-            'scan_half': any(sc['satisfies'] for sc in in_window),
-            'routine_half': bool(flow and flow.get('completed_at')),
-            'splits': flow is not None,
+        # ONE PROOF, ONE VERDICT (2026-09-02). This replaces the two named
+        # halves the 50/50 split served. `proof` says which question was asked,
+        # so the read-out states the day in the gate's own terms rather than
+        # showing a scan row on a gate that has never had a scan.
+        'verdict': {
+            'passed': bool(passed),
+            'reason': verdict_reason,
+            'owed_cents': 0 if passed else stake,
+            'proof': node.get('proof_mode') or 'link',
+            'met': (bool(flow and flow.get('completed_at'))
+                    if qr_judge.is_routine_gate(node)
+                    else any(sc['satisfies'] for sc in in_window)),
             'settles_at': qr_judge.settle_after(
                 node, ymd, flow, (start, end, offset)).strftime('%Y-%m-%d %H:%M'),
         },
@@ -2584,6 +2590,17 @@ def patch_accountability_node(id):
         storage.qr_cancel_pending_change(id, storage.QR_DELETE_FIELD)
         storage.qr_add_pending_change(id, storage.QR_DELETE_FIELD, '1', at, effective)
         return jsonify({'pending': True, 'apply_at': at, 'effective_date': effective})
+
+    if str(data.get('proof_mode') or '') == 'routine' and node.get('proof_mode') != 'routine':
+        # The same rule the tag mode is held to, one proof kind along: a gate
+        # nothing can clear is not a commitment, it is a charge every day. A
+        # routine gate is cleared by its LINKED routine, so there has to be one
+        # — refused in words at the door rather than applied and discovered at
+        # 04:00. (Losing the routine later is handled too, on the safe end:
+        # applies_on stops the gate running at all, so the day lands 'n/a'.)
+        if not storage.gate_has_routine(id):
+            return jsonify({'error': 'link a daily routine first — a routine gate with '
+                                     'no routine could never be cleared'}), 400
 
     if str(data.get('proof_mode') or '') == 'tag' and node.get('proof_mode') != 'tag':
         # A gate nothing can clear is not a commitment, it is a charge every

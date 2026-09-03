@@ -311,6 +311,18 @@ def applies_on(node, ymd, override=None):
         override = storage.qr_get_override(node['id'], ymd)
     if override and override.get('skipped'):
         return False
+    # A ROUTINE GATE WITH NO ROUTINE DOES NOT RUN. Asked BEFORE the schedule
+    # branches below, both of which RETURN — written after them once, where it
+    # was reachable only by a gate with no source, so a gate that had lost its
+    # routine went on being judged and charged. The schedule says which DAYS a
+    # gate runs; this says whether there is anything for it to ask at all, and
+    # a question with no subject is not a commitment. Lands 'n/a' by the same
+    # road a non-run weekday does: judged, frozen, never charged.
+    # Date-free on purpose (storage.gate_has_routine): whether a routine is
+    # ATTACHED is a fact about the gate, not about this date, and the run is a
+    # different question asked later by day_verdict.
+    if is_routine_gate(node) and not storage.gate_has_routine(node['id']):
+        return False
     # With a source, "does it run today" is whether the source has an occurrence
     # — days_of_week is only the fallback for a gate that has no source yet.
     # A gate RUNS on a date when its schedule has an occurrence STARTING that
@@ -471,75 +483,80 @@ def _completed_local(iso):
     return datetime.fromtimestamp(dt.timestamp()) if dt.tzinfo else dt
 
 
-# How far back a judge that has been down will reach. Bounded so a database
-# restored from an old backup, or a gate created long ago, cannot walk a month.
-# ── TWO HALVES, PRICED SEPARATELY (2026-08-22, Quentin's instruction) ─────
+# ── ONE GATE, ONE PROOF, ONE VERDICT (2026-09-02, Quentin's instruction) ──
 #
-# The old rule was all-or-nothing: miss either half and the whole stake went.
-# That left a missed morning with NO REASON TO DO THE ROUTINE AT ALL — the day
-# was already lost by 09:00, and the routine is the part that was actually
-# worth doing. So the stake now splits.
+# This REPLACES the 50/50 split of 2026-08-22, which priced a scan and a linked
+# routine as two halves of one stake. The split was itself a fix for an
+# all-or-nothing rule that left a missed morning with no reason to do the
+# routine at all — but it fixed that by coupling two commitments to one price,
+# and coupling is what was actually wrong. Separated, nothing is ever
+# pre-lost: each checkpoint keeps its own live incentive all day, and no
+# checkpoint's failure discounts another's.
 #
-#   scan in its window AND routine done by its deadline  ->  nothing to pay
-#   either one of those, on its own                      ->  half the stake
-#   neither                                              ->  the whole stake
+# The code had already argued this once. An hours gate refuses to be linked to
+# the routine that hosts its entry step (see day_verdict), because entering the
+# hours IS finishing that routine, so one act would have paid for two halves.
+# That is this rule, one gate earlier.
 #
-# The routine half is earned by finishing the routine AT ALL on its day, late or
-# not; the scan half can only be earned inside the window, because a scan is a
-# claim about where you were at a time. Both on time is the only way to pay
-# nothing — a late routine costs the same half as no scan does, which is what
-# keeps "on time" worth aiming at.
+# So a gate is cleared by exactly ONE kind of proof, named in proof_mode:
 #
-# WHAT THIS COSTS, and it is the part to be careful about: a day can no longer
-# be settled when its scan window closes, because the routine can still earn
-# its half at 20:00. So a gate WITH a routine is judged after its day has ENDED
-# (settle_after below). A gate without one is unchanged — nothing about it can
-# still change once the window shuts, so it is judged then, as it always was.
-FULL, HALF, NONE = 1.0, 0.5, 0.0
+#   'link' / 'tag'  a scan inside the window          (scan_satisfies)
+#   'hours'         a number that meets the day's bar (hours_satisfies)
+#   'routine'       its linked routine, finished      (below)
+#
+# A routine gate has NO DEADLINE (Quentin, 2026-09-02): its commitment is the
+# WALL DAY — done at all, on the day it was owed. `routine_deadline` still
+# answers when the routine is DUE, and the runner still shows it, but nothing
+# on the money path asks. What it costs to have no deadline is paid in the
+# timing instead: the day cannot settle at any clock time inside it, so a
+# routine gate settles at the wall day's end plus ROUTINE_GRACE_HOURS, which is
+# the same instant a run stops being able to earn its day (run_settles_at).
+#
+# THERE IS NO PARTIAL CREDIT ANY MORE. credit_pct is still written — 100 on a
+# pass, 0 on a fail — and judged_outcome still reads the 50s frozen into rows
+# judged under the split, because a judged day is frozen and history says what
+# it said. Nothing can write a 50 again.
 
 
-def day_credit(node, ymd, flow, scans, now=None, hours=None):
-    """How much of the stake this day earned back, and why. THE one answer.
+def day_verdict(node, ymd, flow, scans, now=None, hours=None):
+    """Did this gate's day pass? (ok, reason). THE one answer.
 
-    Returned as (credit, reason). `reason` is NULL when nothing is owed — a row
-    with no failure_reason is a judged success, which is what the freeze made a
-    row mean (see qr_reserve_judgment).
+    `reason` is NULL on a pass — a row with no failure_reason is a judged
+    success, which is what the freeze made a row mean (qr_reserve_judgment).
     """
     if is_hours_gate(node):
-        # A number, not a scan — and there is no half to earn. The routine that
-        # HOSTS the entry step is deliberately not linked to this gate: if it
-        # were, day_credit would hand back half the day just for finishing the
-        # routine, and entering the hours IS finishing it, so every failed day
-        # would silently charge half the stake for both halves of one act.
+        # A number, not a scan. The routine that HOSTS the entry step is
+        # deliberately not this gate's proof: entering the hours IS finishing
+        # that routine, so making it clear the gate would credit one act twice.
         passed = (hours or hours_satisfies(node, ymd))[0]
-        return (FULL, None) if passed else (NONE, 'hours_short')
+        return (True, None) if passed else (False, 'hours_short')
 
-    scan_ok = any(scan_satisfies(node, sc) for sc in scans)
-    done = _completed_local(flow['completed_at']) if flow else None
-    if flow is None:
-        # No routine: the scan IS the whole commitment, so there is no half to
-        # earn and nothing to wait for.
-        return (FULL, None) if scan_ok else (NONE, 'absent')
+    if is_routine_gate(node):
+        # THE WALL DAY, with no deadline inside it. Late is not a failure here
+        # and has no reason to be recorded as one, so there is no 'routine_late'
+        # — the run either belongs to this day or it does not, and a run belongs
+        # to the day it was OPENED on (flowRunView.date), not the clock at the
+        # moment it was ticked.
+        if flow is None:
+            # No routine attached: there is nothing this gate could ask, so it
+            # cannot be failed. applies_on already stops it running at all, and
+            # the PATCH route refuses to leave a gate in this state — both
+            # because a gate nothing can clear is not a commitment, it is a
+            # daily charge. This is the third lock, on the safe end.
+            return True, None
+        return (True, None) if flow['completed_at'] else (False, 'routine_incomplete')
 
-    r_due = routine_deadline(node, flow, ymd)
-    on_time = bool(done) and (r_due is None or done <= r_due)
-    if scan_ok and on_time:
-        return FULL, None
-    if scan_ok:
-        # The scan half is earned. The routine was late, or never happened.
-        return HALF, 'routine_late' if done else 'routine_incomplete'
-    if done:
-        # The routine half is earned, however late. No scan, so half is owed.
-        return HALF, 'absent'
-    return NONE, 'absent'
+    return ((True, None) if any(scan_satisfies(node, sc) for sc in scans)
+            else (False, 'absent'))
 
 
-# HOW FAR PAST MIDNIGHT A ROUTINE CAN STILL EARN ITS HALF (2026-08-25,
-# Quentin's instruction). Midnight alone contradicted a rule the app already
+# HOW FAR PAST MIDNIGHT A ROUTINE CAN STILL EARN ITS DAY (2026-08-25,
+# Quentin's instruction; it earned a HALF until 2026-09-02, and now earns the
+# whole gate). Midnight alone contradicted a rule the app already
 # had: a run belongs to the day it was OPENED on, and openFlowRun deliberately
 # resumes yesterday's unfinished run — so a night routine finished at 00:05
 # credits a day the judge, which settles at 00:00 and runs every five minutes,
-# had already frozen. The half was earned and unearnable at the same time.
+# had already frozen. The day was earned and unearnable at the same time.
 #
 # Four hours, not twenty-four. A full day would keep Monday chargeable while
 # Tuesday's routine was already running, so two money days would be open at
@@ -551,19 +568,24 @@ ROUTINE_GRACE_HOURS = 4
 def settle_after(node, ymd, flow, window):
     """The moment this day can be judged without the answer still moving.
 
-    The scan window's close, and — where a routine is linked — the end of the
-    day PLUS the grace above, because the routine can earn its half right up
-    to then. Judging at the scan's close would charge the full stake for a
-    routine that was about to be done, and a judged day is FROZEN, so there is
-    no second look. This is the whole reason the split needs a timing rule.
+    A gate proved by a SCAN or by a NUMBER settles when its window closes:
+    nothing about the day can change after that, which is what a window is.
+
+    A ROUTINE gate has no deadline inside its day, so there is no clock time
+    within the day at which its answer stops moving — it settles at the wall
+    day's end plus the grace, the same instant a run stops being able to earn
+    its day (run_settles_at). Judging earlier would charge for a routine that
+    was about to be done, and a judged day is FROZEN, so there is no second
+    look. This is the price of having no deadline, and it is paid here.
+
+    `flow` is accepted and ignored for the scan kinds ON PURPOSE: a routine
+    linked to a scan gate no longer delays or softens that gate's judgment
+    (2026-09-02). The two are separate commitments now.
     """
+    if is_routine_gate(node):
+        return run_settles_at(ymd)
     start, end, offset = window
-    close = _local_dt(close_date_of(ymd, offset), end)
-    if flow is None:
-        return close
-    day_end = (_local_dt(_date_plus(ymd, 1), '00:00')
-               + timedelta(hours=ROUTINE_GRACE_HOURS))
-    return max(close, day_end)
+    return _local_dt(close_date_of(ymd, offset), end)
 
 
 def run_settles_at(ymd):
@@ -578,13 +600,15 @@ def run_settles_at(ymd):
     Served to the client rather than mirrored there (`get_flows`), because a
     client re-derivation of a rule the judge charges against is a bug even
     while it agrees. No node and no window: this is the ROUTINE half's outer
-    bound, which settle_after takes the max with, so it is the same instant
-    for every routine whatever gate it hangs on.
+    bound, and settle_after IS this for a routine gate, so a routine's day
+    ends at the same instant whether you ask the runner or the judge.
     """
     return (_local_dt(_date_plus(ymd, 1), '00:00')
             + timedelta(hours=ROUTINE_GRACE_HOURS))
 
 
+# How far back a judge that has been down will reach. Bounded so a database
+# restored from an old backup, or a gate created long ago, cannot walk a month.
 BACKFILL_MAX_DAYS = 14
 
 
@@ -643,10 +667,11 @@ def judge(now=None, verbose=False):
             start, end, offset = resolve_window(node, ymd)
             close_date = close_date_of(ymd, offset)
 
-            # The routine that gates this node, if any. It no longer decides the
-            # day on its own clock: a routine done late still earns half, so the
-            # day is not answerable until it can no longer change (settle_after).
-            flow = storage.gating_flow_for_node(node['id'], ymd)
+            # ONLY a routine gate asks about a routine (2026-09-02). A routine
+            # linked to a SCAN gate is a separate commitment with its own gate
+            # and its own stake, so it neither softens this day nor delays it.
+            flow = (storage.gating_flow_for_node(node['id'], ymd)
+                    if is_routine_gate(node) else None)
             if now < settle_after(node, ymd, flow, (start, end, offset)):
                 continue
             if storage.qr_judgment_exists(node['id'], ymd):
@@ -660,7 +685,7 @@ def judge(now=None, verbose=False):
             # against — the credit_pct rule, for the same reason.
             hrs = hours_satisfies(node, ymd) if is_hours_gate(node) else None
             stamp = (hrs[2], hrs[1], hrs[3]) if hrs else None
-            credit, reason = day_credit(node, ymd, flow, scans, now, hours=hrs)
+            _ok, reason = day_verdict(node, ymd, flow, scans, now, hours=hrs)
             tag = '' if ymd == today else ' (%s)' % ymd
             if reason is None:
                 # A ROW ON SUCCESS TOO (2026-08-17) — the FREEZE, reversing
@@ -684,14 +709,13 @@ def judge(now=None, verbose=False):
                 # Judged, frozen, never charged — see _days_to_judge.
                 if storage.qr_reserve_judgment(node['id'], ymd, reason, 'stale', None,
                                                window=(start, end, offset),
-                                               credit_pct=int(credit * 100),
-                                               hours=stamp):
+                                               credit_pct=0, hours=stamp):
                     lines.append('X   %s (%s): %s -> stale (backfill)'
                                  % (node['label'], ymd, reason))
                 continue
 
             status = charge_for_failure(node, ymd, reason, window=(start, end, offset),
-                                        credit=credit, hours=stamp)
+                                        hours=stamp)
             if status is None:
                 continue          # another tick reserved it first
             lines.append('X   %s%s: %s -> %s' % (node['label'], tag, reason, status))
@@ -783,6 +807,12 @@ def judged_outcome(judgment):
     cannot disagree about what a half-charged day was. credit_pct is NULL on
     rows written before the split — and those rows meant the whole stake, so a
     missing value is a plain failure, which is what they were.
+
+    NO NEW ROW CAN BE PARTIAL (2026-09-02): the split is gone and credit_pct is
+    now only 100 or 0. 'partial' is kept because the rows judged between
+    2026-08-22 and then carry 50, a judged day is FROZEN, and re-scoring them
+    as plain failures would rewrite what they cost. Do not delete this branch
+    to tidy up a state nothing writes; it is history, not dead code.
     """
     if not judgment.get('failure_reason'):
         return 'success'
@@ -868,6 +898,10 @@ def is_hours_gate(node):
     return (node.get('proof_mode') or 'link') == 'hours'
 
 
+def is_routine_gate(node):
+    return (node.get('proof_mode') or 'link') == 'routine'
+
+
 def is_loosening(field, current, nxt, node=None):
     if field == 'source_uid':
         # A source has no fields to compare, so the question is asked of the
@@ -948,13 +982,20 @@ def is_loosening(field, current, nxt, node=None):
         # judged. Turning one back ON is tightening and applies immediately.
         return _falsy(nxt) and not _falsy(current)
     if field == 'proof_mode':
-        # Going from the tag back to the link is the loosening that matters:
-        # the gate stops needing the object in your hand and starts accepting
-        # a URL you can open from bed. Tightening it (link -> tag) applies at
-        # once — but only where a live tag exists to clear it with, which
-        # app.py refuses at the door rather than pending, because a gate with
-        # no way to be cleared is not a commitment, it is a daily charge.
-        return str(current) == 'tag' and str(nxt) != 'tag'
+        # ONE provable tightening, and everything else waits (2026-09-02, when
+        # 'routine' joined 'link', 'tag' and 'hours'). link -> tag is the only
+        # move that unambiguously demands MORE: the gate stops accepting a URL
+        # you can open from bed and starts needing the object in your hand. It
+        # applies at once, but only where a live tag exists to clear it with,
+        # which app.py refuses at the door rather than pending.
+        #
+        # Every other move swaps one kind of proof for a DIFFERENT kind, and
+        # there is no scale on which a scan and a routine and a number can be
+        # compared — so none of them is proven tighter, and the allowlist rule
+        # says they wait. This branch used to read `current == 'tag'`, which
+        # was blacklist-shaped: link -> hours and link -> routine both fell
+        # through as tightenings and applied instantly on the money path.
+        return not (str(current) != 'tag' and str(nxt) == 'tag')
     if field in ('geofence_lat', 'geofence_lng'):
         # A fence cannot be proven tighter by comparing coordinates: moving it
         # is loosening for the place you were meant to be, and CLEARING it
@@ -1196,22 +1237,21 @@ def _http_get(url):
         return 200 <= r.status < 300, json.loads(r.read() or b'{}')
 
 
-def charge_for_failure(node, ymd, reason, sender=None, window=None, credit=0.0,
-                       hours=None):
+def charge_for_failure(node, ymd, reason, sender=None, window=None, hours=None):
     """The whole money path for one judged failure. Returns the status stored.
 
     Reserve BEFORE charging, and only the tick that won the reservation may
     call Beeminder. Every early return still leaves a row, so the day is
     judged exactly once whatever happens to the money.
 
-    `credit` is the share of the stake the day EARNED BACK (day_credit): half
-    for one of the two halves met, so the amount is what is left owing. It is
-    rounded DOWN to the cent in the user's favour, and the amount stored is the
-    amount charged, so the cap and the log agree with the card.
+    A failure costs the WHOLE stake. There is no fractional amount any more
+    (2026-09-02): a gate has one proof and one verdict, so the only two prices
+    are the stake and nothing. credit_pct is still stamped — 0 here — because
+    the rows judged under the split carry 50 and judged_outcome reads it.
     """
     storage.qr_ensure_charge_columns()
     s = charge_settings()
-    amount = int(node_charge_cents(node, s) * (1 - credit))
+    amount = node_charge_cents(node, s)
     spent = storage.qr_weekly_spent_cents(ymd)
     capped = s['live'] and (spent + amount) > s['cap_cents']
     will_charge = s['live'] and not capped
@@ -1219,7 +1259,7 @@ def charge_for_failure(node, ymd, reason, sender=None, window=None, credit=0.0,
     status = 'capped' if capped else ('charging' if will_charge else 'would_fire')
     won = storage.qr_reserve_judgment(
         node['id'], ymd, reason, status, amount if will_charge else None,
-        window=window, credit_pct=int(credit * 100), hours=hours)
+        window=window, credit_pct=0, hours=hours)
     if not won:
         return None          # another tick owns this day; do not touch money
 

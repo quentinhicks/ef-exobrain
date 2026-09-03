@@ -6639,6 +6639,22 @@ def gating_flow_for_node(node_id, date):
     return dict(row) if row else None
 
 
+def gate_has_routine(node_id):
+    # Is a daily routine linked to this gate AT ALL? No date, deliberately:
+    # this is a question about the gate's CONFIGURATION, not about one day's
+    # run, and asking gating_flow_for_node instead would have made a config
+    # check pick a day out of the server's wall clock (dayrule_test caught
+    # exactly that). Due easings are landed first for the same reason they are
+    # there: a queued unlink must not need a UI read to take effect.
+    conn = get_conn()
+    apply_due_flow_pendings(conn)
+    row = conn.execute(
+        """SELECT 1 FROM flow WHERE qr_node_id = ?
+             AND COALESCE(period, 'day') = 'day' LIMIT 1""", (node_id,)).fetchone()
+    conn.close()
+    return row is not None
+
+
 def routine_gate_for_node(node_id, date):
     # Does a routine gate this node on this date, and was it done AT ALL?
     # None when nothing gates it, else True/False. The judge asks the sharper

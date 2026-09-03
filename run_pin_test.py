@@ -11,15 +11,15 @@ the other end. checkDayRollover never touched flowRunView, so an open run kept
 the pin for the rest of the session: every later write that asks runDay() - a
 metric, the journal, THIS morning's social dose - filed under a day that had
 closed hours earlier. On a gated routine that is money, twice over: the new
-day's routine looks undone (the split's routine half is lost and the day
-charges) while the write lands on a day the judge has already frozen.
+day's routine looks undone (a routine gate charges for it) while the write lands
+on a day the judge has already frozen.
 
-The boundary is not a new rule. `settle_after` already says a gated day cannot
-be judged until midnight plus ROUTINE_GRACE_HOURS, because the routine can earn
-its half right up to then; past it the day is settled. So the pin ends exactly
-there, and it is SERVED (get_flows -> `settles_at`) rather than computed in
-app.js, because a client re-derivation of a rule the judge charges against is a
-bug even while it agrees.
+The boundary is not a new rule. `settle_after` already says a ROUTINE gate's day
+cannot be judged until midnight plus ROUTINE_GRACE_HOURS, because the routine
+has no deadline inside its day and can be finished right up to then; past it the
+day is settled. So the pin ends exactly there, and it is SERVED (get_flows ->
+`settles_at`) rather than computed in app.js, because a client re-derivation of
+a rule the judge charges against is a bug even while it agrees.
 
 The client half (pinnedRunStillLive / releaseStaleRunPin releasing the pin and
 runDay() falling back to the wall day) is browser-driven; this is the server
@@ -58,20 +58,23 @@ check('and that is exactly midnight plus the ROUTINE grace',
       settles == dt(2026, 9, 2, 0, 0) + timedelta(hours=qr_judge.ROUTINE_GRACE_HOURS),
       qr_judge.ROUTINE_GRACE_HOURS)
 
-# It must be the SAME instant the judge would settle a gated day at, or the
-# runner would keep crediting a day the judge had already frozen. settle_after
-# takes the max with the scan close, so the routine's outer bound is this one.
+# It must be the SAME instant the judge would settle a ROUTINE gate's day at, or
+# the runner would keep crediting a day the judge had already frozen. A routine
+# gate has no deadline inside its day, so settle_after IS this instant for it.
 window = ('06:00', '09:00', 0)
-check('it agrees with settle_after for a gated, routine-linked day',
-      qr_judge.settle_after({'id': 1}, '2026-09-01', {'id': 1}, window) == settles,
-      qr_judge.settle_after({'id': 1}, '2026-09-01', {'id': 1}, window))
+routine_gate = {'id': 1, 'proof_mode': 'routine'}
+check('it agrees with settle_after for a routine gate',
+      qr_judge.settle_after(routine_gate, '2026-09-01', {'id': 1}, window) == settles,
+      qr_judge.settle_after(routine_gate, '2026-09-01', {'id': 1}, window))
 
-# A gate with NO routine settles at its scan close instead - unchanged, and the
-# reason run_settles_at takes no node: this is the ROUTINE half's bound.
-check('a gate with no routine still settles at its own close, untouched',
+# A SCAN gate settles at its close, and a routine linked to it changes nothing
+# (2026-09-02): the two are separate commitments, so the routine neither softens
+# that gate nor delays it. This used to be the only case that settled early.
+check('a scan gate settles at its own close, with or without a routine',
       qr_judge.settle_after({'id': 1}, '2026-09-01', None, window)
+      == qr_judge.settle_after({'id': 1}, '2026-09-01', {'id': 1}, window)
       == dt(2026, 9, 1, 9, 0),
-      qr_judge.settle_after({'id': 1}, '2026-09-01', None, window))
+      qr_judge.settle_after({'id': 1}, '2026-09-01', {'id': 1}, window))
 
 # Crossing a month is where a hand-rolled "+1 day" would have broken.
 check('it crosses a month end without arithmetic of its own',

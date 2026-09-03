@@ -240,7 +240,7 @@ fresh(live=True, fee=0)
 nid = hours_gate(stake=500)
 storage.put_study_entry(nid, YESTERDAY, 60)
 qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short', sender=fake_sender,
-                            window=('04:00', '04:00', 1), credit=0.0,
+                            window=('04:00', '04:00', 1),
                             hours=(T, 60, 30))
 r = row(nid, YESTERDAY)
 check('a failed day charges the flat stake, not a fraction of it',
@@ -252,7 +252,7 @@ sent.clear()
 fresh(live=True, fee=30)
 nid = hours_gate(stake=500)
 qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short', sender=fake_sender,
-                            window=('04:00', '04:00', 1), credit=0.0,
+                            window=('04:00', '04:00', 1),
                             hours=(T, 0, 0))
 r = row(nid, YESTERDAY)
 check('the card fee comes OUT of the stake: the log keeps the full 500',
@@ -265,7 +265,7 @@ fresh(live=True, cap=300)
 nid = hours_gate(stake=500)
 status = qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short',
                                      sender=fake_sender,
-                                     window=('04:00', '04:00', 1), credit=0.0,
+                                     window=('04:00', '04:00', 1),
                                      hours=(T, 0, 0))
 check('a charge breaching the shared weekly cap is skipped WHOLE',
       status == 'capped' and not sent, (status, sent))
