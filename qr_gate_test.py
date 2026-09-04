@@ -471,5 +471,106 @@ check('and is logged stale, so the cap and the card never see it',
       rows and rows[0]['charge_status'] == 'stale' and rows[0]['amount_cents'] is None,
       rows)
 
+# -- ALL DAY: THE WINDOW STOPS JUDGING (2026-09-03) -----------------------
+#
+# Quentin's instruction: a morning routine has a time it is MEANT to happen at
+# and a commitment that is really "today"; study hours are a number the day
+# owes and nothing to do with a clock. Both were judged against a window that
+# only existed to place the pill. `all_day` says the window judges nothing --
+# the rule a routine gate has had since 2026-09-02, made settable for the other
+# proofs rather than hard-coded to one of them.
+
+fresh()
+nid = storage.qr_create_node('Gym', 'tok-allday-1', '06:00', '08:00')
+scan(nid, YESTERDAY, '21:00')                 # long after the window closed
+qr_judge.judge(now=SETTLED)
+check('control: a scan outside the window fails the day',
+      reason_for(nid, YESTERDAY) == 'absent', reason_for(nid, YESTERDAY))
+
+fresh()
+nid = storage.qr_create_node('Gym', 'tok-allday-2', '06:00', '08:00')
+storage.qr_update_node(nid, {'all_day': 1})
+scan(nid, YESTERDAY, '21:00')
+qr_judge.judge(now=SETTLED)
+check('all day: the same scan clears it',
+      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
+check('and the day is judged, not left open',
+      storage.qr_judgment_exists(nid, YESTERDAY))
+check('outcomes reads the same day the same way',
+      [o['outcome'] for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)
+       if o['node_id'] == nid] == ['success'])
+
+# A scan at 23:59 counts; one at 00:30 is a fact about the NEXT day. The bound
+# is the wall day, not the routine gate's four-hour grace -- that grace exists
+# for the RUN's pin, which a scan does not have.
+fresh()
+nid = storage.qr_create_node('Gym', 'tok-allday-3', '06:00', '08:00')
+storage.qr_update_node(nid, {'all_day': 1})
+scan(nid, _date_plus_day(YESTERDAY), '00:30')
+qr_judge.judge(now=SETTLED)
+check('a scan after midnight does NOT reach back into the all-day it followed',
+      reason_for(nid, YESTERDAY) == 'absent', reason_for(nid, YESTERDAY))
+
+node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
+check('an all-day gate settles at midnight, not at its decorative window',
+      qr_judge.settle_after(node, YESTERDAY, None, ('06:00', '08:00', 0))
+      == datetime.fromisoformat(_date_plus_day(YESTERDAY) + 'T00:00:00'),
+      qr_judge.settle_after(node, YESTERDAY, None, ('06:00', '08:00', 0)))
+
+# THE STUDY CASE, which is what was actually asked for: hours reported in the
+# evening against a daytime window. The number was always dated rather than
+# timed (study_entry is keyed by DAY), so the only thing cutting it off was the
+# day being judged when the window closed.
+TODAY = date_cls.today().isoformat()
+
+fresh()
+nid = storage.qr_create_node('Study', 'tok-allday-4', '09:00', '17:00')
+storage.qr_update_node(nid, {'proof_mode': 'hours', 'target_minutes': 60})
+qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T18:00:00'))
+check('control: an hours gate is judged the moment its window closes',
+      storage.qr_judgment_exists(nid, TODAY))
+
+fresh()
+nid = storage.qr_create_node('Study', 'tok-allday-5', '09:00', '17:00')
+storage.qr_update_node(nid, {'proof_mode': 'hours', 'target_minutes': 60,
+                             'all_day': 1})
+qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T18:00:00'))
+check('all day: 18:00 is too early to judge it -- the evening is still owed',
+      not storage.qr_judgment_exists(nid, TODAY))
+storage.put_study_entry(nid, TODAY, 90)
+qr_judge.judge(now=datetime.fromisoformat(_date_plus_day(TODAY) + 'T00:05:00'))
+check('and hours reported at 20:00 earn the day when it does settle',
+      storage.qr_judgment_exists(nid, TODAY) and reason_for(nid, TODAY) is None,
+      reason_for(nid, TODAY))
+
+# A ROUTINE gate is all-day by construction, whatever the column says: one
+# predicate, so the two cannot disagree.
+fresh()
+nid = storage.qr_create_node('Night', 'tok-allday-6', '21:00', '23:00')
+flow = storage.create_flow('Night routine')
+storage.update_flow(flow['id'], qr_node_id=nid)
+storage.qr_update_node(nid, {'proof_mode': 'routine'})
+node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
+check('a routine gate is all-day with the flag off',
+      qr_judge.is_all_day(node) and not node['all_day'], node['all_day'])
+
+# -- and the 24h teeth still bite --
+check('turning the window off is a loosening',
+      qr_judge.is_loosening('all_day', 0, 1) is True)
+check('putting it back in charge is immediate',
+      qr_judge.is_loosening('all_day', 1, 0) is False)
+
+fresh()
+nid = storage.qr_create_node('Gym', 'tok-allday-7', '06:00', '08:00')
+node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
+imm, pend = qr_judge.schedule_node_patch(node, {'all_day': 1})
+check('so making a gate all-day waits 24h rather than applying now',
+      imm == {} and list(pend) == ['all_day'] and pend['all_day']['value'] == 1,
+      (imm, pend))
+node = dict(node, all_day=1)
+imm, pend = qr_judge.schedule_node_patch(node, {'all_day': 0})
+check('and taking it back applies at once',
+      imm == {'all_day': 0} and pend == {}, (imm, pend))
+
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

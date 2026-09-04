@@ -2174,8 +2174,11 @@ def _gate_day_payload(node, ymd, now=None):
     skipped = bool(override and override.get('skipped'))
     start, end, offset = qr_judge.resolve_window(node, ymd, override)
     close_date = qr_judge.close_date_of(ymd, offset)
-    open_iso = qr_judge._utc_iso(ymd, start)
-    close_iso = qr_judge._utc_iso(close_date, end)
+    # The judge's own bounds, never a second copy of them: on an all-day gate
+    # this is the whole local day, which is what makes `in_window` below true
+    # of the scans that actually counted.
+    open_iso, close_iso = qr_judge.day_scan_bounds(node, ymd, (start, end, offset))
+    all_day = qr_judge.is_all_day(node)
 
     # WHY the window is what it is. The pill shows one time; which of the four
     # layers produced it is the first thing you need when it is not the time you
@@ -2337,7 +2340,15 @@ def _gate_day_payload(node, ymd, now=None):
                    'close_date': close_date, 'from': source,
                    'start_min': qr_judge._hhmm_min(start),
                    'end_min': qr_judge._hhmm_min(end) + int(offset or 0) * 1440,
-                   'closed': now >= qr_judge._local_dt(close_date, end)},
+                   # ALL DAY: the window is where the pill sits and nothing
+                   # else. Said here rather than worked out client-side,
+                   # because "does this time judge me" is the first question
+                   # the read-out has to answer honestly — and `closed` is
+                   # then the moment the DAY stops moving (settle_after), not
+                   # the moment a decorative window ends.
+                   'all_day': all_day,
+                   'closed': now >= qr_judge.settle_after(
+                       node, ymd, flow, (start, end, offset))},
         'history': history,
         'pawn': {'minutes': pawn_min, 'steps': pawned,
                  'taken_min': pawn_taken, 'applied': bool(pawn_taken)},

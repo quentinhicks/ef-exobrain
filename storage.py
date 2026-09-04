@@ -1295,7 +1295,13 @@ def init_db():
             # What actually proved this scan. Written by the scan server after
             # it verifies, never sent by a client — see authority_test.
             ('qr_scan', 'proof', "TEXT NOT NULL DEFAULT 'link'"),
-            ('qr_scan', 'tag_id', 'INTEGER')):
+            ('qr_scan', 'tag_id', 'INTEGER'),
+            # THE WINDOW STOPS JUDGING (2026-09-03, Quentin's instruction). An
+            # all-day gate's commitment is the WALL DAY: its window still says
+            # where the pill sits and when the day opens, and decides nothing.
+            # Default 0, because turning it on for an existing gate would
+            # loosen every one of them silently — and a loosening waits 24h.
+            ('qr_node', 'all_day', 'INTEGER NOT NULL DEFAULT 0')):
         try:
             conn.execute(f'SELECT {col} FROM {table} LIMIT 1')
         except Exception:
@@ -7849,7 +7855,7 @@ def qr_create_node(label, token, window_start, window_end, offset_days=0,
 QR_NODE_FIELDS = ('label', 'window_start', 'window_end', 'window_end_offset_days',
                   'geofence_lat', 'geofence_lng', 'geofence_radius_m', 'active',
                   'days_of_week', 'weekly_windows', 'charge_cents', 'source_uid',
-                  'proof_mode', 'target_minutes')
+                  'proof_mode', 'target_minutes', 'all_day')
 
 # The pseudo-field a queued DELETION is filed under: deliberately not a column,
 # so nothing can ever UPDATE a node with it (qr_apply_due_pending_changes reads

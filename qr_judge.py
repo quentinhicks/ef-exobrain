@@ -584,6 +584,13 @@ def settle_after(node, ymd, flow, window):
     """
     if is_routine_gate(node):
         return run_settles_at(ymd)
+    if is_all_day(node):
+        # The wall day ends, and with it the last minute that could have
+        # cleared this gate. NOT the routine's four-hour grace: that grace
+        # exists for the RUN's pin (a night ticked at 00:05 belongs to the
+        # night it was opened on), and a scan or a number at 00:30 is a fact
+        # about the new day, not the old one.
+        return _local_dt(_date_plus(ymd, 1), '00:00')
     start, end, offset = window
     return _local_dt(close_date_of(ymd, offset), end)
 
@@ -665,7 +672,6 @@ def judge(now=None, verbose=False):
                 continue
             money_reach = ymd >= _date_plus(today, -1)
             start, end, offset = resolve_window(node, ymd)
-            close_date = close_date_of(ymd, offset)
 
             # ONLY a routine gate asks about a routine (2026-09-02). A routine
             # linked to a SCAN gate is a separate commitment with its own gate
@@ -677,8 +683,8 @@ def judge(now=None, verbose=False):
             if storage.qr_judgment_exists(node['id'], ymd):
                 continue
 
-            scans = storage.qr_scans_in_window(
-                node['id'], _utc_iso(ymd, start), _utc_iso(close_date, end))
+            open_iso, close_iso = day_scan_bounds(node, ymd, (start, end, offset))
+            scans = storage.qr_scans_in_window(node['id'], open_iso, close_iso)
             # Resolved ONCE and stamped on whichever row this day lands in. The
             # bucket is a running total, so re-deriving it later would let a
             # correction to last Tuesday rewrite what Wednesday was judged
@@ -755,9 +761,13 @@ def outcomes(from_date, to_date, now=None):
                 continue
             start, end, offset = resolve_window(
                 node, ymd, overrides.get((node['id'], ymd)))
-            close_date = close_date_of(ymd, offset)
-            open_iso = _utc_iso(ymd, start)
-            close_iso = _utc_iso(close_date, end)
+            open_iso, close_iso = day_scan_bounds(node, ymd, (start, end, offset))
+            # WHEN the day stops moving, asked of the judge's own function
+            # rather than re-derived from the window — an all-day gate closes
+            # at midnight and a routine gate four hours after it, and painting
+            # either as failed while it was still winnable is the bug this
+            # avoids. (`flow` is None here and settle_after ignores it.)
+            settles = settle_after(node, ymd, None, (start, end, offset))
             j = judged.get((node['id'], ymd))
             if j and j['charge_status'] == 'n/a':
                 # Frozen as "the gate did not run that day" — neutral, exactly
@@ -772,7 +782,7 @@ def outcomes(from_date, to_date, now=None):
                 # make visible.
                 out.append({'node_id': node['id'], 'date': ymd,
                             'outcome': judged_outcome(j)})
-            elif now >= _local_dt(close_date, end):
+            elif now >= settles:
                 # A closed day the judge never reached. An hours gate is asked
                 # its own predicate here — the SAME function judge() uses, which
                 # is the point of there being one. Deriving it from scans would
@@ -902,6 +912,44 @@ def is_routine_gate(node):
     return (node.get('proof_mode') or 'link') == 'routine'
 
 
+# ── ALL DAY: the window stops judging (2026-09-03, Quentin's instruction) ──
+#
+# A morning routine has a time it is MEANT to happen at and a commitment that
+# is really "today"; study hours are a number owed by the day and nothing about
+# a clock. Both were being judged against a window that existed to place the
+# pill. A routine gate has said exactly this since 2026-09-02 — the wall day,
+# no deadline inside it — and `all_day` is that same rule, made settable for
+# the other proofs instead of hard-coded to one of them. So this predicate is
+# the ONE answer to "does this gate's window judge", and the routine branch
+# below is why it is not simply the column: routine gates ARE all-day by
+# construction, and a second way of asking would eventually disagree.
+#
+# What the window still does, on every gate: `applies_on` decides which DAYS
+# from the schedule, the pill draws at the window, an hours step opens with it,
+# and a pawn can still move an opening earlier. What it stops doing is deciding
+# whether the day was met.
+def is_all_day(node):
+    return is_routine_gate(node) or bool(node.get('all_day'))
+
+
+def day_scan_bounds(node, ymd, window):
+    """The UTC range a scan must land in to count for `ymd`. ONE answer.
+
+    Asked in three places — judge(), outcomes() and the gate read-out — which
+    is exactly the shape scan_satisfies was written in twice before it became
+    one function. An all-day gate takes the whole LOCAL day; every other gate
+    takes its resolved window, tail included.
+
+    An all-day gate ignores `window_end_offset_days` deliberately: the offset
+    exists to carry a window past midnight, and a gate with no deadline inside
+    its day has nothing to carry. The day is the date the gate is filed under.
+    """
+    start, end, offset = window
+    if is_all_day(node):
+        return _utc_iso(ymd, '00:00'), _utc_iso(_date_plus(ymd, 1), '00:00')
+    return _utc_iso(ymd, start), _utc_iso(close_date_of(ymd, offset), end)
+
+
 def is_loosening(field, current, nxt, node=None):
     if field == 'source_uid':
         # A source has no fields to compare, so the question is asked of the
@@ -974,6 +1022,14 @@ def is_loosening(field, current, nxt, node=None):
                                     n.get('window_end_offset_days') or 0)):
                 return True
         return False
+    if field == 'all_day':
+        # Turning the window off is the loosest thing a gate can be told short
+        # of being deleted: a 06:00 deadline becomes "sometime today". It
+        # waits 24h. Putting the window back in charge is a tightening and
+        # applies at once, cancelling any queued easing, like every other
+        # field. (A ROUTINE gate is all-day whatever this column says — see
+        # is_all_day — so on one of those the flag is inert either way.)
+        return not _falsy(nxt) and _falsy(current)
     if field == 'active':
         # Switching a gate OFF is the purest loosening there is. The dedicated
         # /disable route always queued it 24h; this predicate had no branch for

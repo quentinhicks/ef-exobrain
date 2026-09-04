@@ -4521,6 +4521,9 @@ const SETTINGS_SHEETS = {
         location: '', radius: n.geofence_radius_m || '',
         active, active0: active,
         proof: n.proof_mode || 'link', proof0: n.proof_mode || 'link',
+        // '1' / '0' as strings: a select's value is text, and comparing it to
+        // the loaded one is how the save knows whether it changed at all.
+        allDay: n.all_day ? '1' : '0', allDay0: n.all_day ? '1' : '0',
         // Always blank on open: a date is a decision about the save you are
         // making now, not a property of the gate. Re-showing the last one
         // would silently re-date the next edit.
@@ -4617,7 +4620,10 @@ const SETTINGS_SHEETS = {
                 : 'nothing — no routine is linked, so this gate does not run')
             : v.proof === 'hours'
             ? 'the hours you report meet the day’s requirement'
-            : [v.proof === 'tag' ? 'you tap one of its tags' : 'you scan it inside the window',
+              + (v.allDay === '1' ? ', reported any time that day' : ', inside the window')
+            : [v.proof === 'tag' ? 'you tap one of its tags'
+                 : `you scan it ${v.allDay === '1' ? 'any time that day' : 'inside the window'}`,
+               v.proof === 'tag' && v.allDay === '1' ? 'any time that day' : null,
                it.geofence_lat != null && v.proof !== 'tag'
                  ? `within ${it.geofence_radius_m}m of the pinned place` : null,
               ].filter(Boolean).join(', and ') }] : []),
@@ -4637,7 +4643,7 @@ const SETTINGS_SHEETS = {
         // and those are whole commitments in themselves, never a second half
         // bolted onto a scan. Changing this is an easing unless it is link →
         // tag, so it waits 24h.
-        ...(it ? [{ key: 'proof', label: 'Proof', kind: 'select',
+        ...(it ? [{ key: 'proof', label: 'Proof', kind: 'select', rerender: true,
           options: () => [{ value: 'link', name: 'Link + geofence' },
                           { value: 'tag', name: 'NFC tag only' },
                           { value: 'routine', name: 'Its routine, finished' },
@@ -4654,6 +4660,30 @@ const SETTINGS_SHEETS = {
               + ' longer counts. Going back to the link is an easing, so it waits 24h.'
             : 'A tap still counts on a link gate — it is stronger than what is asked.'
               + ' Switching to tag-only applies at once, and needs a live tag first.' }] : []),
+        // IS THERE A DEADLINE INSIDE THE DAY? (2026-09-03, Quentin's
+        // instruction.) A morning routine has a time it is MEANT to happen at
+        // and a commitment that is really "today"; study hours are a number the
+        // day owes and nothing to do with a clock. Both were judged against a
+        // window that existed to place the pill. This is the one question,
+        // asked once, on the gate it decides about — and on a ROUTINE gate it
+        // is not asked at all, because that kind has answered it since
+        // 2026-09-02 and two ways of asking would eventually disagree.
+        ...(it && v.proof === 'routine' ? [{ key: 'allday_r', label: 'Judged on',
+          kind: 'static',
+          text: 'the whole day — a routine gate never has a deadline inside it' }] : []),
+        ...(it && v.proof !== 'routine' ? [{ key: 'allDay', label: 'Judged on',
+          // The hint and the "Passes when" line above it are the whole control
+          // — a toggle whose explanation only updates after you save and
+          // reopen is a toggle you cannot read before committing to it.
+          kind: 'select', rerender: true,
+          options: () => [{ value: '0', name: 'Inside the window' },
+                          { value: '1', name: 'Any time that day' }],
+          hint: v.allDay === '1'
+            ? 'The times above only place the pill on the timeline. The day is met'
+              + ' if this gate is cleared at all before midnight, and it is judged'
+              + ' then. Putting the window back in charge applies at once.'
+            : 'The window IS the deadline: proof after it closes is not proof.'
+              + ' Making it all-day is the largest easing there is, so it waits 24h.' }] : []),
         // THE TAG APPARATUS AND THE SCAN LINK BELONG TO A GATE A SCAN CAN CLEAR.
         // On a routine or hours gate they are not merely unused, they are a
         // claim: a printed QR sitting on a gate no scan can satisfy reads as a
@@ -4743,6 +4773,9 @@ const SETTINGS_SHEETS = {
         geofence_radius_m: parseInt(v.radius) || n.geofence_radius_m,
       };
       if (v.proof !== v.proof0) body.proof_mode = v.proof;
+      // Sent as 0/1, and only when it moved: an unchanged field in the patch
+      // would be classified, queued and reported as a decision nobody made.
+      if (v.allDay !== v.allDay0) body.all_day = v.allDay === '1' ? 1 : 0;
       // The schedule goes through the same 24h test as everything else, but the
       // test is now over OCCURRENCES (schedule.demands_less) rather than fields.
       if (v.source && v.source !== v.source0) body.source_uid = v.source;
@@ -11364,18 +11397,24 @@ function gatePopHoursHtml(hr) {
 function gatePopHtml(d) {
   const w = d.window;
   const isRoutine = d.proof_mode === 'routine';
+  const allDay = !!w.all_day;
   const rows = [];
 
-  rows.push(gpRow(isRoutine ? 'Drawn at' : 'Window',
+  rows.push(gpRow(allDay ? 'Drawn at' : 'Window',
     `<span class="gp-mono">${escHtml(w.start)}–${escHtml(w.end)}`
-    + `${w.offset_days ? ' +1d' : ''}</span>`));
+    + `${w.offset_days && !allDay ? ' +1d' : ''}</span>`));
   rows.push(gpRow('Set by', escHtml(w.from)));
-  // A ROUTINE GATE'S WINDOW JUDGES NOTHING. It is where the pill sits on the
+  // AN ALL-DAY GATE'S WINDOW JUDGES NOTHING. It is where the pill sits on the
   // timeline and nothing more, so the read-out says so next to the times
-  // rather than letting them read as the commitment they are on every other
-  // kind of gate.
-  if (isRoutine) rows.push(gpRow('', '<span class="gp-note">Where it sits on the day.'
-    + ' This gate has no deadline — the times judge nothing.</span>'));
+  // rather than letting them read as the commitment they are on a gate whose
+  // window IS the deadline. True of every routine gate by construction, and of
+  // any other gate told to be all-day (2026-09-03) — one sentence for both,
+  // off the server's `all_day`, because the client deciding which gates have a
+  // deadline is exactly the re-derivation this read-out exists not to do.
+  if (allDay) rows.push(gpRow('', '<span class="gp-note">Where it sits on the day.'
+    + ` This gate has no deadline — the times judge nothing, and ${
+      isRoutine ? 'finishing the routine' : 'anything that clears it'}`
+    + ' counts any time today.</span>'));
   if (!d.applies) rows.push(gpRow('Runs today', isRoutine && !d.routine
     ? '<span class="gp-no">no — nothing is linked to it, so there is nothing it '
       + 'could ask. Link a routine on its editor, or it will never run again.</span>'
@@ -12345,7 +12384,7 @@ const GATE_FIELDS = {
   window_end_offset_days: 'crosses midnight', days_of_week: 'days',
   geofence_lat: 'place', geofence_lng: 'place',
   geofence_radius_m: 'radius', weekly_windows: 'per-day times', active: 'state',
-  source_uid: 'schedule', __delete__: 'delete gate',
+  source_uid: 'schedule', __delete__: 'delete gate', all_day: 'all day',
 };
 
 // THE FENCE IS ONE DECISION IN THREE COLUMNS. Queued per field like everything
