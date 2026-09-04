@@ -3703,6 +3703,7 @@ body.np-body {
    the sheets (200) — clarify opens over these as it does everywhere — and
    below the fill timer (250) and dangerous writing (240). */
 body.over-runner #tab-people,
+body.over-runner #tab-social,
 body.over-runner #map-overlay,
 body.over-runner #cal-overlay,
 body.over-runner #logs-overlay { z-index: 170; }

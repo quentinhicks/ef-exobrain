@@ -6472,6 +6472,13 @@ function closeM(id) {
   renderBar();
 }
 
+// The runner's social payload (`flowRunView.day`), re-read for the RUN's day
+// after the Social surface it raised comes back down.
+async function refreshSocialDay(stepId) {
+  flowRunView.day = await apiGet(`/api/social/day?date=${runDay()}`, flowRunView.day);
+  if (stepId != null) renderFlowStep(stepId);
+}
+
 async function refreshCrmNight() {
   const night = await apiGet(`/api/people/night?date=${runDay()}`, null);
   flowRunView.crmFilled = !!(night && night.satisfied_at);
@@ -6567,6 +6574,16 @@ function initHub() {
       closeStepSheet();
       return;
     }
+    // Social peels an open spec/log form before ANYTHING that closes the
+    // surface under it — including the runner's own layer, since a spec form
+    // half-filled from a routine step is exactly the state Esc must not throw
+    // away. (The focused-input case stopPropagates and never reaches here.)
+    const soEl = document.getElementById('tab-social');
+    if (soEl && !soEl.classList.contains('hidden') && socialView.form) {
+      socialView.form = null;
+      renderSocial();
+      return;
+    }
     // …except a surface the runner itself raised above it: innermost first, so
     // Esc puts that surface back down before it touches the routine. ONE rung
     // for all of them — the layer carries its own closer, so a new surface
@@ -6590,14 +6607,6 @@ function initHub() {
       refView.open = (openList && openList.parent_id) || null;
       refView.openFlow = null;
       renderRef();
-      return;
-    }
-    // Social peels an open spec/log form before the overlay closes (the
-    // focused-input case stopPropagates and never reaches here).
-    const soEl = document.getElementById('tab-social');
-    if (soEl && !soEl.classList.contains('hidden') && socialView.form) {
-      socialView.form = null;
-      renderSocial();
       return;
     }
     const open = [...document.querySelectorAll('.m-overlay:not(.hidden)')].pop();
@@ -8874,17 +8883,29 @@ function frStepBody(s, day) {
       : `<div class="fr-note">No tags are asked about yet. Long-press a tag in the
          context picker and turn on “ask each day”.</div>`}`;
   } else if (s.kind === 'social_spec') {
+    // THE PLANNING HAPPENS HERE (2026-09-03, Quentin's report: "I can't plan a
+    // social spec in the morning routine page"). Both social cards were pure
+    // READ-OUTS that ended "…in ≡ Social" — a step telling you to go somewhere
+    // else, on the one surface you are meant to sit on until it is finished,
+    // and on a HARD step the Done button stays disabled until you have been.
+    // The crm_fill and study_plan rule, one kind over: the step opens the real
+    // surface over the runner rather than growing a second spec form, because
+    // one thing with two editors is how they start disagreeing.
     const okSpec = day.specOk === true;
     page = `<div class="fr-step-big">Social spec</div>
       <div class="fr-note">${(day.specs || []).length
         ? `${(day.specs || []).length} planned · ${day.specTotal ?? 0}/${day.d ?? '—'}`
         : 'no spec yet'}${
-        okSpec ? ' — the plan clears D ✓' : ' — plan enough in ≡ Social'}</div>`;
+        okSpec ? ' — the plan clears D ✓' : ' — plan enough to clear D'}</div>
+      <div class="cl-row"><button class="cl-pill fr-social-open" data-intent="spec">${
+        okSpec ? 'Open the plan ›' : 'Plan a rep ›'}</button></div>`;
   } else if (s.kind === 'social_dose') {
     const okDose = day.doseCleared === true;
     page = `<div class="fr-step-big">Social dose</div>
       <div class="fr-note">${day.total ?? 0} / ${day.d ?? '—'} point${(day.total ?? 0) === 1 ? '' : 's'}${
-        okDose ? ' — the day is clear ✓' : ' — log what you actually did in ≡ Social'}</div>`;
+        okDose ? ' — the day is clear ✓' : ' — log what you actually did'}</div>
+      <div class="cl-row"><button class="cl-pill fr-social-open" data-intent="log">${
+        okDose ? 'Open the day ›' : 'Log what you did ›'}</button></div>`;
   } else if (s.kind === 'study_plan') {
     // THE MORNING HALF. Running the step IS the planning — the crm_fill rule:
     // a step offering only "mark planned" would be an attestation about work
@@ -9500,6 +9521,29 @@ function wireFlowStep(sec, s, day) {
     renderFlowStep(s.id);
     renderEngage();   // the pool and its 👤 count follow immediately
   }));
+
+  // ≡ Social over the runner, on the RUN's day. The spec card opens the plan
+  // form already armed (its own `+ plan` in one tap fewer); the dose card opens
+  // the surface as it is, because the micro buttons are the common path there.
+  const soOpen = sec.querySelector('.fr-social-open');
+  if (soOpen) soOpen.addEventListener('click', async () => {
+    // THE SURFACE IS TOLD WHICH DAY IT IS PLANNING. Every social read and write
+    // used to mean "today" with no date sent at all, which is right when ≡
+    // Social is opened from the hub and wrong the moment a run pinned to
+    // yesterday raises it — a night finished at 00:20 would have logged its
+    // dose against a day that had not happened yet.
+    socialView.date = runDay();
+    socialView.form = soOpen.dataset.intent === 'spec'
+      ? { intent: 'spec', family: 'directed', levels: {}, person: '', opener: '' }
+      : null;
+    openM('tab-social');
+    openOverRunner(() => closeM('tab-social'), async () => {
+      socialView.date = null;      // the hub's own Social is today again
+      socialView.form = null;
+      if (flowRunView.open) await refreshSocialDay(s.id);
+    });
+    await refreshSocial();
+  });
 
   const crmOpen = sec.querySelector('.fr-crm-open');
   if (crmOpen) crmOpen.addEventListener('click', () => {
@@ -10613,7 +10657,18 @@ function renderLogs() {
 // recalibration never rewrites history. Design log:
 // ai-docs/26-8-6 Social stakes system design Q&A.md
 
-const socialView = { config: null, day: null, cues: '', form: null, calOpen: false };
+// `date` is null everywhere except while the routine runner has this surface
+// raised over itself, when it is the RUN's pinned day — the one place ≡ Social
+// is looked at from something that knows a day other than today. Null means
+// today, decided by the SERVER (every social route already defaults that way),
+// so the hub's Social is unchanged and no client re-derives the date.
+const socialView = { config: null, day: null, date: null, cues: '', form: null, calOpen: false };
+
+// The day this surface is speaking about, as a query string and as a field on a
+// write. Empty for today: the route's own default is the one answer.
+function socialQ() {
+  return socialView.date ? `?date=${socialView.date}` : '';
+}
 
 async function refreshSocialDot() {
   socialView.day = await apiGet('/api/social/day', socialView.day);
@@ -10632,7 +10687,7 @@ function paintSocialDot() {
 async function refreshSocial() {
   const [config, day, engage] = await Promise.all([
     apiGet('/api/social', socialView.config),
-    apiGet('/api/social/day', socialView.day),
+    apiGet(`/api/social/day${socialQ()}`, socialView.day),
     apiGet('/api/engage/day', null),
   ]);
   socialView.config = config;
@@ -10917,7 +10972,8 @@ function renderSocial() {
         // undo entry reverses both, so half a replacement can't survive.
         const prev = f.editId ? specById(f.editId) : null;
         const spec = await apiSend('/api/social/specs', 'POST', { family: f.family, levels: f.levels,
-                                 person: f.person, opener: f.opener }).then(r => r.json());
+                                 person: f.person, opener: f.opener,
+                                 date: socialView.date || undefined }).then(r => r.json());
         if (spec.error) return;
         if (prev) await apiSend(`/api/social/specs/${prev.id}`, 'DELETE');
         pushUndo(prev ? 'replaced a planned interaction' : 'planned an interaction', async () => {
@@ -10927,6 +10983,7 @@ function renderSocial() {
         });
       } else {
         const rep = await apiSend('/api/social/reps', 'POST', { family: f.family, levels: f.levels, person: f.person,
+                                 date: socialView.date || undefined,
                                  pre_rating: f.pre === '' || f.pre == null ? null
                                    : Math.max(0, Math.min(10, parseInt(f.pre) || 0)) }).then(r => r.json());
         if (rep.error) return;
@@ -10943,7 +11000,8 @@ function renderSocial() {
   }
 
   body.querySelectorAll('.so-micro').forEach(b => b.addEventListener('click', async () => {
-    const rep = await apiSend('/api/social/reps', 'POST', { family: 'micro', levels: { micro: parseInt(b.dataset.id) } }).then(r => r.json());
+    const rep = await apiSend('/api/social/reps', 'POST', { family: 'micro', levels: { micro: parseInt(b.dataset.id) },
+                             date: socialView.date || undefined }).then(r => r.json());
     if (rep.error) return;
     pushUndo(`logged "${socialShortLabel(rep.levels.micro)}" (+${rep.price})`, async () => {
       await apiSend(`/api/social/reps/${rep.id}`, 'DELETE');
