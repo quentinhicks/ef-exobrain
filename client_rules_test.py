@@ -168,6 +168,73 @@ def object_door_fails(body):
     return out
 
 
+# ── A ROUTINE IS RUN TO THE END, WITHOUT LEAVING IT ──────────
+#
+# (2026-09-03, Quentin's instruction.) A step's own handlers may not close the
+# run. Four of them did: both calendar passes, the clarify act and the mind
+# sweep called closeFlowRun() and dropped you on the day screen with the
+# routine gone — while its gate was still holding the day open — and the
+# comment beside them said there was no way back. There is: openOverRunner
+# raises the surface above #flow-run (165) and closing it lands you back on the
+# step you left.
+#
+# Scoped to the STEP HANDLERS, not to the file: the runner still closes itself
+# when the last step is credited, when the day it was pinned to settles, when
+# there is nothing in it to run, and when you press ✕ or Esc. Those are the run
+# ENDING. This bans the run being taken away mid-way by something a step asked
+# you to do.
+RUNNER_HANDLERS = 'function wireFlowStep('
+
+
+def runner_eviction_fails(lines):
+    start = next((i for i, l in enumerate(lines)
+                  if l.startswith(RUNNER_HANDLERS)), None)
+    if start is None:
+        return [(0, RUNNER_HANDLERS, "the runner's step handlers have been "
+                 'renamed — point this check at them again')]
+    out = []
+    for n in range(start + 1, len(lines)):
+        line = lines[n]
+        if re.match(r'^(async )?function ', line):
+            break
+        stripped = line.strip()
+        if stripped.startswith('//') or stripped.startswith('*'):
+            continue
+        if 'closeFlowRun' in line:
+            out.append((n + 1, stripped[:88],
+                        'openOverRunner(close, back) — a step may raise a '
+                        'surface OVER the run, never in place of it'))
+    return out
+
+
+# ── A STEP'S CONTROL MUST BE ADDRESSED THE WAY IT IS WRITTEN ──
+#
+# (2026-09-03.) When the runner became a scroll every step's inputs became
+# mounted at once, so `wireFlowStep` addresses each control by CLASS, scoped to
+# its own section — an id could not stay unique across two steps of the same
+# kind. The markup was left emitting ids. Eleven controls therefore matched
+# nothing and did nothing: the CRM opener, the plan opener, the hours box, the
+# experiment's start/keep/end/edit, the clarify act and the mind sweep. A dead
+# button is the worst kind of missing feature, because it looks present.
+#
+# So: every class `wireFlowStep` asks for must exist as a class in the markup.
+# Scanned, not curated — a control added tomorrow is covered the day it is
+# written.
+STEP_SELECTOR = re.compile(r"""sec\.querySelector(?:All)?\('\.([a-zA-Z-]+)'""")
+
+
+def step_control_fails(body):
+    out = []
+    for cls in sorted(set(STEP_SELECTOR.findall(body))):
+        if re.search(r'class="[^"]*(?<![\w-])%s(?![\w-])' % re.escape(cls), body):
+            continue
+        why = 'no markup carries class="%s"' % cls
+        if 'id="%s"' % cls in body:
+            why = 'the markup gives it an id="%s" instead — a step control is '                   'addressed by CLASS, because two steps of one kind mount at once' % cls
+        out.append((0, ".%s" % cls, why))
+    return out
+
+
 def main():
     with open(APP_JS, encoding='utf-8') as f:
         body = f.read()
@@ -176,6 +243,8 @@ def main():
         lines = f.read().split('\n')
 
     fails = object_door_fails(body)
+    fails += runner_eviction_fails(lines)
+    fails += step_control_fails(body)
     for n, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('//') or stripped.startswith('*'):
@@ -224,6 +293,9 @@ midnight, a paused row, or a config change.""")
     print('  money path    no gate is hidden through the view-dismissal store')
     print('  object door   %d kind(s) declared, all of them editable'
           % len(declared_kinds(body)))
+    print("  the runner    no step handler closes the run you are sitting in")
+    print('  step controls %d selector(s) in wireFlowStep, all of them live'
+          % len(set(STEP_SELECTOR.findall(body))))
     return 0
 
 

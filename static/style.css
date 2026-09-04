@@ -3692,20 +3692,23 @@ body.np-body {
   overflow: hidden;
 }
 
-/* Opened FROM the routine runner (165), which stays open underneath so closing
-   the CRM lands back on the step. The whole People stack moves up together —
-   raising the tab alone would bury its own add/detail forms (150) behind it.
-   Still below the sheets (200) and the fill timer (250). */
-body.crm-over-runner #tab-people { z-index: 170; }
-body.crm-over-runner #person-detail-overlay,
-body.crm-over-runner #person-add-overlay,
-body.crm-over-runner #bucket-mgr-overlay { z-index: 175; }
-
-/* Same idiom for the review steps that open MAP at a lens from inside the
-   runner: MAP is 150 and #flow-run is 165, so untouched it would open BEHIND
-   the run. Closing MAP drops the class and lands you back on the step. Still
-   below the sheets (200), so clarify opens over it as it does everywhere. */
-body.map-over-runner #map-overlay { z-index: 170; }
+/* A ROUTINE IS RUN TO THE END — ONE LAYER, NOT ONE PER SURFACE (2026-09-03).
+   Anything the runner opens sits ABOVE it (165) and below the sheets (200),
+   so the run stays open underneath and closing the surface lands you back on
+   the step you left. This was three classes — crm-over-runner,
+   map-over-runner, plan-over-runner — each a copy of the last, and the fourth
+   (a released log) would have been a fourth; `openOverRunner` is the one door
+   and this is the one layer. The People stack moves up TOGETHER: raising the
+   tab alone would bury its own add/detail forms (150) behind it. Still below
+   the sheets (200) — clarify opens over these as it does everywhere — and
+   below the fill timer (250) and dangerous writing (240). */
+body.over-runner #tab-people,
+body.over-runner #map-overlay,
+body.over-runner #cal-overlay,
+body.over-runner #logs-overlay { z-index: 170; }
+body.over-runner #person-detail-overlay,
+body.over-runner #person-add-overlay,
+body.over-runner #bucket-mgr-overlay { z-index: 175; }
 
 #people-wrap {
   display: flex;
@@ -7087,6 +7090,4 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .tl-plan-hint { color: var(--text-secondary); font-size: 11px; }
 .tl-refresh-btn.tl-plan-on { border-color: var(--text-secondary); color: var(--accent); }
 
-/* Raised over the runner for the morning plan step — the crm-over-runner
-   ladder, at the same layer, through the one openOver stack. */
-body.plan-over-runner #cal-overlay { z-index: 170; }
+

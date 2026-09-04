@@ -1471,6 +1471,11 @@ function startReviewPass(step) {
   state.currentDate = new Date(from);
   fetchOverridesForDate(state.currentDate).then(() => {
     openM('cal-overlay');
+    // Over the runner when the pass was started FROM a review step, so the run
+    // is still standing underneath and closing the calendar is the way back.
+    // A no-op when the review is not open, which is how the pass used to run.
+    openOverRunner(() => closeM('cal-overlay'),
+                   () => { endReviewPass(); openGtdReview(); });
     renderTimeline();
   });
 }
@@ -1481,6 +1486,10 @@ function startReviewPass(step) {
 // step, i.e. the pass you just came from.
 async function returnToReview() {
   closeM('cal-overlay');
+  // Usually there is nothing to reopen: the pass was raised OVER the run, which
+  // is still open underneath, and the layer's own `back` has just re-read the
+  // counts. Reopening is the fallback for a pass entered some other way.
+  if (flowRunView.open) return;
   const id = (gtdReview && gtdReview.flow_id)
     || await fetch('/api/gtd-review').then(r => r.json()).then(r => r.flow_id).catch(() => null);
   if (id) await openFlowRun(id);
@@ -6411,6 +6420,35 @@ function closeOver(name) {
   return true;
 }
 
+// ── A ROUTINE IS RUN TO THE END, WITHOUT LEAVING IT ──────────
+//
+// (2026-09-03, Quentin's instruction.) A routine is the one surface in the app
+// you are meant to sit on until it is finished — the gate is holding the day
+// open behind it — so nothing a step asks you to DO may put you back on the
+// day screen with the run gone. Three steps did: both calendar passes and the
+// clarify and mind-sweep acts closed the run first, and the note beside them
+// said there was no way back. There is; it just had to be built, and it is the
+// same one crm_fill and MAP already used.
+//
+// One name, one closer, one rung on the Esc ladder. `close` is how the raised
+// surface goes away (the surface's own close, never a copy of it); `back` is
+// what the step needs re-read once it is down. It is a NO-OP when the runner
+// is not open, so the same call site works from the day screen unchanged.
+let runnerOverClose = null;
+
+function openOverRunner(close, back) {
+  if (!flowRunView.open || overIsOpen('over-runner')) return;
+  runnerOverClose = close || null;
+  openOver('over-runner', {
+    raise: () => document.body.classList.add('over-runner'),
+    lower: () => {
+      document.body.classList.remove('over-runner');
+      runnerOverClose = null;
+    },
+    back,
+  });
+}
+
 // ── Hub rail + mobile overlays (9c) ──────────────────────────
 // The day is the whole screen; every reference surface is a full-screen
 // overlay reached from the ≡ hub in the capture bar. One surface at a time.
@@ -6426,13 +6464,11 @@ function closeM(id) {
   flushOpenNotes();
   const el = document.getElementById(id);
   el.classList.add('hidden');
-  // The CRM raised above the runner returns to its own layer, and the routine
-  // step it was opened from re-reads the night before it repaints (the
-  // layer's own `back`).
-  if (id === 'tab-people') closeOver('crm-over-runner');
-  // The calendar raised over the runner for the morning plan step comes down
-  // the same way, and its `back` turns draw mode off and re-reads the plan.
-  if (id === 'cal-overlay') closeOver('plan-over-runner');
+  // A surface the RUNNER raised above itself returns to its own layer, and the
+  // step it was opened from re-reads whatever it asked about (the layer's own
+  // `back`). ONE layer for all of them: openM shows one .m-overlay at a time,
+  // so the one being closed IS the one that was raised.
+  closeOver('over-runner');
   renderBar();
 }
 
@@ -6506,6 +6542,9 @@ function initHub() {
       const el = document.getElementById(id);
       if (el && !el.classList.contains('hidden')) {
         if (id === 'logs-overlay') closeLogsView();
+        // MAP's close does more than hide it (notes flush, the runner layer
+        // comes down), so Esc goes through the button rather than past it.
+        else if (id === 'map-overlay') document.getElementById('map-close').click();
         else if (id === 'modal-overlay' && settingsView.section) backToSettingsIndex();
         else el.classList.add('hidden');
         return;
@@ -6528,10 +6567,13 @@ function initHub() {
       closeStepSheet();
       return;
     }
-    // …except the CRM the runner itself raised above it: innermost first, so
-    // Esc puts the People surface back down before it touches the routine.
-    if (overIsOpen('crm-over-runner')) {
-      closeM('tab-people');
+    // …except a surface the runner itself raised above it: innermost first, so
+    // Esc puts that surface back down before it touches the routine. ONE rung
+    // for all of them — the layer carries its own closer, so a new surface
+    // opened through openOverRunner joins the ladder by existing.
+    if (overIsOpen('over-runner')) {
+      if (runnerOverClose) runnerOverClose();
+      else closeOver('over-runner');
       return;
     }
     // The routine runner peels before anything under it.
@@ -6708,6 +6750,8 @@ function initLogsView() {
 async function closeLogsView() {
   await flushLogSave();
   document.getElementById('logs-overlay').classList.add('hidden');
+  // A no-op unless the runner raised this — the released log of a sweep step.
+  closeOver('over-runner');
   logsView.open = null;
   renderBar();
   // No sync call on close: the PUT already wrote the file on the server, which
@@ -8765,17 +8809,17 @@ function frStepBody(s, day) {
       <div class="fr-exp">
         <div class="fr-exp-head">${running ? 'Tomorrow’s experiment' : 'Start an experiment'}</div>
         ${running ? `
-          <input type="text" id="fr-exp-edit" class="cl-action" value="${escHtml(running.content)}"
+          <input type="text" class="cl-action fr-exp-edit" value="${escHtml(running.content)}"
             title="Reword it and press keep — same variable, said better">
           <div class="cl-row">
-            <button class="cl-pill" id="fr-exp-keep">Keep it running</button>
-            <button class="cl-pill" id="fr-exp-end">End it…</button>
+            <button class="cl-pill fr-exp-keep">Keep it running</button>
+            <button class="cl-pill fr-exp-end">End it…</button>
           </div>
           <div class="fr-note fr-exp-hint">Keeping it is the default — you can just carry on.</div>`
         : `
-          <input type="text" id="fr-exp-new" class="cl-action"
+          <input type="text" class="cl-action fr-exp-new"
             placeholder="change one cue, one cost, or one reward">
-          <div class="cl-row"><button class="cl-pill" id="fr-exp-start">Start it</button></div>`}
+          <div class="cl-row"><button class="cl-pill fr-exp-start">Start it</button></div>`}
         ${(((flowRunView.habits || {}).experiments || {}).awaiting || []).length
           ? `<div class="fr-note fr-exp-hint">${
               ((flowRunView.habits.experiments.awaiting) || []).length} waiting for the weekly review</div>`
@@ -8803,10 +8847,10 @@ function frStepBody(s, day) {
         ? `filled tonight ✓${flowRunView.crmKind === 'nothing' ? ' — nothing to log' : ''}`
         : 'log tonight\'s people entries'}</div>
       <div class="cl-row">
-        <button id="fr-crm-open" class="cl-pill">Open the CRM${
+        <button class="cl-pill fr-crm-open">Open the CRM${
           flowRunView.crmFilled ? '' : ' — 10 minutes'}</button>
         ${flowRunView.crmFilled ? ''
-          : '<button id="fr-crm-fill" class="cl-pill">Mark filled (entries made)</button>'}
+          : '<button class="cl-pill fr-crm-fill">Mark filled (entries made)</button>'}
       </div>`;
   } else if (s.kind === 'daily_contexts') {
     // WHICH CONTEXTS APPLY TODAY. Answering "no" hides that tag's pool items
@@ -8860,7 +8904,7 @@ function frStepBody(s, day) {
             : `Today owes <b>${humanMinutes(ph.required_minutes)}</b>.`)
           + (planned ? ` You have drawn ${humanMinutes(planned)}.` : ' Nothing drawn yet.')
         : 'Draw the stretches you mean to work.'}</div>
-      <div class="cl-row"><button id="fr-plan-open" class="cl-pill">Open the day ›</button></div>`;
+      <div class="cl-row"><button class="cl-pill fr-plan-open">Open the day ›</button></div>`;
   } else if (s.kind === 'study_hours') {
     // THE HOURS GATE'S OWN QUESTION (2026-09-02). Everything on this page is
     // SERVED — the target, the bucket carried in, what today owes — because
@@ -8873,7 +8917,7 @@ function frStepBody(s, day) {
         : h.judged ? `<div class="fr-note">${hoursText(h.logged_minutes)} — that day is judged
             and closed, so it can no longer be changed</div>`
         : `<div class="fr-note">${hoursOwedText(h)}</div>
-           <input type="number" id="fr-hours" class="mt-input" inputmode="decimal" step="0.25"
+           <input type="number" class="mt-input fr-hours" inputmode="decimal" step="0.25"
              min="0" max="24" placeholder="hours"
              value="${h.logged_minutes ? +(h.logged_minutes / 60).toFixed(2) : ''}">
            <div class="fr-note" id="fr-hours-say">${hoursStandingText(h)}</div>`}`;
@@ -8940,10 +8984,10 @@ function frStepBody(s, day) {
         ? `<div class="fr-note${n ? '' : ' fr-note-hard'}">${n
             ? `${n} item${n === 1 ? '' : 's'} still in "in"`
             : '"in" is empty ✓'}</div>
-           ${n ? '<button id="fr-rv-clarify" class="cl-pill">Clarify ' + n + ' →</button>' : ''}`
+           ${n ? '<button class="cl-pill fr-rv-clarify">Clarify ' + n + ' →</button>' : ''}`
         : ''}
       ${s.kind === 'review_sweep'
-        ? '<button id="fr-rv-sweep" class="cl-pill">' + playMark(9) + ' 5-minute sweep</button>'
+        ? '<button class="cl-pill fr-rv-sweep">' + playMark(9) + ' 5-minute sweep</button>'
         : ''}
       ${meta.collect ? collectChecklistHtml(s) : ''}
       ${meta.projects ? reviewProjectsHtml(counts) : ''}
@@ -9256,38 +9300,40 @@ function wireFlowStep(sec, s, day) {
   if (pawn) pawn.addEventListener('click', () => pawnStep(s));
   const unpawn = sec.querySelector('.fr-unpawn');
   if (unpawn) unpawn.addEventListener('click', () => unpawnStep(s));
-  // MAP OVER THE RUN (2026-08-17). Clarify and the sweep below still close the
-  // runner first — each takes the whole screen and owns the keyboard — but a
-  // lens of MAP is a place you LOOK, and the point of running the review is to
-  // fix what you find without losing your place in it. crm_fill already proved
-  // the idiom: raise the surface above #flow-run, drop the class when it
-  // closes, and you land back on the step. That IS the way back the note on the
-  // two acts below said did not exist; it just had to be built.
-  //
-  // The calendar pass and Lists are NOT here yet on purpose. `cal-overlay` has
-  // its own return path (returnToReview) written for the fold-out, and pointing
-  // it at the runner as an afterthought is how two surfaces start disagreeing
-  // about where "back" is. It gets its own pass.
+  // EVERY ACT HAPPENS OVER THE RUN (2026-09-03, Quentin's instruction). MAP's
+  // three lenses were raised in 2026-08-17 and the other four were left closing
+  // the runner first, on the reasoning that a full-screen surface over another
+  // is "two layers deep with no way back". There is a way back: it is
+  // `openOverRunner`, the same one MAP and crm_fill use, and being dropped onto
+  // the day screen with the run gone is the worse end of that trade — a gated
+  // routine is holding the day open, and the way back was a hunt through Lists.
   sec.querySelectorAll('.fr-rv-act').forEach(b => b.addEventListener('click', () => {
     const act = b.dataset.act;
     if (act === 'map_projects') { openMapAtLens('projects', true); return; }
     if (act === 'map_someday') { openMapAtLens('someday', true); return; }
     if (act === 'map_waiting') { openMapAtLens('waiting', true); return; }
-    if (act === 'pass_back') { closeFlowRun(); startReviewPass('cal_back'); return; }
-    if (act === 'pass_fwd') { closeFlowRun(); startReviewPass('cal_fwd'); return; }
+    // The calendar pass raises itself (startReviewPass), so the pass bar's own
+    // "Mark reviewed ✓" and ✕ land back on this step through returnToReview.
+    if (act === 'pass_back') { startReviewPass('cal_back'); return; }
+    if (act === 'pass_fwd') { startReviewPass('cal_fwd'); return; }
   }));
-  // The two review steps that are a DOING, not a ticking — the same two acts
-  // the GTD fold-out offers, from the same registry. The runner closes first:
-  // both open a full-screen surface of their own, and one over the other would
-  // be two layers deep with no way back.
+  // The two review steps that are a DOING, not a ticking. Both open something
+  // that covers the runner anyway — the clarify SHEET is z-200 and dangerous
+  // writing z-240, both already above #flow-run's 165 — so closing the run was
+  // never what put them on top; it only took away the way back. Esc peels the
+  // sheet first (peelClarify) and dangerous writing swallows Esc entirely, so
+  // the ladder is unchanged.
   const rvClarify = sec.querySelector('.fr-rv-clarify');
-  if (rvClarify) rvClarify.addEventListener('click', () => { closeFlowRun(); openClarify(); });
+  if (rvClarify) rvClarify.addEventListener('click', async () => {
+    await openClarify();
+    // Emptying "in" is what the next step is measured against, so the counts
+    // are re-read the moment the sheet comes down.
+    clarifyView.after = () => { if (flowRunView.open) openGtdReview(); };
+  });
   const rvSweep = sec.querySelector('.fr-rv-sweep');
   if (rvSweep) rvSweep.addEventListener('click', () => {
-    const iso = runDay();
-    closeFlowRun();
     openDangerousWriting({ goalKind: 'time', goalTime: 5, hardcore: false,
-                           logName: `${iso} emptied`, autostart: true });
+                           logName: `${runDay()} emptied`, autostart: true });
   });
   // Only a CARD has a Done button; a simple step's tick is its own, and none
   // of the guards below can apply to a kind that asks nothing.
@@ -9461,11 +9507,8 @@ function wireFlowStep(sec, s, day) {
     // Over the runner (165) for as long as the routine holds it open. The
     // layer comes down in closeM, which is also where the step it was opened
     // from re-reads the night — that is the `back` half.
-    openOver('crm-over-runner', {
-      raise: () => document.body.classList.add('crm-over-runner'),
-      lower: () => document.body.classList.remove('crm-over-runner'),
-      back: () => { if (flowRunView.open) refreshCrmNight(); },
-    });
+    openOverRunner(() => closeM('tab-people'),
+                   () => { if (flowRunView.open) refreshCrmNight(); });
     openPeopleSurface();
     startPeopleSession({ force: true });
   });
@@ -9481,13 +9524,9 @@ function wireFlowStep(sec, s, day) {
     state.currentDate = new Date(runDay() + 'T12:00:00');
     state.planMode = true;
     openM('cal-overlay');
-    openOver('plan-over-runner', {
-      raise: () => document.body.classList.add('plan-over-runner'),
-      lower: () => document.body.classList.remove('plan-over-runner'),
-      back: async () => {
-        state.planMode = false;
-        if (flowRunView.open) { await refreshPlan(runDay()); renderFlowStep(s.id); }
-      },
+    openOverRunner(() => closeM('cal-overlay'), async () => {
+      state.planMode = false;
+      if (flowRunView.open) { await refreshPlan(runDay()); renderFlowStep(s.id); }
     });
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
@@ -9644,6 +9683,10 @@ async function dwSucceed() {
   await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT', { content: body });
   closeDangerousWriting();
   openM('logs-overlay');
+  // The sweep step releases its log while the routine is still open behind it
+  // (165). Without this the log opens BEHIND the run that asked for it, which
+  // reads as a dead button; closing the log lands back on the step.
+  openOverRunner(closeLogsView);
   logsView.logs = await fetch('/api/logs').then(r => r.json());
   await openLog(log.name);
   toast('Released — it is yours to edit now');
@@ -13304,12 +13347,7 @@ function mapVisibleItems(items, today) {
 async function openMapAtLens(lens, overRunner) {
   mapView.lens = lens;
   mapView.q = '';
-  if (overRunner && !overIsOpen('map-over-runner')) {
-    openOver('map-over-runner', {
-      raise: () => document.body.classList.add('map-over-runner'),
-      lower: () => document.body.classList.remove('map-over-runner'),
-    });
-  }
+  if (overRunner) openOverRunner(() => document.getElementById('map-close').click());
   await openMap();
 }
 
@@ -13320,7 +13358,7 @@ async function openMap() {
       flushOpenNotes();
       overlay.classList.add('hidden');
       // A no-op when MAP was opened on its own, which is most of the time.
-      closeOver('map-over-runner');
+      closeOver('over-runner');
     };
     document.getElementById('map-close').addEventListener('click', shut);
     overlay.addEventListener('click', e => { if (e.target === overlay) shut(); });
