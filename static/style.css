@@ -7051,12 +7051,17 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: var(--text-secondary);
   overflow: hidden;
   touch-action: none;
+  /* The whole span is the handle now, so the whole span says so — the layer's
+     crosshair means "draw here", and over a span that is not what a press
+     does. */
+  cursor: grab;
 }
 
 .tl-plan-ghost { border-style: solid; pointer-events: none; }
 
-/* The grab handle, and a real finger target: the same 14px rail the block bar
-   uses, so the two surfaces are held the same way. */
+/* The rail: the affordance, not the target. It reads as "this can be grabbed"
+   the way the block bar's does, but the span itself takes the drag — a 14px
+   rail is a mouse target, and the rule here is thirds for a finger. */
 .tl-plan-bar-grip {
   position: absolute;
   left: 0;

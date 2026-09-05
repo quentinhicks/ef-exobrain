@@ -351,6 +351,23 @@ function justLongPressed() {
   return Date.now() - lastLongPressAt < 800;
 }
 
+// AND WHEN THE LAST DRAG MOVED — the same question one gesture along, and a
+// timestamp for the same reason: the element that was dragged is usually
+// re-rendered by the write the drop made, so a flag on it dies with it. A
+// mouse drag ends with a click on whatever it dropped on, and every
+// `data-obj-tap` artifact opens its menu on a click, so without this a block
+// bar or a plan span popped its menu open every time it was moved. Read by
+// initObjectDoors; set by onPointerDrag when a live drag actually moves.
+let lastPointerDragAt = 0;
+
+function justPointerDragged() {
+  // Shorter than justLongPressed's 800ms on purpose: this turns away the click
+  // a mouse-up dispatches immediately, and a longer window would eat a real
+  // tap on the thing you just moved — which is the one you are most likely to
+  // want the menu of.
+  return Date.now() - lastPointerDragAt < 400;
+}
+
 function onLongPress(el, fn) {
   let t = null, sx = 0, sy = 0, fired = false;
   el.addEventListener('pointerdown', e => {
@@ -388,7 +405,7 @@ function onLongPress(el, fn) {
 // {move(clientY), end(clientY, e)}. That shape is what lets one drag body serve
 // both input paths instead of a mouse copy and a touch copy drifting apart.
 function onPointerDrag(el, spec) {
-  let t = null, live = null, sy = 0, pid = null, prevTouch = '';
+  let t = null, live = null, sy = 0, pid = null, prevTouch = '', moved = false;
 
   const release = () => {
     clearTimeout(t); t = null;
@@ -456,9 +473,25 @@ function onPointerDrag(el, spec) {
       document.addEventListener(ev, stop, { once: true }));
   });
 
+  // A TOUCH'S SCROLLING IS DECIDED AT touchstart, so the `touch-action: none`
+  // set when the hold ARMS (550ms later) is too late to hold the page still:
+  // the browser has already ruled this touch may pan, and the first move after
+  // the arm arrives as a pointercancel. The drag then died one step in — the
+  // plan draw wrote a 35-minute stub of the span being drawn and every other
+  // finger drag stopped where it started. preventDefault on POINTERMOVE does
+  // not stop a pan (only touchmove's does, and the first touchmove after a
+  // still hold is still cancelable), which is why the handler below never
+  // helped. So the page is held HERE, and only while a drag is live — a
+  // surface that declines the press, or one still counting to 550ms, scrolls
+  // exactly as it did.
+  document.addEventListener('touchmove', e => {
+    if (live) e.preventDefault();
+  }, { passive: false });
+
   document.addEventListener('pointermove', e => {
     if (!live) return;
     e.preventDefault();
+    moved = true;
     live.move(e.clientY);
   }, { passive: false });
 
@@ -467,6 +500,12 @@ function onPointerDrag(el, spec) {
       if (!live) return;
       const done = live;
       live = null;
+      // Stamped from the DROP, not from the last move: what it turns away is
+      // the click this release is about to send. Only if the drag actually
+      // moved — a press that never moved IS a tap, and on a `data-obj-tap`
+      // artifact that tap is how the menu opens.
+      if (moved) lastPointerDragAt = Date.now();
+      moved = false;
       release();
       done.end(e.clientY, e);
     }));
@@ -689,7 +728,7 @@ function renderPlanBar() {
   }
   bar.innerHTML = `<span class="tl-plan-sum">${planned
     ? humanMinutes(planned) + ' planned' : 'nothing planned yet'}${escHtml(against)}</span>`
-    + '<span class="tl-plan-hint">drag an empty stretch to draw · long-press a span for its menu</span>';
+    + '<span class="tl-plan-hint">drag an empty stretch to draw · drag a span to move it · tap it for its menu</span>';
 }
 
 function renderPlanLayer(bodyH = 600) {
@@ -818,15 +857,27 @@ function wirePlanDraw(layer) {
   } });
 }
 
+// THE WHOLE SPAN IS THE HANDLE (2026-09-05, Quentin's report: a drawn region
+// could not be dragged on a phone). It was the 14px rail alone, which is a
+// mouse target — the app's own rule is thirds, not edges, and below ~36px the
+// sub-target is dropped rather than offered where a finger cannot hit it. The
+// rail stays as the affordance that says "this can be grabbed"; it is no
+// longer the only thing that can be.
+//
+// What made the body free to become a drag surface is that a span's menu opens
+// on a TAP (`data-obj-tap`), so the 550ms hold that every other artifact spends
+// on its menu is spare here — and a press on a span already meant nothing else.
+// `keepClick` keeps the mouse's tap alive (a press that never moves is still a
+// tap, and the tap is the menu); justPointerDragged turns away the click that
+// TRAILS a real drag.
 function wirePlanSpanDrags(layer, dateStr) {
   layer.querySelectorAll('.tl-plan-span').forEach(el => {
     el.dataset.objTap = '1';        // a tap opens its menu; nothing here mutates bare
-    const grip = el.querySelector('.tl-plan-bar-grip') || el;
     const origStart = parseInt(el.dataset.startMin);
     const origEnd = parseInt(el.dataset.endMin);
     const id = el.dataset.spanId;
 
-    onPointerDrag(grip, { start(e) {
+    onPointerDrag(el, { keepClick: true, start(e) {
       if (e.pointerType === 'mouse' && e.button !== 0) return null;
       e.stopPropagation();
       const r = el.getBoundingClientRect();
@@ -840,10 +891,11 @@ function wirePlanSpanDrags(layer, dateStr) {
           : r.bottom - e.clientY < r.height / 3 ? 'end' : 'move')
         : ((e.clientY - r.top < 10) ? 'start' : (r.bottom - e.clientY < 10) ? 'end' : 'move');
       const startM = planMinuteAt(e.clientY);
-      let curS = origStart, curE = origEnd;
+      let curS = origStart, curE = origEnd, dragged = false;
 
       return {
         move(clientY) {
+          dragged = true;
           const delta = planMinuteAt(clientY) - startM;
           let lo = curS, hi = curE;
           if (mode === 'move') { lo = origStart + delta; hi = origEnd + delta; }
@@ -855,6 +907,13 @@ function wirePlanSpanDrags(layer, dateStr) {
             - Math.max(0, minutesToViewPercent(curS))}%`;
         },
         async end() {
+          // A PRESS THAT NEVER MOVED IS A TAP, and the tap is how this span's
+          // menu opens — so the whole-span drag must leave it alone. Repainting
+          // here would eat it: renderTimeline rebuilds the layer, and the click
+          // the mouse-up is about to send then lands on a detached node with no
+          // `data-obj-tap` above it. Only a drag that MOVED owes a repaint,
+          // and one that moved back to where it started owes just the snap.
+          if (!dragged) return;
           if (curS === origStart && curE === origEnd) { renderTimeline(); return; }
           const res = await apiSend(`/api/plan/spans/${id}`, 'PATCH',
             { start_min: curS, end_min: curE });
@@ -6349,6 +6408,11 @@ function initObjectDoors() {
     // and events take ⌘-click and say so in their own titles. This handler is
     // in the capture phase, so without the bail it would swallow them.
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    // A CLICK THAT TRAILS A DRAG IS NOT A TAP. A mouse drag ends with one, on
+    // the very artifact it just moved, and this handler is in the capture
+    // phase — so the drag surface's own stopPropagation runs too late to stop
+    // it. Every menu here opened by itself on the drop until this line.
+    if (justPointerDragged()) return;
     const el = e.target.closest('[data-obj-tap]');
     if (!el) return;
     if (e.target.closest('button, a, input, select, textarea') !== null
