@@ -8620,7 +8620,7 @@ async function loadFlowRun(flowId, today) {
     apiGet(`/api/flows?date=${today}`, []),
     apiGet(`/api/social/day?date=${today}`, null),
     apiGet('/api/journal', null),
-    apiGet('/api/habits', null),
+    apiGet(`/api/habits?date=${today}`, null),
     apiGet('/api/ref', []),
     apiGet(`/api/people/night?date=${today}`, null),
   ]);
@@ -8881,6 +8881,15 @@ function frStepBody(s, day) {
     const hb = flowRunView.habits || {};
     const marks = hb.marks_today || {};
     const running = hb.experiments && hb.experiments.running;
+    // THE DAY'S EXPERIMENT, not whatever is running when this paints. They are
+    // the same thing right up until you end one and start tomorrow's — one act
+    // on this very page — and then the night you have just written would be
+    // captioned with an experiment that has not begun. The server resolves it
+    // (`storage.experiment_on`, keyed by the run's own day) and this renders
+    // the answer.
+    const onDay = (hb.experiments && hb.experiments.on_day) || null;
+    // Decided tonight, starting tomorrow: it is not what today is rated on.
+    const nextUp = !!(running && onDay && running.id !== onDay.id);
     // Two different questions, deliberately separated (2026-08-11): the 1-7 is
     // the EXPERIMENT's instrument — is this change worth keeping? — because
     // value is what an experiment exists to decide. A habit's value was
@@ -8894,10 +8903,11 @@ function frStepBody(s, day) {
         placeholder="What interesting way did you subconsciously overreact today?">${escHtml(j.bottleneck || '')}</textarea>
       <textarea id="fr-jn-problem" class="cl-notes" rows="2"
         placeholder="What is a formulation of a problem you have that you can explicitly solve?">${escHtml(j.problem || '')}</textarea>
-      ${running ? `<div class="fr-note">experiment: ${escHtml(running.content)}
-        <span class="fr-of">since ${escHtml(running.started_on)}</span> — how did it feel today?</div>` : ''}
+      ${onDay ? `<div class="fr-note">experiment: ${escHtml(onDay.content)}
+        <span class="fr-of">since ${escHtml(onDay.started_on)}</span> — how did it feel today?
+        The observation and the 1-7 below are this one's.</div>` : ''}
       <textarea id="fr-jn-exp" class="cl-notes" rows="2"
-        placeholder="${running ? 'Observations on the experiment…' : 'Active experiment…'}">${escHtml(j.active_experiment || '')}</textarea>
+        placeholder="${onDay ? 'Observations on the experiment…' : 'Active experiment…'}">${escHtml(j.active_experiment || '')}</textarea>
       <div class="fr-rating">${[1, 2, 3, 4, 5, 6, 7].map(n =>
         `<button class="fr-rate${j.rating === n ? ' fr-rate-on' : ''}" data-rate="${n}">${n}</button>`).join('')}</div>
 
@@ -8918,10 +8928,14 @@ function frStepBody(s, day) {
           <input type="text" class="cl-action fr-exp-edit" value="${escHtml(running.content)}"
             title="Reword it and press keep — same variable, said better">
           <div class="cl-row">
-            <button class="cl-pill fr-exp-keep">Keep it running</button>
-            <button class="cl-pill fr-exp-end">End it…</button>
+            <button class="cl-pill fr-exp-keep">${nextUp ? 'Save the wording' : 'Keep it running'}</button>
+            ${/* Nothing to end: tonight's experiment is already closed, and the
+                  one named here has not run a day yet. */''}
+            ${nextUp ? '' : '<button class="cl-pill fr-exp-end">End it…</button>'}
           </div>
-          <div class="fr-note fr-exp-hint">Keeping it is the default — you can just carry on.</div>`
+          <div class="fr-note fr-exp-hint">${nextUp
+            ? `Starts ${escHtml(running.started_on)} — tonight is still ${escHtml(onDay.content)}.`
+            : 'Keeping it is the default — you can just carry on.'}</div>`
         : `
           <input type="text" class="cl-action fr-exp-new"
             placeholder="change one cue, one cost, or one reward">
@@ -9554,7 +9568,7 @@ function wireFlowStep(sec, s, day) {
   // is for.
   const expRefresh = async () => {
     await saveJournalDraft(sec);
-    flowRunView.habits = await fetch('/api/habits').then(r => r.json())
+    flowRunView.habits = await fetch(`/api/habits?date=${runDay()}`).then(r => r.json())
       .catch(() => flowRunView.habits);
     renderFlowStep(s.id);
   };
@@ -9578,14 +9592,14 @@ function wireFlowStep(sec, s, day) {
   if (expKeep) expKeep.addEventListener('click', async () => {
     const next = sec.querySelector('.fr-exp-edit').value.trim();
     if (!next) { toast('An experiment needs a name'); return; }
-    if (next === expRunning.content) { toast('Still running — unchanged'); return; }
+    if (next === expRunning.content) { toast('Unchanged'); return; }
     const was = expRunning.content;
     await apiSend(`/api/habit-experiments/${expRunning.id}`, 'PATCH', { content: next });
     pushUndo(`reworded the experiment`, async () => {
       await apiSend(`/api/habit-experiments/${expRunning.id}`, 'PATCH', { content: was });
       await expRefresh();
     });
-    toast('reworded — still running');
+    toast('reworded');
     await expRefresh();
   });
   // Both ends live in the one sheet, which also asks for tomorrow's experiment

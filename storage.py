@@ -5129,6 +5129,33 @@ def reopen_habit_experiment(id):
     return dict(row) if row else None
 
 
+def experiment_on(day):
+    # WHICH EXPERIMENT WAS THIS DAY'S — the one function that answers it, and
+    # the reason the nightly 1-7 means anything. The rating and the observation
+    # are the EXPERIMENT'S instrument, so they have to name the experiment the
+    # day was actually lived under; the page used to label them with whatever
+    # was `running` when it painted, and ending one and starting tomorrow's is
+    # a single act on that same page. The moment you did it, the night you had
+    # just written was captioned with an experiment that had not started yet.
+    #
+    # A day belongs to the experiment that had started by then and had not
+    # ended before it. Resolved-on is INCLUSIVE: the night you close one is a
+    # night it ran. One-at-a-time means at most two rows can cover one day —
+    # the incumbent that ended on it and a replacement that started on it — and
+    # the INCUMBENT wins, because the day was lived under that one and the
+    # rating is about the day. (Ending one from the runner starts the next on
+    # the day AFTER, which is what it is called and what keeps this from being
+    # the common case.)
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT * FROM habit_experiment
+           WHERE started_on <= ?
+             AND (resolved_on IS NULL OR resolved_on >= ?)
+           ORDER BY started_on ASC, id ASC LIMIT 1""", (day, day)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def get_habit_experiments_overview(today):
     d30 = (date_cls.fromisoformat(today) - timedelta(days=30)).isoformat()
     conn = get_conn()

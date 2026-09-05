@@ -1689,9 +1689,14 @@ def patch_journal(date):
 
 @app.route('/api/habits')
 def get_habits_route():
-    today = date_cls.today().isoformat()
+    # THE DAY IS THE CALLER'S. The nightly runner sends the run's pinned day,
+    # so a night finished at 00:20 reads the marks it made and the experiment
+    # it was run under rather than the ones belonging to the day that has just
+    # started. A route default is for READS with no surface behind them.
+    today = request.args.get('date') or date_cls.today().isoformat()
     return jsonify(dict(storage.get_habits_overview(today),
-                        experiments=storage.get_habit_experiments_overview(today),
+                        experiments=dict(storage.get_habit_experiments_overview(today),
+                                         on_day=storage.experiment_on(today)),
                         marks_today=storage.habit_marks_for(today)))
 
 
@@ -1787,8 +1792,15 @@ def patch_habit_experiment(id):
         # client call so the ordering is the server's and every surface that
         # ends an experiment gets the same door — and so a start that lands
         # while the end failed is impossible.
+        # TOMORROW'S EXPERIMENT STARTS TOMORROW, which is what it is called.
+        # Starting it on the day the last one ended made two experiments true
+        # of one day, and the night you had just written — its observation and
+        # its 1-7, which are the ENDED one's instrument — was captioned with
+        # the one that had not run yet. `storage.experiment_on` is what reads
+        # the answer back; this is the write that makes it unambiguous.
         nxt = (data.get('next') or '').strip()
-        row['next_experiment'] = storage.create_habit_experiment(nxt, day) if nxt else None
+        tomorrow = (date_cls.fromisoformat(day) + timedelta(days=1)).isoformat()
+        row['next_experiment'] = storage.create_habit_experiment(nxt, tomorrow) if nxt else None
         return jsonify(row)
     outcome = data.get('outcome')
     if outcome == 'resolved':
