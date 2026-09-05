@@ -8974,9 +8974,20 @@ function frStepBody(s, day) {
       </div>`;
   } else if (s.kind === 'daily_contexts') {
     // WHICH CONTEXTS APPLY TODAY. Answering "no" hides that tag's pool items
-    // for the day and is counted on the pool header; leaving one unanswered
-    // excludes nothing, so this step can be skipped without consequence.
-    const dTags = ((state.tagDaily || {}).tags || []);
+    // for the day; leaving one unanswered excludes nothing, so this step can be
+    // skipped without consequence.
+    //
+    // ONLY THE TAGS THAT ARE ON THE BOARD (2026-09-05, Quentin's instruction).
+    // `live` is the asked-about tags that some AVAILABLE item actually
+    // carries, resolved by the server (storage.tag_daily_live) off the same
+    // availability predicate and the same EFFECTIVE tags the pool reads. A tag
+    // nothing is waiting on cannot change what today shows, so asking about it
+    // spends a morning's attention on a question with no consequence. The
+    // context picker still lists every asked-about tag — that is where the
+    // asking is turned on and off, and a tag with nothing under it today must
+    // still be reachable there.
+    const dTags = ((state.tagDaily || {}).live
+                   || (state.tagDaily || {}).tags || []);
     const dAns = ((state.tagDaily || {}).answers || {});
     const unanswered = dTags.filter(t => dAns[t] === undefined).length;
     page = `<div class="fr-step-big">${escHtml(s.content || 'Today’s contexts')}</div>
@@ -8991,8 +9002,10 @@ function frStepBody(s, day) {
         <div class="fr-note">${unanswered
           ? `${unanswered} unanswered — those stay visible`
           : 'all answered'}</div>`
-      : `<div class="fr-note">No tags are asked about yet. Long-press a tag in the
-         context picker and turn on “ask each day”.</div>`}`;
+      : `<div class="fr-note">${((state.tagDaily || {}).tags || []).length
+          ? 'Nothing on the board carries the tags you ask about — nothing to answer today.'
+          : `No tags are asked about yet. Long-press a tag in the
+             context picker and turn on “ask each day”.`}</div>`}`;
   } else if (s.kind === 'social_spec') {
     // THE PLANNING HAPPENS HERE (2026-09-03, Quentin's report: "I can't plan a
     // social spec in the morning routine page"). Both social cards were pure

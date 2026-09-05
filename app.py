@@ -3273,7 +3273,15 @@ def delete_tag_time_route(tag):
 @app.route('/api/tag-daily')
 def get_tag_daily_route():
     date = request.args.get('date') or date_cls.today().isoformat()
-    return jsonify({'tags': storage.get_tag_daily(), 'answers': storage.get_tag_day(date)})
+    # `tags` is every tag that is ASKED about — the context picker's own list,
+    # and what the toggle in it writes. `live` is the subset any available item
+    # actually carries: the morning step asks that, because a question about a
+    # tag nothing is waiting on cannot change what the pool shows. Resolved
+    # here, not narrowed in app.js, so the step and the picker cannot end up
+    # with two ideas of what is being asked.
+    return jsonify({'tags': storage.get_tag_daily(),
+                    'live': storage.tag_daily_live(),
+                    'answers': storage.get_tag_day(date)})
 
 
 @app.route('/api/tag-daily', methods=['POST'])
@@ -3283,7 +3291,8 @@ def post_tag_daily():
     if not tag:
         return jsonify({'error': 'tag is required'}), 400
     storage.set_tag_daily(tag, bool(data.get('on', True)))
-    return jsonify({'tags': storage.get_tag_daily()}), 201
+    return jsonify({'tags': storage.get_tag_daily(),
+                    'live': storage.tag_daily_live()}), 201
 
 
 @app.route('/api/tag-daily/answer', methods=['POST'])

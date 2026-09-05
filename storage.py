@@ -8964,6 +8964,29 @@ def get_tag_daily():
     return rows
 
 
+def tag_daily_live():
+    # WHICH ASKED-ABOUT TAGS ARE ACTUALLY ON THE BOARD (2026-09-05, Quentin's
+    # instruction: the morning step must ask about only the tags that are on
+    # active items). Answering one hides work or it does nothing, and a tag no
+    # available item carries can only ever do nothing — so asking about it is a
+    # question with no consequence on the surface that is meant to take ten
+    # seconds. It is a DISPLAY filter and nothing else: the answers already
+    # given stay, `tag_daily` still holds every tag that is asked about, and
+    # the gate itself is unchanged and still fails open.
+    #
+    # Two rules are borrowed rather than restated, exactly as items_at_location
+    # borrows them: AVAILABILITY is `_AVAILABLE` through get_active_items_all,
+    # and the tags are the EFFECTIVE ones, so an action under a project tagged
+    # @dad keeps its parent's context here like it does everywhere else.
+    asked = set(get_tag_daily())
+    if not asked:
+        return []
+    on_board = set()
+    for row in get_active_items_all():
+        on_board.update((row.get('effective_tags') or '').split())
+    return sorted(asked & on_board)
+
+
 def set_tag_daily(tag, on):
     conn = get_conn()
     if on:
