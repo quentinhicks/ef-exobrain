@@ -1969,6 +1969,9 @@ def get_gates_billing():
     week_from = (date_cls.today() - timedelta(days=6)).isoformat()
     return jsonify({
         'live': s['live'],
+        # The hard switch, so the panel can say why its live button is dead
+        # rather than offering one that bounces back to off.
+        'charging_disabled': s.get('disabled', False),
         'dryrun': s['dryrun'],
         'cap_cents': s['cap_cents'],
         'default_cents': s['default_cents'],
@@ -1991,6 +1994,14 @@ def patch_gates_billing():
     # design: it lives in config.json so that no request can read or write it
     # (see qr_judge's charging header).
     data = request.get_json() or {}
+    # Arming charging while qr_judge.CHARGING_DISABLED stands would store a '1'
+    # that never takes effect -- saved, and not in force. Refuse it in words.
+    # Turning it OFF is always allowed: a lock may never be the thing that
+    # stops you locking further.
+    if data.get('gate_charging_live') and qr_judge.CHARGING_DISABLED:
+        return jsonify({'error': 'Charging is disabled in the code '
+                                 '(qr_judge.CHARGING_DISABLED). Nothing can arm it '
+                                 'from here.'}), 409
     allowed = {
         'gate_charging_live': lambda v: '1' if v else '0',
         'gate_charge_dryrun': lambda v: '1' if v else '0',

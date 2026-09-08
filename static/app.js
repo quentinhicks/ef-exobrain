@@ -12645,6 +12645,12 @@ async function renderGatesBilling(verify) {
     cls = 'gb-bad';
     verdict = 'Judgment isn\'t running.';
     sub = `Nothing has been judged since ${agoLabel(b.judge_last_run)} — gates are not being decided.`;
+  } else if (b.charging_disabled) {
+    // Outranks the settings-level "off": this one cannot be clicked back on.
+    cls = 'gb-good';
+    verdict = 'Charging is disabled. No money can move.';
+    sub = 'Failures are judged, logged and priced as before, but the pipeline is '
+        + 'switched off in the code (qr_judge.CHARGING_DISABLED) and nothing here can arm it.';
   } else if (!b.live) {
     cls = 'gb-good';
     verdict = 'Scanning works. No money moves.';
@@ -12703,11 +12709,13 @@ async function renderGatesBilling(verify) {
       <div class="be-set-row">
         ${b.live ? mark(true) : idle}
         <span class="be-set-name">Charging</span>
-        <div class="gb-seg" id="gb-seg">
+        ${b.charging_disabled
+          ? '<span class="gb-val">disabled in code</span>'
+          : `<div class="gb-seg" id="gb-seg">
           <button data-gmode="off" class="${!b.live ? 'gb-seg-on' : ''}">off</button>
           <button data-gmode="dry" class="${b.live && b.dryrun ? 'gb-seg-on' : ''}">dry run</button>
           <button data-gmode="live" class="${b.live && !b.dryrun ? 'gb-seg-on gb-seg-live' : ''}">live</button>
-        </div>
+        </div>`}
       </div>
       <button class="be-set-row gb-rowbtn" data-gbsheet="1">
         <span class="gb-mark"></span>

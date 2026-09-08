@@ -1183,6 +1183,29 @@ def apply_node_patch(node, fields, now=None):
 # equivalent of a Worker secret — a file on the box, gitignored, invisible to
 # the API and to any surface the app renders. The Gates panel can therefore
 # verify it but not read or set it, which was the deliberate choice.
+# CHARGING IS HARD-DISABLED (2026-09-07, Quentin's instruction). The four
+# locks above are SETTINGS — a click in Settings -> Gates arms them again, and
+# three of the four are one click each. This constant is the fifth lock and the
+# only one no surface can reach: while it is True no request is built and none
+# is sent, whatever the settings or config.json say.
+#
+# It is applied at TWO choke points, deliberately:
+#   * charge_settings() forces live=False, so charge_for_failure takes the
+#     already-proven not-live path and a day still lands 'would_fire' — judged,
+#     frozen, logged and priced, with no money branch entered at all. No new
+#     branch on the money path is worth the risk of writing one.
+#   * beeminder_charge() refuses at the network door, so a caller that builds
+#     its own settings dict still cannot post. Returns 'failed' because that is
+#     what 'failed' has always meant here: NOTHING WAS SENT. It must not be
+#     'unknown' — unknown counts against the cap and blocks a retry, which are
+#     both statements about a charge that might exist.
+#
+# The pipeline is intact, not deleted: the stakes, the cap, the fee and every
+# read-out still say what a day would cost. Flipping this to False is the whole
+# of turning charging back on, and the two money suites do exactly that so the
+# rails stay proven rather than merely present.
+CHARGING_DISABLED = True
+
 BEEMINDER_CHARGES_URL = 'https://www.beeminder.com/api/v1/charges.json'
 BEEMINDER_ME_URL = 'https://www.beeminder.com/api/v1/users/me.json'
 
@@ -1201,7 +1224,12 @@ def charge_settings():
     cfg = _cfg()
     st = storage.get_settings() or {}
     return {
-        'live': st.get('gate_charging_live') == '1',
+        # The kill switch wins over the setting. Reported, not silently
+        # applied: /api/gates/billing ships `charging_disabled` so the panel
+        # can say WHY its live button is dead, instead of a toggle that reads
+        # as saved and is not in force -- the config.json failure, one layer up.
+        'live': (not CHARGING_DISABLED) and st.get('gate_charging_live') == '1',
+        'disabled': CHARGING_DISABLED,
         'dryrun': st.get('gate_charge_dryrun', '1') != '0',
         'cap_cents': int(st.get('gate_weekly_cap_cents') or 2500),
         'default_cents': int(st.get('gate_charge_cents') or 200),
@@ -1225,6 +1253,8 @@ def node_charge_cents(node, settings):
 
 def beeminder_charge(settings, amount_cents, note, sender=None):
     """Returns (status, charge_id). Statuses mirror the Worker exactly."""
+    if CHARGING_DISABLED:
+        return 'failed', None            # the network door; nothing was sent
     if not settings['token'] or not settings['user']:
         return 'failed', None            # nothing was sent
     dollars = '%.2f' % max(1.0, amount_cents / 100.0)   # their minimum is $1

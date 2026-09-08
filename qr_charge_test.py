@@ -35,6 +35,11 @@ def fresh(live=True, dryrun=False, cap=2500, default=200, token='t', user='u'):
             os.remove(f)
     storage.init_db()
     storage.qr_ensure_charge_columns()
+    # The pipeline is hard-disabled in production (qr_judge.CHARGING_DISABLED).
+    # A fixture that arms charging opts back in explicitly, so the rails stay
+    # PROVEN rather than merely present -- a suite that silently ran against
+    # the kill switch would pass while testing nothing.
+    qr_judge.CHARGING_DISABLED = not live
     storage.set_setting('gate_charging_live', '1' if live else '0')
     storage.set_setting('gate_charge_dryrun', '1' if dryrun else '0')
     storage.set_setting('gate_weekly_cap_cents', str(cap))
