@@ -91,6 +91,42 @@ def _migrate_project_to_area(conn):
             conn.commit()
 
 
+# The general area of every domain, made if it is missing. Idempotent and run
+# at every startup, like the domain backfill above it: a domain with no general
+# area is a domain you cannot file into, and that state is reachable by
+# deleting an area rather than only by a missed migration.
+#
+# The default domain's general is the app's existing `General` area, adopted
+# rather than duplicated - there was never a second one, and minting one would
+# split the items already filed there.
+def _ensure_domain_generals(conn):
+    rows = conn.execute('SELECT id, name, is_default FROM domain').fetchall()
+    for d in rows:
+        have = conn.execute(
+            'SELECT id FROM area WHERE domain_id = ? AND is_domain_default = 1',
+            (d['id'],)).fetchone()
+        if have:
+            continue
+        adopt = conn.execute(
+            """SELECT id FROM area WHERE domain_id = ? AND is_default = 1
+               ORDER BY id LIMIT 1""", (d['id'],)).fetchone()
+        if adopt:
+            conn.execute('UPDATE area SET is_domain_default = 1 WHERE id = ?',
+                         (adopt['id'],))
+        else:
+            conn.execute(
+                """INSERT INTO area (name, type, domain_id, is_domain_default)
+                   VALUES (?, 'standard', ?, 1)""",
+                (domain_general_name(d['name']), d['id']))
+    conn.commit()
+
+
+# Named after its domain, not "General": `seAreaOptions` and the clarify chips
+# are FLAT lists, and three areas all called General there say nothing.
+def domain_general_name(domain_name):
+    return f'{domain_name} · general'
+
+
 def init_db():
     conn = get_conn()
     _migrate_project_to_area(conn)
@@ -544,6 +580,22 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE area ADD COLUMN qr_node_id INTEGER')
         conn.commit()
+    # EVERY DOMAIN HAS A GENERAL AREA (2026-09-08, Quentin's instruction:
+    # file a thing "under a domain generally"). The domain in force is DERIVED
+    # from the area everywhere in the app - the pool, the blocks, MAP, the
+    # plan - so an item carrying its own domain_id would be a second answer to
+    # a question one place already answers. Filing to a domain therefore lands
+    # in that domain's general area, and nothing downstream learns a new rule.
+    #
+    # A SEPARATE FLAG from `is_default`, which names the ONE global fallback
+    # (`WHERE is_default = 1 ... LIMIT 1`, five call sites): a second row
+    # answering that query would make those five pick at random.
+    try:
+        conn.execute('SELECT is_domain_default FROM area LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE area ADD COLUMN is_domain_default INTEGER NOT NULL DEFAULT 0')
+        conn.commit()
+    _ensure_domain_generals(conn)
     try:
         conn.execute('SELECT updated_at FROM daily_todo LIMIT 1')
     except Exception:
@@ -1893,6 +1945,18 @@ def _new_uid(kind):
     return f'{kind}-{uuid.uuid4().hex[:12]}'
 
 
+# THE ONE ANSWER to "which area when none was named" (2026-09-08). This query
+# was written out at five call sites - the tax seed, the routine task seed
+# (twice), the sheets seeder and the social minter - and a sixth was about to
+# join them for the clarify rule below. Same shape every time, which is the
+# class CLAUDE.md says to fix at the abstraction rather than at the site.
+def default_area_id(conn):
+    row = conn.execute(
+        """SELECT id FROM area WHERE is_default = 1 AND active = 1
+           AND type = 'standard' LIMIT 1""").fetchone()
+    return row['id'] if row else None
+
+
 def get_areas():
     conn = get_conn()
     rows = conn.execute('SELECT * FROM area ORDER BY is_default DESC, name').fetchall()
@@ -1912,6 +1976,20 @@ def create_area(name, type, domain_id=None):
     row = conn.execute('SELECT * FROM area WHERE id = ?', (row_id,)).fetchone()
     conn.close()
     return dict(row)
+
+
+# A domain's general area may not be moved out of it: it is the answer to
+# "file this under that domain", and moving it would leave the domain with no
+# answer. Reported, not silently ignored - the sheet says why.
+def area_move_refusal(id, domain_id):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM area WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    if row['is_domain_default'] and str(row['domain_id']) != str(domain_id):
+        return 'That is its domain’s general area — it is where things filed under the domain land, so it stays.'
+    return None
 
 
 def set_area_domain(id, domain_id):
@@ -1946,6 +2024,10 @@ def create_domain(name):
     cur = conn.execute('INSERT INTO domain (name) VALUES (?)', (name,))
     row_id = cur.lastrowid
     conn.commit()
+    # A domain with nothing under it cannot be filed into, so its general area
+    # is made HERE rather than waiting for the next startup's backfill - the
+    # clarify sheet offers the new domain the moment this returns.
+    _ensure_domain_generals(conn)
     row = conn.execute('SELECT * FROM domain WHERE id = ?', (row_id,)).fetchone()
     conn.close()
     return dict(row)
@@ -1954,6 +2036,17 @@ def create_domain(name):
 def update_domain(id, name=None, active=None):
     conn = get_conn()
     if name is not None:
+        # Its general area is named AFTER the domain, so a rename that left the
+        # area behind would put "Old · general" under "New" - and an area has
+        # no rename of its own to fix it with. Only a name this function
+        # generated is rewritten: the default domain's adopted `General` keeps
+        # the name it has always had.
+        was = conn.execute('SELECT name FROM domain WHERE id = ?', (id,)).fetchone()
+        if was:
+            conn.execute(
+                '''UPDATE area SET name = ? WHERE domain_id = ?
+                   AND is_domain_default = 1 AND name = ?''',
+                (domain_general_name(name), id, domain_general_name(was['name'])))
         conn.execute('UPDATE domain SET name = ? WHERE id = ?', (name, id))
     if active is not None:
         conn.execute('UPDATE domain SET active = ? WHERE id = ?', (1 if active else 0, id))
@@ -1971,7 +2064,12 @@ def delete_domain(id):
     if not row or row['is_default']:
         conn.close()
         return
-    conn.execute('''UPDATE area SET domain_id = (SELECT id FROM domain WHERE is_default = 1)
+    # Its general area comes along with everything else - it holds real items,
+    # and dropping it would strand them. It stops being A general (the default
+    # domain already has one) and keeps its name, which already says where it
+    # came from.
+    conn.execute('''UPDATE area SET domain_id = (SELECT id FROM domain WHERE is_default = 1),
+                                    is_domain_default = 0
                     WHERE domain_id = ?''', (id,))
     conn.execute('DELETE FROM domain WHERE id = ?', (id,))
     conn.commit()
@@ -2400,6 +2498,12 @@ def create_inbox_item(content, status=None, area_id=None, project_id=None, tags=
     # The next-actions prompt bar passes status='active' plus an area to write
     # straight onto a list, skipping the inbox.
     conn = get_conn()
+    # The same door rule as update_inbox_item: a row created already TRIAGED
+    # with no area would never appear in the pool, which JOINs area. A bare
+    # capture ('in', status None) is left alone - it has not been filed yet,
+    # and giving it an area would be answering a question clarify exists to ask.
+    if status in ('active', 'waiting', 'on_hold') and area_id is None             and project_id is None:
+        area_id = default_area_id(conn)
     cur = conn.execute('INSERT INTO inbox_item (content, status, area_id, tags) VALUES (?, ?, ?, ?)',
                        (content, status, area_id, tags or ''))
     row_id = cur.lastrowid
@@ -3108,6 +3212,25 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
         conn.close()
         if row and row['parent_area'] != area_id:
             updates['project_id'] = None
+    # AN ITEM THAT LEAVES THE INBOX HAS AN AREA (2026-09-08, Quentin's rule:
+    # "if not, they will be placed in a general area of focus"). Not cosmetic -
+    # every pool query JOINs area, so a triaged item with none is INVISIBLE on
+    # the day surface while sitting in MAP looking filed. The fallback is the
+    # global General, which is also the default domain's general area, so the
+    # item reads as "no particular area, no particular domain" on every lens.
+    #
+    # It runs at the DOOR, on the write, rather than as a render-time fallback:
+    # a surface that showed General while the row said NULL would be two
+    # answers to where the thing is filed.
+    if updates.get('status') in ('active', 'waiting', 'on_hold'):
+        conn = get_conn()
+        row = conn.execute('SELECT area_id FROM inbox_item WHERE id = ?', (id,)).fetchone()
+        landing = updates['area_id'] if 'area_id' in updates else (row and row['area_id'])
+        if landing is None:
+            fallback = default_area_id(conn)
+            if fallback is not None:
+                updates['area_id'] = fallback
+        conn.close()
     if not updates:
         conn = get_conn()
         row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (id,)).fetchone()
@@ -3197,9 +3320,7 @@ TAX_PROJECT = {
 def _seed_tax_project(conn):
     if conn.execute("SELECT 1 FROM setting WHERE key = 'tax_project_seeded'").fetchone():
         return
-    area = conn.execute(
-        """SELECT id FROM area WHERE is_default = 1 AND active = 1
-             AND type = 'standard' LIMIT 1""").fetchone()
+    area = default_area_id(conn)
     if not area:
         return                  # no General yet; try again on the next start
     month, dom = TAX_PROJECT['start_md']
@@ -3213,7 +3334,7 @@ def _seed_tax_project(conn):
              (name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date,
               spawn, deadline_md, notes)
            VALUES (?, ?, 'monthly_date', NULL, NULL, NULL, 12, ?, 'project', ?, ?)''',
-        (TAX_PROJECT['name'], area['id'], date_cls(year, month, dom).isoformat(),
+        (TAX_PROJECT['name'], area, date_cls(year, month, dom).isoformat(),
          TAX_PROJECT['deadline_md'], TAX_PROJECT['notes']))
     conn.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('tax_project_seeded', ?)",
                  (date_cls(year, month, dom).isoformat(),))
@@ -3292,9 +3413,7 @@ def seed_flow_tasks():
     conn = get_conn()
     flows = [dict(r) for r in conn.execute(
         'SELECT * FROM flow WHERE COALESCE(as_task, 0) = 1').fetchall()]
-    default_area = conn.execute(
-        """SELECT id FROM area WHERE is_default = 1 AND active = 1
-           AND type = 'standard' LIMIT 1""").fetchone()
+    default_area = default_area_id(conn)
     for f in flows:
         key = flow_period_key(f.get('period'), today)
         live = conn.execute(
@@ -3315,7 +3434,7 @@ def seed_flow_tasks():
             (f['id'], key)).fetchone()
         if already or not step_due_on(f, today):
             continue
-        area_id = f['area_id'] or (default_area['id'] if default_area else None)
+        area_id = f['area_id'] or default_area
         if area_id is None:
             continue          # nothing to file it under; the pool JOINs area
         cur = conn.execute(
@@ -3359,10 +3478,8 @@ def seed_flow_task_now(flow_id, ymd=None):
     if live or (done and done['completed_at']):
         conn.close()
         return None
-    default_area = conn.execute(
-        """SELECT id FROM area WHERE is_default = 1 AND active = 1
-           AND type = 'standard' LIMIT 1""").fetchone()
-    area_id = f['area_id'] or (default_area['id'] if default_area else None)
+    default_area = default_area_id(conn)
+    area_id = f['area_id'] or default_area
     if area_id is None:
         conn.close()
         return None
@@ -3624,6 +3741,13 @@ def replace_source_events(source_id, occurrences, fetched_at):
         conn.close()
         raise
     conn.close()
+
+
+def area_is_domain_general(id):
+    conn = get_conn()
+    row = conn.execute('SELECT is_domain_default FROM area WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return bool(row and row['is_domain_default'])
 
 
 def delete_area(id):
@@ -4294,10 +4418,7 @@ def sheets_area_id(conn, area_name=''):
             (name,)).fetchone()
         if row:
             return row['id']
-    row = conn.execute(
-        """SELECT id FROM area WHERE is_default = 1 AND active = 1
-           AND type = 'standard' LIMIT 1""").fetchone()
-    return row['id'] if row else None
+    return default_area_id(conn)
 
 
 def _sheets_deadline(due):

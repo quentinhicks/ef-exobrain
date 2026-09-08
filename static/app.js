@@ -733,9 +733,42 @@ function renderPlanBar() {
         ? ` · that covers the ${humanMinutes(owed)} it owes`
         : ` · ${humanMinutes(owed - planned)} short of the ${humanMinutes(owed)} it owes`;
   }
+  // WHAT THE HOURS ARE FOR, picked before they are drawn (2026-09-08,
+  // Quentin's instruction). A span already carried an area; the thing you
+  // actually think in while planning a day is the DOMAIN, so that is what the
+  // banner asks for — and picking one files the span in that domain's general
+  // area, the same road the clarify sheet's "Filing to" takes.
+  //
+  // NOT a second store: the span still carries only `area_id`, and its domain
+  // is derived from that everywhere. A `plan_span.domain_id` beside it would
+  // be the parallel implementation CLAUDE.md bans — the two would agree right
+  // up until an area moved domain.
+  //
+  // The pick is a DEFAULT for what you draw next, never a filter: spans
+  // already drawn stay exactly as they are and keep showing their own area.
+  const domains = (state.domains || []).filter(d => d.active !== 0
+    || String(d.id) === String(state.planDomainId));
   bar.innerHTML = `<span class="tl-plan-sum">${planned
     ? humanMinutes(planned) + ' planned' : 'nothing planned yet'}${escHtml(against)}</span>`
+    + `<div class="tl-plan-domains"><span class="tl-plan-dlabel">drawing for</span>
+        <button class="ctx-chip ${state.planDomainId == null ? 'ctx-req' : 'ctx-off'}"
+          data-plandomain="">nothing in particular</button>
+        ${domains.map(d => `<button class="ctx-chip ${
+          String(d.id) === String(state.planDomainId) ? 'ctx-req' : 'ctx-off'}"
+          data-plandomain="${d.id}">${escHtml(d.name)}</button>`).join('')}
+      </div>`
     + '<span class="tl-plan-hint">drag an empty stretch to draw · drag a span to move it · tap it for its menu</span>';
+  bar.querySelectorAll('[data-plandomain]').forEach(b => b.addEventListener('click', () => {
+    state.planDomainId = b.dataset.plandomain === '' ? null : parseInt(b.dataset.plandomain);
+    renderPlanBar();
+  }));
+}
+
+// The area a newly drawn span lands in: the chosen domain's general area, or
+// nothing at all when no domain is chosen. One reader, so the draw gesture and
+// any future one cannot disagree about what the banner's pick means.
+function planDrawAreaId() {
+  return state.planDomainId == null ? null : defaultAreaForDomain(state.planDomainId);
 }
 
 function renderPlanLayer(bodyH = 600) {
@@ -758,12 +791,19 @@ function renderPlanLayer(bodyH = 600) {
                  style="top:${top}%;height:${bottom - top}%">
               <div class="tl-plan-bar-grip"></div>
               <span class="tl-plan-label">${escHtml(humanMinutes(s.end_min - s.start_min))}${
-                area ? ' · ' + escHtml(area.name) : ''}</span>
+                area ? ' · ' + escHtml(planSpanWhatFor(area)) : ''}</span>
             </div>`;
   }).join('');
 
   wirePlanSpanDrags(layer, dateStr);
   wirePlanDraw(layer);
+}
+
+// A span filed in a domain's GENERAL area was drawn "for that domain", so the
+// label says the domain — "Study", not "Study · general". A span filed in a
+// real area says the area, which is the more specific thing and wins.
+function planSpanWhatFor(area) {
+  return area.is_domain_default ? domainName(area.domain_id) : area.name;
 }
 
 // Minutes under a pointer, snapped to 5 — the same grain the block drag uses,
@@ -846,7 +886,7 @@ function wirePlanDraw(layer) {
         ghost.remove();
         if (hi - lo < 5) { renderTimeline(); return; }
         const res = await apiSend('/api/plan/spans', 'POST',
-          { date: dateStr, start_min: lo, end_min: hi });
+          { date: dateStr, start_min: lo, end_min: hi, area_id: planDrawAreaId() });
         if (!res.ok) { toast('Could not draw that span'); renderTimeline(); return; }
         const row = await res.json();
         // A GESTURE IS A BUTTON: a create inverts to a delete of the row it
@@ -4272,6 +4312,7 @@ const SETTINGS_SHEETS = {
     title: it => it ? 'Area' : 'Add area',
     save: it => it ? 'Save area' : 'Add area',
     removeLabel: 'Delete area',
+    canRemove: it => !it.is_domain_default,
     confirm: it => `Delete area "${it.name}"?`,
     blank: () => ({ name: '', type: 'standard', domain: (state.domains[0] || {}).id || '' }),
     load: a => ({
@@ -4288,11 +4329,21 @@ const SETTINGS_SHEETS = {
         { key: 'domain', label: 'Domain', kind: 'select', half: true,
           options: () => seDomainOptions(v.domain) },
       ];
+      // A domain's GENERAL area is where "file this under the domain" lands, so
+      // its domain is not a choice — showing a live select that the server
+      // then refuses is a dead control, which is the failure mode the runner's
+      // eleven addressed-by-id controls just taught us.
+      const general = !!it.is_domain_default;
       return [
         { key: 'name', label: 'Name', kind: 'static', text: it.name },
         { key: 'type', label: 'Type', kind: 'select', half: true, rerender: true, options: () => types },
-        { key: 'domain', label: 'Domain', kind: 'select', half: true,
-          options: () => seDomainOptions(v.domain) },
+        general
+          ? { key: 'domain', label: 'Domain', kind: 'static',
+              text: domainName(it.domain_id) + ' — its general area',
+              hint: 'Anything filed under this domain with no area of its own '
+                    + 'lands here, so it stays where it is and cannot be deleted.' }
+          : { key: 'domain', label: 'Domain', kind: 'select', half: true,
+              options: () => seDomainOptions(v.domain) },
         // A routine area can hang off a gate: the routine then nests under
         // that gate's hairline on Engage even with no block on the calendar.
         ...(v.type === 'routine' ? [{ key: 'qr', label: 'Gate anchor', kind: 'select',
@@ -4311,7 +4362,13 @@ const SETTINGS_SHEETS = {
       }
       const patch = async body => apiSend(`/api/areas/${a.id}`, 'PATCH', body);
       if (v.type !== a.type) await patch({ type: v.type });
-      if (String(v.domain) !== String(a.domain_id || '')) await patch({ domain_id: parseInt(v.domain) });
+      if (String(v.domain) !== String(a.domain_id || '')) {
+        // The server refuses to move a domain's general area out of it. Its
+        // words, not a copy of them here: one rule, one place that states it.
+        const res = await patch({ domain_id: parseInt(v.domain) });
+        if (!res.ok) return (await res.json().catch(() => ({}))).error
+          || 'That area cannot move domain.';
+      }
       if (v.type === 'routine' && String(v.qr) !== String(a.qr_node_id || '')) {
         await patch({ qr_node_id: v.qr ? parseInt(v.qr) : null });
       }
@@ -4320,7 +4377,11 @@ const SETTINGS_SHEETS = {
       return null;
     },
     remove: async a => {
-      await apiSend(`/api/areas/${a.id}`, 'DELETE');
+      const res = await apiSend(`/api/areas/${a.id}`, 'DELETE');
+      if (!res.ok) {
+        toast((await res.json().catch(() => ({}))).error || 'That area cannot be deleted.');
+        return;
+      }
       await refreshBlockEditor();
     },
   },
@@ -13705,6 +13766,95 @@ function renderMapFilter() {
   });
 }
 
+// ── THE AREAS OF FOCUS, at the foot of MAP (2026-09-08, Quentin's
+// instruction) ──────────────────────────────────────────────────────────────
+//
+// The tree above groups domain → area, but it can only show the ones that
+// HAVE something in them: an area you set up and then never filed into is
+// invisible on the surface built for reading the whole map, and the only
+// place it existed was Settings. Horizon 2 is a list you are supposed to
+// REVIEW, so it belongs on the reading surface.
+//
+// It is the STANDING structure, so it is not narrowed by the lens — a filter
+// is a question about the inventory, and an area does not stop existing
+// because you are looking at "Waiting & deferred". The counts are of the whole
+// inventory for the same reason.
+//
+// No editor of its own: each row is the object it names (`data-obj`), so its
+// menu and its `›` open the SAME `SETTINGS_SHEETS.area` / `.domain` sheet that
+// Settings opens. One thing, one editor — reached from the thing.
+function mapAreasHtml() {
+  const items = state.mapItems || [];
+  const nByArea = {};
+  items.forEach(i => { nByArea[i.area_id] = (nByArea[i.area_id] || 0) + 1; });
+  const areas = (state.areas || []).filter(a => a.type === 'standard');
+  const domains = (state.domains || []).slice().sort((a, b) =>
+    (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0) || a.name.localeCompare(b.name));
+
+  const areaRow = a => {
+    const n = nByArea[a.id] || 0;
+    return `<div class="map-af-row" data-obj="area:${a.id}" data-area-id="${a.id}">
+      <span class="map-af-name">${escHtml(a.name)}</span>
+      ${a.is_domain_default ? '<span class="map-badge" title="Where anything filed under this domain with no area of its own lands">general</span>' : ''}
+      ${a.active ? '' : '<span class="map-badge">paused</span>'}
+      <span class="map-count">${n}</span>
+      <span class="map-acts"><button class="map-af-open" data-kind="area" data-id="${a.id}"
+        title="Edit this area — its domain, its state">›</button></span>
+    </div>`;
+  };
+
+  const groups = domains.map(d => {
+    const mine = areas.filter(a => String(domainIdForArea(a.id)) === String(d.id))
+      .sort((x, y) => (y.is_domain_default ? 1 : 0) - (x.is_domain_default ? 1 : 0)
+        || x.name.localeCompare(y.name));
+    return `<div class="map-af-domain">
+      <div class="map-af-dhead" data-obj="domain:${d.id}">
+        <span class="map-af-dname">${escHtml(d.name)}</span>
+        ${d.active === 0 ? '<span class="map-badge">paused</span>' : ''}
+        <span class="map-count">${mine.reduce((n, a) => n + (nByArea[a.id] || 0), 0)}</span>
+        <span class="map-acts"><button class="map-af-open" data-kind="domain" data-id="${d.id}"
+          title="Edit this domain">›</button></span>
+      </div>
+      ${mine.map(areaRow).join('')}
+    </div>`;
+  }).join('');
+
+  return `<div class="map-af">
+    <div class="map-af-head">Areas of focus
+      <span class="map-count">${areas.length}</span>
+      <span class="map-acts">
+        <button class="map-af-add" data-kind="area">+ area</button>
+        <button class="map-af-add" data-kind="domain">+ domain</button>
+      </span>
+    </div>
+    <div class="map-af-hint">Horizon 2 — the standing responsibilities every
+      project and action files under. A domain is the level above; anything
+      filed under one with no area of its own lands in its general area.</div>
+    ${groups}
+  </div>`;
+}
+
+// The roster's own control. `returnTo` is what makes the sheet's Save land
+// back on MAP: openSeSheet's default close leaves the settings index behind
+// it, which is not where this was opened from.
+function wireMapAreas(body) {
+  const back = async () => {
+    closeSeSheet();
+    // The sheet's own submit/remove already re-read /api/areas and /api/domains
+    // (refreshBlockEditor), so this repaints MAP against fresh state rather
+    // than fetching them a second time.
+    await refreshMap();
+  };
+  body.querySelectorAll('.map-af-open').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation();
+    openObjectSheet(btn.dataset.kind, btn.dataset.id, back);
+  }));
+  body.querySelectorAll('.map-af-add').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation();
+    openSeSheet(btn.dataset.kind, null, back);
+  }));
+}
+
 function closeMapFilter() {
   if (!mapView.menuOpen) return false;
   mapView.menuOpen = false;
@@ -13713,14 +13863,23 @@ function closeMapFilter() {
 }
 
 async function refreshMap() {
-  const [items, projects, inbox] = await Promise.all([
-    fetch('/api/map').then(r => r.json()),
-    fetch('/api/projects').then(r => r.json()),
-    fetch('/api/inbox').then(r => r.json()),
+  // Areas and domains come along because MAP now RENDERS them (the roster at
+  // its foot). A surface reads what it draws: leaving them to whoever happened
+  // to load state.areas last is how an area added here fails to appear until
+  // something unrelated refreshes. Every fetch falls back to CURRENT state, not
+  // [] — Promise.all rejects as a unit, and one dead endpoint used to blank it.
+  const [items, projects, inbox, areas, domains] = await Promise.all([
+    apiGet('/api/map', state.mapItems || []),
+    apiGet('/api/projects', state.projects || []),
+    apiGet('/api/inbox', state.inbox || []),
+    apiGet('/api/areas', state.areas || []),
+    apiGet('/api/domains', state.domains || []),
   ]);
   state.mapItems = items;
   state.projects = projects;
   state.inbox = inbox;
+  state.areas = areas;
+  state.domains = domains;
   renderMap();
 }
 
@@ -14075,12 +14234,13 @@ function renderMap() {
       ? `Nothing in the inventory answers “${escHtml(mapLens().name)}”${
           mapFilterExtras() ? ' with those filters' : ''}.`
       : 'Nothing in the inventory yet — capture into the inbox first.'
-  }</div>`) + inboxHtml;
+  }</div>`) + inboxHtml + mapAreasHtml();
 
   const patchItem = (id, patch) => apiSend(`/api/inbox/${id}`, 'PATCH', patch);
   const after = async () => { await refreshMap(); await refreshActiveItems(); };
 
   wireMapRows(body, byId);
+  wireMapAreas(body);
 
   // Drag one row onto another to file it there — the same act as the filing
   // target, so the destination becomes a project by the usual invariant. The
@@ -16722,11 +16882,26 @@ function recentBump(key, value) {
   localStorage.setItem('recent.' + key, JSON.stringify(list.slice(0, RECENT_MAX)));
 }
 
-// The area to land on for a given domain: its default, else its first.
+// FILING TO A DOMAIN LANDS IN ITS GENERAL AREA (2026-09-08). Every domain has
+// one (`storage._ensure_domain_generals`), so "under this domain, no
+// particular area" is a real, single answer rather than whichever area
+// happened to sort first — which is what this used to pick, silently.
+//
+// The item still carries only an area, and the domain is DERIVED from it
+// everywhere (the pool, blocks, MAP, the plan). That is the whole point: an
+// item that stored its own domain would be a second answer to a question the
+// area already answers, and the two would agree until an area moved domain.
 function defaultAreaForDomain(did) {
   const areas = state.areas.filter(a => a.active && a.type === 'standard'
                                         && domainIdForArea(a.id) === did);
-  return (areas.find(a => a.is_default) || areas[0] || {}).id || null;
+  return (areas.find(a => a.is_domain_default) || areas.find(a => a.is_default)
+          || areas[0] || {}).id || null;
+}
+
+// Is this area the "no particular area" one for its domain?
+function areaIsGeneral(areaId) {
+  const a = (state.areas || []).find(x => String(x.id) === String(areaId));
+  return !!(a && a.is_domain_default);
 }
 
 function clarifyResetItem() {
@@ -17380,6 +17555,12 @@ function renderClarify() {
   // Where it lands. Domain first (the obligation level you actually think
   // in), then that domain's areas when the choice is ambiguous. Defaults to
   // the block calendar's area, so the common case is still zero taps.
+  //
+  // The area row always carries the domain's GENERAL area, spelled `general`
+  // rather than by its own name: "under this domain, no particular area" is a
+  // real filing decision and needs a chip to make it with. It is still an
+  // AREA underneath — the item stores one filing, and the domain is derived
+  // from it everywhere, so nothing downstream learns a second rule.
   if ((verb !== 'do' || doProgress) && verb !== 'trash') {
     const areas = state.areas.filter(a => a.active && a.type === 'standard');
     const current = areas.find(a => a.id === clarifyView.areaId)
@@ -17396,7 +17577,9 @@ function renderClarify() {
       </div>
       ${siblings.length > 1 ? `<div class="cl-chips">
         ${siblings.map(a => `<button class="cl-chip${current && a.id === current.id ? ' cl-chip-on' : ''}"
-           data-area="${a.id}">${escHtml(a.name)}</button>`).join('')}
+           data-area="${a.id}"${a.is_domain_default
+             ? ' title="No particular area — filed under the domain itself"' : ''}
+           >${escHtml(a.is_domain_default ? 'general' : a.name)}</button>`).join('')}
       </div>` : ''}`;
   }
 

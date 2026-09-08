@@ -385,6 +385,9 @@ def patch_area(id):
             return jsonify({'error': 'type must be standard, review, sleep, or routine'}), 400
         project = storage.set_project_type(id, data['type'])
     elif 'domain_id' in data:
+        refusal = storage.area_move_refusal(id, data['domain_id'])
+        if refusal:
+            return jsonify({'error': refusal}), 400
         project = storage.set_area_domain(id, data['domain_id'])
     elif 'qr_node_id' in data:
         project = storage.set_area_qr_node(id, data['qr_node_id'])
@@ -1114,6 +1117,11 @@ def delete_project_route(id):
 
 @app.route('/api/areas/<int:id>', methods=['DELETE'])
 def delete_area(id):
+    # A domain's general area is where "file this under the domain" lands, so
+    # it is as undeletable as the default area for the same reason.
+    if storage.area_is_domain_general(id):
+        return jsonify({'error': 'That is its domain’s general area — delete the '
+                                 'domain itself if you want it gone.'}), 400
     storage.delete_area(id)
     return '', 204
 

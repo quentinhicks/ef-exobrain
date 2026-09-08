@@ -4656,6 +4656,73 @@ body.over-runner #bucket-mgr-overlay { z-index: 175; }
 
 .map-count { font-size: 10px; color: var(--text-secondary); margin-left: 6px; }
 
+/* -- Areas of focus, the roster at the foot of MAP --------------------------
+   The standing structure, below the inventory it files. Visually quieter than
+   the tree above it - a rule and a muted head - because it is a list you come
+   to REVIEW, not one you read every visit; MAP is weekly, and this is the
+   part of it that is weekly-most. */
+.map-af {
+  display: flex;
+  flex-direction: column;
+  margin-top: 22px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.map-af-head {
+  display: flex;
+  align-items: center;
+  font: 600 12px var(--font-ui);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+.map-af-head .map-acts { margin-left: auto; gap: 8px; }
+
+.map-af-add {
+  font: 11px var(--font-ui);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+  padding: 2px 4px;
+}
+.map-af-add:hover { color: var(--accent); }
+
+.map-af-hint {
+  font: 11px/1.4 var(--font-ui);
+  color: var(--text-secondary);
+  margin: 4px 0 10px;
+}
+
+.map-af-domain { display: flex; flex-direction: column; margin-bottom: 10px; }
+
+.map-af-dhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 11px var(--font-ui);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  padding: 2px 0;
+}
+.map-af-dname { flex: 1; min-width: 0; }
+.map-af-dhead .map-acts, .map-af-row .map-acts { margin-left: auto; }
+
+.map-af-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0 3px 10px;
+  border-left: 2px solid var(--border);
+  margin-left: 4px;
+}
+
+.map-af-name { flex: 1; font-size: 13px; color: var(--text-primary); min-width: 0; }
+
+.map-af-open { font-size: 15px; line-height: 1; padding: 0 4px; color: var(--text-secondary); }
+.map-af-open:hover { color: var(--accent); }
+
 .map-row {
   display: flex;
   align-items: center;
@@ -7094,6 +7161,18 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 
 .tl-plan-sum { color: var(--text-primary); font-weight: 600; }
 .tl-plan-hint { color: var(--text-secondary); font-size: 11px; }
+
+/* What the next drawn span is FOR. Wraps to its own line on a phone-width
+   banner rather than squeezing the summary, and the chips are the app's own
+   ctx-chip so a pick reads the same here as it does in MAP's filter menu. */
+.tl-plan-domains {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  flex-basis: 100%;
+}
+.tl-plan-dlabel { color: var(--text-secondary); font-size: 11px; margin-right: 2px; }
 .tl-refresh-btn.tl-plan-on { border-color: var(--text-secondary); color: var(--accent); }
 
 
