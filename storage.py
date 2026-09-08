@@ -5895,9 +5895,13 @@ def get_flows(date=None):
             # about, so a header that survived into it would be an uncreditable
             # hard step holding a gated routine open forever and charging for a
             # day that was never missed.
+            # The social kinds are dropped by the same rule while
+            # SOCIAL_ENABLED is off: a disabled feature must not leave a hard
+            # step behind that no surface can credit.
+            _dropped = {'header'} if SOCIAL_ENABLED else {'header', 'social_spec', 'social_dose'}
             f['day_steps'] = carried + [s for s in f['steps']
                                         if s['due'] and not s.get('pawned_out')
-                                        and s['kind'] != 'header']
+                                        and s['kind'] not in _dropped]
             run = conn.execute('SELECT * FROM flow_run WHERE flow_id = ? AND date = ?',
                                (f['id'], f['period_key'])).fetchone()
             f['run'] = dict(run) if run else None
@@ -6763,6 +6767,25 @@ def get_inbox_items_like(pattern, deadline):
 # it. Rewording in place keeps the promise; only a genuine surplus is deleted.
 # It lives here rather than in app.py for the same reason all the other SQL
 # does: it is an inventory write, not a route.
+# THE SOCIAL SURFACE IS DISABLED (2026-09-07, Quentin's instruction). One
+# constant, the CHARGING_DISABLED shape: the tables and every row in them stay,
+# nothing is dropped or migrated, and flipping this back to True is the whole of
+# turning it on again.
+#
+# It is applied where the feature could still DECIDE something:
+#   * get_flows drops social_spec / social_dose from day_steps, beside the
+#     'header' drop and for the same MONEY reason -- a hard social step that
+#     survived into day_steps would be uncreditable, hold a gated routine open
+#     and charge for a day that was never missed.
+#   * sync_social_spec_items reconciles the day's "Social plan:" pool items
+#     against an EMPTY plan, so the minted actions retire by the road that
+#     already retires them instead of being orphaned in the pool.
+#   * app.py refuses the /api/social writes and ships social_enabled to the
+#     client, which hides the hub entry and stops offering the two step kinds.
+# What is deliberately NOT touched: People / crm_fill and the People timer.
+# They sit next to this and are a different feature.
+SOCIAL_ENABLED = False
+
 SOCIAL_ITEM_PREFIX = 'Social plan: '
 
 
@@ -6771,7 +6794,10 @@ def sync_social_spec_items(date):
     # The pool JOINs area, so an area-less row would never show: default area.
     default = next((a for a in get_areas() if a.get('is_default') and a.get('active')), None)
     labels = []
-    for spec in get_social_day(date)['specs']:
+    # Disabled: reconcile against an EMPTY plan, so the loop below retires the
+    # minted rows by the road that already retires them. Deleting them here
+    # would be a second writer of the same inventory.
+    for spec in (get_social_day(date)['specs'] if SOCIAL_ENABLED else []):
         who = spec.get('person') or ''
         opener = (spec.get('opener') or '').strip()
         labels.append((SOCIAL_ITEM_PREFIX

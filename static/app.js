@@ -244,6 +244,13 @@ async function loadAll() {
   state.accountabilityNodes = Array.isArray(accountabilityNodes) ? accountabilityNodes : [];
   state.calendars = calendars;
   state.settings = settings;
+  // The hub's Social door, closed the moment the flag lands. Done here rather
+  // than in the markup because the answer is the SERVER's -- the template must
+  // not carry a second opinion about whether the feature exists.
+  // The `hidden` CLASS, not the attribute: .hub-btn sets display:flex, which
+  // beats the UA's [hidden] rule, and .hidden is display:none !important.
+  const soBtn = document.getElementById('hub-social-btn');
+  if (soBtn) soBtn.classList.toggle('hidden', !socialEnabled());
   paintPanelToggle(settings.panel_hidden === '1');
   // The db is authoritative; the localStorage mirror only exists to beat the
   // flash, so re-sync it in case another window (or a restore) changed it.
@@ -6723,7 +6730,12 @@ function initHub() {
       else if (dest === 'map') { openMap(); }
       else if (dest === 'people') { openM('tab-people'); openPeopleSurface(); }
       else if (dest === 'tracking') { openM('tab-tracking'); openTracking(); }
-      else if (dest === 'social') { socialView.form = null; openM('tab-social'); refreshSocial(); }
+      else if (dest === 'social') {
+        // Belt-and-braces: the button is hidden below, but the hub is also
+        // reachable by keyboard and a dead door is worse than an absent one.
+        if (!socialEnabled()) return;
+        socialView.form = null; openM('tab-social'); refreshSocial();
+      }
       else if (dest === 'logs') {
         logsView.logs = await fetch('/api/logs').then(r => r.json());
         logsView.open = null;
@@ -7232,8 +7244,6 @@ function renderRef() {
 const FLOW_KINDS = { text: 'text', checklist: 'checklist',
                      daily_contexts: 'today’s contexts',
                      metrics: 'metrics',
-                     social_spec: 'social spec (planned)',
-                     social_dose: 'social dose (done)',
                      study_plan: 'plan the hours',
                      study_hours: 'hours worked',
                      journal_night: 'nightly journal', crm_fill: 'CRM fill' };
@@ -7241,8 +7251,16 @@ const FLOW_KINDS = { text: 'text', checklist: 'checklist',
 // FLOW_KINDS is the PICKABLE set — what the Type chips offer. A review step's
 // kind is not pickable (it is the binding to a review surface, minted with the
 // routine), so it needs a label without joining the chip row.
+// The social kinds left FLOW_KINDS with the surface (2026-09-07), so an
+// existing social step still needs a name here -- it is dropped from day_steps
+// server-side and never runs, but the step editor still lists it and an
+// unlabelled row reads as corruption rather than as a retired feature.
+const RETIRED_KINDS = { social_spec: 'social spec (disabled)',
+                        social_dose: 'social dose (disabled)' };
+
 function stepKindLabel(s) {
-  return FLOW_KINDS[s.kind] || (REVIEW_KINDS[s.kind] ? 'review step' : s.kind);
+  return FLOW_KINDS[s.kind] || RETIRED_KINDS[s.kind]
+    || (REVIEW_KINDS[s.kind] ? 'review step' : s.kind);
 }
 
 // A step reads as its own WORDING where it has wording to read: a text step and
@@ -10786,6 +10804,16 @@ function renderLogs() {
 // is looked at from something that knows a day other than today. Null means
 // today, decided by the SERVER (every social route already defaults that way),
 // so the hub's Social is unchanged and no client re-derives the date.
+// THE SOCIAL SURFACE IS OFF (2026-09-07, Quentin's instruction). The server
+// owns the answer (storage.SOCIAL_ENABLED, served on /api/settings) and this is
+// the ONE reader of it -- a second client-side switch is how the two start
+// disagreeing about whether a step kind exists. Default OFF while settings are
+// still loading: showing a door that is about to vanish is worse than a door
+// that appears a beat late.
+function socialEnabled() {
+  return (state.settings || {}).social_enabled === true;
+}
+
 const socialView = { config: null, day: null, date: null, cues: '', form: null, calOpen: false };
 
 // The day this surface is speaking about, as a query string and as a field on a
@@ -10795,6 +10823,7 @@ function socialQ() {
 }
 
 async function refreshSocialDot() {
+  if (!socialEnabled()) return;
   socialView.day = await apiGet('/api/social/day', socialView.day);
   paintSocialDot();
 }
@@ -10809,6 +10838,7 @@ function paintSocialDot() {
 }
 
 async function refreshSocial() {
+  if (!socialEnabled()) return;
   const [config, day, engage] = await Promise.all([
     apiGet('/api/social', socialView.config),
     apiGet(`/api/social/day${socialQ()}`, socialView.day),
@@ -10827,6 +10857,7 @@ async function refreshSocial() {
 }
 
 async function refreshSocialIfOpen() {
+  if (!socialEnabled()) return;
   const el = document.getElementById('tab-social');
   if (el && !el.classList.contains('hidden')) await refreshSocial();
   else await refreshSocialDot();

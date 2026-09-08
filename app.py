@@ -973,6 +973,18 @@ def get_metric_history(id):
     return jsonify(storage.metric_history(id, start, end))
 
 
+# The social surface is off (storage.SOCIAL_ENABLED). Every WRITE below is
+# refused at the door -- a hidden surface is not a lock, and a stale tab or a
+# replayed undo would otherwise still file a plan nothing renders. The READS are
+# left working on purpose: they answer questions about rows that still exist,
+# and a 404 there would only turn a hidden surface into a broken one.
+def _social_off():
+    if not storage.SOCIAL_ENABLED:
+        return jsonify({'error': 'the social surface is disabled '
+                                 '(storage.SOCIAL_ENABLED)'}), 409
+    return None
+
+
 @app.route('/api/social')
 def get_social_route():
     levels = storage.get_social_levels()
@@ -983,6 +995,9 @@ def get_social_route():
 
 @app.route('/api/social/levels/<int:id>', methods=['PATCH'])
 def patch_social_level(id):
+    off = _social_off()
+    if off:
+        return off
     data = request.get_json()
     rating = data.get('rating')
     if rating is not None:
@@ -992,6 +1007,9 @@ def patch_social_level(id):
 
 @app.route('/api/social/anchor', methods=['PUT'])
 def put_social_anchor():
+    off = _social_off()
+    if off:
+        return off
     data = request.get_json()
     anchor = {k: data.get(k) for k in ('warmth', 'medium', 'ask')}
     if not all(anchor.values()):
@@ -1008,6 +1026,9 @@ def get_social_day_route():
 
 @app.route('/api/social/specs', methods=['POST'])
 def post_social_spec():
+    off = _social_off()
+    if off:
+        return off
     data = request.get_json()
     date = data.get('date') or date_cls.today().isoformat()
     # id+price present only when an undo replays a removed spec verbatim.
@@ -1023,6 +1044,9 @@ def post_social_spec():
 
 @app.route('/api/social/specs/<int:id>', methods=['DELETE'])
 def delete_social_spec_route(id):
+    off = _social_off()
+    if off:
+        return off
     date = storage.delete_social_spec(id)
     if date:
         storage.sync_social_spec_items(date)
@@ -1031,6 +1055,9 @@ def delete_social_spec_route(id):
 
 @app.route('/api/social/reps', methods=['POST'])
 def post_social_rep():
+    off = _social_off()
+    if off:
+        return off
     data = request.get_json()
     data['date'] = data.get('date') or date_cls.today().isoformat()
     rep = storage.add_social_rep(data)
@@ -1041,6 +1068,9 @@ def post_social_rep():
 
 @app.route('/api/social/reps/<int:id>', methods=['DELETE'])
 def delete_social_rep_route(id):
+    off = _social_off()
+    if off:
+        return off
     storage.delete_social_rep(id)
     return '', 204
 
@@ -1284,8 +1314,13 @@ def get_settings():
     # needs it to build scan URLs. Serving it here keeps ONE source of truth —
     # it used to be hardcoded separately in app.js, so changing the Worker
     # meant changing two files and finding out later if you missed one.
+    # social_enabled is a CODE flag, not a setting row: it is served here for
+    # the same reason gate_scan_url is -- the client needs the answer and there
+    # must be one source of it. Nothing writes it; PATCH /api/settings would
+    # only store a dead row of the same name.
     return jsonify(dict(storage.get_settings(), gate_scan_url=_gate_scan_url(),
-                        app_url=_app_url()))
+                        app_url=_app_url(),
+                        social_enabled=storage.SOCIAL_ENABLED))
 
 
 VALID_TIMEZONES = [
