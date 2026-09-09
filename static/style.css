@@ -1687,7 +1687,6 @@ body.calendar-minimized #review-modal {
   white-space: nowrap;
 }
 
-
 .tl-event-tight {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
@@ -1704,7 +1703,6 @@ body.calendar-minimized #review-modal {
   z-index: 10;
   pointer-events: none;
 }
-
 
 /* ── Deadlines strip ─────────────────────────────────────────── */
 
@@ -2523,13 +2521,6 @@ body.calendar-minimized #review-modal {
 }
 
 /* ── Sheets Inbox (Due items) ─────────────────────────────── */
-
-
-
-
-
-
-
 
 /* ==================== Review Tab & Nav ==================== */
 
@@ -3683,115 +3674,7 @@ body.np-body {
   padding: 2px 12px;
 }
 
-/* ---- People tab ---- */
-
-#tab-people {
-  flex-direction: column;
-  padding: 16px;
-  gap: 14px;
-  overflow: hidden;
-}
-
-/* A ROUTINE IS RUN TO THE END — ONE LAYER, NOT ONE PER SURFACE (2026-09-03).
-   Anything the runner opens sits ABOVE it (165) and below the sheets (200),
-   so the run stays open underneath and closing the surface lands you back on
-   the step you left. This was three classes — crm-over-runner,
-   map-over-runner, plan-over-runner — each a copy of the last, and the fourth
-   (a released log) would have been a fourth; `openOverRunner` is the one door
-   and this is the one layer. The People stack moves up TOGETHER: raising the
-   tab alone would bury its own add/detail forms (150) behind it. Still below
-   the sheets (200) — clarify opens over these as it does everywhere — and
-   below the fill timer (250) and dangerous writing (240). */
-body.over-runner #tab-people,
-body.over-runner #tab-social,
-body.over-runner #map-overlay,
-body.over-runner #cal-overlay,
-body.over-runner #logs-overlay { z-index: 170; }
-body.over-runner #person-detail-overlay,
-body.over-runner #person-add-overlay,
-body.over-runner #bucket-mgr-overlay { z-index: 175; }
-
-#people-wrap {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  gap: 14px;
-}
-
-#people-topbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-shrink: 0;
-}
-
-#people-due-strip {
-  display: flex;
-  align-items: stretch;
-  flex-wrap: wrap;
-  gap: 10px;
-  flex: 1;
-}
-
-#people-due-strip:empty {
-  display: none;
-}
-
-.due-strip-label {
-  align-self: center;
-  color: var(--text-secondary);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.due-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 12px;
-  min-width: 180px;
-  max-width: 240px;
-}
-
-.due-name {
-  font-weight: 600;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.due-action {
-  color: var(--text-secondary);
-  font-size: 12px;
-  margin: 2px 0 6px;
-  cursor: pointer;
-}
-
-.due-skip {
-  font-size: 11px;
-  color: var(--accent);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 10px;
-}
-
-.due-skip:hover {
-  background: var(--surface-2);
-}
-
-#people-toolbar {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-#people-grid {
-  flex: 1;
-  min-height: 0;
-}
+body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #cal-overlay, body.over-runner #logs-overlay { z-index: 170; }
 
 /* Journal tab */
 #tab-journal {
@@ -3836,35 +3719,6 @@ body.over-runner #bucket-mgr-overlay { z-index: 175; }
 
 #tracking-habit .jh-since { color: var(--text-secondary); font-size: 12px; }
 #tracking-habit .jh-empty { color: var(--text-secondary); }
-
-.people-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1px 8px;
-  margin: 0 3px 0 0;
-  font-size: 11px;
-  color: var(--text-primary);
-}
-
-.people-chip-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.people-open {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.people-open:hover {
-  color: var(--accent);
-}
 
 /* Tabulator dark-theme overrides */
 
@@ -3972,14 +3826,7 @@ body.over-runner #bucket-mgr-overlay { z-index: 175; }
 .tabulator-edit-select-list .tabulator-edit-select-list-item:hover {
   background: var(--accent);
   color: var(--on-accent);
-}
-
-/* People overlays (detail / buckets / add) */
-
-#person-detail-overlay,
-#map-overlay,
-#bucket-mgr-overlay,
-#person-add-overlay {
+}#map-overlay {
   position: fixed;
   inset: 0;
     background: var(--overlay);
@@ -3992,12 +3839,7 @@ body.over-runner #bucket-mgr-overlay { z-index: 175; }
 @keyframes modal-slide-in-right {
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
-}
-
-#person-detail-modal,
-#map-modal,
-#bucket-mgr-modal,
-#person-add-modal {
+}#map-modal {
   background: var(--surface);
   border-left: 1px solid var(--border);
   width: 480px;
@@ -4109,12 +3951,7 @@ body.over-runner #bucket-mgr-overlay { z-index: 175; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.map-row-hit { cursor: default; }
-
-#person-detail-body,
-#map-body,
-#bucket-mgr-body,
-#person-add-body {
+.map-row-hit { cursor: default; }#map-body {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
@@ -4162,363 +3999,6 @@ body.over-runner #bucket-mgr-overlay { z-index: 175; }
   color: var(--text-secondary);
   font-size: 13px;
 }
-
-.pd-sub {
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.pd-metas {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.pd-meta {
-  font-size: 12px;
-  color: var(--text-primary);
-}
-
-.pd-meta span {
-  display: inline-block;
-  width: 96px;
-  color: var(--text-secondary);
-}
-
-.pd-label,
-.pd-log-heading {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-secondary);
-}
-
-.pd-notes {
-  min-height: 90px;
-  resize: vertical;
-}
-
-.pd-add-form {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.pd-add-form input[type="text"] {
-  flex: 1;
-}
-
-.pd-log {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.pd-log-row {
-  display: flex;
-  gap: 10px;
-  font-size: 12px;
-  padding: 6px 8px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.pd-log-date {
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  white-space: nowrap;
-}
-
-.pd-log-note {
-  flex: 1;
-  color: var(--text-primary);
-}
-
-.pd-log-src {
-  color: var(--text-secondary);
-}
-
-.pd-empty {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.bm-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.bm-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.bm-name {
-  flex: 1;
-}
-
-.bm-toggle {
-  font-size: 11px;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 3px 10px;
-}
-
-.bm-toggle:hover {
-  color: var(--text-primary);
-  background: var(--surface-2);
-}
-
-.pa-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.pa-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.pa-row > label {
-  width: 96px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
-.pa-row input[type="text"],
-.pa-row select {
-  flex: 1;
-}
-
-.pa-row-buckets {
-  align-items: flex-start;
-}
-
-.pa-buckets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-}
-
-.pa-check {
-  font-size: 12px;
-  color: var(--text-primary);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.pa-actions {
-  padding-top: 6px;
-}
-
-/* ---- People add form: name autocomplete + first-interaction section ---- */
-.pa-name-wrap {
-  flex: 1;
-  position: relative;
-}
-
-.pa-name-wrap input[type="text"] {
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.pa-suggest {
-  position: absolute;
-  top: calc(100% + 2px);
-  left: 0;
-  right: 0;
-  z-index: 20;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  max-height: 240px;
-  overflow-y: auto;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
-}
-
-.pa-suggest-item {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 6px 10px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--border);
-}
-
-.pa-suggest-item:last-child {
-  border-bottom: none;
-}
-
-.pa-suggest-item:hover {
-  background: var(--surface-2);
-}
-
-.pa-suggest-name {
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.pa-suggest-sub {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.pa-existing {
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: rgba(90, 140, 255, 0.10);
-  border: 1px solid rgba(90, 140, 255, 0.35);
-  border-radius: 6px;
-  padding: 7px 10px;
-}
-
-.pa-existing strong {
-  color: var(--text-primary);
-}
-
-/* The escape for two real people with one name. Its own line and a full finger
-   target — it sits inside a sentence, but it is a decision, not a word. */
-.pa-dup-btn {
-  display: block;
-  margin-top: 7px;
-  min-height: 36px;
-  padding: 8px 10px;
-  font: inherit;
-  color: var(--text-secondary);
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.pa-dup-btn:hover { color: var(--text-primary); }
-
-.pa-contact {
-  font-size: 13px;
-}
-
-.pa-row-notes { align-items: flex-start; }
-
-.pa-notes-wrap {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-/* What's already on file, read-only. This form only ever APPENDS, so showing an
-   editable copy would invite overwriting notes it may not have loaded. */
-.pa-notes-current {
-  font-size: 12px;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  max-height: 96px;
-  overflow-y: auto;
-  padding: 6px 8px;
-  border-left: 2px solid var(--border);
-  background: var(--tint-faint);
-  border-radius: 3px;
-  scrollbar-width: thin;
-}
-
-.pa-notes-add {
-  width: 100%;
-  min-height: 56px;
-  resize: vertical;
-}
-
-.pa-int {
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-  margin-top: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* ---- Bucket manager: color swatch + palette picker ---- */
-.bm-swatch {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  flex-shrink: 0;
-  cursor: pointer;
-  padding: 0;
-}
-
-.bm-palette {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 2px 10px 28px;
-}
-
-.bm-pal-swatch {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  cursor: pointer;
-  padding: 0;
-}
-
-.bm-pal-swatch:hover {
-  outline: 2px solid var(--text-secondary);
-  outline-offset: 1px;
-}
-
-/* ---- Person detail: delete footer ---- */
-.pd-footer {
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.pd-delete {
-  font-size: 12px;
-  color: #ff6b6b;
-  border: 1px solid rgba(255, 107, 107, 0.4);
-  border-radius: 4px;
-  padding: 5px 14px;
-}
-
-.pd-delete:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.12);
-}
-
-.pd-delete:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* ---- People tab: nightly-fill session bar + locked state ---- */
-#people-session-bar.psb {
-  padding: 8px 12px;
-  font-size: 12.5px;
-  border-radius: 4px;
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.psb-closed { background: var(--surface); color: var(--text-secondary); }
-.psb-open { background: var(--surface); color: var(--text-primary); border: 1px solid var(--accent); }
-.psb-active { background: rgba(152, 185, 221, 0.12); color: var(--text-primary); border: 1px solid var(--accent); }
-.psb-timer { font-family: var(--font-mono); font-weight: 600; }
-/* Read-only outside the window: hide the day-editing write affordances. */
-#people-wrap.people-locked #people-toolbar,
-#people-wrap.people-locked .due-skip { display: none; }
 
 /* ── NOW — the next-actions lens ─────────────────────────────
    Flat by construction: no group containers, no indentation. The parent chain
@@ -5735,29 +5215,13 @@ button.eg-domain { cursor: pointer; }
 }
 
 .gr-list li > span:first-child { flex: 1; color: var(--text-primary); }
-.gr-list-meta { flex: none; font-size: 11px; color: var(--text-secondary); }
-
-/* ── Mobile modal overrides ─────────────────────────────────── */
+.gr-list-meta { flex: none; font-size: 11px; color: var(--text-secondary); }/* ── Mobile modal overrides ─────────────────────────────────── */
 /* Every modal is a phone-sized surface now: full width, capped at the shell,
    centered over the letterboxed column on a big screen. */
 
-#modal-overlay,
-#logs-overlay,
-#review-overlay,
-#person-detail-overlay,
-#map-overlay,
-#bucket-mgr-overlay,
-#person-add-overlay {
+#modal-overlay, #logs-overlay, #review-overlay, #map-overlay {
   justify-content: center;
-}
-
-#block-editor-modal,
-#logs-modal,
-#review-modal,
-#person-detail-modal,
-#map-modal,
-#bucket-mgr-modal,
-#person-add-modal {
+}#block-editor-modal, #logs-modal, #review-modal, #map-modal {
   width: 100%;
   max-width: 430px;
   border-left: 1px solid var(--border);
@@ -5806,45 +5270,7 @@ button.eg-domain { cursor: pointer; }
   background: var(--surface);
   border-bottom: 1px solid var(--border-soft);
   padding: 0 14px 12px;
-}
-
-/* People: mobile list */
-#people-wrap, #tracking-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-#people-grid { flex: 1; overflow-y: auto; }
-.people-search {
-  margin: 10px 14px 6px;
-  width: calc(100% - 28px);
-  padding: 8px 11px;
-  font: 13px var(--font-ui);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-primary);
-  outline: none;
-}
-.pl-row {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 10px 14px;
-  width: 100%;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-  color: var(--text-primary);
-}
-.pl-row:hover { background: var(--surface-2); }
-.pl-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.pl-name { font-size: 14px; font-weight: 600; }
-.pl-meta { display: flex; gap: 8px; align-items: center; width: 100%; }
-.pl-next {
-  font-size: 12px;
-  color: var(--accent);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.pl-last { font: 10px var(--font-mono); color: var(--text-secondary); margin-left: auto; flex: none; }
+}#tracking-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 
 /* Journal: day cards */
 /* -- Tracking: the metric list, and one metric's days -------------------- */
@@ -5931,35 +5357,6 @@ button.eg-domain { cursor: pointer; }
 }
 .mx-set-on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
-/* Person detail: editable fields during the nightly-fill session */
-.pd-meta .pd-edit {
-  flex: 1;
-  min-width: 0;
-  font: 12px var(--font-ui);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text-primary);
-  padding: 4px 6px;
-}
-.pd-bucket-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-/* Filing someone into a bucket is a TAP, on a phone, inside a 10-minute
-   session — so the chip is a finger target rather than an 11px label. */
-.pd-bucket-chip {
-  font-size: 12px;
-  padding: 7px 12px;
-  min-height: 32px;
-  border-radius: 16px;
-  background: var(--surface-2);
-  color: var(--text-secondary);
-}
-.pd-bucket-on { background: var(--accent); color: var(--on-accent); }
-/* Dashed: it does not name a bucket, it makes one. */
-.pd-bucket-new {
-  background: transparent;
-  border: 1px dashed var(--border);
-}
-
 /* Full-screen NOW view (phone) */
 #now-full-body {
   flex: 1;
@@ -6004,33 +5401,6 @@ button.eg-domain { cursor: pointer; }
   color: var(--text-primary);
   padding: 6px 8px;
   max-width: 220px;
-}
-
-/* (The global bar's overlay-offset contract lives at the very END of this
-   file — it must out-cascade every overlay's own inset/bottom declaration,
-   including #clarify-sheet's, which is defined after this point.) */
-
-/* Nightly-fill countdown, over every surface including People's own fixed
-   add/log forms. Rides below the offline marker via --stale-h so the two can
-   never stack on top of each other. */
-#people-timer {
-  position: fixed;
-  top: var(--stale-h, 0px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 250;
-  padding: 5px 14px;
-  padding-top: max(5px, env(safe-area-inset-top));
-  background: var(--accent);
-  color: var(--on-accent);
-  border-radius: 0 0 8px 8px;
-  font: 600 11.5px/1.35 var(--font-mono);
-  letter-spacing: 0.03em;
-  /* left:50% with no right caps shrink-to-fit at half the viewport, which wraps
-     the countdown onto two lines. nowrap, then the transform re-centres it. */
-  white-space: nowrap;
-  pointer-events: none;
-  box-shadow: 0 4px 14px var(--overlay);
 }
 
 #app-toast {
@@ -6080,8 +5450,6 @@ button.eg-domain { cursor: pointer; }
    marker's measured height (--stale-h, set in markStale) rather than pushing
    the footer off the bottom. */
 body.pt-stale #app { padding-top: var(--stale-h, 20px); }
-
-
 
 /* Rendered-markdown notes (GTD + MAP): the read view; tap to edit raw text. */
 .md-body {
@@ -6496,7 +5864,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    the one state on this list worth colouring. */
 .be-list-row .be-row-sub.be-row-warn { color: var(--danger); }
 
-
 /* ── The event read-out ──────────────────────────────────────
    Shares #gate-pop's box, layer and backdrop (see the two selector groups
    above): one geometry, two read-outs, the same rule the sheets follow. Only
@@ -6536,7 +5903,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 
 .ep-none { color: var(--text-secondary); font-style: italic; }
-
 
 /* ---- Light theme ---- */
 
@@ -6617,29 +5983,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* Accent tints: keyed to the pastel accent, so they vanish on a light bg. */
 :root.theme-light .s2-drop-target { background: rgba(47, 111, 181, 0.10); }
 :root.theme-light .log-editor::selection { background: rgba(47, 111, 181, 0.22); }
-:root.theme-light .psb-active { background: rgba(47, 111, 181, 0.10); }
+
 :root.theme-light .now-row:focus { background: rgba(47, 111, 181, 0.08); }
 :root.theme-light .s2-item-recurring { background: rgba(186, 160, 40, 0.16); }
-:root.theme-light .pa-existing {
-  background: rgba(47, 111, 181, 0.08);
-  border-color: rgba(47, 111, 181, 0.30);
-}
 
-/* Reds: #ff6b6b is a dark-UI red and glares on white. */
-:root.theme-light .pd-delete { color: #c0392b; border-color: rgba(192, 57, 43, 0.40); }
-:root.theme-light .pd-delete:hover:not(:disabled) { background: rgba(192, 57, 43, 0.10); }
 :root.theme-light .map-badge-push { color: #8a6a12; border-color: #c9b978; }
 :root.theme-light .now-chip-on { background: rgba(47, 111, 181, 0.10); }
-
-/* The gate pill is a tan chip with dark text — it reads on either theme; only
-   the dismissed (grayed-out) state needs to stop being near-black. */
-/* (The gate square's light values are --on-gate and --gate-dismissed, set with
-   the other light tokens above. They were theme-scoped RULES here, which
-   outranked the state list and quietly won it. Fixing the var beats fixing the
-   rule — the appendix already swaps it, so no second entry can drift.) */
-
-/* Shadows: a 0.4-alpha black drop is a smudge on a light surface. */
-:root.theme-light .pa-suggest { box-shadow: 0 6px 20px rgba(15, 20, 25, 0.14); }
 
 /* ── The global bar's layout contract with every overlay ──────────────────
    LAST ON PURPOSE: overlays open ABOVE the bar rather than covering it — that
@@ -6649,32 +5998,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    #clarify-sheet's bottom: 0 sits late in the file. Listed by id because a
    few non-overlay fixed elements (toast, stale banner) legitimately keep
    inset: 0. Theme-independent, hence after the light appendix. */
-.m-overlay,
-#hub-overlay,
-#logs-overlay,
-#person-detail-overlay,
-#map-overlay,
-#bucket-mgr-overlay,
-#person-add-overlay,
-#modal-overlay,
-#clarify-backdrop,
-#clarify-sheet,
-#fr-sheet-backdrop,
-#fr-sheet,
-#ctx-sheet-backdrop,
-#ctx-sheet,
-#se-sheet-backdrop,
-#se-sheet,
-#sp-sheet-backdrop,
-#sp-sheet,
-#ev-sheet-backdrop,
-#ev-sheet,
-#en-sheet-backdrop,
-#en-sheet,
-#ex-sheet-backdrop,
-#ex-sheet,
-#oc-sheet-backdrop,
-#oc-sheet {
+.m-overlay, #hub-overlay, #logs-overlay, #map-overlay, #modal-overlay, #clarify-backdrop, #clarify-sheet, #fr-sheet-backdrop, #fr-sheet, #ctx-sheet-backdrop, #ctx-sheet, #se-sheet-backdrop, #se-sheet, #sp-sheet-backdrop, #sp-sheet, #ev-sheet-backdrop, #ev-sheet, #en-sheet-backdrop, #en-sheet, #ex-sheet-backdrop, #ex-sheet, #oc-sheet-backdrop, #oc-sheet {
   /* Above the bar, AND above whatever the browser chrome or the keyboard is
      covering: 100% is the viewport, --vvh is what you can see, so the
      difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
@@ -7062,7 +6386,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .jh-done { color: var(--text-secondary); }
 .jh-legacy { color: var(--text-secondary); font-size: 12px; }
 
-
 /* A tags metric's vocabulary grows from the runner, so the + sits with the
    chips rather than in Settings. Dashed to read as "not an answer". */
 .mt-chip-add { border-style: dashed; color: var(--text-secondary); }
@@ -7174,5 +6497,4 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .tl-plan-dlabel { color: var(--text-secondary); font-size: 11px; margin-right: 2px; }
 .tl-refresh-btn.tl-plan-on { border-color: var(--text-secondary); color: var(--accent); }
-
 

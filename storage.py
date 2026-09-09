@@ -1469,6 +1469,7 @@ def init_db():
     _review_as_task(conn)
     _seed_tax_project(conn)
     _merge_review_next_actions(conn)
+    _retire_crm_steps(conn)
     # Reference lists NEST (2026-08-11): a list can live inside a list. The
     # split at the root is what the index shows; delete splices children up a
     # level, the same rule projects follow.
@@ -5919,6 +5920,38 @@ def _seed_collect_checklist(conn):
           % (COLLECT_LIST_NAME, len(COLLECT_LIST_ITEMS)))
 
 
+def _retire_crm_steps(conn):
+    # THE CRM LEFT (2026-09-08): it is its own app now (ef-crm), with its own
+    # db and its own port, and nothing here reads a person any more. A
+    # `crm_fill` step left behind would render as a bare checkbox — the kind
+    # has no branch in frStepBody, and FR_CARD_KINDS is built so an unknown
+    # kind falls out as a ROW rather than an empty box — which means a nightly
+    # routine that silently grew a step you cannot do from this app.
+    #
+    # Deleting the ROWS, not just the kind (Quentin's call): a bare checkbox
+    # for a surface that is gone is worse than a shorter routine.
+    #
+    # Done ONCE and recorded, the _merge_review_next_actions idiom: steps are
+    # ordinary editable rows, and without the ledger this would keep deleting a
+    # step somebody had deliberately re-added. Ticks left in flow_run.steps are
+    # harmless — the runner only reads steps[step.id] for a step that exists.
+    #
+    # A gated routine gets SHORTER, which loosens what its gate demands. That
+    # needs no easing queue: the 24h wait exists so a change made today cannot
+    # release a commitment today, and this runs once at startup on a step whose
+    # surface no longer exists — there is nothing left to demand.
+    if conn.execute(
+            "SELECT value FROM setting WHERE key = 'crm_steps_retired'").fetchone():
+        return
+    n = conn.execute("DELETE FROM flow_step WHERE kind = 'crm_fill'").rowcount
+    if n:
+        print(f'crm: retired {n} crm_fill step(s) - the CRM is ef-crm now')
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('crm_steps_retired', ?)",
+        (date_cls.today().isoformat(),))
+    conn.commit()
+
+
 def _merge_review_next_actions(conn):
     # 'Review next-action lists' and 'Every active project has a next action'
     # were ONE question asked twice — per project, is there a next action? — so
@@ -6903,8 +6936,9 @@ def get_inbox_items_like(pattern, deadline):
 #     already retires them instead of being orphaned in the pool.
 #   * app.py refuses the /api/social writes and ships social_enabled to the
 #     client, which hides the hub entry and stops offering the two step kinds.
-# What is deliberately NOT touched: People / crm_fill and the People timer.
-# They sit next to this and are a different feature.
+# The People CRM sat next to this and was a different feature; it is a
+# different APP now (ef-crm, 2026-09-08), taking its five tables and its
+# nightly fill with it.
 SOCIAL_ENABLED = False
 
 SOCIAL_ITEM_PREFIX = 'Social plan: '
@@ -7032,153 +7066,6 @@ def remove_timeline_dismissal(type, key):
     )
     conn.commit()
     conn.close()
-
-
-# --- People CRM ---
-# last_contact/next_due are always computed (never stored). Cadence intervals
-# in days below; cadence 'none' (or unknown) never produces a due date.
-
-CADENCE_DAYS = {'weekly': 7, 'monthly': 30, 'quarterly': 91, 'biannual': 182}
-PERSON_FIELDS = ('name', 'company', 'location', 'email', 'linkedin', 'birthday',
-                 'how_we_met', 'next_action', 'notes', 'cadence',
-                 'next_due_override', 'has_contact', 'archived')
-
-
-def _compute_next_due(cadence, next_due_override, last_contact):
-    days = CADENCE_DAYS.get(cadence)
-    if not days:
-        return None
-    if next_due_override:
-        return next_due_override
-    if not last_contact:
-        return None
-    return (date_cls.fromisoformat(last_contact) + timedelta(days=days)).isoformat()
-
-
-def _assemble_person(conn, row):
-    p = dict(row)
-    buckets = conn.execute(
-        '''SELECT b.id, b.name, b.color FROM bucket b
-           JOIN person_bucket pb ON pb.bucket_id = b.id
-           WHERE pb.person_id = ? ORDER BY b.name''',
-        (p['id'],)
-    ).fetchall()
-    p['buckets'] = [dict(b) for b in buckets]
-    inter = conn.execute(
-        'SELECT id, date, note, source FROM interaction WHERE person_id = ? ORDER BY date DESC, id DESC',
-        (p['id'],)
-    ).fetchall()
-    p['interactions'] = [dict(i) for i in inter]
-    last = conn.execute(
-        'SELECT MAX(date) AS m FROM interaction WHERE person_id = ?', (p['id'],)
-    ).fetchone()['m']
-    p['last_contact'] = last
-    p['next_due'] = _compute_next_due(p['cadence'], p['next_due_override'], last)
-    return p
-
-
-def get_people(include_archived=False):
-    conn = get_conn()
-    where = '' if include_archived else 'WHERE archived = 0'
-    rows = conn.execute(f'SELECT * FROM person {where} ORDER BY name').fetchall()
-    result = [_assemble_person(conn, r) for r in rows]
-    conn.close()
-    return result
-
-
-def get_person(id):
-    conn = get_conn()
-    row = conn.execute('SELECT * FROM person WHERE id = ?', (id,)).fetchone()
-    result = _assemble_person(conn, row) if row else None
-    conn.close()
-    return result
-
-
-# The ONE definition of "same person by name" (2026-08-16). Every path that can
-# mint a person from a typed name resolves through this: the add/log form, the
-# API, the phone capture merge. Matching is trimmed + case-insensitive, and an
-# ARCHIVED match still counts — otherwise archiving someone quietly turns the
-# next mention of them into a second row, which is the duplicate this prevents.
-# Archived rows sort last so a live person wins when both exist.
-def find_person_by_name(name):
-    if not (name or '').strip():
-        return None
-    conn = get_conn()
-    row = conn.execute(
-        '''SELECT * FROM person WHERE lower(trim(name)) = lower(trim(?))
-           ORDER BY archived, id LIMIT 1''', (name,)).fetchone()
-    result = _assemble_person(conn, row) if row else None
-    conn.close()
-    return result
-
-
-def create_person(data):
-    cols = [c for c in PERSON_FIELDS if c in data]
-    conn = get_conn()
-    placeholders = ', '.join('?' * len(cols))
-    cur = conn.execute(
-        f'INSERT INTO person ({", ".join(cols)}) VALUES ({placeholders})',
-        [data[c] for c in cols]
-    )
-    pid = cur.lastrowid
-    for bid in data.get('bucket_ids') or []:
-        conn.execute('INSERT OR IGNORE INTO person_bucket (person_id, bucket_id) VALUES (?, ?)', (pid, bid))
-    conn.commit()
-    result = _assemble_person(conn, conn.execute('SELECT * FROM person WHERE id = ?', (pid,)).fetchone())
-    conn.close()
-    return result
-
-
-def update_person(id, data):
-    updates = {c: data[c] for c in PERSON_FIELDS if c in data}
-    conn = get_conn()
-    if updates:
-        fields = ', '.join(f'{k} = ?' for k in updates)
-        conn.execute(f'UPDATE person SET {fields} WHERE id = ?', list(updates.values()) + [id])
-    # `notes_append` is deliberately a different key from `notes`. The
-    # add-interaction form only ever ADDS to what's already there, so it must not
-    # carry a whole copy of the notes and write them back — that would clobber
-    # anything edited in the detail panel since the form opened. Concatenating in
-    # SQL means the append can't lose a word it never read.
-    append = (data.get('notes_append') or '').strip()
-    if append:
-        conn.execute(
-            '''UPDATE person
-               SET notes = CASE WHEN notes IS NULL OR TRIM(notes) = '' THEN ?
-                                ELSE notes || char(10) || ? END
-               WHERE id = ?''',
-            (append, append, id))
-    if 'bucket_ids' in data:
-        conn.execute('DELETE FROM person_bucket WHERE person_id = ?', (id,))
-        for bid in data.get('bucket_ids') or []:
-            conn.execute('INSERT OR IGNORE INTO person_bucket (person_id, bucket_id) VALUES (?, ?)', (id, bid))
-    conn.commit()
-    result = _assemble_person(conn, conn.execute('SELECT * FROM person WHERE id = ?', (id,)).fetchone())
-    conn.close()
-    return result
-
-
-def delete_person(id):
-    conn = get_conn()
-    conn.execute('DELETE FROM interaction WHERE person_id = ?', (id,))
-    conn.execute('DELETE FROM person_bucket WHERE person_id = ?', (id,))
-    conn.execute('DELETE FROM person WHERE id = ?', (id,))
-    conn.commit()
-    conn.close()
-
-
-def add_interaction(person_id, data):
-    conn = get_conn()
-    cur = conn.execute(
-        'INSERT INTO interaction (person_id, date, note, source) VALUES (?, ?, ?, ?)',
-        (person_id, data['date'], data.get('note', ''), data.get('source', 'desktop'))
-    )
-    iid = cur.lastrowid
-    conn.execute('UPDATE person SET next_due_override = NULL WHERE id = ?', (person_id,))
-    conn.commit()
-    row = conn.execute('SELECT id, date, note, source FROM interaction WHERE id = ?', (iid,)).fetchone()
-    conn.close()
-    return dict(row)
 
 
 # --- Social gamification (points for social interactions) ---
@@ -7359,115 +7246,6 @@ def social_history(since):
     ).fetchall()
     conn.close()
     return {r['date']: r['total'] for r in rows}
-
-
-def get_crm_night(date):
-    conn = get_conn()
-    row = conn.execute(
-        'SELECT date, satisfied_at, kind FROM crm_night WHERE date = ?', (date,)
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def skip_cycle(id):
-    conn = get_conn()
-    row = conn.execute('SELECT * FROM person WHERE id = ?', (id,)).fetchone()
-    if not row:
-        conn.close()
-        return None
-    p = dict(row)
-    days = CADENCE_DAYS.get(p['cadence'])
-    if days:
-        last = conn.execute(
-            'SELECT MAX(date) AS m FROM interaction WHERE person_id = ?', (id,)
-        ).fetchone()['m']
-        computed = _compute_next_due(p['cadence'], p['next_due_override'], last)
-        today = date_cls.today().isoformat()
-        base = max(computed, today) if computed else today
-        new_override = (date_cls.fromisoformat(base) + timedelta(days=days)).isoformat()
-        conn.execute('UPDATE person SET next_due_override = ? WHERE id = ?', (new_override, id))
-        conn.commit()
-    result = _assemble_person(conn, conn.execute('SELECT * FROM person WHERE id = ?', (id,)).fetchone())
-    conn.close()
-    return result
-
-
-def get_buckets():
-    conn = get_conn()
-    rows = conn.execute('SELECT id, name, active, color FROM bucket ORDER BY name').fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def _next_bucket_color(conn):
-    used = {r['color'] for r in conn.execute('SELECT color FROM bucket').fetchall() if r['color']}
-    for c in BUCKET_PALETTE:
-        if c not in used:
-            return c
-    n = conn.execute('SELECT COUNT(*) AS n FROM bucket').fetchone()['n']
-    return BUCKET_PALETTE[n % len(BUCKET_PALETTE)]
-
-
-def create_bucket(name):
-    conn = get_conn()
-    color = _next_bucket_color(conn)
-    cur = conn.execute('INSERT INTO bucket (name, color) VALUES (?, ?)', (name, color))
-    conn.commit()
-    row = conn.execute('SELECT id, name, active, color FROM bucket WHERE id = ?', (cur.lastrowid,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-def update_bucket(id, data):
-    updates = {}
-    if 'name' in data:
-        updates['name'] = data['name']
-    if 'active' in data:
-        updates['active'] = 1 if data['active'] else 0
-    if 'color' in data:
-        updates['color'] = data['color']
-    conn = get_conn()
-    if updates:
-        fields = ', '.join(f'{k} = ?' for k in updates)
-        conn.execute(f'UPDATE bucket SET {fields} WHERE id = ?', list(updates.values()) + [id])
-        conn.commit()
-    row = conn.execute('SELECT id, name, active, color FROM bucket WHERE id = ?', (id,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-def record_crm_night(date, kind):
-    conn = get_conn()
-    satisfied_at = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        '''INSERT INTO crm_night (date, satisfied_at, kind) VALUES (?, ?, ?)
-           ON CONFLICT(date) DO UPDATE SET satisfied_at = excluded.satisfied_at, kind = excluded.kind''',
-        (date, satisfied_at, kind)
-    )
-    conn.commit()
-    row = conn.execute('SELECT date, satisfied_at, kind FROM crm_night WHERE date = ?', (date,)).fetchone()
-    conn.close()
-    return dict(row)
-
-
-# Merge phone-captured ops (from the Worker capture blob) into the local db.
-# Phone is append-only: entry -> new interaction, new_person -> new row,
-# nothing -> a satisfied crm_night. Structural edits never come from the phone.
-def apply_people_capture(ops):
-    for op in ops:
-        kind = op.get('op')
-        if kind == 'entry' and op.get('person_id') is not None:
-            add_interaction(op['person_id'], {
-                'date': op.get('date'), 'note': op.get('note', ''), 'source': 'phone'})
-        elif kind == 'new_person' and op.get('name'):
-            # The phone types a name with no id to pick from, so it cannot know
-            # the person already exists — and a capture blob can be merged more
-            # than once. Resolving by name makes this idempotent either way.
-            if not find_person_by_name(op['name']):
-                create_person(op)
-        if op.get('date'):
-            record_crm_night(op['date'], 'nothing' if kind == 'nothing' else 'entries')
 
 
 # --- Self-monitoring: metrics asked on a routine step (2026-08-16) ---

@@ -51,10 +51,6 @@
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
         <span>Lists</span>
       </button>
-      <button class="hub-btn" data-hub="people">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        <span>People</span>
-      </button>
       <button class="hub-btn" data-hub="tracking">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
         <span>Tracking</span>
@@ -119,24 +115,6 @@
       <button class="modal-close-btn m-close" data-close="now-full">✕</button>
     </div>
     <div id="now-full-body"></div>
-  </div>
-
-  <div id="tab-people" class="m-overlay hidden">
-    <div class="m-head">
-      <span class="m-title">People</span>
-      <button class="modal-close-btn m-close" data-close="tab-people">✕</button>
-    </div>
-    <div id="people-wrap">
-      <div id="people-session-bar"></div>
-      <div id="people-topbar">
-        <div id="people-due-strip"></div>
-        <div id="people-toolbar">
-          <button id="people-add-btn" class="be-btn-primary">+ add person</button>
-          <button id="people-buckets-btn" class="be-btn-secondary">Buckets</button>
-        </div>
-      </div>
-      <div id="people-grid"></div>
-    </div>
   </div>
 
   <!-- Routine runner: one step per page, over everything (incl. tab-lists). -->
@@ -242,16 +220,6 @@
   </div>
 
   <!-- Person detail panel -->
-  <div id="person-detail-overlay" class="hidden">
-    <div id="person-detail-modal">
-      <div class="modal-header">
-        <span class="modal-title" id="person-detail-title">Person</span>
-        <button id="person-detail-close" class="modal-close-btn">✕</button>
-      </div>
-      <div id="person-detail-body"></div>
-    </div>
-  </div>
-
   <!-- Projects manager (GTD Horizon 1) -->
   <div id="map-overlay" class="hidden">
     <div id="map-modal">
@@ -273,28 +241,6 @@
         <span id="map-q-count" class="cl-hint"></span>
       </div>
       <div id="map-body"></div>
-    </div>
-  </div>
-
-  <!-- Bucket manager -->
-  <div id="bucket-mgr-overlay" class="hidden">
-    <div id="bucket-mgr-modal">
-      <div class="modal-header">
-        <span class="modal-title">Buckets</span>
-        <button id="bucket-mgr-close" class="modal-close-btn">✕</button>
-      </div>
-      <div id="bucket-mgr-body"></div>
-    </div>
-  </div>
-
-  <!-- Add person -->
-  <div id="person-add-overlay" class="hidden">
-    <div id="person-add-modal">
-      <div class="modal-header">
-        <span class="modal-title" id="person-add-title">Add Person</span>
-        <button id="person-add-close" class="modal-close-btn">✕</button>
-      </div>
-      <div id="person-add-body"></div>
     </div>
   </div>
 
@@ -460,10 +406,6 @@
        inside a panel. Empty until a thumbnail is tapped. -->
   <div id="log-photo-view" class="hidden"></div>
 
-  <!-- Nightly-fill countdown. Lives out here, not in the People tab, because
-       the add/log forms are fixed overlays that sit above the tab and hid it
-       during the only ten minutes it governs. -->
-  <div id="people-timer" class="hidden"></div>
 
   <script src="/static/app.js"></script>
 </body>

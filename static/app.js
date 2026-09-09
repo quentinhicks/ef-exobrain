@@ -2234,7 +2234,6 @@ async function runUndo() {
 async function refreshAfterUndo() {
   await refreshEngage();
   if (!document.getElementById('map-overlay').classList.contains('hidden')) await refreshMap();
-  if (!document.getElementById('tab-people').classList.contains('hidden')) await loadPeopleData();
   if (!document.getElementById('tab-lists').classList.contains('hidden')) await refreshRef();
   // The breakdown composer reads its own list, so an undo that touched a
   // chain (undoablePatch writes the inverse itself) has to repaint it here or
@@ -6593,7 +6592,7 @@ function closeOver(name) {
 // day screen with the run gone. Three steps did: both calendar passes and the
 // clarify and mind-sweep acts closed the run first, and the note beside them
 // said there was no way back. There is; it just had to be built, and it is the
-// same one crm_fill and MAP already used.
+// same one MAP already used.
 //
 // One name, one closer, one rung on the Esc ladder. `close` is how the raised
 // surface goes away (the surface's own close, never a copy of it); `back` is
@@ -6642,13 +6641,6 @@ function closeM(id) {
 async function refreshSocialDay(stepId) {
   flowRunView.day = await apiGet(`/api/social/day?date=${runDay()}`, flowRunView.day);
   if (stepId != null) renderFlowStep(stepId);
-}
-
-async function refreshCrmNight() {
-  const night = await apiGet(`/api/people/night?date=${runDay()}`, null);
-  flowRunView.crmFilled = !!(night && night.satisfied_at);
-  flowRunView.crmKind = night ? night.kind : null;
-  renderFlowRun();
 }
 
 function initHub() {
@@ -6789,7 +6781,6 @@ function initHub() {
         refreshRef();
       }
       else if (dest === 'map') { openMap(); }
-      else if (dest === 'people') { openM('tab-people'); openPeopleSurface(); }
       else if (dest === 'tracking') { openM('tab-tracking'); openTracking(); }
       else if (dest === 'social') {
         // Belt-and-braces: the button is hidden below, but the hub is also
@@ -7307,7 +7298,7 @@ const FLOW_KINDS = { text: 'text', checklist: 'checklist',
                      metrics: 'metrics',
                      study_plan: 'plan the hours',
                      study_hours: 'hours worked',
-                     journal_night: 'nightly journal', crm_fill: 'CRM fill' };
+                     journal_night: 'nightly journal' };
 
 // FLOW_KINDS is the PICKABLE set — what the Type chips offer. A review step's
 // kind is not pickable (it is the binding to a review surface, minted with the
@@ -8648,7 +8639,7 @@ async function endExperiment(ex, day, note, next, drop, after) {
 // journal_day, CRM fill posts the same 'entries' satisfy the People flow
 // sends, the social page reads the day's spec status.
 const flowRunView = { open: false, flow: null, idx: 0, steps: {}, day: null,
-                      journal: null, crmFilled: false,
+                      journal: null,
                       // Checklist steps: per-RUN ticks ({step_id: {item_id:
                       // true}}), session-local — the ref list is a reusable
                       // template and its own done flags stay untouched.
@@ -8695,13 +8686,12 @@ async function openFlowRun(flowId) {
 // routine you were part-way through vanished, taking the page you were on with
 // it. Reloading in place is the same answer without the eviction.
 async function loadFlowRun(flowId, today) {
-  const [flows, day, journal, habits, refLists, crmNight] = await Promise.all([
+  const [flows, day, journal, habits, refLists] = await Promise.all([
     apiGet(`/api/flows?date=${today}`, []),
     apiGet(`/api/social/day?date=${today}`, null),
     apiGet('/api/journal', null),
     apiGet(`/api/habits?date=${today}`, null),
     apiGet('/api/ref', []),
-    apiGet(`/api/people/night?date=${today}`, null),
   ]);
   flowRunView.refLists = refLists;
   const flow = flows.find(f => f.id === flowId);
@@ -8751,10 +8741,6 @@ async function loadFlowRun(flowId, today) {
   flowRunView.day = day;
   flowRunView.journal = journal && journal.days
     ? journal.days.find(x => x.date === today) || null : null;
-  // Not an attestation any more: the CRM step reads the night it is asking
-  // about, so re-entering the routine after filling shows it filled.
-  flowRunView.crmFilled = !!(crmNight && crmNight.satisfied_at);
-  flowRunView.crmKind = crmNight ? crmNight.kind : null;
   flowRunView.habits = habits;
   // The day this run belongs to, pinned. Everything below files against it,
   // never against the wall clock — see creditFlowStep.
@@ -9034,23 +9020,6 @@ function frStepBody(s, day) {
             `<button class="fr-rate${m.effort === v ? ' fr-rate-on' : ''}" data-effort="${v}">${t}</button>`).join('')}</div>
         </div>`;
       }).join('')}`;
-  } else if (s.kind === 'crm_fill') {
-    // Running the step IS the fill (2026-08-15). It used to offer only "mark
-    // filled" — an attestation about work you had no way of doing from here,
-    // since the People surface is read-only until a fill session is open. The
-    // step now opens one: reaching this page in tonight's routine is the same
-    // intent the sleep scan was proof of. The CRM opens OVER the runner, so
-    // closing it drops you back on this page.
-    page = `<div class="fr-step-big">CRM nightly fill</div>
-      <div class="fr-note">${flowRunView.crmFilled
-        ? `filled tonight ✓${flowRunView.crmKind === 'nothing' ? ' — nothing to log' : ''}`
-        : 'log tonight\'s people entries'}</div>
-      <div class="cl-row">
-        <button class="cl-pill fr-crm-open">Open the CRM${
-          flowRunView.crmFilled ? '' : ' — 10 minutes'}</button>
-        ${flowRunView.crmFilled ? ''
-          : '<button class="cl-pill fr-crm-fill">Mark filled (entries made)</button>'}
-      </div>`;
   } else if (s.kind === 'daily_contexts') {
     // WHICH CONTEXTS APPLY TODAY. Answering "no" hides that tag's pool items
     // for the day; leaving one unanswered excludes nothing, so this step can be
@@ -9091,7 +9060,7 @@ function frStepBody(s, day) {
     // READ-OUTS that ended "…in ≡ Social" — a step telling you to go somewhere
     // else, on the one surface you are meant to sit on until it is finished,
     // and on a HARD step the Done button stays disabled until you have been.
-    // The crm_fill and study_plan rule, one kind over: the step opens the real
+    // The study_plan rule, one kind over: the step opens the real
     // surface over the runner rather than growing a second spec form, because
     // one thing with two editors is how they start disagreeing.
     const okSpec = day.specOk === true;
@@ -9110,7 +9079,7 @@ function frStepBody(s, day) {
       <div class="cl-row"><button class="cl-pill fr-social-open" data-intent="log">${
         okDose ? 'Open the day ›' : 'Log what you did ›'}</button></div>`;
   } else if (s.kind === 'study_plan') {
-    // THE MORNING HALF. Running the step IS the planning — the crm_fill rule:
+    // THE MORNING HALF. Running the step IS the planning:
     // a step offering only "mark planned" would be an attestation about work
     // you had no way of doing from here. It opens the day calendar over the
     // runner with draw mode already on, and closing it lands back here.
@@ -9272,7 +9241,7 @@ function frStepBody(s, day) {
 // question and needs room to ask it. Listed as the kinds that need a card, so
 // a NEW kind with no branch in frStepBody falls out as a row rather than as an
 // empty box.
-const FR_CARD_KINDS = ['checklist', 'journal_night', 'crm_fill', 'daily_contexts',
+const FR_CARD_KINDS = ['checklist', 'journal_night', 'daily_contexts',
                        'social_spec', 'social_dose', 'study_plan', 'study_hours',
                        'metrics'];
 
@@ -9528,7 +9497,7 @@ function wireFlowStep(sec, s, day) {
   // three lenses were raised in 2026-08-17 and the other four were left closing
   // the runner first, on the reasoning that a full-screen surface over another
   // is "two layers deep with no way back". There is a way back: it is
-  // `openOverRunner`, the same one MAP and crm_fill use, and being dropped onto
+  // `openOverRunner`, the same one MAP uses, and being dropped onto
   // the day screen with the run gone is the worse end of that trade — a gated
   // routine is holding the day open, and the way back was a hunt through Lists.
   sec.querySelectorAll('.fr-rv-act').forEach(b => b.addEventListener('click', () => {
@@ -9748,20 +9717,8 @@ function wireFlowStep(sec, s, day) {
     await refreshSocial();
   });
 
-  const crmOpen = sec.querySelector('.fr-crm-open');
-  if (crmOpen) crmOpen.addEventListener('click', () => {
-    openM('tab-people');
-    // Over the runner (165) for as long as the routine holds it open. The
-    // layer comes down in closeM, which is also where the step it was opened
-    // from re-reads the night — that is the `back` half.
-    openOverRunner(() => closeM('tab-people'),
-                   () => { if (flowRunView.open) refreshCrmNight(); });
-    openPeopleSurface();
-    startPeopleSession({ force: true });
-  });
-
   // The morning half: the calendar over the runner, draw mode already on. Same
-  // ladder as crm_fill above — `back` re-reads the plan so the step's own
+  // ladder as the social steps above — `back` re-reads the plan so the step's own
   // sentence ("you have drawn 3 hr") is true the moment you land on it again.
   const planOpen = sec.querySelector('.fr-plan-open');
   if (planOpen) planOpen.addEventListener('click', async () => {
@@ -9779,13 +9736,6 @@ function wireFlowStep(sec, s, day) {
     renderTimeline();
   });
 
-  const crm = sec.querySelector('.fr-crm-fill');
-  if (crm) crm.addEventListener('click', async () => {
-    const today = runDay();
-    await apiSend('/api/people/night', 'POST', { kind: 'entries', date: today });
-    flowRunView.crmFilled = true;
-    renderFlowStep(s.id);
-  });
 }
 
 
@@ -11280,7 +11230,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initBlockEditor();
   initTimeline();
   initLogsView();
-  initPeopleModals();
   initHub();
   initObjectDoors();
   initSwipe();
@@ -12949,51 +12898,6 @@ async function removeOverride(nodeId, date) {
   await renderQrManager();
 }
 
-// ── People (CRM) ──────────────────────────────────────────────
-
-const CADENCES = ['none', 'weekly', 'monthly', 'quarterly', 'biannual'];
-
-const peopleView = { table: null, ready: false, pending: null, people: [], buckets: [], detailId: null,
-  editable: false, win: { open: false }, sessionEnd: 0, sessionTimer: null, satisfiedDate: null };
-
-// Editing is only allowed during the nightly fill session (window open + started,
-// within the 10-min cap). Test hooks: window.__peopleWindow forces the window
-// state; window.__peopleCapSecs overrides the 600s cap.
-function peopleEditable() { return peopleView.editable; }
-const PEOPLE_CAP_SECS = 600;
-
-function peopleBucketOptions() {
-  return peopleView.buckets.filter(b => b.active).map(b => ({ value: b.id, label: b.name }));
-}
-
-function initPeopleModals() {
-  const wire = (overlayId, closeId) => {
-    const overlay = document.getElementById(overlayId);
-    document.getElementById(closeId).addEventListener('click', () => overlay.classList.add('hidden'));
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.add('hidden'); });
-  };
-  wire('person-detail-overlay', 'person-detail-close');
-  wire('bucket-mgr-overlay', 'bucket-mgr-close');
-  wire('person-add-overlay', 'person-add-close');
-
-  document.getElementById('people-add-btn').addEventListener('click', openAddPerson);
-  document.getElementById('people-buckets-btn').addEventListener('click', openBucketMgr);
-}
-
-// Entered from the hub rail: render the grid once, show the session bar
-// immediately, and start the nightly-fill window poll.
-function openPeopleSurface() {
-  renderPeople();
-  renderSessionBar();
-  peopleWindowPoll();
-  if (!peopleView.pollTimer) peopleView.pollTimer = setInterval(peopleWindowPoll, 20000);
-}
-
-async function renderPeople() {
-  await loadPeopleData();
-}
-window.renderPeople = renderPeople;
-
 // -- TRACKING: what you monitor about yourself, and what it has said ------
 //
 // The app collected self-monitoring answers every night and rendered NONE of
@@ -13210,362 +13114,6 @@ function renderHabitPanel(hb) {
     async () => renderHabitPanel(await fetch('/api/habits').then(r => r.json()))));
 }
 
-// --- nightly-fill window + 10-min hard-capped session ---
-
-async function peopleWindowPoll() {
-  if (window.__peopleWindow) { peopleView.win = window.__peopleWindow; }
-  else {
-    peopleView.win = await fetch('/api/people/window').then(r => r.json())
-      .catch(() => ({ open: false, seconds_left: 0 }));
-  }
-  // if the window closed while a session was running, end it — unless the
-  // ROUTINE opened this one, which never had a scan window behind it.
-  if (!peopleView.win.open && peopleView.editable && !peopleView.forced) endPeopleSession();
-  renderSessionBar();
-}
-
-function startPeopleSession(opts) {
-  // `force` is the ROUTINE opening the fill (the crm_fill step). The scan-gated
-  // window is not the only honest opener — running tonight's routine is the
-  // same statement — but the 10-minute cap still applies, unchanged.
-  const forced = !!(opts && opts.force);
-  if (!peopleView.win.open && !forced) return;
-  const cap = window.__peopleCapSecs || PEOPLE_CAP_SECS;
-  const winLeft = forced ? cap : (peopleView.win.seconds_left || cap);
-  peopleView.sessionEnd = Date.now() + Math.min(cap, winLeft) * 1000;
-  peopleView.editable = true;
-  peopleView.forced = forced;
-  if (peopleView.sessionTimer) clearInterval(peopleView.sessionTimer);
-  peopleView.sessionTimer = setInterval(() => {
-    if (Date.now() >= peopleView.sessionEnd) endPeopleSession();
-    else renderSessionBar();
-  }, 1000);
-  renderSessionBar();
-}
-
-function endPeopleSession() {
-  peopleView.editable = false;
-  peopleView.forced = false;
-  if (peopleView.sessionTimer) { clearInterval(peopleView.sessionTimer); peopleView.sessionTimer = null; }
-  peopleView.sessionEnd = 0;
-  document.getElementById('person-detail-overlay').classList.add('hidden');
-  document.getElementById('person-add-overlay').classList.add('hidden');
-  renderSessionBar();
-}
-
-async function peopleSatisfy(kind) {
-  // The RUN's day when the runner raised this surface (crm_fill opens the CRM
-  // over itself), the wall day otherwise — runDay() is that sentence.
-  const today = runDay();
-  if (kind === 'entries' && peopleView.satisfiedDate === today) return;
-  peopleView.satisfiedDate = today;
-  await apiSend('/api/people/night', 'POST', { kind, date: today }).catch(() => {});
-}
-
-// The countdown, over every surface. The .psb bar below lives inside the
-// People tab (z 140), while the add/log forms are fixed at z 150 — so during
-// the fill, the only ten minutes the clock actually governs, it was hidden
-// behind the form you were filling in. Painted before the guard so it stays
-// correct even if the People markup isn't there.
-function paintPeopleTimer() {
-  const el = document.getElementById('people-timer');
-  if (!el) return;
-  if (!peopleView.editable) { el.classList.add('hidden'); return; }
-  const left = Math.max(0, Math.round((peopleView.sessionEnd - Date.now()) / 1000));
-  const mm = String(Math.floor(left / 60)).padStart(2, '0');
-  const ss = String(left % 60).padStart(2, '0');
-  // Shorter than the in-flow bar's copy on purpose: it is centred over whatever
-  // surface you are on, so every character it doesn't need is one it isn't
-  // covering. The countdown reads as a countdown without "left".
-  el.textContent = `Nightly fill · ${mm}:${ss}`;
-  el.classList.remove('hidden');
-}
-
-function renderSessionBar() {
-  paintPeopleTimer();
-  const bar = document.getElementById('people-session-bar');
-  const wrap = document.getElementById('people-wrap');
-  if (!bar || !wrap) return;
-  wrap.classList.toggle('people-locked', !peopleView.editable);
-  // During the fill the unified add/log form is the catch-all: most entries are
-  // an interaction with someone already in the list, so the button says so.
-  const addBtn = document.getElementById('people-add-btn');
-  if (addBtn) addBtn.textContent = peopleView.editable ? '+ add interaction' : '+ add person';
-  if (peopleView.editable) {
-    const left = Math.max(0, Math.round((peopleView.sessionEnd - Date.now()) / 1000));
-    const mm = String(Math.floor(left / 60)).padStart(2, '0');
-    const ss = String(left % 60).padStart(2, '0');
-    bar.className = 'psb psb-active';
-    bar.innerHTML = `<span class="psb-timer">Nightly fill · ${mm}:${ss} left</span>
-      <button id="psb-nothing" class="be-btn-secondary">nothing tonight</button>`;
-    bar.querySelector('#psb-nothing').addEventListener('click', async () => {
-      await peopleSatisfy('nothing');
-      endPeopleSession();
-    });
-  } else if (peopleView.win.open) {
-    bar.className = 'psb psb-open';
-    bar.innerHTML = `<span>Nightly fill is open</span>
-      <button id="psb-start" class="be-btn-primary">start nightly fill</button>`;
-    bar.querySelector('#psb-start').addEventListener('click', startPeopleSession);
-  } else {
-    bar.className = 'psb psb-closed';
-    bar.textContent = 'Read-only — editing opens when you scan your sleep gate (10-min session)';
-  }
-}
-
-// Palette for the manual recolor picker (auto-assignment happens server-side).
-const BUCKET_PALETTE_JS = (() => {
-  const out = [];
-  for (let h = 0; h < 360; h += 15) out.push(`hsl(${h}, 55%, 60%)`);
-  return out;
-})();
-
-function bucketChip(b) {
-  const c = b.color || '#8a8a8a';
-  return `<span class="people-chip" style="border-color:${c}"><span class="people-chip-dot" style="background:${c}"></span>${escHtml(b.name)}</span>`;
-}
-
-async function loadPeopleData() {
-  const [buckets, people] = await Promise.all([
-    apiGet('/api/buckets', []),
-    apiGet('/api/people', []),
-  ]);
-  peopleView.buckets = Array.isArray(buckets) ? buckets : [];
-  peopleView.people = Array.isArray(people) ? people : [];
-  renderPeopleList();
-  renderDueStrip();
-}
-
-// Mobile list: search + name/bucket/next-action rows; every edit lives in the
-// detail modal (still gated by the nightly-fill session).
-function renderPeopleList() {
-  const grid = document.getElementById('people-grid');
-  if (!grid) return;
-  const q = (peopleView.query || '').toLowerCase();
-  const people = peopleView.people
-    .filter(p => !q || (p.name || '').toLowerCase().includes(q)
-                    || (p.company || '').toLowerCase().includes(q))
-    .slice()
-    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  grid.innerHTML = `
-    <input type="text" id="people-search" class="people-search" placeholder="⌕ search people…" value="${escHtml(peopleView.query || '')}" autocomplete="off">
-    <div class="people-list">
-      ${people.map(p => `
-        <button class="pl-row" data-id="${p.id}">
-          <span class="pl-main">
-            <span class="pl-name">${escHtml(p.name || '')}</span>
-            <span class="pl-chips">${(p.buckets || []).map(bucketChip).join('')}</span>
-          </span>
-          <span class="pl-meta">
-            ${p.next_action ? `<span class="pl-next">→ ${escHtml(p.next_action)}</span>` : ''}
-            <span class="pl-last">${escHtml(p.last_contact || 'never')}</span>
-          </span>
-        </button>`).join('') || '<div class="gtd-empty">No people yet</div>'}
-    </div>`;
-  grid.querySelector('#people-search').addEventListener('input', e => {
-    peopleView.query = e.target.value;
-    preserveCaret('people-search', renderPeopleList);
-  });
-  grid.querySelectorAll('.pl-row').forEach(r =>
-    r.addEventListener('click', () => openPersonDetail(parseInt(r.dataset.id))));
-}
-
-function renderDueStrip() {
-  const strip = document.getElementById('people-due-strip');
-  if (!strip) return;
-  const today = wallDay();
-  const due = peopleView.people
-    .filter(p => p.next_due && p.next_due <= today)
-    .sort((a, b) => a.next_due.localeCompare(b.next_due))
-    .slice(0, 5);
-  if (!due.length) { strip.innerHTML = ''; return; }
-  strip.innerHTML = `<div class="due-strip-label">Due</div>` + due.map(p => `
-    <div class="due-card" data-id="${p.id}">
-      <div class="due-name">${escHtml(p.name)}</div>
-      <div class="due-action">${escHtml(p.next_action || '')}</div>
-      <button class="due-skip" data-id="${p.id}">skip this cycle</button>
-    </div>`).join('');
-  strip.querySelectorAll('.due-card .due-name, .due-card .due-action').forEach(el => {
-    el.addEventListener('click', () => openPersonDetail(Number(el.closest('.due-card').dataset.id)));
-  });
-  strip.querySelectorAll('.due-skip').forEach(btn => {
-    btn.addEventListener('click', async e => {
-      e.stopPropagation();
-      if (!peopleView.editable) return;
-      btn.disabled = true;
-      const res = await apiSend(`/api/people/${btn.dataset.id}/skip-cycle`, 'POST');
-      if (!res.ok) { toast(`Skip failed (${res.status})`); btn.disabled = false; return; }
-      await loadPeopleData();
-    });
-  });
-}
-
-function openPersonDetail(id) {
-  peopleView.detailId = id;
-  const p = peopleView.people.find(x => x.id === id);
-  if (!p) return;
-  renderPersonDetail(p);
-  document.getElementById('person-detail-overlay').classList.remove('hidden');
-}
-
-function renderPersonDetail(p) {
-  document.getElementById('person-detail-title').textContent = p.name || 'Person';
-  const body = document.getElementById('person-detail-body');
-  const sub = [p.company, p.location].filter(Boolean).join(' · ');
-  // The grid used to be the field editor; with the mobile list, the detail
-  // modal edits every field — still gated by the nightly-fill session.
-  const meta = peopleView.editable
-    ? `
-      ${[['name', 'Name'], ['company', 'Company'], ['location', 'Location'],
-         ['birthday', 'Birthday'], ['how_we_met', 'How we met'], ['next_action', 'Next action']]
-        .map(([f, label]) => `<div class="pd-meta"><span>${label}</span>
-          <input type="text" class="pd-edit" data-field="${f}" value="${escHtml(p[f] || '')}"></div>`).join('')}
-      <div class="pd-meta"><span>Cadence</span>
-        <select class="pd-edit" data-field="cadence">${CADENCES.map(c =>
-          `<option value="${c}"${(p.cadence || 'none') === c ? ' selected' : ''}>${c}</option>`).join('')}</select></div>
-      <div class="pd-meta"><span>Contact</span>
-        <input type="checkbox" class="pd-edit" data-field="has_contact"${p.has_contact ? ' checked' : ''}></div>
-      <div class="pd-meta"><span>Buckets</span><span class="pd-bucket-chips">${
-        peopleView.buckets.filter(b => b.active || (p.buckets || []).some(x => x.id === b.id)).map(b => {
-          const on = (p.buckets || []).some(x => x.id === b.id);
-          return `<button class="pd-bucket-chip${on ? ' pd-bucket-on' : ''}" data-bucket="${b.id}">${escHtml(b.name)}</button>`;
-        }).join('')}<button class="pd-bucket-chip pd-bucket-new" id="pd-bucket-new">+ bucket</button></span></div>`
-    : [
-      p.birthday && `<div class="pd-meta"><span>Birthday</span>${escHtml(p.birthday)}</div>`,
-      p.how_we_met && `<div class="pd-meta"><span>How we met</span>${escHtml(p.how_we_met)}</div>`,
-      `<div class="pd-meta"><span>Cadence</span>${escHtml(p.cadence || 'none')}</div>`,
-      `<div class="pd-meta"><span>Contact</span>${p.has_contact ? 'Yes' : '—'}</div>`,
-      p.next_action && `<div class="pd-meta"><span>Next action</span>${escHtml(p.next_action)}</div>`,
-    ].filter(Boolean).join('');
-  const ints = p.interactions || [];
-  const log = ints.length
-    ? ints.map(i => `<div class="pd-log-row"><span class="pd-log-date">${escHtml(i.date)}</span><span class="pd-log-note">${escHtml(i.note || '')}</span><span class="pd-log-src">${escHtml(i.source || '')}</span></div>`).join('')
-    : `<div class="pd-empty">No interactions logged yet</div>`;
-  body.innerHTML = `
-    ${sub ? `<div class="pd-sub">${escHtml(sub)}</div>` : ''}
-    <div class="pd-metas">${meta}</div>
-    <label class="pd-label">Notes</label>
-    <textarea id="pd-notes" class="pd-notes" placeholder="Notes…">${escHtml(p.notes || '')}</textarea>
-    <div class="pd-log-heading">Interactions</div>
-    <form id="pd-add-form" class="pd-add-form">
-      <input type="date" id="pd-int-date" value="${escHtml(runDay())}">
-      <input type="text" id="pd-int-note" placeholder="What happened?" autocomplete="off">
-      <select id="pd-int-source">
-        <option value="desktop">desktop</option>
-        <option value="phone">phone</option>
-      </select>
-      <button type="submit" class="be-btn-primary" id="pd-int-submit">Log</button>
-    </form>
-    <div class="pd-log">${log}</div>
-    <div class="pd-footer">
-      <button id="pd-delete" class="pd-delete" ${peopleView.editable ? '' : 'disabled'}>Delete person</button>
-    </div>`;
-
-  const pdPatch = async payload => {
-    const res = await apiSend(`/api/people/${p.id}`, 'PATCH', payload);
-    if (!res.ok) { toast(`Save failed (${res.status})`); return null; }
-    const person = await res.json();
-    syncPersonRow(person);
-    return person;
-  };
-  body.querySelectorAll('.pd-edit').forEach(el => {
-    el.addEventListener('change', async () => {
-      const value = el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.value;
-      const person = await pdPatch({ [el.dataset.field]: value });
-      if (person && el.dataset.field === 'name') {
-        document.getElementById('person-detail-title').textContent = person.name || 'Person';
-      }
-    });
-  });
-  body.querySelectorAll('.pd-bucket-chip[data-bucket]').forEach(el => {
-    el.addEventListener('click', async () => {
-      const bid = parseInt(el.dataset.bucket);
-      const ids = (p.buckets || []).map(b => b.id);
-      const next = ids.includes(bid) ? ids.filter(x => x !== bid) : [...ids, bid];
-      const person = await pdPatch({ bucket_ids: next });
-      if (person) renderPersonDetail(person);
-    });
-  });
-  // A BUCKET CAN BE MINTED HERE (2026-08-17). The fill is where you find out a
-  // bucket is missing — you are looking at the person who does not fit any of
-  // them — and the only way to add one was to leave the person, open the
-  // bucket manager, add it, and come back to a 10-minute session you had just
-  // spent. It mints AND files in one go, because naming it while looking at
-  // the person is what makes it the right bucket.
-  //
-  // The ENTRY SHEET, like every other list datatype's add: one add grammar,
-  // and at z-200 it opens above the person modal (175 over the runner).
-  const newBucket = document.getElementById('pd-bucket-new');
-  if (newBucket) {
-    newBucket.addEventListener('click', () => openEntrySheet({
-      title: 'New bucket',
-      placeholder: 'e.g. Climbing',
-      hint: `Added to ${p.name || 'this person'} as well.`,
-      button: 'Add', closeOnAdd: true,
-      add: async raw => {
-        const name = raw.trim();
-        if (!name) return;
-        const res = await apiSend('/api/buckets', 'POST', { name });
-        if (!res.ok) { toast('Could not add that bucket'); return; }
-        const bucket = await res.json();
-        peopleView.buckets = await apiGet('/api/buckets', peopleView.buckets);
-        const person = await pdPatch({
-          bucket_ids: [...(p.buckets || []).map(b => b.id), bucket.id] });
-        if (person) renderPersonDetail(person);
-      },
-    }));
-  }
-
-  const pdNotes = document.getElementById('pd-notes');
-  pdNotes.readOnly = !peopleView.editable;
-  const pdFlush = wireNotesAutosave(pdNotes, async value => {
-    if (!peopleView.editable) return;
-    const res = await apiSend(`/api/people/${p.id}`, 'PATCH', { notes: value });
-    if (!res.ok) return;
-    p.notes = value;
-    syncPersonRow(await res.json());
-  });
-  pdNotes.addEventListener('blur', pdFlush);
-  document.getElementById('pd-add-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    if (!peopleView.editable) return;
-    const btn = document.getElementById('pd-int-submit');
-    if (btn.disabled) return;
-    const date = document.getElementById('pd-int-date').value;
-    const note = document.getElementById('pd-int-note').value;
-    const source = document.getElementById('pd-int-source').value;
-    if (!date) return;
-    btn.disabled = true;
-    try {
-      const res = await apiSend(`/api/people/${p.id}/interactions`, 'POST', { date, note, source });
-      if (!res.ok) { toast(`Log failed (${res.status})`); return; }
-      await peopleSatisfy('entries');
-      await loadPeopleData();
-      const fresh = peopleView.people.find(x => x.id === p.id);
-      if (fresh) renderPersonDetail(fresh);
-    } finally {
-      btn.disabled = false;
-    }
-  });
-  document.getElementById('pd-delete').addEventListener('click', async () => {
-    if (!peopleView.editable) return;
-    if (!confirm(`Delete ${p.name || 'this person'} and all their logged interactions? This cannot be undone.`)) return;
-    const btn = document.getElementById('pd-delete');
-    btn.disabled = true;
-    const res = await apiSend(`/api/people/${p.id}`, 'DELETE');
-    if (!res.ok) { toast(`Delete failed (${res.status})`); btn.disabled = false; return; }
-    document.getElementById('person-detail-overlay').classList.add('hidden');
-    await loadPeopleData();
-  });
-}
-
-function syncPersonRow(person) {
-  const idx = peopleView.people.findIndex(p => p.id === person.id);
-  if (idx >= 0) peopleView.people[idx] = person;
-  renderPeopleList();
-  renderDueStrip();
-}
-
 // ── MAP — the inventory lens ─────────────────────────────────
 // The whole triaged inventory as a tree: domain → area → projects → actions,
 // every state included and nothing filtered by availability. This is the lens
@@ -13629,7 +13177,7 @@ function mapVisibleItems(items, today) {
 // slice and fix it". The lens is the one MAP already has (MAP_LENSES) — the
 // review does not get a second projects list with its own rules.
 //
-// `overRunner` is the crm_fill idiom: MAP is z-150 and the runner z-165, so
+// `overRunner` is the over-the-runner idiom: MAP is z-150 and the runner z-165, so
 // without the class it would open BEHIND the run you launched it from. The
 // class comes off when MAP closes, which puts you back on the step.
 async function openMapAtLens(lens, overRunner) {
@@ -18360,330 +17908,6 @@ document.addEventListener('keydown', e => {
   else if (k === 'r') { clarifyView.refOpen = !clarifyView.refOpen; renderClarify(); }
   else if (e.key === 'Backspace') { e.preventDefault(); fileClarify('trash'); }
 });
-
-function openBucketMgr() {
-  renderBucketMgr();
-  document.getElementById('bucket-mgr-overlay').classList.remove('hidden');
-}
-
-function renderBucketMgr() {
-  const body = document.getElementById('bucket-mgr-body');
-  const rows = peopleView.buckets.map(b => `
-    <div class="bm-row" data-id="${b.id}">
-      <button class="bm-swatch" title="Change color" style="background:${b.color || '#8a8a8a'}"></button>
-      <input type="text" class="bm-name" value="${escHtml(b.name)}"${b.active ? '' : ' disabled'}>
-      <button class="bm-toggle">${b.active ? 'retire' : 'activate'}</button>
-    </div>`).join('') || `<div class="pd-empty">No buckets yet</div>`;
-  body.innerHTML = `
-    <div class="bm-list">${rows}</div>
-    <form id="bm-add-form" class="be-inline-form">
-      <input type="text" id="bm-new-name" placeholder="New bucket name" autocomplete="off">
-      <button type="submit" id="bm-add-btn">Add</button>
-    </form>`;
-  body.querySelectorAll('.bm-row').forEach(row => {
-    const id = Number(row.dataset.id);
-    const nameInput = row.querySelector('.bm-name');
-    nameInput.addEventListener('blur', async () => {
-      if (nameInput.value === (peopleView.buckets.find(b => b.id === id) || {}).name) return;
-      await patchBucket(id, { name: nameInput.value });
-    });
-    row.querySelector('.bm-toggle').addEventListener('click', async () => {
-      const b = peopleView.buckets.find(x => x.id === id);
-      await patchBucket(id, { active: b.active ? 0 : 1 });
-    });
-    row.querySelector('.bm-swatch').addEventListener('click', () => {
-      const open = row.nextElementSibling && row.nextElementSibling.classList.contains('bm-palette');
-      body.querySelectorAll('.bm-palette').forEach(p => p.remove());
-      if (open) return;
-      const pal = document.createElement('div');
-      pal.className = 'bm-palette';
-      pal.innerHTML = BUCKET_PALETTE_JS.map(c =>
-        `<button class="bm-pal-swatch" style="background:${c}" data-color="${c}" title="${c}"></button>`).join('');
-      row.after(pal);
-      pal.querySelectorAll('.bm-pal-swatch').forEach(sw => {
-        sw.addEventListener('click', () => patchBucket(id, { color: sw.dataset.color }));
-      });
-    });
-  });
-  document.getElementById('bm-add-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const btn = document.getElementById('bm-add-btn');
-    if (btn.disabled) return;
-    const name = document.getElementById('bm-new-name').value.trim();
-    if (!name) return;
-    btn.disabled = true;
-    try {
-      const res = await apiSend('/api/buckets', 'POST', { name });
-      if (!res.ok) { toast(`Add bucket failed (${res.status})`); return; }
-      await reloadBuckets();
-      renderBucketMgr();
-    } finally {
-      // renderBucketMgr() rebuilds the form; guard only matters if the fetch failed.
-      const still = document.getElementById('bm-add-btn');
-      if (still) still.disabled = false;
-    }
-  });
-}
-
-async function patchBucket(id, body) {
-  const res = await apiSend(`/api/buckets/${id}`, 'PATCH', body);
-  if (!res.ok) { toast(`Bucket update failed (${res.status})`); return; }
-  await reloadBuckets();
-  renderBucketMgr();
-  renderPeopleList();
-}
-
-async function reloadBuckets() {
-  const buckets = await apiGet('/api/buckets', []);
-  peopleView.buckets = Array.isArray(buckets) ? buckets : [];
-}
-
-// Unified add/log form. Typing a name surfaces matching existing people; picking
-// one autofills their info (edits are saved) and the form logs a new interaction.
-// Keeping a fresh name creates a new person, optionally with a first interaction.
-function openAddPerson() {
-  if (!peopleView.editable) return;
-  peopleView.addSelectedId = null;
-  peopleView.addAllowDuplicate = false;
-  const title = document.getElementById('person-add-title');
-  if (title) title.textContent = 'Add interaction';
-  const body = document.getElementById('person-add-body');
-  const bucketChecks = peopleView.buckets.filter(b => b.active).map(b => `
-    <label class="pa-check"><input type="checkbox" value="${b.id}"> ${escHtml(b.name)}</label>`).join('')
-    || `<span class="pd-empty">No buckets yet</span>`;
-  body.innerHTML = `
-    <form id="pa-form" class="pa-form" autocomplete="off">
-      <div class="pa-row pa-name-row"><label>Name</label>
-        <div class="pa-name-wrap">
-          <input type="text" id="pa-name" autocomplete="off" required placeholder="Type a name…">
-          <div id="pa-suggest" class="pa-suggest hidden"></div>
-        </div>
-      </div>
-      <div id="pa-existing" class="pa-existing hidden"></div>
-      <div class="pa-row"><label>Company</label><input type="text" id="pa-company" autocomplete="off"></div>
-      <div class="pa-row"><label>Location</label><input type="text" id="pa-location" autocomplete="off"></div>
-      <div class="pa-row"><label>Birthday</label><input type="text" id="pa-birthday" autocomplete="off"></div>
-      <div class="pa-row"><label>How we met</label><input type="text" id="pa-how" autocomplete="off"></div>
-      <div class="pa-row"><label>Next action</label><input type="text" id="pa-next" autocomplete="off"></div>
-      <div class="pa-row"><label>Cadence</label>
-        <select id="pa-cadence">${CADENCES.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
-      </div>
-      <div class="pa-row"><label>Contact</label>
-        <label class="pa-check pa-contact"><input type="checkbox" id="pa-contact"> I have their contact info</label>
-      </div>
-      <div class="pa-row pa-row-notes"><label>Notes</label>
-        <div class="pa-notes-wrap">
-          <div id="pa-notes-current" class="pa-notes-current hidden"></div>
-          <textarea id="pa-notes-add" class="pa-notes-add" placeholder="Add to notes…"></textarea>
-        </div>
-      </div>
-      <div class="pa-int">
-        <div class="pd-log-heading">Interaction (optional)</div>
-        <div class="pa-row"><label>Date</label><input type="date" id="pa-int-date" value="${escHtml(runDay())}"></div>
-        <div class="pa-row"><label>What happened</label><input type="text" id="pa-int-note" autocomplete="off"></div>
-        <div class="pa-row"><label>Source</label>
-          <select id="pa-int-source"><option value="desktop">desktop</option><option value="phone">phone</option></select>
-        </div>
-      </div>
-      <div class="pa-actions"><button type="submit" class="be-btn-primary" id="pa-submit">Add person</button></div>
-      <div id="pa-error" class="be-error"></div>
-    </form>`;
-
-  const nameInput = document.getElementById('pa-name');
-  const suggest = document.getElementById('pa-suggest');
-  // The notes-append box is a markdown field like every other notes surface.
-  wireMdShortcuts(document.getElementById('pa-notes-add'));
-
-  // Typing a name in FULL is the same intent as tapping it in the suggestion
-  // list, and it is the likelier one on a phone (the list is a 36px target you
-  // have to notice). Before this, only the tap set addSelectedId, so typing
-  // "Sarah Chen" over an existing Sarah Chen minted a second row. The match is
-  // resolved here and at submit; the server 409s as the backstop.
-  const exactMatch = () => {
-    const key = nameInput.value.trim().toLowerCase();
-    if (!key) return null;
-    return peopleView.people.find(p => (p.name || '').trim().toLowerCase() === key) || null;
-  };
-
-  // Tapping a suggestion PREFILLS the form from the person, so saving it whole
-  // is safe. Typing the name does not, so the form is blank — and a blank field
-  // there means "I didn't fill this in", never "clear what's on file". Sending
-  // it whole would blank their company, birthday, cadence and buckets. Only
-  // what was actually entered travels.
-  const prunedFields = f => {
-    const out = {};
-    ['company', 'location', 'birthday', 'how_we_met', 'next_action'].forEach(k => {
-      if ((f[k] || '').trim()) out[k] = f[k];
-    });
-    if (f.cadence && f.cadence !== 'none') out.cadence = f.cadence;
-    if (f.has_contact) out.has_contact = true;
-    // Empty means "checked nothing", and update_person replaces the whole set —
-    // an empty list would unfile them from every bucket they are in.
-    if ((f.bucket_ids || []).length) out.bucket_ids = f.bucket_ids;
-    return out;
-  };
-
-  const updateBanner = () => {
-    const banner = document.getElementById('pa-existing');
-    const submit = document.getElementById('pa-submit');
-    if (peopleView.addSelectedId) {
-      const p = peopleView.people.find(x => x.id === peopleView.addSelectedId);
-      banner.innerHTML = `Existing contact — edits save to <strong>${escHtml(p ? p.name : '')}</strong> and your interaction is logged.`;
-      banner.classList.remove('hidden');
-      submit.textContent = 'Save + log interaction';
-      return;
-    }
-    const m = peopleView.addAllowDuplicate ? null : exactMatch();
-    if (m) {
-      // Said before the press, not refused after it: the button already names
-      // what it will do, and the escape for two real people with one name is
-      // right here rather than being a dead end.
-      banner.innerHTML = `Already in your CRM — this logs to <strong>${escHtml(m.name)}</strong> instead of adding a second row. `
-        + `<button type="button" class="pa-dup-btn" id="pa-dup">Add as a separate person</button>`;
-      banner.classList.remove('hidden');
-      const dup = document.getElementById('pa-dup');
-      if (dup) dup.addEventListener('click', () => {
-        peopleView.addAllowDuplicate = true;
-        updateBanner();
-      });
-      submit.textContent = 'Log interaction';
-      return;
-    }
-    banner.classList.add('hidden');
-    submit.textContent = peopleView.addAllowDuplicate ? 'Add separate person' : 'Add person';
-  };
-
-  const selectExisting = id => {
-    const p = peopleView.people.find(x => x.id === id);
-    if (!p) return;
-    peopleView.addSelectedId = id;
-    nameInput.value = p.name || '';
-    document.getElementById('pa-company').value = p.company || '';
-    document.getElementById('pa-location').value = p.location || '';
-    document.getElementById('pa-birthday').value = p.birthday || '';
-    document.getElementById('pa-how').value = p.how_we_met || '';
-    document.getElementById('pa-next').value = p.next_action || '';
-    document.getElementById('pa-cadence').value = p.cadence || 'none';
-    document.getElementById('pa-contact').checked = !!p.has_contact;
-    const bids = (p.buckets || []).map(b => b.id);
-    document.querySelectorAll('#pa-form .pa-buckets input').forEach(cb => { cb.checked = bids.includes(Number(cb.value)); });
-    // Show what's already on file, read-only, so you're adding to their notes
-    // rather than repeating what's in them. The box below only ever appends.
-    const curNotes = document.getElementById('pa-notes-current');
-    const hasNotes = (p.notes || '').trim();
-    curNotes.textContent = hasNotes ? p.notes : '';
-    curNotes.classList.toggle('hidden', !hasNotes);
-    suggest.classList.add('hidden');
-    updateBanner();
-    document.getElementById('pa-int-note').focus();
-  };
-
-  nameInput.addEventListener('input', () => {
-    peopleView.addSelectedId = null;   // typing means diverging from any picked person
-    // …but a CHANGED name is a fresh question, so an earlier "separate person"
-    // decision does not carry over to whoever is being typed now.
-    peopleView.addAllowDuplicate = false;
-    updateBanner();
-    document.getElementById('pa-notes-current').classList.add('hidden');
-    const q = nameInput.value.trim().toLowerCase();
-    const matches = q ? peopleView.people.filter(p => (p.name || '').toLowerCase().includes(q)).slice(0, 8) : [];
-    if (!matches.length) { suggest.classList.add('hidden'); suggest.innerHTML = ''; return; }
-    suggest.innerHTML = matches.map(p => `
-      <div class="pa-suggest-item" data-id="${p.id}">
-        <span class="pa-suggest-name">${escHtml(p.name)}</span>
-        <span class="pa-suggest-sub">${escHtml([p.company, p.location].filter(Boolean).join(' · '))}</span>
-      </div>`).join('');
-    suggest.classList.remove('hidden');
-    suggest.querySelectorAll('.pa-suggest-item').forEach(it => {
-      // pointerdown beats the input's blur on BOTH inputs; mousedown is
-      // synthesised after touchend on a phone, by which time the 120ms blur
-      // timer has already hidden the list and the tap hits nothing.
-      it.addEventListener('pointerdown', e => { e.preventDefault(); selectExisting(Number(it.dataset.id)); });
-    });
-  });
-  nameInput.addEventListener('focus', () => { if (suggest.innerHTML) suggest.classList.remove('hidden'); });
-  nameInput.addEventListener('blur', () => setTimeout(() => suggest.classList.add('hidden'), 120));
-
-  document.getElementById('pa-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const submit = document.getElementById('pa-submit');
-    if (submit.disabled) return;
-    const errEl = document.getElementById('pa-error');
-    errEl.textContent = '';
-    const name = nameInput.value.trim();
-    if (!name) { errEl.textContent = 'Name is required.'; return; }
-    const bucket_ids = [...document.querySelectorAll('#pa-form .pa-buckets input:checked')].map(cb => Number(cb.value));
-    const fields = {
-      name,
-      company: document.getElementById('pa-company').value,
-      location: document.getElementById('pa-location').value,
-      birthday: document.getElementById('pa-birthday').value,
-      how_we_met: document.getElementById('pa-how').value,
-      next_action: document.getElementById('pa-next').value,
-      cadence: document.getElementById('pa-cadence').value,
-      has_contact: document.getElementById('pa-contact').checked,
-      bucket_ids,
-    };
-    const intDate = document.getElementById('pa-int-date').value;
-    const intNote = document.getElementById('pa-int-note').value.trim();
-    const intSource = document.getElementById('pa-int-source').value;
-    const notesAdd = document.getElementById('pa-notes-add').value.trim();
-    submit.disabled = true;
-    try {
-      let personId = peopleView.addSelectedId;
-      // A name typed in full names the person it matches, exactly as tapping
-      // the suggestion would have. Without this the form's own autocomplete was
-      // the only thing standing between you and a second row.
-      let adopted = null;
-      if (!personId && !peopleView.addAllowDuplicate) {
-        adopted = exactMatch();
-        if (adopted) personId = adopted.id;
-      }
-      if (personId) {
-        // notes_append, never notes: appending in SQL is what keeps this form
-        // from overwriting notes it never showed.
-        const base = adopted ? prunedFields(fields) : fields;
-        const body = notesAdd ? { ...base, notes_append: notesAdd } : base;
-        const res = await apiSend(`/api/people/${personId}`, 'PATCH', body);
-        if (!res.ok) { errEl.textContent = `Save failed (${res.status})`; return; }
-        if (adopted) toast(`Logged to ${adopted.name} — already in your CRM`);
-      } else {
-        // A new person has nothing to append to, so this IS their notes.
-        const body = notesAdd ? { ...fields, notes: notesAdd } : fields;
-        if (peopleView.addAllowDuplicate) body.allow_duplicate = true;
-        const res = await apiSend('/api/people', 'POST', body);
-        // The server's own name guard, for the case the client could not see:
-        // a people list loaded before someone else's session added them. It
-        // hands back the person, so this becomes the log it should have been.
-        if (res.status === 409) {
-          const dup = (await res.json()).person;
-          personId = dup.id;
-          const pbody = prunedFields(fields);
-          if (notesAdd) pbody.notes_append = notesAdd;
-          const pres = await apiSend(`/api/people/${personId}`, 'PATCH', pbody);
-          if (!pres.ok) { errEl.textContent = `Save failed (${pres.status})`; return; }
-          toast(`Logged to ${dup.name} — already in your CRM`);
-        } else if (!res.ok) {
-          errEl.textContent = `Add failed (${res.status})`; return;
-        } else {
-          personId = (await res.json()).id;
-        }
-      }
-      if (intNote && intDate) {
-        const ires = await apiSend(`/api/people/${personId}/interactions`, 'POST', { date: intDate, note: intNote, source: intSource });
-        if (!ires.ok) { errEl.textContent = `Person saved, but logging failed (${ires.status})`; await loadPeopleData(); return; }
-      }
-      await peopleSatisfy('entries');
-      document.getElementById('person-add-overlay').classList.add('hidden');
-      await loadPeopleData();
-    } finally {
-      submit.disabled = false;
-    }
-  });
-
-  document.getElementById('person-add-overlay').classList.remove('hidden');
-  nameInput.focus();
-}
 
 // ── Offline (service worker + the stale marker) ───────────────
 //
