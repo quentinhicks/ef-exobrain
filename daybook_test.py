@@ -136,11 +136,12 @@ ok('under daybook/<year>/<date>.md', os.path.exists(p), p)
 eq('writing today again with nothing changed is a no-op', daybook.write_day(TODAY), False)
 
 # A past day is HISTORY. Rewriting it from a later schema would restate what was
-# never true, so it happens only when asked. (Given something to record: an
-# interaction dated yesterday.)
+# never true, so it happens only when asked. (Given something to record: a
+# context answer dated yesterday. It used to be an interaction, until the CRM
+# left for its own app on 2026-09-08 — the case is about DATED ROWS, and any
+# dated table stands for the rest.)
 conn = sqlite3.connect(storage.DB_PATH)
-conn.execute("INSERT INTO person (name) VALUES ('Someone')")
-conn.execute("INSERT INTO interaction (person_id, date, note) VALUES (1, ?, 'talked')",
+conn.execute("INSERT INTO tag_day (tag, date, applies) VALUES ('@home', ?, 1)",
              (YESTERDAY,))
 conn.commit(); conn.close()
 eq('a past day WITH something in it is written', daybook.write_day(YESTERDAY), True)

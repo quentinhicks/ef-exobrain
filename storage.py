@@ -7,21 +7,9 @@ import uuid
 
 import recurrence
 import schedule
-import colorsys
 from datetime import date as date_cls, datetime, timedelta, timezone
 
 DB_PATH = 'tracker.db'
-
-
-# 24 evenly-spaced hues (HLS l=.60 s=.55) — muted enough to sit on the dark UI,
-# distinct enough to tell ~25 buckets apart at a glance. Bucket colors are drawn
-# from here in order (first unused), cycling only past 24.
-def _hsl_hex(h):
-    r, g, b = colorsys.hls_to_rgb(h / 360.0, 0.60, 0.55)
-    return '#%02x%02x%02x' % (round(r * 255), round(g * 255), round(b * 255))
-
-
-BUCKET_PALETTE = [_hsl_hex(h) for h in range(0, 360, 15)]
 
 
 def get_conn():
@@ -428,51 +416,6 @@ def init_db():
             created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         );
 
-        CREATE TABLE IF NOT EXISTS person (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            name              TEXT NOT NULL,
-            company           TEXT,
-            location          TEXT,
-            email             TEXT,
-            linkedin          TEXT,
-            birthday          TEXT,
-            how_we_met        TEXT,
-            next_action       TEXT,
-            notes             TEXT,
-            cadence           TEXT NOT NULL DEFAULT 'none',
-            next_due_override TEXT,
-            has_contact       INTEGER NOT NULL DEFAULT 0,
-            archived          INTEGER NOT NULL DEFAULT 0,
-            created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-        );
-
-        CREATE TABLE IF NOT EXISTS interaction (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            person_id  INTEGER NOT NULL REFERENCES person(id),
-            date       TEXT NOT NULL,
-            note       TEXT NOT NULL DEFAULT '',
-            source     TEXT NOT NULL DEFAULT 'desktop',
-            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-        );
-
-        CREATE TABLE IF NOT EXISTS bucket (
-            id     INTEGER PRIMARY KEY AUTOINCREMENT,
-            name   TEXT NOT NULL,
-            active INTEGER NOT NULL DEFAULT 1,
-            color  TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS person_bucket (
-            person_id INTEGER NOT NULL REFERENCES person(id),
-            bucket_id INTEGER NOT NULL REFERENCES bucket(id),
-            UNIQUE(person_id, bucket_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS crm_night (
-            date         TEXT NOT NULL UNIQUE,
-            satisfied_at TEXT,
-            kind         TEXT
-        );
 
         -- Nightly journal (filled on the sleep-QR phone form, mirrored here).
         -- bottleneck/active_experiment are written the night BEFORE (for this
@@ -646,19 +589,6 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE observation ADD COLUMN now_block TEXT')
         conn.commit()
-    try:
-        conn.execute('SELECT has_contact FROM person LIMIT 1')
-    except Exception:
-        conn.execute('ALTER TABLE person ADD COLUMN has_contact INTEGER NOT NULL DEFAULT 0')
-        conn.commit()
-    try:
-        conn.execute('SELECT color FROM bucket LIMIT 1')
-    except Exception:
-        conn.execute('ALTER TABLE bucket ADD COLUMN color TEXT')
-        conn.commit()
-    for i, r in enumerate(conn.execute('SELECT id FROM bucket WHERE color IS NULL ORDER BY id').fetchall()):
-        conn.execute('UPDATE bucket SET color = ? WHERE id = ?',
-                     (BUCKET_PALETTE[i % len(BUCKET_PALETTE)], r['id']))
     conn.commit()
     # GTD projects (Horizon 1). A project is an inbox_item with kind='project';
     # actions point at it via project_id. area_id stays the AREA on both, so a
