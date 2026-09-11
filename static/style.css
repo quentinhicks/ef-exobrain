@@ -815,6 +815,18 @@ select option {
 
 .se-swatch.se-on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--text-primary); }
 
+/* NO COLOUR is an answer, so it is a chip like the others rather than an
+   absence you reach by unpicking. It is the one swatch with no fill, so it
+   needs an outline to be a target at all - a control's outline, which owes
+   3:1 and therefore takes --text-secondary, never --border. */
+.se-swatch-none {
+  background: transparent;
+  border: 1px dashed var(--text-secondary);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+}
+
 .se-check {
   flex: 1;
   text-align: left;
@@ -6429,16 +6441,37 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   right: 0;
   border-radius: 2px;
   padding: 2px 6px 2px 14px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  /* A SPAN DRAWS IN ITS DOMAIN'S COLOUR (2026-09-10). The colour arrives as
+     `--plan-color` on the element, set from the DOMAIN the span's area carries
+     - never from the span, which would be a second answer to what the area
+     already says. The fallback here is what makes the feature optional: a
+     domain with no colour of its own leaves the var unset and every rule below
+     resolves to the accent the plan has always drawn in, so nothing has to be
+     coloured for the surface to work. */
+  --plan-color: var(--accent);
+  background: color-mix(in srgb, var(--plan-color) 12%, transparent);
   /* MEASURED, not eyeballed. A span is draggable, so its outline is an
      INTERACTIVE control's and owes 3:1 against the painted backdrop. At 55%
      of the accent over transparent it measured 2.40:1 in light — the exact
      shape of the 2026-08-17 finding, where the accent was fine and the
      translucent edge was not. Blended with --text-secondary and fully opaque
      instead, which is the rule's own answer for a control's outline. */
-  border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--text-secondary));
+  /* 40%, not the 55% the accent alone was tuned at. The accent is ONE colour
+     and could be measured once; --plan-color is now any of the ten block
+     pastels, and the palest of them (#d8cb96) measured 2.73:1 in light at 55%
+     — a control's outline owing 3:1. Swept across the whole palette, 40% is
+     the first step where the WORST colour clears it (3.31 light, 6.39 dark),
+     so the ratio is set by the palette rather than by the colour that happened
+     to be picked while looking at it. */
+  border: 1px dashed color-mix(in srgb, var(--plan-color) 40%, var(--text-secondary));
   font-size: 11px;
-  color: var(--text-secondary);
+  /* TEXT OWES 4.5:1, and --text-secondary did not pay it here: the label sits
+     on the span's own tinted fill, not on the flat surface the var was
+     measured against, and it came out 4.31:1 in dark on the accent alone —
+     4.16 once a domain colour could set the tint. --text-primary measures 11.7
+     dark / 13.5 light across every fill in the palette. The size stays 11px;
+     it is the colour that was wrong, which is the cheaper half to change. */
+  color: var(--text-primary);
   overflow: hidden;
   touch-action: none;
   /* The whole span is the handle now, so the whole span says so — the layer's
@@ -6461,12 +6494,30 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   cursor: grab;
   /* The grip IS the control, so it owes 3:1 too; at 38% over transparent it
      measured 2.31:1 dark and 1.62:1 light — nearly invisible on the theme it
-     was designed in. Opaque. */
-  background: color-mix(in srgb, var(--accent) 70%, var(--text-secondary));
+     was designed in. Opaque, and blended at the same 40% the outline above is,
+     for the same reason: the share is set by the palest colour in the palette,
+     not by the accent it was first tuned against. */
+  background: color-mix(in srgb, var(--plan-color) 40%, var(--text-secondary));
   border-radius: 2px 0 0 2px;
 }
 
 .tl-plan-label { display: block; line-height: 1.25; }
+
+/* WHERE the stretch is meant to happen, under what it is for. A second line
+   rather than more of the first: the length and the area are what the span is
+   read for at a glance, and a place appended to them pushes them out of a row
+   that is often 18px tall. `tl-event-tight` already hides the overflow, so a
+   short span simply keeps the line that matters. It is its own object door
+   (the location's), which is why it may not inherit the label's colour - it
+   is a thing you can open, not a caption. */
+.tl-plan-sublabel {
+  display: block;
+  line-height: 1.25;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* The mode is VISIBLE while it is on — this bar, the pressed button and the
    crosshair. That visibility is the whole difference between this and the
@@ -6496,5 +6547,19 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   flex-basis: 100%;
 }
 .tl-plan-dlabel { color: var(--text-secondary); font-size: 11px; margin-right: 2px; }
+
+/* The chip wears the colour its spans will draw in, so the pick and the result
+   are the same fact seen twice. Decoration on a control that is already
+   labelled by name, so it owes --border, not a control's 3:1 - the chip's own
+   outline is what has to be hittable and readable, and it is unchanged. */
+.tl-plan-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: baseline;
+  border: 1px solid var(--border);
+}
 .tl-refresh-btn.tl-plan-on { border-color: var(--text-secondary); color: var(--accent); }
 

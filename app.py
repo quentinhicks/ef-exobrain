@@ -407,7 +407,7 @@ def post_domain():
     name = (data.get('name') or '').strip()
     if not name:
         return jsonify({'error': 'name is required'}), 400
-    return jsonify(storage.create_domain(name)), 201
+    return jsonify(storage.create_domain(name, (data.get('color') or '').strip() or None)), 201
 
 
 @app.route('/api/domains/<int:id>', methods=['PATCH'])
@@ -419,9 +419,14 @@ def patch_domain(id):
         if not name:
             return jsonify({'error': 'name is required'}), 400
     active = data.get('active') if 'active' in data else None
-    if name is None and active is None:
-        return jsonify({'error': 'name or active is required'}), 400
-    return jsonify(storage.update_domain(id, name, active))
+    # A domain's COLOUR is what the plan's spans draw in. Blank clears it, so
+    # the key's presence is the decision and `''` is not the same as absent.
+    color = storage._UNSET
+    if 'color' in data:
+        color = (data.get('color') or '').strip()
+    if name is None and active is None and color is storage._UNSET:
+        return jsonify({'error': 'name, active or color is required'}), 400
+    return jsonify(storage.update_domain(id, name, active, color))
 
 
 @app.route('/api/domains/<int:id>', methods=['DELETE'])
@@ -2515,7 +2520,8 @@ def post_plan_span():
     # ORIGINAL row rather than making a new one.
     return jsonify(storage.create_plan_span(ymd, span[0], span[1],
                                             data.get('area_id') or None,
-                                            id=data.get('id') or None))
+                                            id=data.get('id') or None,
+                                            location_id=data.get('location_id') or None))
 
 
 @app.route('/api/plan/spans/<int:id>', methods=['PATCH', 'DELETE'])
@@ -2534,6 +2540,8 @@ def plan_span(id):
         fields['start_min'], fields['end_min'] = span
     if 'area_id' in data:
         fields['area_id'] = data.get('area_id') or None
+    if 'location_id' in data:
+        fields['location_id'] = data.get('location_id') or None
     return jsonify(storage.update_plan_span(id, **fields))
 
 

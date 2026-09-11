@@ -755,9 +755,12 @@ function renderPlanBar() {
           data-plandomain="">nothing in particular</button>
         ${domains.map(d => `<button class="ctx-chip ${
           String(d.id) === String(state.planDomainId) ? 'ctx-req' : 'ctx-off'}"
-          data-plandomain="${d.id}">${escHtml(d.name)}</button>`).join('')}
+          data-plandomain="${d.id}">${d.color
+            ? `<span class="tl-plan-dot" style="background:${escHtml(d.color)}"></span>` : ''
+          }${escHtml(d.name)}</button>`).join('')}
       </div>`
-    + '<span class="tl-plan-hint">drag an empty stretch to draw · drag a span to move it · tap it for its menu</span>';
+    + '<span class="tl-plan-hint">drag an empty stretch to draw · drag a span to move it'
+      + ' · tap it for its menu, double-click to edit it</span>';
   bar.querySelectorAll('[data-plandomain]').forEach(b => b.addEventListener('click', () => {
     state.planDomainId = b.dataset.plandomain === '' ? null : parseInt(b.dataset.plandomain);
     renderPlanBar();
@@ -778,20 +781,26 @@ function renderPlanLayer(bodyH = 600) {
   const plan = state.plan && state.plan.date === dateStr ? state.plan : null;
   const spans = (plan && plan.spans) || [];
   const areasById = Object.fromEntries((state.areas || []).map(a => [a.id, a]));
+  const locsById = Object.fromEntries((state.locations || []).map(l => [l.id, l]));
 
   layer.innerHTML = spans.map(s => {
     const top = Math.max(0, minutesToViewPercent(s.start_min));
     const bottom = Math.min(100, minutesToViewPercent(s.end_min));
     if (bottom - top <= 0) return '';
     const area = s.area_id ? areasById[s.area_id] : null;
+    const loc = s.location_id ? locsById[s.location_id] : null;
     const tight = ((bottom - top) * bodyH / 100) < 18;
+    const color = planSpanColor(s);
     return `<div class="tl-plan-span${tight ? ' tl-event-tight' : ''}"
-                 data-span-id="${s.id}" data-obj="planspan:${s.id}"
+                 data-span-id="${s.id}" data-obj="planspan:${s.id}" data-obj-dbl="1"
                  data-start-min="${s.start_min}" data-end-min="${s.end_min}"
-                 style="top:${top}%;height:${bottom - top}%">
+                 style="top:${top}%;height:${bottom - top}%${
+                   color ? `;--plan-color:${color}` : ''}">
               <div class="tl-plan-bar-grip"></div>
               <span class="tl-plan-label">${escHtml(humanMinutes(s.end_min - s.start_min))}${
-                area ? ' · ' + escHtml(planSpanWhatFor(area)) : ''}</span>
+                area ? ' · ' + escHtml(planSpanWhatFor(area)) : ''}</span>${loc
+                ? `<span class="tl-plan-sublabel" data-obj="location:${loc.id}">📍︎ ${
+                    escHtml(loc.name)}</span>` : ''}
             </div>`;
   }).join('');
 
@@ -804,6 +813,25 @@ function renderPlanLayer(bodyH = 600) {
 // real area says the area, which is the more specific thing and wins.
 function planSpanWhatFor(area) {
   return area.is_domain_default ? domainName(area.domain_id) : area.name;
+}
+
+// A SPAN'S COLOUR IS ITS DOMAIN'S (2026-09-10, Quentin's instruction). The
+// colour hangs on the DOMAIN, not on the span: a span already derives its
+// domain from its area, so one edit re-colours every hour ever drawn for that
+// domain and the day reads as domains at a glance. A colour written on the
+// span would be a second answer to "what is this stretch for" — agreeing
+// with the area right up until one of them changed, which is the parallel
+// implementation the `plan_span.domain_id` note above rules out, one field
+// along.
+//
+// A domain with no colour of its own returns null and the span keeps the
+// accent it has always drawn in: nothing has to be coloured for the surface
+// to work.
+function planSpanColor(span) {
+  if (!span.area_id) return null;
+  const d = (state.domains || []).find(x =>
+    String(x.id) === String(domainIdForArea(span.area_id)));
+  return (d && d.color) || null;
 }
 
 // Minutes under a pointer, snapped to 5 — the same grain the block drag uses,
@@ -3551,9 +3579,14 @@ function seFieldHtml(f, v) {
       `<option value="${escHtml(String(o.value))}"${String(o.value) === String(val) ? ' selected' : ''}>${escHtml(o.name)}</option>`
     ).join('')}</select>`;
   } else if (f.kind === 'swatches') {
-    control = `<div class="se-swatches" data-f="${f.key}">${BLOCK_COLORS.map(c =>
+    // `clearable` puts NO COLOUR on the row as a chip of its own. A field
+    // whose blank state is a real answer needs a way back to it, and a
+    // swatch row otherwise only ever moves one way.
+    control = `<div class="se-swatches" data-f="${f.key}">${(f.clearable
+      ? [`<button type="button" class="se-swatch se-swatch-none${val ? '' : ' se-on'}" data-color="" title="No colour">×</button>`]
+      : []).concat(BLOCK_COLORS.map(c =>
       `<button type="button" class="se-swatch${c === val ? ' se-on' : ''}" data-color="${c}" style="background:${c}" title="${c}"></button>`
-    ).join('')}</div>`;
+    )).join('')}</div>`;
   } else if (f.kind === 'days') {
     control = `<div class="se-days" data-f="${f.key}">${DAY_LETTERS.map((d, i) =>
       `<button type="button" class="se-day${val.includes(i) ? ' se-on' : ''}" data-day="${i}" title="${DAY_NAMES[i]}">${d}</button>`
@@ -4392,10 +4425,17 @@ const SETTINGS_SHEETS = {
     save: () => 'Save domain',
     removeLabel: 'Delete domain',
     confirm: it => `Delete domain "${it.name}"? Its areas move to the default domain.`,
-    blank: () => ({ name: '', active: true }),
-    load: d => ({ name: d.name, active: d.active !== 0 }),
+    blank: () => ({ name: '', color: '', active: true }),
+    load: d => ({ name: d.name, color: d.color || '', active: d.active !== 0 }),
     fields: (v, it) => [
       { key: 'name', label: 'Name', kind: 'text', placeholder: 'Domain name' },
+      // THE COLOUR THE PLAN DRAWS IN. It lives on the domain because that is
+      // what you think in while planning a day — the banner already asks for
+      // a domain, not an area — and one edit re-colours every span ever drawn
+      // for it. Clearable: no colour is a real answer, and the span falls
+      // back to the accent it has always used.
+      { key: 'color', label: 'Colour', kind: 'swatches', clearable: true,
+        hint: 'What planned hours for this domain draw in on the calendar.' },
       // The default domain is the fallback every area lands in, so it is the
       // one thing here that cannot be taken out of circulation.
       ...(it && !it.is_default
@@ -4405,11 +4445,19 @@ const SETTINGS_SHEETS = {
       const name = v.name.trim();
       if (!name) return 'Name is required.';
       if (d) {
-        await apiSend(`/api/domains/${d.id}`, 'PATCH', { name, ...(d.is_default ? {} : { active: v.active ? 1 : 0 }) });
+        await apiSend(`/api/domains/${d.id}`, 'PATCH', { name, color: v.color || '',
+          ...(d.is_default ? {} : { active: v.active ? 1 : 0 }) });
       } else {
-        await apiSend('/api/domains', 'POST', { name });
+        await apiSend('/api/domains', 'POST', { name, color: v.color || '' });
       }
       await refreshBlockEditor();
+      // The colour is what the PLAN draws in, and this sheet opens over the
+      // day as often as over Settings (MAP's roster is the other door). The
+      // spans behind it are already on screen, so a repaint here is the
+      // difference between seeing the edit and waiting for the 60s tick to
+      // show it. refreshBlockEditor has just reloaded state.domains, which is
+      // the only thing planSpanColor reads.
+      renderTimeline();
       return null;
     },
     remove: async d => {
@@ -4521,9 +4569,9 @@ const SETTINGS_SHEETS = {
     title: () => 'Planned hours',
     save: () => 'Save span',
     removeLabel: 'Remove span',
-    blank: () => ({ start: '', end: '', area: '' }),
+    blank: () => ({ start: '', end: '', area: '', location: '' }),
     load: s => ({ start: clockHHMM(s.start_min), end: clockHHMM(s.end_min),
-                  area: s.area_id || '' }),
+                  area: s.area_id || '', location: s.location_id || '' }),
     fields: v => [
       { key: 'start', label: 'From', kind: 'time', half: true },
       { key: 'end', label: 'To', kind: 'time', half: true },
@@ -4532,6 +4580,14 @@ const SETTINGS_SHEETS = {
         hint: 'What this stretch is for. The area carries its domain, which is '
               + 'what the pool already filters on — so naming it here needs no '
               + 'second filter of its own.' },
+      // WHERE it is meant to happen (2026-09-10, Quentin's instruction). It is
+      // a plain reference to the location row, not a copy of its coordinates
+      // the way a gate takes one: nothing judges a span, so there is no
+      // commitment here for a moved pin to silently redefine.
+      { key: 'location', label: 'Location', kind: 'select', half: true,
+        options: () => seLocationOptions(null, v.location),
+        hint: 'Where you mean to be. It gates nothing — the plan is a claim '
+              + 'about the day, never a geofence.' },
     ],
     submit: async (v, s) => {
       if (!v.start || !v.end) return 'From and to are required.';
@@ -4544,7 +4600,8 @@ const SETTINGS_SHEETS = {
       const end = spanEndMin(v.start, v.end);
       if (isNaN(end) || end - lo < 5) return 'A span runs at least 5 minutes.';
       const res = await apiSend(`/api/plan/spans/${s.id}`, 'PATCH',
-        { start_min: lo, end_min: end, area_id: v.area || null });
+        { start_min: lo, end_min: end, area_id: v.area || null,
+          location_id: v.location || null });
       if (!res.ok) return 'Error saving that span.';
       await refreshPlan(s.date);
       renderTimeline();
@@ -5400,7 +5457,7 @@ function renderBeDomains() {
     if (a.domain_id) counts[a.domain_id] = (counts[a.domain_id] || 0) + 1;
   });
   list.innerHTML = state.domains.map(d => beRow({
-    id: d.id, name: d.name, dim: d.active === 0,
+    id: d.id, name: d.name, dim: d.active === 0, color: d.color,
     meta: plural(counts[d.id], 'area'),
     badge: d.active === 0 ? 'paused' : d.is_default ? 'default' : '',
   })).join('') + beAddRow('Add domain');
@@ -6386,6 +6443,18 @@ async function openObjectSheet(kind, id, returnTo) {
 // still says what a thing is, so every artifact that had a door keeps it.
 const objMenu = { open: false };
 
+// A tap on a `data-obj-dbl` artifact is HELD this long, to see whether a
+// second one follows. One store, so the hold cannot be started twice or
+// outlive the element it was armed on.
+const OBJTAP_MS = 250;
+const objTap = { el: null, timer: null };
+
+function objTapCancel() {
+  if (objTap.timer) clearTimeout(objTap.timer);
+  objTap.timer = null;
+  objTap.el = null;
+}
+
 // `…` means "opens further UI", the convention every desktop menu uses. The
 // day-level verbs a surface supplies come first and the editor last, because
 // the frequent thing should not be under the rare one.
@@ -6409,6 +6478,7 @@ function closeObjectMenu() {
 // is the same rule placeGatePop follows.
 function openObjectMenu(x, y, kind, id, extra) {
   closeObjectMenu();
+  objTapCancel();   // a menu arriving by any road voids a held tap
   const items = objectMenuItems(kind, extra);
   if (!items.length) return false;
   const el = document.createElement('div');
@@ -6423,9 +6493,17 @@ function openObjectMenu(x, y, kind, id, extra) {
   el.style.top = `${Math.max(pad, Math.min(y, window.innerHeight - h - pad))}px`;
   objMenu.open = true;
 
+  // A SECOND CLICK IS NOT A CHOICE. The menu opens AT the pointer, so its
+  // first item sits directly under it — and the first item is often the
+  // dangerous one (remove this span, call this gate's day off). A stray
+  // double-click therefore used to pick it, having shown it for a few
+  // milliseconds. Nothing human answers a menu it has not read yet, so the
+  // first moment of one is not a target.
+  const openedAt = Date.now();
   el.querySelectorAll('.om-item').forEach(btn => {
     btn.addEventListener('click', ev => {
       ev.stopPropagation();
+      if (Date.now() - openedAt < 250) return;
       const it = items[parseInt(btn.dataset.i)];
       closeObjectMenu();
       if (it.edit) openObjectSheet(kind, id);
@@ -6481,6 +6559,8 @@ function initObjectDoors() {
     // it. Every menu here opened by itself on the drop until this line.
     if (justPointerDragged()) return;
     const el = e.target.closest('[data-obj-tap]');
+    // A tap that moved to a different artifact abandons any held menu.
+    if (objTap.el && objTap.el !== el) objTapCancel();
     if (!el) return;
     if (e.target.closest('button, a, input, select, textarea') !== null
         && e.target.closest('button, a, input, select, textarea') !== el) return;
@@ -6489,8 +6569,37 @@ function initObjectDoors() {
     e.preventDefault();
     e.stopPropagation();
     const r = el.getBoundingClientRect();
-    openObjectMenu(e.clientX || r.left + r.width / 2, e.clientY || r.top + 8,
-                   kind, id, verbsFor(kind, id, el));
+    const x = e.clientX || r.left + r.width / 2;
+    const y = e.clientY || r.top + 8;
+    // DOUBLE-CLICK IS A SECOND DOOR TO THE EDITOR (2026-09-10, Quentin's
+    // instruction, for the plan's spans). Opt-in per artifact
+    // (`data-obj-dbl`), because it costs the menu the OBJTAP_MS it has to
+    // wait to find out whether a second click is coming — a price only an
+    // artifact whose editor is reached often should pay.
+    //
+    // It is not a touch gesture and does not have to be: the menu's
+    // `Edit …` is the finger's path to the same sheet, which is the rename
+    // rule's precedent (double-click is a poor phone gesture, so it is never
+    // the ONLY way).
+    //
+    // Holding the menu is also what makes the gesture possible at all. The
+    // menu opens under the pointer, so if the first click opened it the
+    // second would land on the menu instead of the artifact and the dblclick
+    // would never reach here.
+    if (el.dataset.objDbl) {
+      if (objTap.el === el && objTap.timer) {
+        objTapCancel();
+        openObjectSheet(kind, id);
+        return;
+      }
+      objTap.el = el;
+      objTap.timer = setTimeout(() => {
+        objTapCancel();
+        openObjectMenu(x, y, kind, id, verbsFor(kind, id, el));
+      }, OBJTAP_MS);
+      return;
+    }
+    openObjectMenu(x, y, kind, id, verbsFor(kind, id, el));
   }, true);
 
   // CAPTURE phase: the artifacts this covers have their own contextmenu and

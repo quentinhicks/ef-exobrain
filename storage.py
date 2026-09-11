@@ -815,6 +815,18 @@ def init_db():
         except Exception:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
             conn.commit()
+    # A DOMAIN HAS A COLOUR (2026-09-10, Quentin's instruction), and it is the
+    # domain's rather than the span's: a drawn span already derives its domain
+    # from its area, so hanging the colour there means the day reads as domains
+    # at a glance and one edit re-colours every day ever drawn. A per-span
+    # colour would be a second answer to "what is this stretch for" — the
+    # question the area already answers. NULL = no colour of its own, and the
+    # span keeps the accent it has always drawn in.
+    try:
+        conn.execute('SELECT color FROM domain LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE domain ADD COLUMN color TEXT')
+        conn.commit()
     # Which days a routine step runs. Same grammar the rest of the app already
     # speaks — a digit string, '0'=Mon..'6'=Sun, NULL = every day (exactly how
     # recurring_task.days_of_week and nodes.days_of_week read). NULL meaning
@@ -1167,8 +1179,23 @@ def init_db():
             start_min  INTEGER NOT NULL,
             end_min    INTEGER NOT NULL,
             area_id    INTEGER REFERENCES area(id),
+            -- WHERE the stretch is meant to happen (2026-09-10, Quentin's
+            -- instruction). A reference, not a copy: the plan is not a
+            -- geofence and nothing judges it, so unlike a gate — which copies
+            -- a location's coordinates so moving the place cannot move the
+            -- commitment — a span may simply point at the row and follow it.
+            location_id INTEGER REFERENCES location(id),
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
+    # The same column on a db that already had the table. It lives HERE, not up
+    # with the other ALTERs: those run before this CREATE, so on a fresh db the
+    # migration fired against a table that did not exist yet and init_db threw.
+    # A migration belongs after the shape it migrates.
+    try:
+        conn.execute('SELECT location_id FROM plan_span LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE plan_span ADD COLUMN location_id INTEGER')
+        conn.commit()
     conn.execute('''
         CREATE TABLE IF NOT EXISTS study_entry (
             node_id    INTEGER NOT NULL REFERENCES qr_node(id),
@@ -1950,9 +1977,9 @@ def get_domains():
     return [dict(r) for r in rows]
 
 
-def create_domain(name):
+def create_domain(name, color=None):
     conn = get_conn()
-    cur = conn.execute('INSERT INTO domain (name) VALUES (?)', (name,))
+    cur = conn.execute('INSERT INTO domain (name, color) VALUES (?,?)', (name, color or None))
     row_id = cur.lastrowid
     conn.commit()
     # A domain with nothing under it cannot be filed into, so its general area
@@ -1964,7 +1991,7 @@ def create_domain(name):
     return dict(row)
 
 
-def update_domain(id, name=None, active=None):
+def update_domain(id, name=None, active=None, color=_UNSET):
     conn = get_conn()
     if name is not None:
         # Its general area is named AFTER the domain, so a rename that left the
@@ -1981,6 +2008,10 @@ def update_domain(id, name=None, active=None):
         conn.execute('UPDATE domain SET name = ? WHERE id = ?', (name, id))
     if active is not None:
         conn.execute('UPDATE domain SET active = ? WHERE id = ?', (1 if active else 0, id))
+    if color is not _UNSET:
+        # Blank CLEARS it — the swatch row carries a "no colour" chip, so an
+        # empty string is a decision here, not an absent field.
+        conn.execute('UPDATE domain SET color = ? WHERE id = ?', (color or None, id))
     conn.commit()
     row = conn.execute('SELECT * FROM domain WHERE id = ?', (id,)).fetchone()
     conn.close()
@@ -8288,7 +8319,8 @@ def get_plan_span(id):
     return dict(row) if row else None
 
 
-def create_plan_span(ymd, start_min, end_min, area_id=None, id=None):
+def create_plan_span(ymd, start_min, end_min, area_id=None, id=None,
+                     location_id=None):
     # `id` re-inserts an ORIGINAL id, which is what an undo of a delete needs:
     # a re-create under a new id would leave the undo stack, and anything else
     # holding the old one, pointing at a row that no longer exists — the
@@ -8296,19 +8328,22 @@ def create_plan_span(ymd, start_min, end_min, area_id=None, id=None):
     conn = get_conn()
     if id:
         cur = conn.execute(
-            'INSERT INTO plan_span (id, date, start_min, end_min, area_id) VALUES (?,?,?,?,?)',
-            (id, ymd, int(start_min), int(end_min), area_id))
+            'INSERT INTO plan_span (id, date, start_min, end_min, area_id, location_id)'
+            ' VALUES (?,?,?,?,?,?)',
+            (id, ymd, int(start_min), int(end_min), area_id, location_id))
     else:
         cur = conn.execute(
-            'INSERT INTO plan_span (date, start_min, end_min, area_id) VALUES (?,?,?,?)',
-            (ymd, int(start_min), int(end_min), area_id))
+            'INSERT INTO plan_span (date, start_min, end_min, area_id, location_id)'
+            ' VALUES (?,?,?,?,?)',
+            (ymd, int(start_min), int(end_min), area_id, location_id))
     conn.commit()
     row_id = id or cur.lastrowid
     conn.close()
     return get_plan_span(row_id)
 
 
-def update_plan_span(id, start_min=_UNSET, end_min=_UNSET, area_id=_UNSET):
+def update_plan_span(id, start_min=_UNSET, end_min=_UNSET, area_id=_UNSET,
+                     location_id=_UNSET):
     updates = {}
     if start_min is not _UNSET:
         updates['start_min'] = int(start_min)
@@ -8316,6 +8351,8 @@ def update_plan_span(id, start_min=_UNSET, end_min=_UNSET, area_id=_UNSET):
         updates['end_min'] = int(end_min)
     if area_id is not _UNSET:
         updates['area_id'] = area_id or None
+    if location_id is not _UNSET:
+        updates['location_id'] = location_id or None
     if updates:
         conn = get_conn()
         sets = ', '.join(f'{k} = ?' for k in updates)
