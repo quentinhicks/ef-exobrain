@@ -271,10 +271,8 @@ async function loadAll() {
   state.activeBlock = activeBlock;
   state.section2OverrideDomainId = null;
   state.section2OverrideItems = null;
-  const defaultArea = state.areas.find(p => p.is_default && p.active && p.type === 'standard');
-  const activeAreaId = activeBlock ? activeBlock.area_id : (defaultArea ? defaultArea.id : null);
-  state.activeAreaId = activeAreaId;
-  state.activeDomainId = domainIdForArea(activeAreaId);
+  state.activeAreaId = activeBlock ? activeBlock.area_id || null : null;
+  state.activeDomainId = filingDomainId(activeBlock);
   state.projects = await apiGet('/api/projects', state.projects);
   if (state.activeDomainId) {
     state.activeDomainItems = await apiGet(`/api/inbox/active?domain_id=${state.activeDomainId}`, state.activeDomainItems);
@@ -734,15 +732,10 @@ function renderPlanBar() {
         : ` · ${humanMinutes(owed - planned)} short of the ${humanMinutes(owed)} it owes`;
   }
   // WHAT THE HOURS ARE FOR, picked before they are drawn (2026-09-08,
-  // Quentin's instruction). A span already carried an area; the thing you
-  // actually think in while planning a day is the DOMAIN, so that is what the
-  // banner asks for — and picking one files the span in that domain's general
-  // area, the same road the clarify sheet's "Filing to" takes.
-  //
-  // NOT a second store: the span still carries only `area_id`, and its domain
-  // is derived from that everywhere. A `plan_span.domain_id` beside it would
-  // be the parallel implementation CLAUDE.md bans — the two would agree right
-  // up until an area moved domain.
+  // Quentin's instruction). The thing you think in while planning a day is
+  // the DOMAIN, so that is what the banner asks for, and a span drawn with one
+  // picked is filed under that domain itself (2026-09-15: no general area in
+  // between). One filing per span — an area or a domain — like every row.
   //
   // The pick is a DEFAULT for what you draw next, never a filter: spans
   // already drawn stay exactly as they are and keep showing their own area.
@@ -767,12 +760,6 @@ function renderPlanBar() {
   }));
 }
 
-// The area a newly drawn span lands in: the chosen domain's general area, or
-// nothing at all when no domain is chosen. One reader, so the draw gesture and
-// any future one cannot disagree about what the banner's pick means.
-function planDrawAreaId() {
-  return state.planDomainId == null ? null : defaultAreaForDomain(state.planDomainId);
-}
 
 function renderPlanLayer(bodyH = 600) {
   const layer = document.getElementById('tl-plan-layer');
@@ -780,7 +767,6 @@ function renderPlanLayer(bodyH = 600) {
   const dateStr = viewDay();
   const plan = state.plan && state.plan.date === dateStr ? state.plan : null;
   const spans = (plan && plan.spans) || [];
-  const areasById = Object.fromEntries((state.areas || []).map(a => [a.id, a]));
 
   // A span's location being typed into is HALF-TYPED TEXT, and this layer is
   // rebuilt by the 60s tick, every day change and every write. innerHTML would
@@ -792,7 +778,7 @@ function renderPlanLayer(bodyH = 600) {
     const top = Math.max(0, minutesToViewPercent(s.start_min));
     const bottom = Math.min(100, minutesToViewPercent(s.end_min));
     if (bottom - top <= 0) return '';
-    const area = s.area_id ? areasById[s.area_id] : null;
+    const what = filingLabel(s);
     const tight = ((bottom - top) * bodyH / 100) < 18;
     const color = planSpanColor(s);
     return `<div class="tl-plan-span${tight ? ' tl-event-tight' : ''}"
@@ -802,7 +788,7 @@ function renderPlanLayer(bodyH = 600) {
                    color ? `;--plan-color:${color}` : ''}">
               <div class="tl-plan-bar-grip"></div>
               <span class="tl-plan-label">${escHtml(humanMinutes(s.end_min - s.start_min))}${
-                area ? ' · ' + escHtml(planSpanWhatFor(area)) : ''}</span>${s.location
+                what ? ' · ' + escHtml(what) : ''}</span>${s.location
                 ? `<span class="tl-plan-sublabel">📍︎ ${escHtml(s.location)}</span>` : ''}
             </div>`;
   }).join('');
@@ -811,29 +797,19 @@ function renderPlanLayer(bodyH = 600) {
   wirePlanDraw(layer);
 }
 
-// A span filed in a domain's GENERAL area was drawn "for that domain", so the
-// label says the domain — "Study", not "Study · general". A span filed in a
-// real area says the area, which is the more specific thing and wins.
-function planSpanWhatFor(area) {
-  return area.is_domain_default ? domainName(area.domain_id) : area.name;
-}
-
 // A SPAN'S COLOUR IS ITS DOMAIN'S (2026-09-10, Quentin's instruction). The
-// colour hangs on the DOMAIN, not on the span: a span already derives its
-// domain from its area, so one edit re-colours every hour ever drawn for that
-// domain and the day reads as domains at a glance. A colour written on the
-// span would be a second answer to "what is this stretch for" — agreeing
-// with the area right up until one of them changed, which is the parallel
-// implementation the `plan_span.domain_id` note above rules out, one field
-// along.
+// colour hangs on the DOMAIN, not on the span: one edit re-colours every hour
+// ever drawn for that domain and the day reads as domains at a glance. A
+// colour written on the span would be a second answer to "what is this
+// stretch for".
 //
 // A domain with no colour of its own returns null and the span keeps the
 // accent it has always drawn in: nothing has to be coloured for the surface
 // to work.
 function planSpanColor(span) {
-  if (!span.area_id) return null;
-  const d = (state.domains || []).find(x =>
-    String(x.id) === String(domainIdForArea(span.area_id)));
+  const did = filingDomainId(span);
+  if (!did) return null;
+  const d = (state.domains || []).find(x => String(x.id) === String(did));
   return (d && d.color) || null;
 }
 
@@ -917,7 +893,7 @@ function wirePlanDraw(layer) {
         ghost.remove();
         if (hi - lo < 5) { renderTimeline(); return; }
         const res = await apiSend('/api/plan/spans', 'POST',
-          { date: dateStr, start_min: lo, end_min: hi, area_id: planDrawAreaId() });
+          { date: dateStr, start_min: lo, end_min: hi, domain_id: state.planDomainId });
         if (!res.ok) { toast('Could not draw that span'); renderTimeline(); return; }
         const row = await res.json();
         // A GESTURE IS A BUTTON: a create inverts to a delete of the row it
@@ -1024,7 +1000,8 @@ async function deletePlanSpan(span) {
   pushUndo(`removed ${humanMinutes(span.end_min - span.start_min)}`, async () => {
     await apiSend('/api/plan/spans', 'POST', {
       id: span.id, date: span.date, start_min: span.start_min,
-      end_min: span.end_min, area_id: span.area_id, location: span.location });
+      end_min: span.end_min, area_id: span.area_id, domain_id: span.domain_id,
+      location: span.location });
     await refreshPlan(span.date);
     renderTimeline();
   });
@@ -1850,7 +1827,7 @@ function segmentRow(s) {
   const cont = s.start < 0;                       // yesterday's overnight tail
   const loc = (state.locations || []).find(l => String(l.id) === String(s.location_id));
   return {
-    b: { id: s.block_id, area_id: s.area_id, color: s.color,
+    b: { id: s.block_id, area_id: s.area_id, domain_id: s.domain_id, color: s.color,
          location_id: s.location_id, location_name: loc ? loc.name : null },
     startMin: cont ? 0 : s.start,
     endMin: s.end,
@@ -1971,9 +1948,12 @@ function detectCurrentStandardBlock() {
   const projectsById = Object.fromEntries(state.areas.map(p => [p.id, p]));
   const blocksById = Object.fromEntries((state.blocks || []).map(b => [b.id, b]));
   for (const seg of todaySegments.segments) {
-    if (!seg.area_id) continue;
-    const proj = projectsById[seg.area_id];
-    if (!proj || proj.type !== 'standard') continue;
+    // A block filed under a domain is a working block; one filed under an area
+    // is one when the area is a standard area (not a routine or sleep area).
+    if (seg.area_id) {
+      const proj = projectsById[seg.area_id];
+      if (!proj || proj.type !== 'standard') continue;
+    } else if (!seg.domain_id) continue;
     if (nowMin >= seg.start && nowMin < seg.end) return blocksById[seg.block_id] || seg;
   }
   return null;
@@ -1981,13 +1961,6 @@ function detectCurrentStandardBlock() {
 
 let section2RevertTimer = null;
 
-// Every area belongs to exactly one domain (storage backfills the default), so
-// a missing domain_id can only mean stale client state — fall back rather than
-// leaving section 2 blank.
-function defaultDomainId() {
-  const d = state.domains.find(x => x.is_default) || state.domains[0];
-  return d ? d.id : null;
-}
 
 // ── Calendar navigation bounds ───────────────────────────────
 //
@@ -2027,8 +2000,45 @@ function domainName(id) {
 }
 
 function domainIdForArea(areaId) {
-  const a = areaId ? state.areas.find(p => p.id === areaId) : null;
-  return (a && a.domain_id) || defaultDomainId();
+  const a = areaId ? (state.areas || []).find(p => String(p.id) === String(areaId)) : null;
+  return (a && a.domain_id) || null;
+}
+
+// ── WHERE A ROW IS FILED (2026-09-15, Quentin's instruction) ──────────────
+//
+// Domains and areas are two separate things. An area MAY be assigned to a
+// domain; an item, project, block, span, recurring task or routine is filed
+// under an AREA, or a DOMAIN, or nothing — never both (storage.filing_updates
+// is the server's half). These four are the only readers of that shape, so no
+// surface re-decides which of the two columns wins.
+//
+// The DOMAIN a row is in: its area's, when it is filed under one; otherwise
+// its own. Nothing filed means no domain, which every domain filter treats as
+// "belongs everywhere" rather than "belongs nowhere".
+function filingDomainId(row) {
+  if (!row) return null;
+  if (row.area_id) return domainIdForArea(row.area_id);
+  return row.domain_id || null;
+}
+
+// A picker holds ONE value for the pair: 'a:<id>', 'd:<id>' or ''.
+function filingKey(row) {
+  if (row && row.area_id) return `a:${row.area_id}`;
+  if (row && row.domain_id) return `d:${row.domain_id}`;
+  return '';
+}
+
+function filingBody(key) {
+  const [k, id] = String(key || '').split(':');
+  const n = parseInt(id) || null;
+  return { area_id: k === 'a' ? n : null, domain_id: k === 'd' ? n : null };
+}
+
+function filingLabel(row) {
+  if (row && row.area_id) {
+    return ((state.areas || []).find(a => String(a.id) === String(row.area_id)) || {}).name || '';
+  }
+  return row && row.domain_id ? domainName(row.domain_id) : '';
 }
 
 // Re-render an input's surface without teleporting the caret to the end.
@@ -3906,16 +3916,26 @@ async function removeSeItem() {
 // PAUSED things are not offered — that is what pausing is for — but the one
 // already SELECTED is always kept in the list, or opening a sheet would
 // silently drop the choice it is showing you.
-function seAreaOptions(current) {
-  return [{ value: '', name: '— none —' }].concat(
-    (state.areas || []).filter(p => p.active || String(p.id) === String(current))
-      .map(p => ({ value: p.id, name: p.name + (p.active ? '' : ' (paused)') })));
-}
-
 function seLocationOptions(firstName, current) {
   return [{ value: '', name: firstName || '— none —' }].concat(
     (state.locations || []).filter(l => l.active !== 0 || String(l.id) === String(current))
       .map(l => ({ value: l.id, name: l.name + (l.active === 0 ? ' (paused)' : '') })));
+}
+
+// ONE select for where a thing is filed: nothing, a domain, or an area. Areas
+// name their domain beside them, since that is where they send the thing too.
+function seFilingOptions(current) {
+  const dom = (state.domains || []).filter(d => d.active !== 0 || `d:${d.id}` === String(current))
+    .map(d => ({ value: `d:${d.id}`, name: `${d.name} (domain)` }));
+  const areas = (state.areas || []).filter(a => a.active || `a:${a.id}` === String(current))
+    .map(a => ({ value: `a:${a.id}`, name: a.name
+      + (a.domain_id ? ` · ${domainName(a.domain_id)}` : '') + (a.active ? '' : ' (paused)') }));
+  return [{ value: '', name: '— nothing —' }].concat(dom, areas);
+}
+
+// An area's own domain, which it need not have.
+function areaDomainOptions(current) {
+  return [{ value: '', name: '— no domain —' }].concat(seDomainOptions(current));
 }
 
 function seDomainOptions(current) {
@@ -3967,7 +3987,7 @@ function seWhenLabel(ymd) {
 // than name a column. GATE_FIELDS is the same idea for the money path.
 const BLOCK_FIELDS = {
   label: 'Label', color: 'Colour', day_of_week: 'Day', start_time: 'From',
-  end_time: 'To', area_id: 'Area', location_id: 'Location', active: 'State',
+  end_time: 'To', area_id: 'Area', domain_id: 'Domain', location_id: 'Location', active: 'State',
   delete: 'Deleted',
 };
 
@@ -3977,6 +3997,7 @@ function blockChangeValue(c) {
   if (c.field === 'area_id') {
     return ((state.areas || []).find(a => String(a.id) === String(c.new_value)) || {}).name || '—';
   }
+  if (c.field === 'domain_id') return c.new_value ? domainName(c.new_value) : '—';
   if (c.field === 'location_id') {
     return ((state.locations || []).find(l => String(l.id) === String(c.new_value)) || {}).name || '—';
   }
@@ -4020,7 +4041,7 @@ async function scheduleBlockGroup(g, v) {
   if (v.color !== g.color) fields.color = v.color;
   if (v.start !== g.start_time) fields.start_time = v.start;
   if (v.end !== g.end_time) fields.end_time = v.end;
-  if (String(v.area || '') !== String(g.area_id || '')) fields.area_id = v.area || null;
+  if (String(v.area || '') !== filingKey(g)) Object.assign(fields, filingBody(v.area));
   if (String(v.location || '') !== String(g.location_id || '')) fields.location_id = v.location || null;
   const wasActive = g.rows.some(r => r.active);
   if (v.active !== wasActive) fields.active = v.active ? 1 : 0;
@@ -4057,7 +4078,7 @@ const SETTINGS_SHEETS = {
     load: g => ({
       label: g.label, color: g.color, days: g.days.slice(),
       start: g.start_time, end: g.end_time,
-      area: g.area_id || '', location: g.location_id || '',
+      area: filingKey(g), location: g.location_id || '',
       // A group is paused when every row in it is — the rows only ever move
       // together, and a half-paused group has no meaning on the timeline.
       active: g.rows.some(r => r.active),
@@ -4069,8 +4090,8 @@ const SETTINGS_SHEETS = {
       { key: 'days', label: 'Days', kind: 'days' },
       { key: 'start', label: 'From', kind: 'time', half: true },
       { key: 'end', label: 'To', kind: 'time', half: true },
-      { key: 'area', label: 'Area', kind: 'select', half: true,
-        options: () => seAreaOptions(v.area) },
+      { key: 'area', label: 'Filed under', kind: 'select', half: true,
+        options: () => seFilingOptions(v.area) },
       { key: 'location', label: 'Location', kind: 'select', half: true,
         options: () => seLocationOptions(null, v.location) },
       ...(g ? [seStateRow('Paused: off the timeline, and its hours are free for '
@@ -4106,7 +4127,7 @@ const SETTINGS_SHEETS = {
       const res = await apiSend('/api/blocks', 'POST', {
           label: v.label.trim(), color: v.color, days: v.days,
           start_time: v.start, end_time: v.end,
-          area_id: v.area || null, location_id: v.location || null,
+          ...filingBody(v.area), location_id: v.location || null,
         });
       const data = await res.json();
       if (!res.ok) {
@@ -4117,7 +4138,8 @@ const SETTINGS_SHEETS = {
           await apiSend('/api/blocks', 'POST', {
               label: g.label, color: g.color, days: g.days,
               start_time: g.start_time, end_time: g.end_time,
-              area_id: g.area_id || null, location_id: g.location_id || null,
+              area_id: g.area_id || null, domain_id: g.domain_id || null,
+              location_id: g.location_id || null,
             }).catch(() => {});
           await refreshBlockEditor();
         }
@@ -4172,9 +4194,8 @@ const SETTINGS_SHEETS = {
       const unit = v.kind === 'every_n_days' ? 'day(s)' : v.kind === 'weekly' ? 'week(s)' : 'month(s)';
       return [
         { key: 'name', label: 'Name', kind: 'text', placeholder: 'e.g. Water the plants' },
-        { key: 'area', label: 'Area', kind: 'select', placeholder: '— pick an area —',
-          options: () => (state.areas || []).filter(p => p.active && p.type === 'standard')
-            .map(p => ({ value: p.id, name: p.name })) },
+        { key: 'area', label: 'Filed under', kind: 'select',
+          options: () => seFilingOptions(v.area) },
         { key: 'kind', label: 'Repeats', kind: 'select', rerender: true, options: () => [
           { value: 'weekly', name: 'Days of the week' },
           { value: 'monthly_nth', name: 'Nth weekday of the month' },
@@ -4216,10 +4237,9 @@ const SETTINGS_SHEETS = {
       // Each one named on its own: "Name, area and start date are required"
       // made you check all three to find the one that was not.
       if (!v.name.trim()) return 'Give the task a name.';
-      if (!v.area) return 'Pick an area for it.';
       if (!v.anchor) return 'Set the day it starts.';
       const body = {
-        name: v.name.trim(), area_id: parseInt(v.area), kind: v.kind,
+        name: v.name.trim(), ...filingBody(v.area), kind: v.kind,
         anchor_date: v.anchor, interval: parseInt(v.interval) || 1,
       };
       // YYYY-MM-DD in, MM-DD stored: the year belongs to the occurrence.
@@ -4280,7 +4300,7 @@ const SETTINGS_SHEETS = {
       as_task: !!f.as_task,
       offset: f.offset_min == null ? '' : String(f.offset_min),
       offset0: f.offset_min == null ? '' : String(f.offset_min),
-      area: f.area_id || '',
+      area: filingKey(f),
       days: (f.days_of_week || '').split('').filter(d => d !== '').map(Number),
     }),
     fields: (v, it) => [
@@ -4329,7 +4349,7 @@ const SETTINGS_SHEETS = {
           + 'you owe weekly is visible on the day you owe it. Finishing the run '
           + 'takes the action away.' },
       ...(v.as_task ? [{ key: 'area', label: 'In', kind: 'select', half: true,
-        options: () => seAreaOptions(v.area) }] : []),
+        options: () => seFilingOptions(v.area) }] : []),
       ...(v.as_task ? [{ key: 'days', label: 'On', kind: 'days',
         hint: 'Which days the task appears. None lit means every day.' }] : []),
       // The schedule says which days it APPEARS; this says "and I want it
@@ -4369,7 +4389,7 @@ const SETTINGS_SHEETS = {
                      as_task: !!v.as_task,
                      days_of_week: v.days.length ? v.days.slice().sort().join('') : null };
       if (v.source !== v.source0) body.source_uid = v.source || null;
-      if (v.as_task) body.area_id = v.area || null;
+      if (v.as_task) Object.assign(body, filingBody(v.area));
       if (String(v.offset) !== String(v.offset0)) {
         body.offset_min = String(v.offset).trim() === '' ? null : parseInt(v.offset, 10);
       }
@@ -4399,9 +4419,9 @@ const SETTINGS_SHEETS = {
     title: it => it ? 'Area' : 'Add area',
     save: it => it ? 'Save area' : 'Add area',
     removeLabel: 'Delete area',
-    canRemove: it => !it.is_domain_default,
-    confirm: it => `Delete area "${it.name}"?`,
-    blank: () => ({ name: '', type: 'standard', domain: (state.domains[0] || {}).id || '' }),
+    confirm: it => `Delete area "${it.name}"? What is filed under it moves to `
+      + (it.domain_id ? `the ${domainName(it.domain_id)} domain.` : 'nothing in particular.'),
+    blank: () => ({ name: '', type: 'standard', domain: '' }),
     load: a => ({
       type: a.type, domain: a.domain_id || '', qr: a.qr_node_id || '', active: !!a.active,
     }),
@@ -4414,23 +4434,15 @@ const SETTINGS_SHEETS = {
         { key: 'name', label: 'Name', kind: 'text', placeholder: 'Area name' },
         { key: 'type', label: 'Type', kind: 'select', half: true, options: () => types },
         { key: 'domain', label: 'Domain', kind: 'select', half: true,
-          options: () => seDomainOptions(v.domain) },
+          options: () => areaDomainOptions(v.domain) },
       ];
-      // A domain's GENERAL area is where "file this under the domain" lands, so
-      // its domain is not a choice — showing a live select that the server
-      // then refuses is a dead control, which is the failure mode the runner's
-      // eleven addressed-by-id controls just taught us.
-      const general = !!it.is_domain_default;
       return [
         { key: 'name', label: 'Name', kind: 'static', text: it.name },
         { key: 'type', label: 'Type', kind: 'select', half: true, rerender: true, options: () => types },
-        general
-          ? { key: 'domain', label: 'Domain', kind: 'static',
-              text: domainName(it.domain_id) + ' — its general area',
-              hint: 'Anything filed under this domain with no area of its own '
-                    + 'lands here, so it stays where it is and cannot be deleted.' }
-          : { key: 'domain', label: 'Domain', kind: 'select', half: true,
-              options: () => seDomainOptions(v.domain) },
+        { key: 'domain', label: 'Domain', kind: 'select', half: true,
+          options: () => areaDomainOptions(v.domain),
+          hint: 'Optional. An area in a domain counts as that domain wherever '
+                + 'domains filter.' },
         // A routine area can hang off a gate: the routine then nests under
         // that gate's hairline on Engage even with no block on the calendar.
         ...(v.type === 'routine' ? [{ key: 'qr', label: 'Gate anchor', kind: 'select',
@@ -4450,9 +4462,7 @@ const SETTINGS_SHEETS = {
       const patch = async body => apiSend(`/api/areas/${a.id}`, 'PATCH', body);
       if (v.type !== a.type) await patch({ type: v.type });
       if (String(v.domain) !== String(a.domain_id || '')) {
-        // The server refuses to move a domain's general area out of it. Its
-        // words, not a copy of them here: one rule, one place that states it.
-        const res = await patch({ domain_id: parseInt(v.domain) });
+        const res = await patch({ domain_id: parseInt(v.domain) || null });
         if (!res.ok) return (await res.json().catch(() => ({}))).error
           || 'That area cannot move domain.';
       }
@@ -4473,13 +4483,13 @@ const SETTINGS_SHEETS = {
     },
   },
 
-  // The default domain has no Delete — it is where a deleted domain's areas
-  // land, so it can't be removed.
+  // Every domain can be deleted, the old default included (2026-09-15).
   domain: {
     title: it => it ? 'Domain' : 'Add domain',
     save: () => 'Save domain',
     removeLabel: 'Delete domain',
-    confirm: it => `Delete domain "${it.name}"? Its areas move to the default domain.`,
+    confirm: it => `Delete domain "${it.name}"? Its areas stay, in no domain, and what `
+      + 'was filed under it is filed under nothing.',
     blank: () => ({ name: '', color: '', active: true }),
     load: d => ({ name: d.name, color: d.color || '', active: d.active !== 0 }),
     fields: (v, it) => [
@@ -4491,17 +4501,14 @@ const SETTINGS_SHEETS = {
       // back to the accent it has always used.
       { key: 'color', label: 'Colour', kind: 'swatches', clearable: true,
         hint: 'What planned hours for this domain draw in on the calendar.' },
-      // The default domain is the fallback every area lands in, so it is the
-      // one thing here that cannot be taken out of circulation.
-      ...(it && !it.is_default
-        ? [seStateRow('Paused: not offered when filing. Its areas keep working.')] : []),
+      ...(it ? [seStateRow('Paused: not offered when filing. Its areas keep working.')] : []),
     ],
     submit: async (v, d) => {
       const name = v.name.trim();
       if (!name) return 'Name is required.';
       if (d) {
         await apiSend(`/api/domains/${d.id}`, 'PATCH', { name, color: v.color || '',
-          ...(d.is_default ? {} : { active: v.active ? 1 : 0 }) });
+          active: v.active ? 1 : 0 });
       } else {
         await apiSend('/api/domains', 'POST', { name, color: v.color || '' });
       }
@@ -4626,15 +4633,14 @@ const SETTINGS_SHEETS = {
     removeLabel: 'Remove span',
     blank: () => ({ start: '', end: '', area: '', location: '' }),
     load: s => ({ start: clockHHMM(s.start_min), end: clockHHMM(s.end_min),
-                  area: s.area_id || '', location: s.location || '' }),
+                  area: filingKey(s), location: s.location || '' }),
     fields: v => [
       { key: 'start', label: 'From', kind: 'time', half: true },
       { key: 'end', label: 'To', kind: 'time', half: true },
-      { key: 'area', label: 'Area', kind: 'select',
-        options: () => seAreaOptions(v.area),
-        hint: 'What this stretch is for. The area carries its domain, which is '
-              + 'what the pool already filters on — so naming it here needs no '
-              + 'second filter of its own.' },
+      { key: 'area', label: 'For', kind: 'select',
+        options: () => seFilingOptions(v.area),
+        hint: 'What this stretch is for: a domain, or an area (which carries its '
+              + 'domain, if it has one).' },
       // WHERE, as typed words — the same field the span's double-click edits
       // in place. This sheet is the finger's road to it (the menu's
       // `Edit span…`), since a double-click is a poor phone gesture.
@@ -4653,7 +4659,7 @@ const SETTINGS_SHEETS = {
       const end = spanEndMin(v.start, v.end);
       if (isNaN(end) || end - lo < 5) return 'A span runs at least 5 minutes.';
       const res = await apiSend(`/api/plan/spans/${s.id}`, 'PATCH',
-        { start_min: lo, end_min: end, area_id: v.area || null,
+        { start_min: lo, end_min: end, ...filingBody(v.area),
           location: (v.location || '').trim() });
       if (!res.ok) return 'Error saving that span.';
       await refreshPlan(s.date);
@@ -5401,7 +5407,7 @@ async function closeBlockEditor() {
   // Domains and area assignments can have changed in here, so section 2's
   // obligation may now be a different one. This goes before renderTimeline so a
   // timeline failure (a dead gate fetch, say) can't take section 2 down with it.
-  state.activeDomainId = state.activeAreaId ? domainIdForArea(state.activeAreaId) : null;
+  state.activeDomainId = filingDomainId(state.activeBlock);
   state.section2OverrideDomainId = null;
   state.section2OverrideItems = null;
   await refreshActiveItems();
@@ -5512,7 +5518,7 @@ function renderBeDomains() {
   list.innerHTML = state.domains.map(d => beRow({
     id: d.id, name: d.name, dim: d.active === 0, color: d.color,
     meta: plural(counts[d.id], 'area'),
-    badge: d.active === 0 ? 'paused' : d.is_default ? 'default' : '',
+    badge: d.active === 0 ? 'paused' : '',
   })).join('') + beAddRow('Add domain');
   wireBeList(list, 'domain', state.domains);
 }
@@ -5520,7 +5526,7 @@ function renderBeDomains() {
 function groupBlocks(blocks) {
   const groups = new Map();
   for (const b of blocks) {
-    const key = `${b.label}|${b.color}|${b.start_time}|${b.end_time}|${b.area_id ?? ''}|${b.location_id ?? ''}`;
+    const key = `${b.label}|${b.color}|${b.start_time}|${b.end_time}|${filingKey(b)}|${b.location_id ?? ''}`;
     if (!groups.has(key)) {
       groups.set(key, { ...b, days: [b.day_of_week], rows: [b] });
     } else {
@@ -5640,7 +5646,7 @@ function renderBeRecurring(tasks, areas, flows) {
   list.innerHTML = tasks.map(t => beRow({
     id: t.id, name: t.name, dim: !t.active,
     meta: recurringScheduleLabel(t),
-    sub: [byId[t.area_id] ? byId[t.area_id].name : null, projectName(t.project_id),
+    sub: [filingLabel(t) || null, projectName(t.project_id),
           t.spawn === 'project' && t.deadline_md
             ? `due ${recDueLabel(t.deadline_md)}` : null]
       .filter(Boolean).join(' · '),
@@ -5710,14 +5716,11 @@ async function checkActiveBlock() {
   // answer here is exactly how the viewed day used to leak into "now".
   await refreshTodaySegments();
   const newBlock = detectCurrentStandardBlock();
-  const defaultArea = state.areas.find(p => p.is_default && p.active && p.type === 'standard');
-  const newProjectId = newBlock
-    ? newBlock.area_id
-    : (defaultArea ? defaultArea.id : null);
-  if (newProjectId === state.activeAreaId) return;
+  const newProjectId = newBlock ? newBlock.area_id || null : null;
+  const newDomainId = filingDomainId(newBlock);
+  if (newProjectId === state.activeAreaId && newDomainId === state.activeDomainId) return;
   state.activeBlock = newBlock;
   state.activeAreaId = newProjectId;
-  const newDomainId = newProjectId ? domainIdForArea(newProjectId) : null;
   const domainChanged = newDomainId !== state.activeDomainId;
   state.activeDomainId = newDomainId;
   state.section2OverrideDomainId = null;
@@ -5732,7 +5735,8 @@ async function checkActiveBlock() {
   }
   // The engage pool follows the block calendar's domain unless the chip was
   // deliberately pointed elsewhere.
-  if (domainChanged && engageView.domainId !== newDomainId && newDomainId) {
+  // Leaving every domain (a block filed under none, or no block) follows too.
+  if (domainChanged && engageView.domainId !== newDomainId) {
     engageView.domainId = newDomainId;
     await refreshEngage();
   }
@@ -8485,7 +8489,7 @@ function renderOccasionSheet() {
     ${o.items.map(it => `
       <div class="oc-item">
         <span class="oc-item-text">${escHtml(it.content)}</span>
-        <span class="oc-item-meta">${escHtml(areaName(it.area_id))}</span>
+        <span class="oc-item-meta">${escHtml(filingLabel(it))}</span>
         <button class="oc-item-go" data-ocitem="${it.id}" title="Clarify this action">›</button>
       </div>`).join('')}
     <div class="cl-row"><button class="cl-pill" id="oc-add">+ action</button></div>
@@ -13600,17 +13604,18 @@ function renderMapFilter() {
 // Settings opens. One thing, one editor — reached from the thing.
 function mapAreasHtml() {
   const items = state.mapItems || [];
-  const nByArea = {};
-  items.forEach(i => { nByArea[i.area_id] = (nByArea[i.area_id] || 0) + 1; });
+  const nByArea = {}, nOnDomain = {};
+  items.forEach(i => {
+    if (i.area_id) nByArea[i.area_id] = (nByArea[i.area_id] || 0) + 1;
+    else if (i.domain_id) nOnDomain[i.domain_id] = (nOnDomain[i.domain_id] || 0) + 1;
+  });
   const areas = (state.areas || []).filter(a => a.type === 'standard');
-  const domains = (state.domains || []).slice().sort((a, b) =>
-    (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0) || a.name.localeCompare(b.name));
+  const domains = (state.domains || []).slice().sort((a, b) => a.name.localeCompare(b.name));
 
   const areaRow = a => {
     const n = nByArea[a.id] || 0;
     return `<div class="map-af-row" data-obj="area:${a.id}" data-area-id="${a.id}">
       <span class="map-af-name">${escHtml(a.name)}</span>
-      ${a.is_domain_default ? '<span class="map-badge" title="Where anything filed under this domain with no area of its own lands">general</span>' : ''}
       ${a.active ? '' : '<span class="map-badge">paused</span>'}
       <span class="map-count">${n}</span>
       <span class="map-acts"><button class="map-af-open" data-kind="area" data-id="${a.id}"
@@ -13619,20 +13624,26 @@ function mapAreasHtml() {
   };
 
   const groups = domains.map(d => {
-    const mine = areas.filter(a => String(domainIdForArea(a.id)) === String(d.id))
-      .sort((x, y) => (y.is_domain_default ? 1 : 0) - (x.is_domain_default ? 1 : 0)
-        || x.name.localeCompare(y.name));
+    const mine = areas.filter(a => String(a.domain_id) === String(d.id))
+      .sort((x, y) => x.name.localeCompare(y.name));
     return `<div class="map-af-domain">
       <div class="map-af-dhead" data-obj="domain:${d.id}">
         <span class="map-af-dname">${escHtml(d.name)}</span>
         ${d.active === 0 ? '<span class="map-badge">paused</span>' : ''}
-        <span class="map-count">${mine.reduce((n, a) => n + (nByArea[a.id] || 0), 0)}</span>
+        <span class="map-count">${mine.reduce((n, a) => n + (nByArea[a.id] || 0), nOnDomain[d.id] || 0)}</span>
         <span class="map-acts"><button class="map-af-open" data-kind="domain" data-id="${d.id}"
           title="Edit this domain">›</button></span>
       </div>
       ${mine.map(areaRow).join('')}
     </div>`;
   }).join('');
+  // Areas in no domain are a group of their own, not a domain called "none".
+  const loose = areas.filter(a => !a.domain_id || !domains.some(d => String(d.id) === String(a.domain_id)))
+    .sort((x, y) => x.name.localeCompare(y.name));
+  const looseHtml = loose.length ? `<div class="map-af-domain">
+      <div class="map-af-dhead"><span class="map-af-dname">In no domain</span></div>
+      ${loose.map(areaRow).join('')}
+    </div>` : '';
 
   return `<div class="map-af">
     <div class="map-af-head">Areas of focus
@@ -13642,10 +13653,10 @@ function mapAreasHtml() {
         <button class="map-af-add" data-kind="domain">+ domain</button>
       </span>
     </div>
-    <div class="map-af-hint">Horizon 2 — the standing responsibilities every
-      project and action files under. A domain is the level above; anything
-      filed under one with no area of its own lands in its general area.</div>
-    ${groups}
+    <div class="map-af-hint">Horizon 2 — the standing responsibilities. Projects
+      and actions file under an area or a domain, and an area can sit in a
+      domain if you give it one.</div>
+    ${groups}${looseHtml}
   </div>`;
 }
 
@@ -14108,7 +14119,7 @@ function renderMap() {
       const srcId = dragId || parseInt(e.dataTransfer.getData('text/plain'));
       if (!canDrop(srcId, id)) return;
       dragId = null;
-      if (byId[srcId]) undoablePatch(byId[srcId], ['project_id', 'area_id'],
+      if (byId[srcId]) undoablePatch(byId[srcId], ['project_id', 'area_id', 'domain_id'],
                                      `filed "${byId[srcId].content}"`);
       await patchItem(srcId, { project_id: id });
       await after();
@@ -15199,7 +15210,7 @@ function initEngage() {
 }
 
 async function openEngage() {
-  if (!engageView.domainId) engageView.domainId = state.activeDomainId || defaultDomainId();
+  if (!engageView.domainId) engageView.domainId = state.activeDomainId || null;
   await refreshEngage();
   // No header clock (2026-08-08) and so no tick to drive it. The day is
   // already positioned against now by .eg-past dimming; the device shows the
@@ -15505,12 +15516,15 @@ function renderEngage() {
   // A flat OR over both axes made "School + deep" mean "School OR deep", which
   // dragged in deep work from every other domain, and a tag-only selection
   // dropped the domain scope entirely rather than filtering inside it.
-  const domainOf = i => i.domain_id || domainIdForArea(i.area_id);
-  // ONE domain is always in force — the explicit selection, or the block
-  // calendar's. Being in it is being NOT in every other; the pool predicate
-  // is exactly the formula the button shows: domain ∧ ¬others ∧ tag ∧ tag.
+  // The server ships each row's domain resolved (area's, else its own).
+  const domainOf = i => filingDomainId(i);
+  // AT MOST one domain is in force — the explicit selection, or the block
+  // calendar's — and none at all when the block in force has none. Being in it
+  // is being NOT in every other. A row filed in NO domain is in every one:
+  // hiding it until you happened to pick "no domain" would lose it.
   const ctxDomainId = engageView.ctxDomain != null ? engageView.ctxDomain : engageView.domainId;
-  const inContext = i => String(domainOf(i)) === String(ctxDomainId)
+  const inContext = i => (ctxDomainId == null || domainOf(i) == null
+                          || String(domainOf(i)) === String(ctxDomainId))
     && [...engageView.ctxTags].every(t => itemTags(i).includes(t));
 
   const { locOk, deviceOk, timeOk, dayOk, device,
@@ -15715,7 +15729,7 @@ function renderEngage() {
   const poolTags = [...new Set(engageView.pool.flatMap(itemTags))].sort();
   const ctxCount = (engageView.ctxDomain != null ? 1 : 0) + engageView.ctxTags.size;
   const domainName = id =>
-    (state.domains.find(d => String(d.id) === String(id)) || {}).name || 'contexts';
+    (state.domains.find(d => String(d.id) === String(id)) || {}).name || 'every domain';
   // The button names the domain in force and the required tags. The ¬ terms
   // for every other domain went with the chips (2026-08-08): with more than
   // two domains the label was mostly exclusions, and it grew with each domain
@@ -15746,7 +15760,9 @@ function renderEngage() {
     ${engageView.ctxOpen ? `<div id="eg-ctx-menu">
       <div class="ctx-group">Domain${engageView.ctxDomainPick ? ' — pick one' : ' — in force'}</div>
       <div class="ctx-chips">${engageView.ctxDomainPick ? domainPicker()
-        : state.domains.filter(d => String(d.id) === String(ctxDomainId))
+        : ctxDomainId == null
+          ? `<button class="ctx-chip ctx-base" data-ctx="domain:" title="no domain in force — tap to choose one">every domain ▾</button>`
+          : state.domains.filter(d => String(d.id) === String(ctxDomainId))
             .map(domainChip).join('')}</div>
       ${poolTags.length ? `<div class="ctx-group">Tags — every selected one required</div>
       <div class="ctx-chips">${poolTags.map(tagChip).join('')}</div>` : ''}
@@ -16361,7 +16377,8 @@ const clarifyView = {
   refOpen: false,     // the Reference exit's list picker (R toggles)
   refLists: [],       // loaded with the sheet's other vocab
   projNotesOpen: false, // the chosen PROJECT's notes editor (✎ by the pill)
-  areaId: null,       // explicit filing target; null = the block calendar's
+  areaId: null,       // filed under this area — or …
+  domainId: null,     // … under this domain; never both, and neither = nothing
   projSearch: null,   // null = main sheet; a string = the 8b search state
   // Which Do-now you mean: 'done' (the two-minute rule — filing marks it
   // done) or 'progress' (you are STARTING it, not finishing it). The trio of
@@ -16529,7 +16546,6 @@ async function openClarifyForRecurring(task, after) {
   clarifyView.open = true;
   clarifyView.after = after || null;
   clarifyResetItem();
-  const defArea = (state.areas || []).find(a => a.is_default && a.active && a.type === 'standard');
   clarifyView.forRecurring = {
     id: task ? task.id : null,
     interval: task ? (task.interval || 12) : 12,
@@ -16539,7 +16555,8 @@ async function openClarifyForRecurring(task, after) {
   };
   clarifyView.action = task ? task.name : '';
   clarifyView.notes = task ? (task.notes || '') : '';
-  clarifyView.areaId = (task && task.area_id) || (defArea ? defArea.id : null);
+  clarifyView.areaId = (task && task.area_id) || null;
+  clarifyView.domainId = task && !task.area_id ? (task.domain_id || null) : null;
   // 'active' is the branch that renders the filing chips and no date row; the
   // dates here are the SCHEDULE's, and saveClarifyRecurring is what runs.
   clarifyView.verb = 'active';
@@ -16589,10 +16606,9 @@ async function saveClarifyRecurring() {
   const rec = clarifyView.forRecurring;
   const name = clarifyView.action.trim();
   if (!name) { toast('Name the outcome first'); return; }
-  if (!clarifyView.areaId) { toast('Pick an area to file it under'); return; }
   if (!rec.anchor) { toast('Say when the first one starts'); return; }
   const body = {
-    name, area_id: clarifyView.areaId, kind: 'monthly_date',
+    name, ...clarifyFiling(), kind: 'monthly_date',
     interval: rec.interval, anchor_date: rec.anchor, spawn: 'project',
     deadline_md: rec.dueMd || null, notes: clarifyView.notes,
   };
@@ -16680,9 +16696,16 @@ function lastFiledDomain() {
   return stickyUse('filedDomain');
 }
 
-function rememberFiledDomain(areaId) {
-  if (!areaId) return;
-  stickyRemember('filedDomain', domainIdForArea(areaId));
+function rememberFiledDomain(filing) {
+  const did = filingDomainId(filing);
+  if (did) stickyRemember('filedDomain', did);
+}
+
+// What the clarify sheet files the item under, as the two columns a write
+// sends. Every exit reads this; none re-decides a fallback of its own.
+function clarifyFiling() {
+  return clarifyView.areaId ? { area_id: clarifyView.areaId, domain_id: null }
+                            : { area_id: null, domain_id: clarifyView.domainId || null };
 }
 
 // ── Recency memory for pickers with NO natural sort (2026-08-11) ──
@@ -16707,27 +16730,6 @@ function recentBump(key, value) {
   localStorage.setItem('recent.' + key, JSON.stringify(list.slice(0, RECENT_MAX)));
 }
 
-// FILING TO A DOMAIN LANDS IN ITS GENERAL AREA (2026-09-08). Every domain has
-// one (`storage._ensure_domain_generals`), so "under this domain, no
-// particular area" is a real, single answer rather than whichever area
-// happened to sort first — which is what this used to pick, silently.
-//
-// The item still carries only an area, and the domain is DERIVED from it
-// everywhere (the pool, blocks, MAP, the plan). That is the whole point: an
-// item that stored its own domain would be a second answer to a question the
-// area already answers, and the two would agree until an area moved domain.
-function defaultAreaForDomain(did) {
-  const areas = state.areas.filter(a => a.active && a.type === 'standard'
-                                        && domainIdForArea(a.id) === did);
-  return (areas.find(a => a.is_domain_default) || areas.find(a => a.is_default)
-          || areas[0] || {}).id || null;
-}
-
-// Is this area the "no particular area" one for its domain?
-function areaIsGeneral(areaId) {
-  const a = (state.areas || []).find(x => String(x.id) === String(areaId));
-  return !!(a && a.is_domain_default);
-}
 
 function clarifyResetItem() {
   const item = clarifyView.queue[0];
@@ -16788,12 +16790,18 @@ function clarifyResetItem() {
   clarifyView.chase = '';
   clarifyView.notes = item ? (item.notes || '') : '';
   clarifyView.due = item ? (item.deadline || '') : '';
-  // An item that already has an area keeps it. Only a fresh capture — which
-  // has none — takes the remembered domain.
-  clarifyView.areaId = item ? item.area_id : null;
-  if (!clarifyView.areaId) {
+  // An item already filed keeps its filing. Only a fresh capture — which has
+  // none — is offered one: the domain you last filed into, else the block in
+  // force's. Offered ON the chips, so nothing is filed that the sheet did not
+  // show you.
+  clarifyView.areaId = item && item.area_id ? item.area_id : null;
+  clarifyView.domainId = item && !item.area_id && item.status != null
+    ? (item.domain_id || null) : null;
+  if (!clarifyView.areaId && !clarifyView.domainId && !(item && item.status != null)) {
     const did = lastFiledDomain();
-    if (did != null) clarifyView.areaId = defaultAreaForDomain(did);
+    if (did != null) clarifyView.domainId = did;
+    else if (state.activeAreaId) clarifyView.areaId = state.activeAreaId;
+    else clarifyView.domainId = state.activeDomainId || null;
   }
   clarifyView.projSearch = null;
   clarifyView.projNotesOpen = false;
@@ -16986,14 +16994,11 @@ async function fileClarify(bucket, refListId) {
     const snap = await snapshotItem(item.id);
     const patch = body => apiSend(`/api/inbox/${item.id}`, 'PATCH', body);
     const content = clarifyView.action.trim() || item.content;
-    // The design has no area control: the block calendar's area is the silent
-    // default (same suggestion the old processing table made), a chosen project
-    // overrides it server-side, and MAP can re-file later.
-    // Filing is what teaches the memory — the area actually written, not the
-    // one that happened to be showing.
-    const areaId = clarifyView.areaId || item.area_id || state.activeAreaId
-      || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
-    rememberFiledDomain(areaId);
+    // A chosen project overrides the filing server-side, and MAP can re-file
+    // later. Filing is what teaches the memory — the filing actually written,
+    // not the one that happened to be showing.
+    const filing = clarifyFiling();
+    rememberFiledDomain(filing);
 
     // (The 'breakdown' bucket — the capture BECOMING the project — was
     // replaced 2026-08-07 by clarifyCreateProject's composer: naming the
@@ -17010,18 +17015,18 @@ async function fileClarify(bucket, refListId) {
     } else if (bucket === 'someday') {
       // No due input on this exit, but the prefilled value rides along so
       // parking a deadlined item never silently drops its deadline.
-      await patch({ content, status: 'on_hold', area_id: areaId,
+      await patch({ content, status: 'on_hold', ...filing,
                     notes: clarifyView.notes,
                     deadline: clarifyView.due || null });
     } else if (bucket === 'delegate') {
-      await patch({ content, status: 'waiting', area_id: areaId,
+      await patch({ content, status: 'waiting', ...filing,
                     waiting_on: clarifyView.who.trim(),
                     chase_on: clarifyView.chase || null,
                     notes: clarifyView.notes,
                     deadline: clarifyView.due || null,
                     tags: [...clarifyView.tags].join(' ') });
     } else {
-      const body = { content, status: 'active', area_id: areaId,
+      const body = { content, status: 'active', ...filing,
                      tags: [...clarifyView.tags].join(' '),
                      notes: clarifyView.notes,
                      deadline: clarifyView.due || null,
@@ -17105,11 +17110,9 @@ async function fileClarifyOccasion() {
   const content = clarifyView.action.trim();
   const item = clarifyView.queue[0];
   if (!content && !item) return;
-  const areaId = clarifyView.areaId || state.activeAreaId
-    || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
   const body = {
     content: content || item.content,
-    area_id: areaId,
+    ...clarifyFiling(),
     project_id: clarifyView.projectId || null,
     tags: [...clarifyView.tags].join(' '),
     notes: clarifyView.notes,
@@ -17159,23 +17162,22 @@ async function fileClarifyExternal(bucket, refListId) {
         await refreshAfterUndo();
       });
     } else if (bucket !== 'trash' && bucket !== 'do') {
-      const areaId = clarifyView.areaId || state.activeAreaId
-        || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
-      rememberFiledDomain(areaId);   // the external step teaches it too
+      const filing = clarifyFiling();
+      rememberFiledDomain(filing);   // the external step teaches it too
       const created = await apiSend('/api/inbox', 'POST', { content }).then(r => r.json());
       const patch = body => apiSend(`/api/inbox/${created.id}`, 'PATCH', body);
       if (bucket === 'someday') {
-        await patch({ status: 'on_hold', area_id: areaId, notes: clarifyView.notes,
+        await patch({ status: 'on_hold', ...filing, notes: clarifyView.notes,
                       deadline: clarifyView.due || null });
       } else if (bucket === 'delegate') {
-        await patch({ status: 'waiting', area_id: areaId,
+        await patch({ status: 'waiting', ...filing,
                       waiting_on: clarifyView.who.trim(),
                       chase_on: clarifyView.chase || null,
                       notes: clarifyView.notes,
                       deadline: clarifyView.due || null,
                       tags: [...clarifyView.tags].join(' ') });
       } else {
-        const body = { status: 'active', area_id: areaId,
+        const body = { status: 'active', ...filing,
                        tags: [...clarifyView.tags].join(' '),
                        notes: clarifyView.notes,
                        deadline: clarifyView.due || null,
@@ -17377,34 +17379,26 @@ function renderClarify() {
     middle = '';
   }
 
-  // Where it lands. Domain first (the obligation level you actually think
-  // in), then that domain's areas when the choice is ambiguous. Defaults to
-  // the block calendar's area, so the common case is still zero taps.
-  //
-  // The area row always carries the domain's GENERAL area, spelled `general`
-  // rather than by its own name: "under this domain, no particular area" is a
-  // real filing decision and needs a chip to make it with. It is still an
-  // AREA underneath — the item stores one filing, and the domain is derived
-  // from it everywhere, so nothing downstream learns a second rule.
+  // Where it lands (2026-09-15): a DOMAIN, an AREA, or nothing — two rows of
+  // chips, tap again to let go. Picking a domain narrows the area row to that
+  // domain's areas; an area picked on its own shows the domain it carries.
+  // Filing under nothing is a real answer: the action is in every pool.
   if ((verb !== 'do' || doProgress) && verb !== 'trash') {
-    const areas = state.areas.filter(a => a.active && a.type === 'standard');
-    const current = areas.find(a => a.id === clarifyView.areaId)
-      || areas.find(a => a.id === (state.activeAreaId || (item && item.area_id))) || areas[0];
-    const curDomain = current ? domainIdForArea(current.id) : defaultDomainId();
-    const siblings = areas.filter(a => domainIdForArea(a.id) === curDomain);
+    const areas = state.areas.filter(a => a.active && a.type === 'standard'
+                                          || a.id === clarifyView.areaId);
+    const curDomain = filingDomainId(clarifyFiling());
+    const shown = curDomain ? areas.filter(a => String(a.domain_id) === String(curDomain)) : areas;
+    const doms = state.domains.filter(d => d.active !== 0 || d.id === curDomain);
     middle += `
       <div class="cl-sec"><span class="cl-label">Filing to</span>
-        <span class="cl-hint">domain${siblings.length > 1 ? ' · area' : ''}</span></div>
-      <div class="cl-chips">
-        ${state.domains.filter(d => d.active !== 0 || d.id === curDomain)
-          .map(d => `<button class="cl-chip${d.id === curDomain ? ' cl-chip-on' : ''}"
+        <span class="cl-hint">${curDomain || clarifyView.areaId ? 'tap again to clear' : 'nothing in particular'}</span></div>
+      ${doms.length ? `<div class="cl-chips">
+        ${doms.map(d => `<button class="cl-chip${d.id === curDomain ? ' cl-chip-on' : ''}"
            data-domain="${d.id}">${escHtml(d.name)}</button>`).join('')}
-      </div>
-      ${siblings.length > 1 ? `<div class="cl-chips">
-        ${siblings.map(a => `<button class="cl-chip${current && a.id === current.id ? ' cl-chip-on' : ''}"
-           data-area="${a.id}"${a.is_domain_default
-             ? ' title="No particular area — filed under the domain itself"' : ''}
-           >${escHtml(a.is_domain_default ? 'general' : a.name)}</button>`).join('')}
+      </div>` : ''}
+      ${shown.length ? `<div class="cl-chips">
+        ${shown.map(a => `<button class="cl-chip${a.id === clarifyView.areaId ? ' cl-chip-on' : ''}"
+           data-area="${a.id}">${escHtml(a.name)}</button>`).join('')}
       </div>` : ''}`;
   }
 
@@ -17572,14 +17566,26 @@ function renderClarify() {
   }));
   sheet.querySelectorAll('.cl-chip[data-domain]').forEach(b => {
     b.addEventListener('click', () => {
-      // Land on that domain's default area; the area row refines it.
-      clarifyView.areaId = defaultAreaForDomain(parseInt(b.dataset.domain));
+      // The domain itself; the area row refines it. The one in force, tapped
+      // again, files under nothing.
+      const did = parseInt(b.dataset.domain);
+      const on = filingDomainId(clarifyFiling()) === did;
+      clarifyView.areaId = null;
+      clarifyView.domainId = on ? null : did;
       renderClarify();
     });
   });
   sheet.querySelectorAll('.cl-chip[data-area]').forEach(b => {
     b.addEventListener('click', () => {
-      clarifyView.areaId = parseInt(b.dataset.area);
+      // Letting go of an area keeps you in the domain it carried.
+      const aid = parseInt(b.dataset.area);
+      if (clarifyView.areaId === aid) {
+        clarifyView.domainId = domainIdForArea(aid);
+        clarifyView.areaId = null;
+      } else {
+        clarifyView.areaId = aid;
+        clarifyView.domainId = null;
+      }
       renderClarify();
     });
   });
@@ -17905,7 +17911,8 @@ function renderClarifyProjSearch(sheet, item) {
     // Show what will ACTUALLY happen: filing under a project adopts that
     // project's area server-side, unconditionally. Leaving the Filing-to row
     // on some other area would display a destination the write overrides.
-    if (p.area_id) clarifyView.areaId = p.area_id;
+    clarifyView.areaId = p.area_id || null;
+    clarifyView.domainId = p.area_id ? null : (p.domain_id || null);
     // Picking a project does NOT open the composer (Quentin, 2026-08-11).
     // It used to, whenever the project already had actions — but the composer
     // ALSO opens after filing, so ordering was asked twice per item: once
@@ -17934,17 +17941,13 @@ function renderClarifyProjSearch(sheet, item) {
 // The composer is untouched and still reached the explicit way, the ⛓ pill.
 async function clarifyCreateProject(name) {
   if (!name) return;
-  const areaId = clarifyView.areaId || state.activeAreaId
-    || (state.areas.find(a => a.is_default && a.active && a.type === 'standard') || {}).id;
-  const p = await apiSend('/api/projects', 'POST', { content: name, area_id: areaId }).then(r => r.json());
+  const p = await apiSend('/api/projects', 'POST', { content: name, ...clarifyFiling() })
+    .then(r => r.json());
   state.projects = await fetch('/api/projects').then(r => r.json());
   recentBump('project', p.id);
   clarifyView.projectId = p.id;
   clarifyView.projectName = p.content;
   clarifyView.projSearch = null;
-  // Same reason as the pick path: filing adopts the project's area server-side
-  // unconditionally, so the Filing-to row must not show a different one.
-  clarifyView.areaId = areaId;
   // A create inverts to a delete. The item is NOT filed here any more, so
   // there is nothing to restore — but if the sheet is still pointing at the
   // project when this runs, the selection has to let go of a row that is gone.

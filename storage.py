@@ -79,40 +79,86 @@ def _migrate_project_to_area(conn):
             conn.commit()
 
 
-# The general area of every domain, made if it is missing. Idempotent and run
-# at every startup, like the domain backfill above it: a domain with no general
-# area is a domain you cannot file into, and that state is reachable by
-# deleting an area rather than only by a missed migration.
+# DOMAINS AND AREAS ARE TWO THINGS (2026-09-15, Quentin's instruction,
+# reversing "every domain has a general area" of 2026-09-08). There are
+# domains, there are areas, an area MAY be assigned to a domain, and each row
+# below is filed under an area, or under a domain, or under neither - never
+# both. Nothing makes an area per domain, and nothing is undeletable.
 #
-# The default domain's general is the app's existing `General` area, adopted
-# rather than duplicated - there was never a second one, and minting one would
-# split the items already filed there.
-def _ensure_domain_generals(conn):
-    rows = conn.execute('SELECT id, name, is_default FROM domain').fetchall()
-    for d in rows:
-        have = conn.execute(
-            'SELECT id FROM area WHERE domain_id = ? AND is_domain_default = 1',
-            (d['id'],)).fetchone()
-        if have:
-            continue
-        adopt = conn.execute(
-            """SELECT id FROM area WHERE domain_id = ? AND is_default = 1
-               ORDER BY id LIMIT 1""", (d['id'],)).fetchone()
-        if adopt:
-            conn.execute('UPDATE area SET is_domain_default = 1 WHERE id = ?',
-                         (adopt['id'],))
-        else:
-            conn.execute(
-                """INSERT INTO area (name, type, domain_id, is_domain_default)
-                   VALUES (?, 'standard', ?, 1)""",
-                (domain_general_name(d['name']), d['id']))
+# Still ONE filing per row: `domain_id` is written only where `area_id` is not
+# (`filing_updates` is the one place that decides it), so a row under an area
+# takes that area's domain and cannot also claim a different one of its own.
+FILED_TABLES = ('inbox_item', 'recurring_block', 'plan_span', 'recurring_task', 'flow')
+
+# The one SQL answer to "which domain is this row in", for a row aliased `i`
+# LEFT JOINed to its area as `a`. Served under the name `domain_id`, so every
+# reader gets the answer rather than the column.
+FILED_DOMAIN_SQL = 'COALESCE(a.domain_id, i.domain_id)'
+
+
+# The two filing columns of a write, exclusive. `area_id` wins when both are
+# sent, because it is the more specific answer (and carries a domain of its own).
+def filing_updates(area_id=None, domain_id=None):
+    if area_id:
+        return {'area_id': area_id, 'domain_id': None}
+    return {'area_id': None, 'domain_id': domain_id or None}
+
+
+def _add_filing_columns(conn):
+    for t in FILED_TABLES:
+        cols = {r['name'] for r in conn.execute(f'PRAGMA table_info({t})')}
+        if 'domain_id' not in cols:
+            conn.execute(f'ALTER TABLE {t} ADD COLUMN domain_id INTEGER')
     conn.commit()
+    # recurring_task was created with `area_id NOT NULL`, which a task filed
+    # under a domain cannot satisfy, and SQLite cannot drop a constraint in
+    # place. Rebuilt under a NEW name and renamed over the old one - renaming
+    # the OLD table away would rewrite the references other tables hold to it.
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' "
+                       "AND name = 'recurring_task'").fetchone()['sql']
+    if re.search(r'area_id\s+INTEGER\s+NOT NULL', sql):
+        cols = ', '.join(r['name'] for r in conn.execute('PRAGMA table_info(recurring_task)'))
+        new = re.sub(r'(area_id\s+INTEGER)\s+NOT NULL', r'\1', sql, count=1)
+        new = re.sub(r'CREATE TABLE\s+(IF NOT EXISTS\s+)?"?recurring_task"?',
+                     'CREATE TABLE recurring_task_new', new, count=1)
+        conn.execute(new)
+        conn.execute(f'INSERT INTO recurring_task_new ({cols}) SELECT {cols} FROM recurring_task')
+        conn.execute('DROP TABLE recurring_task')
+        conn.execute('ALTER TABLE recurring_task_new RENAME TO recurring_task')
+        conn.commit()
 
 
-# Named after its domain, not "General": `seAreaOptions` and the clarify chips
-# are FLAT lists, and three areas all called General there say nothing.
-def domain_general_name(domain_name):
-    return f'{domain_name} · general'
+# The general areas are dissolved ONCE, recorded in
+# `setting.domain_generals_dissolved`: what was filed under a domain's general
+# area (or the global `General`) is filed under that DOMAIN itself, and the
+# area goes. An area still named by a routine checklist or a monthly review is
+# kept as an ordinary area instead, since those rows cannot file to a domain.
+# Never clear the setting: a re-run would dissolve an area made since.
+def _dissolve_domain_generals(conn):
+    if conn.execute("SELECT 1 FROM setting WHERE key = 'domain_generals_dissolved'").fetchone():
+        return
+    cols = {r['name'] for r in conn.execute('PRAGMA table_info(area)')}
+    flag = 'is_domain_default = 1 OR is_default = 1' if 'is_domain_default' in cols         else 'is_default = 1'
+    moved = 0
+    for g in conn.execute(f'SELECT id, domain_id FROM area WHERE {flag}').fetchall():
+        for t in FILED_TABLES:
+            moved += conn.execute(
+                f'UPDATE {t} SET domain_id = ?, area_id = NULL WHERE area_id = ?',
+                (g['domain_id'], g['id'])).rowcount
+        held = any(conn.execute(f'SELECT 1 FROM {t} WHERE area_id = ? LIMIT 1',
+                                (g['id'],)).fetchone()
+                   for t in ('routine_item', 'monthly_project_status'))
+        if held:
+            conn.execute('UPDATE area SET is_default = 0 WHERE id = ?', (g['id'],))
+            if 'is_domain_default' in cols:
+                conn.execute('UPDATE area SET is_domain_default = 0 WHERE id = ?', (g['id'],))
+        else:
+            conn.execute('DELETE FROM area WHERE id = ?', (g['id'],))
+    conn.execute("INSERT OR REPLACE INTO setting (key, value) VALUES "
+                 "('domain_generals_dissolved', datetime('now','localtime'))")
+    conn.commit()
+    if moved:
+        print('filing: %d row(s) moved from general areas onto their domains' % moved)
 
 
 def init_db():
@@ -489,18 +535,9 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE project ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
         conn.commit()
-    exists = conn.execute('SELECT 1 FROM area WHERE is_default = 1').fetchone()
-    if not exists:
-        conn.execute("INSERT INTO area (name, type, is_default) VALUES ('General', 'standard', 1)")
-        conn.commit()
-    # Domains are the obligation level ABOVE areas: while one is in force, its
-    # areas are the only thing you are supposed to be working on. Every area
-    # belongs to exactly one, so the backfill below runs every startup and the
-    # default domain can't be deleted — there is no "no domain" state.
-    exists = conn.execute('SELECT 1 FROM domain WHERE is_default = 1').fetchone()
-    if not exists:
-        conn.execute("INSERT INTO domain (name, is_default) VALUES ('General', 1)")
-        conn.commit()
+    # No `General` area or domain is made any more (2026-09-15): nothing has to
+    # be filed, so nothing needs a fallback to be filed in, and a row made here
+    # on every start could never be deleted. `is_default` is a dead column.
     # The Calendar overlay's "Due" strip is retired (2026-09-03). It read the
     # SAME sheet feed the pool now seeds real items from, so it was one feed
     # rendered in two places, disagreeing the moment either half refreshed -
@@ -513,9 +550,6 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE area ADD COLUMN domain_id INTEGER')
         conn.commit()
-    conn.execute('''UPDATE area SET domain_id = (SELECT id FROM domain WHERE is_default = 1)
-                    WHERE domain_id IS NULL''')
-    conn.commit()
     # A routine can anchor to a QR instead of a block: it nests directly under
     # that QR's hairline on Engage (Morning routine under Wake QR).
     try:
@@ -523,22 +557,6 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE area ADD COLUMN qr_node_id INTEGER')
         conn.commit()
-    # EVERY DOMAIN HAS A GENERAL AREA (2026-09-08, Quentin's instruction:
-    # file a thing "under a domain generally"). The domain in force is DERIVED
-    # from the area everywhere in the app - the pool, the blocks, MAP, the
-    # plan - so an item carrying its own domain_id would be a second answer to
-    # a question one place already answers. Filing to a domain therefore lands
-    # in that domain's general area, and nothing downstream learns a new rule.
-    #
-    # A SEPARATE FLAG from `is_default`, which names the ONE global fallback
-    # (`WHERE is_default = 1 ... LIMIT 1`, five call sites): a second row
-    # answering that query would make those five pick at random.
-    try:
-        conn.execute('SELECT is_domain_default FROM area LIMIT 1')
-    except Exception:
-        conn.execute('ALTER TABLE area ADD COLUMN is_domain_default INTEGER NOT NULL DEFAULT 0')
-        conn.commit()
-    _ensure_domain_generals(conn)
     try:
         conn.execute('SELECT updated_at FROM daily_todo LIMIT 1')
     except Exception:
@@ -1431,6 +1449,9 @@ def init_db():
             PRIMARY KEY (flow_id, date)
         )''')
     conn.commit()
+    # Before anything below seeds a row that files somewhere.
+    _add_filing_columns(conn)
+    _dissolve_domain_generals(conn)
     _seed_review_flow(conn)
     _backfill_review_steps(conn)
     _review_as_task(conn)
@@ -1913,32 +1934,18 @@ def _new_uid(kind):
     return f'{kind}-{uuid.uuid4().hex[:12]}'
 
 
-# THE ONE ANSWER to "which area when none was named" (2026-09-08). This query
-# was written out at five call sites - the tax seed, the routine task seed
-# (twice), the sheets seeder and the social minter - and a sixth was about to
-# join them for the clarify rule below. Same shape every time, which is the
-# class CLAUDE.md says to fix at the abstraction rather than at the site.
-def default_area_id(conn):
-    row = conn.execute(
-        """SELECT id FROM area WHERE is_default = 1 AND active = 1
-           AND type = 'standard' LIMIT 1""").fetchone()
-    return row['id'] if row else None
-
-
 def get_areas():
     conn = get_conn()
-    rows = conn.execute('SELECT * FROM area ORDER BY is_default DESC, name').fetchall()
+    rows = conn.execute('SELECT * FROM area ORDER BY name').fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
+# No domain is picked for you: an area is assigned to one only when you say so.
 def create_area(name, type, domain_id=None):
     conn = get_conn()
-    if domain_id is None:
-        row = conn.execute('SELECT id FROM domain WHERE is_default = 1').fetchone()
-        domain_id = row['id'] if row else None
     cur = conn.execute('INSERT INTO area (name, type, domain_id) VALUES (?, ?, ?)',
-                       (name, type, domain_id))
+                       (name, type, domain_id or None))
     row_id = cur.lastrowid
     conn.commit()
     row = conn.execute('SELECT * FROM area WHERE id = ?', (row_id,)).fetchone()
@@ -1946,23 +1953,9 @@ def create_area(name, type, domain_id=None):
     return dict(row)
 
 
-# A domain's general area may not be moved out of it: it is the answer to
-# "file this under that domain", and moving it would leave the domain with no
-# answer. Reported, not silently ignored - the sheet says why.
-def area_move_refusal(id, domain_id):
-    conn = get_conn()
-    row = conn.execute('SELECT * FROM area WHERE id = ?', (id,)).fetchone()
-    conn.close()
-    if not row:
-        return None
-    if row['is_domain_default'] and str(row['domain_id']) != str(domain_id):
-        return 'That is its domain’s general area — it is where things filed under the domain land, so it stays.'
-    return None
-
-
 def set_area_domain(id, domain_id):
     conn = get_conn()
-    conn.execute('UPDATE area SET domain_id = ? WHERE id = ?', (domain_id, id))
+    conn.execute('UPDATE area SET domain_id = ? WHERE id = ?', (domain_id or None, id))
     conn.commit()
     row = conn.execute('SELECT * FROM area WHERE id = ?', (id,)).fetchone()
     conn.close()
@@ -1978,11 +1971,11 @@ def set_area_qr_node(id, qr_node_id):
     return dict(row)
 
 
-# --- Domains (the level above areas) -----------------------------------
+# --- Domains ------------------------------------------------------------
 
 def get_domains():
     conn = get_conn()
-    rows = conn.execute('SELECT * FROM domain ORDER BY is_default DESC, name').fetchall()
+    rows = conn.execute('SELECT * FROM domain ORDER BY name').fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -1992,10 +1985,6 @@ def create_domain(name, color=None):
     cur = conn.execute('INSERT INTO domain (name, color) VALUES (?,?)', (name, color or None))
     row_id = cur.lastrowid
     conn.commit()
-    # A domain with nothing under it cannot be filed into, so its general area
-    # is made HERE rather than waiting for the next startup's backfill - the
-    # clarify sheet offers the new domain the moment this returns.
-    _ensure_domain_generals(conn)
     row = conn.execute('SELECT * FROM domain WHERE id = ?', (row_id,)).fetchone()
     conn.close()
     return dict(row)
@@ -2004,17 +1993,6 @@ def create_domain(name, color=None):
 def update_domain(id, name=None, active=None, color=_UNSET):
     conn = get_conn()
     if name is not None:
-        # Its general area is named AFTER the domain, so a rename that left the
-        # area behind would put "Old · general" under "New" - and an area has
-        # no rename of its own to fix it with. Only a name this function
-        # generated is rewritten: the default domain's adopted `General` keeps
-        # the name it has always had.
-        was = conn.execute('SELECT name FROM domain WHERE id = ?', (id,)).fetchone()
-        if was:
-            conn.execute(
-                '''UPDATE area SET name = ? WHERE domain_id = ?
-                   AND is_domain_default = 1 AND name = ?''',
-                (domain_general_name(name), id, domain_general_name(was['name'])))
         conn.execute('UPDATE domain SET name = ? WHERE id = ?', (name, id))
     if active is not None:
         conn.execute('UPDATE domain SET active = ? WHERE id = ?', (1 if active else 0, id))
@@ -2028,21 +2006,15 @@ def update_domain(id, name=None, active=None, color=_UNSET):
     return dict(row) if row else None
 
 
+# ANY domain can go, completely (2026-09-15). Nothing is re-homed onto another
+# domain, because nothing has to have one: its areas stay, assigned to no
+# domain, and whatever was filed under the domain itself is filed under
+# nothing and keeps showing (an unfiled row is in every domain's pool).
 def delete_domain(id):
-    # The default domain is where every area falls back to, so it stays. Deleting
-    # any other moves its areas there rather than leaving them domainless.
     conn = get_conn()
-    row = conn.execute('SELECT is_default FROM domain WHERE id = ?', (id,)).fetchone()
-    if not row or row['is_default']:
-        conn.close()
-        return
-    # Its general area comes along with everything else - it holds real items,
-    # and dropping it would strand them. It stops being A general (the default
-    # domain already has one) and keeps its name, which already says where it
-    # came from.
-    conn.execute('''UPDATE area SET domain_id = (SELECT id FROM domain WHERE is_default = 1),
-                                    is_domain_default = 0
-                    WHERE domain_id = ?''', (id,))
+    conn.execute('UPDATE area SET domain_id = NULL WHERE domain_id = ?', (id,))
+    for t in FILED_TABLES:
+        conn.execute(f'UPDATE {t} SET domain_id = NULL WHERE domain_id = ?', (id,))
     conn.execute('DELETE FROM domain WHERE id = ?', (id,))
     conn.commit()
     conn.close()
@@ -2054,7 +2026,7 @@ def get_inbox_items():
     rows = conn.execute(
         '''SELECT * FROM inbox_item
            WHERE (defer_until IS NULL OR defer_until <= ?)
-             AND (status IS NULL OR area_id IS NULL)
+             AND status IS NULL
              AND kind = 'item'
            ORDER BY captured_at ASC, id ASC''',
         (today,)
@@ -2144,6 +2116,12 @@ def _apply_inherited(conn, rows):
     chain = _inherit_chain(conn)
     for r in rows:
         r['effective_deadline'], r['effective_tags'] = _walk_up(chain, r['id'])
+        # The item's DOMAIN, resolved (FILED_DOMAIN_SQL), served under the
+        # column's own name: selected under an alias because `i.*` already
+        # carries a `domain_id`, and a Row answers a repeated name with the
+        # first one.
+        if 'filed_domain_id' in r:
+            r['domain_id'] = r.pop('filed_domain_id')
     return rows
 
 
@@ -2155,8 +2133,8 @@ def get_active_items_all():
     today = date_cls.today().isoformat()
     conn = get_conn()
     rows = conn.execute(
-        f'''SELECT i.*, a.domain_id AS domain_id, a.name AS area_name
-           FROM inbox_item i JOIN area a ON a.id = i.area_id
+        f'''SELECT i.*, {FILED_DOMAIN_SQL} AS filed_domain_id, a.name AS area_name
+           FROM inbox_item i LEFT JOIN area a ON a.id = i.area_id
            WHERE {_AVAILABLE}
            ORDER BY i.captured_at DESC''',
         (today,)
@@ -2173,8 +2151,9 @@ def get_active_items_for_domain(domain_id):
     today = date_cls.today().isoformat()
     conn = get_conn()
     rows = conn.execute(
-        f'''SELECT i.* FROM inbox_item i JOIN area a ON a.id = i.area_id
-           WHERE a.domain_id = ? AND {_AVAILABLE}
+        f'''SELECT i.*, {FILED_DOMAIN_SQL} AS filed_domain_id
+           FROM inbox_item i LEFT JOIN area a ON a.id = i.area_id
+           WHERE ({FILED_DOMAIN_SQL} = ? OR {FILED_DOMAIN_SQL} IS NULL) AND {_AVAILABLE}
            ORDER BY i.captured_at DESC''',
         (domain_id, today)
     ).fetchall()
@@ -2208,8 +2187,8 @@ def items_at_location(location_id, day=None):
     binds = {r['tag']: r['location_id'] for r in conn.execute(
         'SELECT tag, location_id FROM tag_location').fetchall()}
     rows = conn.execute(
-        f'''SELECT i.*, a.name AS area_name, a.domain_id AS domain_id
-            FROM inbox_item i JOIN area a ON a.id = i.area_id
+        f'''SELECT i.*, a.name AS area_name, {FILED_DOMAIN_SQL} AS filed_domain_id
+            FROM inbox_item i LEFT JOIN area a ON a.id = i.area_id
             WHERE {_AVAILABLE}
             ORDER BY i.captured_at DESC''',
         (today,)
@@ -2235,11 +2214,11 @@ def get_map_items():
     # tree from project_id, same as the NOW list does.
     conn = get_conn()
     rows = conn.execute(
-        '''SELECT i.*, a.name AS area_name, a.domain_id AS domain_id,
+        f'''SELECT i.*, a.name AS area_name, {FILED_DOMAIN_SQL} AS filed_domain_id,
                   d.name AS domain_name
            FROM inbox_item i
            LEFT JOIN area a ON a.id = i.area_id
-           LEFT JOIN domain d ON d.id = a.domain_id
+           LEFT JOIN domain d ON d.id = {FILED_DOMAIN_SQL}
            WHERE i.status IN ('active', 'waiting', 'on_hold')
            ORDER BY d.name, a.name, i.id'''
     ).fetchall()
@@ -2256,7 +2235,7 @@ def get_deferred_items():
     today = date_cls.today().isoformat()
     conn = get_conn()
     rows = conn.execute(
-        f'''SELECT i.*, a.name AS area_name, a.domain_id AS domain_id,
+        f'''SELECT i.*, a.name AS area_name, {FILED_DOMAIN_SQL} AS filed_domain_id,
                    p.content AS project_name
             FROM inbox_item i
             LEFT JOIN area a ON a.id = i.area_id
@@ -2368,7 +2347,7 @@ def get_gtd_review_counts():
     conn = get_conn()
     inbox = conn.execute(
         '''SELECT COUNT(*) n FROM inbox_item
-           WHERE kind = 'item' AND (status IS NULL OR area_id IS NULL)
+           WHERE kind = 'item' AND status IS NULL
              AND (defer_until IS NULL OR defer_until <= ?)''', (today,)).fetchone()['n']
     someday = conn.execute(
         "SELECT COUNT(*) n FROM inbox_item WHERE kind = 'item' AND status = 'on_hold'").fetchone()['n']
@@ -2439,12 +2418,13 @@ def get_gtd_review_counts():
             'pushed_list': pushed_list}
 
 
-def create_project(content, area_id):
+def create_project(content, area_id=None, domain_id=None):
+    f = filing_updates(area_id, domain_id)
     conn = get_conn()
     cur = conn.execute(
-        '''INSERT INTO inbox_item (content, status, area_id, kind)
-           VALUES (?, 'active', ?, 'project')''',
-        (content, area_id)
+        '''INSERT INTO inbox_item (content, status, area_id, domain_id, kind)
+           VALUES (?, 'active', ?, ?, 'project')''',
+        (content, f['area_id'], f['domain_id'])
     )
     row_id = cur.lastrowid
     conn.commit()
@@ -2465,19 +2445,17 @@ def delete_project(id):
     conn.close()
 
 
-def create_inbox_item(content, status=None, area_id=None, project_id=None, tags=None):
+def create_inbox_item(content, status=None, area_id=None, project_id=None, tags=None,
+                      domain_id=None):
     # Bare capture (no status/area) is still the default — that is "in".
-    # The next-actions prompt bar passes status='active' plus an area to write
-    # straight onto a list, skipping the inbox.
+    # The next-actions prompt bar passes status='active' plus an area or a
+    # domain to write straight onto a list, skipping the inbox. Neither is
+    # required: an unfiled action is in every domain's pool.
+    f = filing_updates(area_id, domain_id)
     conn = get_conn()
-    # The same door rule as update_inbox_item: a row created already TRIAGED
-    # with no area would never appear in the pool, which JOINs area. A bare
-    # capture ('in', status None) is left alone - it has not been filed yet,
-    # and giving it an area would be answering a question clarify exists to ask.
-    if status in ('active', 'waiting', 'on_hold') and area_id is None             and project_id is None:
-        area_id = default_area_id(conn)
-    cur = conn.execute('INSERT INTO inbox_item (content, status, area_id, tags) VALUES (?, ?, ?, ?)',
-                       (content, status, area_id, tags or ''))
+    cur = conn.execute('INSERT INTO inbox_item (content, status, area_id, domain_id, tags) '
+                       'VALUES (?, ?, ?, ?, ?)',
+                       (content, status, f['area_id'], f['domain_id'], tags or ''))
     row_id = cur.lastrowid
     conn.commit()
     row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (row_id,)).fetchone()
@@ -2615,7 +2593,7 @@ def delete_engage_placement(date, item_id):
 # clarify sheet author them: a template carries an area, a project, tags and
 # notes because it IS an item, not a parallel little schema that would drift.
 
-_OCC_COPIED = ('content', 'area_id', 'project_id', 'tags', 'notes')
+_OCC_COPIED = ('content', 'area_id', 'domain_id', 'project_id', 'tags', 'notes')
 
 
 def get_occasions():
@@ -2687,13 +2665,14 @@ def delete_occasion(id):
 
 
 def add_occasion_item(occasion_id, content, area_id=None, project_id=None,
-                      tags='', notes=''):
+                      tags='', notes='', domain_id=None):
+    f = filing_updates(area_id, domain_id)
     conn = get_conn()
     cur = conn.execute(
-        """INSERT INTO inbox_item (content, status, kind, area_id, project_id,
+        """INSERT INTO inbox_item (content, status, kind, area_id, domain_id, project_id,
                                    tags, notes, occasion_id)
-           VALUES (?, 'occasion', 'item', ?, ?, ?, ?, ?)""",
-        (content, area_id, project_id, tags, notes, occasion_id))
+           VALUES (?, 'occasion', 'item', ?, ?, ?, ?, ?, ?)""",
+        (content, f['area_id'], f['domain_id'], project_id, tags, notes, occasion_id))
     new_id = cur.lastrowid
     conn.commit()
     row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (new_id,)).fetchone()
@@ -2800,21 +2779,21 @@ def mint_occasions(day):
             # FILING UNDER A PROJECT ADOPTS ITS AREA, unconditionally — the
             # inventory's rule, and a raw INSERT was the one path that skipped
             # it, minting children into a split no interactive path can create.
-            area_id = t['area_id']
+            area_id, domain_id = t['area_id'], t['domain_id']
             if t['project_id']:
-                parent = conn.execute('SELECT area_id FROM inbox_item WHERE id = ?',
+                parent = conn.execute('SELECT area_id, domain_id FROM inbox_item WHERE id = ?',
                                       (t['project_id'],)).fetchone()
                 if parent:
-                    area_id = parent['area_id']
+                    area_id, domain_id = parent['area_id'], parent['domain_id']
             # A mint for a FUTURE day is deferred to it. Without this, walking
             # the timeline to Friday put Friday's prep in TODAY's pool, MAP and
             # review counts — the pool's availability predicate reads
             # defer_until and knows nothing about placements.
             cur = conn.execute(
-                """INSERT INTO inbox_item (content, status, kind, area_id, project_id,
-                                           tags, notes, occasion_id, defer_until)
-                   VALUES (?, 'active', 'item', ?, ?, ?, ?, ?, ?)""",
-                (t['content'], area_id, t['project_id'], t['tags'], t['notes'],
+                """INSERT INTO inbox_item (content, status, kind, area_id, domain_id,
+                                           project_id, tags, notes, occasion_id, defer_until)
+                   VALUES (?, 'active', 'item', ?, ?, ?, ?, ?, ?, ?)""",
+                (t['content'], area_id, domain_id, t['project_id'], t['tags'], t['notes'],
                  o['id'], day if day > today else None))
             item_id = cur.lastrowid
             conn.execute(
@@ -2878,7 +2857,8 @@ def block_segments_for(date_str, with_cancelled=False):
             end = _hhmm_to_min(end_t) + (1440 if end_t < start_t else 0) + offset
             if end <= 0:
                 continue
-            out.append({'block_id': b['id'], 'area_id': b['area_id'], 'label': b['label'],
+            out.append({'block_id': b['id'], 'area_id': b['area_id'],
+                        'domain_id': b.get('domain_id'), 'label': b['label'],
                         'start': start, 'end': end, 'date': on_date,
                         'overridden': bool(ov), 'cancelled': cancelled,
                         # Presentation, resolved the same way as the times: a
@@ -3076,7 +3056,7 @@ def delete_ref_item(id):
 def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_until=_UNSET,
                       project_id=_UNSET, tags=_UNSET, waiting_on=_UNSET, chase_on=_UNSET,
                       notes=_UNSET, pushed=_UNSET, started_at=_UNSET, deadline=_UNSET,
-                      after_id=_UNSET):
+                      after_id=_UNSET, domain_id=_UNSET):
     # Projects nest, so filing must not close a loop: an item can't land under
     # itself or under anything in its own subtree. A cycle-making file is a
     # silent no-op (the client refuses it too; this is the backstop).
@@ -3106,8 +3086,17 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
         updates['content'] = content
     if status is not _UNSET:
         updates['status'] = status
-    if area_id is not _UNSET:
-        updates['area_id'] = area_id
+    # ONE filing: an area OR a domain. Naming either clears the other; clearing
+    # one alone leaves the other as it was, which is already empty.
+    if area_id is not _UNSET and area_id:
+        updates.update(filing_updates(area_id=area_id))
+    elif domain_id is not _UNSET and domain_id:
+        updates.update(filing_updates(domain_id=domain_id))
+    else:
+        if area_id is not _UNSET:
+            updates['area_id'] = None
+        if domain_id is not _UNSET:
+            updates['domain_id'] = None
     if defer_until is not _UNSET:
         updates['defer_until'] = defer_until
     if tags is not _UNSET:
@@ -3167,42 +3156,31 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
         # position, and position decides area. To move an item OUT of a project
         # into another area, send area_id WITHOUT project_id (the orphan rule) or
         # send project_id = None alongside it.
+        # (The FILING is adopted whole - area and domain - since a project
+        # filed under a domain has no area to adopt.)
         if project_id is not None:
             conn = get_conn()
-            row = conn.execute('SELECT area_id FROM inbox_item WHERE id = ?', (project_id,)).fetchone()
+            row = conn.execute('SELECT area_id, domain_id FROM inbox_item WHERE id = ?',
+                               (project_id,)).fetchone()
             conn.close()
-            if row and row['area_id'] is not None:
+            if row:
                 updates['area_id'] = row['area_id']
-    elif area_id is not _UNSET and area_id is not None:
-        # Moving an item to a different area orphans it from a project that
-        # lives in the old one.
+                updates['domain_id'] = row['domain_id']
+    elif 'area_id' in updates or 'domain_id' in updates:
+        # Moving an item to a different filing orphans it from a project that
+        # is filed elsewhere.
         conn = get_conn()
         row = conn.execute(
-            '''SELECT p.area_id AS parent_area FROM inbox_item i
+            '''SELECT i.area_id, i.domain_id, p.area_id AS parent_area,
+                      p.domain_id AS parent_domain FROM inbox_item i
                JOIN inbox_item p ON p.id = i.project_id WHERE i.id = ?''', (id,)
         ).fetchone()
         conn.close()
-        if row and row['parent_area'] != area_id:
-            updates['project_id'] = None
-    # AN ITEM THAT LEAVES THE INBOX HAS AN AREA (2026-09-08, Quentin's rule:
-    # "if not, they will be placed in a general area of focus"). Not cosmetic -
-    # every pool query JOINs area, so a triaged item with none is INVISIBLE on
-    # the day surface while sitting in MAP looking filed. The fallback is the
-    # global General, which is also the default domain's general area, so the
-    # item reads as "no particular area, no particular domain" on every lens.
-    #
-    # It runs at the DOOR, on the write, rather than as a render-time fallback:
-    # a surface that showed General while the row said NULL would be two
-    # answers to where the thing is filed.
-    if updates.get('status') in ('active', 'waiting', 'on_hold'):
-        conn = get_conn()
-        row = conn.execute('SELECT area_id FROM inbox_item WHERE id = ?', (id,)).fetchone()
-        landing = updates['area_id'] if 'area_id' in updates else (row and row['area_id'])
-        if landing is None:
-            fallback = default_area_id(conn)
-            if fallback is not None:
-                updates['area_id'] = fallback
-        conn.close()
+        if row:
+            landing = (updates.get('area_id', row['area_id']),
+                       updates.get('domain_id', row['domain_id']))
+            if landing != (row['parent_area'], row['parent_domain']):
+                updates['project_id'] = None
     if not updates:
         conn = get_conn()
         row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (id,)).fetchone()
@@ -3212,16 +3190,19 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
     values = list(updates.values()) + [id]
     conn = get_conn()
     conn.execute(f'UPDATE inbox_item SET {fields} WHERE id = ?', values)
-    # Area flows down the whole subtree, so a project and everything under it
-    # can never disagree about area.
-    if 'area_id' in updates:
+    # The filing flows down the whole subtree, so a project and everything
+    # under it can never disagree about where they are filed.
+    if 'area_id' in updates or 'domain_id' in updates:
         conn.execute('''WITH RECURSIVE sub(sid) AS (
                             SELECT id FROM inbox_item WHERE project_id = ?
                             UNION
                             SELECT i.id FROM inbox_item i JOIN sub ON i.project_id = sub.sid
                         )
-                        UPDATE inbox_item SET area_id = ? WHERE id IN (SELECT sid FROM sub)''',
-                     (id, updates['area_id']))
+                        UPDATE inbox_item
+                        SET area_id = (SELECT area_id FROM inbox_item WHERE id = ?),
+                            domain_id = (SELECT domain_id FROM inbox_item WHERE id = ?)
+                        WHERE id IN (SELECT sid FROM sub)''',
+                     (id, id, id))
     conn.commit()
     row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (id,)).fetchone()
     conn.close()
@@ -3292,9 +3273,6 @@ TAX_PROJECT = {
 def _seed_tax_project(conn):
     if conn.execute("SELECT 1 FROM setting WHERE key = 'tax_project_seeded'").fetchone():
         return
-    area = default_area_id(conn)
-    if not area:
-        return                  # no General yet; try again on the next start
     month, dom = TAX_PROJECT['start_md']
     today = date_cls.today()
     # The anchor is the FIRST occurrence, never a date already gone by: an
@@ -3305,8 +3283,8 @@ def _seed_tax_project(conn):
         '''INSERT INTO recurring_task
              (name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date,
               spawn, deadline_md, notes)
-           VALUES (?, ?, 'monthly_date', NULL, NULL, NULL, 12, ?, 'project', ?, ?)''',
-        (TAX_PROJECT['name'], area, date_cls(year, month, dom).isoformat(),
+           VALUES (?, NULL, 'monthly_date', NULL, NULL, NULL, 12, ?, 'project', ?, ?)''',
+        (TAX_PROJECT['name'], date_cls(year, month, dom).isoformat(),
          TAX_PROJECT['deadline_md'], TAX_PROJECT['notes']))
     conn.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('tax_project_seeded', ?)",
                  (date_cls(year, month, dom).isoformat(),))
@@ -3361,11 +3339,11 @@ def seed_recurring_tasks():
             project = t.get('spawn') == 'project'
             conn.execute(
                 '''INSERT INTO inbox_item
-                     (content, status, kind, area_id, project_id, recurring_task_id,
-                      deadline, notes)
-                   VALUES (?, 'active', ?, ?, ?, ?, ?, ?)''',
+                     (content, status, kind, area_id, domain_id, project_id,
+                      recurring_task_id, deadline, notes)
+                   VALUES (?, 'active', ?, ?, ?, ?, ?, ?, ?)''',
                 (t['name'], 'project' if project else 'item', t['area_id'],
-                 t['project_id'], t['id'],
+                 t['domain_id'], t['project_id'], t['id'],
                  _md_on_or_after(t.get('deadline_md'), today), t.get('notes') or '')
             )
         conn.execute('UPDATE recurring_task SET last_seeded = ? WHERE id = ?', (today_str, t['id']))
@@ -3385,7 +3363,6 @@ def seed_flow_tasks():
     conn = get_conn()
     flows = [dict(r) for r in conn.execute(
         'SELECT * FROM flow WHERE COALESCE(as_task, 0) = 1').fetchall()]
-    default_area = default_area_id(conn)
     for f in flows:
         key = flow_period_key(f.get('period'), today)
         live = conn.execute(
@@ -3406,13 +3383,10 @@ def seed_flow_tasks():
             (f['id'], key)).fetchone()
         if already or not step_due_on(f, today):
             continue
-        area_id = f['area_id'] or default_area
-        if area_id is None:
-            continue          # nothing to file it under; the pool JOINs area
         cur = conn.execute(
-            """INSERT INTO inbox_item (content, status, kind, area_id, flow_id)
-               VALUES (?, 'active', 'item', ?, ?)""",
-            (f['name'], area_id, f['id']))
+            """INSERT INTO inbox_item (content, status, kind, area_id, domain_id, flow_id)
+               VALUES (?, 'active', 'item', ?, ?, ?)""",
+            (f['name'], f['area_id'], f['domain_id'], f['id']))
         conn.execute(
             'INSERT INTO flow_task_seed (flow_id, date, item_id) VALUES (?, ?, ?)',
             (f['id'], key, cur.lastrowid))
@@ -3450,14 +3424,10 @@ def seed_flow_task_now(flow_id, ymd=None):
     if live or (done and done['completed_at']):
         conn.close()
         return None
-    default_area = default_area_id(conn)
-    area_id = f['area_id'] or default_area
-    if area_id is None:
-        conn.close()
-        return None
     cur = conn.execute(
-        """INSERT INTO inbox_item (content, status, kind, area_id, flow_id)
-           VALUES (?, 'active', 'item', ?, ?)""", (f['name'], area_id, flow_id))
+        """INSERT INTO inbox_item (content, status, kind, area_id, domain_id, flow_id)
+           VALUES (?, 'active', 'item', ?, ?, ?)""",
+        (f['name'], f['area_id'], f['domain_id'], flow_id))
     conn.execute(
         'INSERT OR REPLACE INTO flow_task_seed (flow_id, date, item_id) VALUES (?, ?, ?)',
         (flow_id, key, cur.lastrowid))
@@ -3475,14 +3445,17 @@ def get_recurring_tasks():
 
 
 def create_recurring_task(name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date,
-                          project_id=None, spawn='item', deadline_md=None, notes=None):
+                          project_id=None, spawn='item', deadline_md=None, notes=None,
+                          domain_id=None):
+    f = filing_updates(area_id, domain_id)
     conn = get_conn()
     cur = conn.execute(
-        '''INSERT INTO recurring_task (name, area_id, kind, days_of_week, nth, weekday,
-                                       interval, anchor_date, project_id, spawn,
+        '''INSERT INTO recurring_task (name, area_id, domain_id, kind, days_of_week, nth,
+                                       weekday, interval, anchor_date, project_id, spawn,
                                        deadline_md, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        (name, area_id, kind, days_of_week, nth, weekday, interval, anchor_date, project_id,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (name, f['area_id'], f['domain_id'], kind, days_of_week, nth, weekday, interval,
+         anchor_date, project_id,
          'project' if spawn == 'project' else 'item', deadline_md or None, notes or None)
     )
     row_id = cur.lastrowid
@@ -3496,12 +3469,14 @@ def create_recurring_task(name, area_id, kind, days_of_week, nth, weekday, inter
 # UPDATE each while Settings could only pause a task and file it under a
 # project; a recurring PROJECT is edited in the clarify sheet, which saves its
 # wording, its area, its notes, its deadline rule and its schedule in one go.
-RECURRING_FIELDS = ('name', 'area_id', 'kind', 'days_of_week', 'nth', 'weekday',
+RECURRING_FIELDS = ('name', 'area_id', 'domain_id', 'kind', 'days_of_week', 'nth', 'weekday',
                     'interval', 'anchor_date', 'project_id', 'spawn', 'deadline_md',
                     'notes', 'active')
 
 
 def update_recurring_task(id, **fields):
+    if fields.get('area_id') or fields.get('domain_id'):
+        fields.update(filing_updates(fields.get('area_id'), fields.get('domain_id')))
     sets, params = [], []
     for key in RECURRING_FIELDS:
         if key not in fields:
@@ -3715,16 +3690,21 @@ def replace_source_events(source_id, occurrences, fetched_at):
     conn.close()
 
 
-def area_is_domain_general(id):
-    conn = get_conn()
-    row = conn.execute('SELECT is_domain_default FROM area WHERE id = ?', (id,)).fetchone()
-    conn.close()
-    return bool(row and row['is_domain_default'])
-
-
+# ANY area can go, completely (2026-09-15). What was filed under it is filed
+# under the area's domain instead - the one statement about where it belongs
+# that survives - or under nothing when the area had none. It used to be a bare
+# DELETE, which left every item pointing at a row that no longer existed and so
+# JOINed out of the pool. A routine checklist belongs to its area alone and goes
+# with it; a monthly review's status is history and is left as it was.
 def delete_area(id):
     conn = get_conn()
-    conn.execute('DELETE FROM area WHERE id = ?', (id,))
+    row = conn.execute('SELECT domain_id FROM area WHERE id = ?', (id,)).fetchone()
+    if row:
+        for t in FILED_TABLES:
+            conn.execute(f'UPDATE {t} SET domain_id = ?, area_id = NULL WHERE area_id = ?',
+                         (row['domain_id'], id))
+        conn.execute('DELETE FROM routine_item WHERE area_id = ?', (id,))
+        conn.execute('DELETE FROM area WHERE id = ?', (id,))
     conn.commit()
     conn.close()
 
@@ -3774,11 +3754,13 @@ def _fetch_block(conn, id):
     ).fetchone())
 
 
-def create_block(label, color, day_of_week, start_time, end_time, area_id, location_id):
+def create_block(label, color, day_of_week, start_time, end_time, area_id, location_id,
+                 domain_id=None):
+    f = filing_updates(area_id, domain_id)
     conn = get_conn()
     cur = conn.execute(
-        'INSERT INTO recurring_block (label, color, day_of_week, start_time, end_time, area_id, location_id) VALUES (?,?,?,?,?,?,?)',
-        (label, color, day_of_week, start_time, end_time, area_id, location_id)
+        'INSERT INTO recurring_block (label, color, day_of_week, start_time, end_time, area_id, domain_id, location_id) VALUES (?,?,?,?,?,?,?,?)',
+        (label, color, day_of_week, start_time, end_time, f['area_id'], f['domain_id'], location_id)
     )
     row_id = cur.lastrowid
     conn.commit()
@@ -3787,11 +3769,13 @@ def create_block(label, color, day_of_week, start_time, end_time, area_id, locat
     return result
 
 
-def update_block(id, label, color, day_of_week, start_time, end_time, area_id, location_id):
+def update_block(id, label, color, day_of_week, start_time, end_time, area_id, location_id,
+                 domain_id=None):
+    f = filing_updates(area_id, domain_id)
     conn = get_conn()
     conn.execute(
-        'UPDATE recurring_block SET label=?, color=?, day_of_week=?, start_time=?, end_time=?, area_id=?, location_id=? WHERE id=?',
-        (label, color, day_of_week, start_time, end_time, area_id, location_id, id)
+        'UPDATE recurring_block SET label=?, color=?, day_of_week=?, start_time=?, end_time=?, area_id=?, domain_id=?, location_id=? WHERE id=?',
+        (label, color, day_of_week, start_time, end_time, f['area_id'], f['domain_id'], location_id, id)
     )
     conn.commit()
     result = _fetch_block(conn, id)
@@ -3806,7 +3790,7 @@ def update_block(id, label, color, day_of_week, start_time, end_time, area_id, l
 # money path, so a change lands exactly when you said and nothing waits 24h.
 # The date is the whole mechanism here.
 BLOCK_SCHEDULED_FIELDS = ('label', 'color', 'day_of_week', 'start_time', 'end_time',
-                          'area_id', 'location_id', 'active')
+                          'area_id', 'domain_id', 'location_id', 'active')
 
 # The pseudo-field a dated removal is filed under, matching the flow half's
 # spelling. Not a column, so nothing can UPDATE a block with it.
@@ -4379,9 +4363,8 @@ def sheets_area_id(conn, area_name=''):
 
     Named rather than numbered: the id of "Academics" is not knowable from
     config on a machine whose db was built somewhere else, and a WRONG id is
-    silently the wrong area. An unmatched name falls back to the default area,
-    the same fallback seed_flow_tasks uses, because an item with no area is
-    invisible - the pool JOINs area.
+    silently the wrong area. An unmatched or unset name files them under no
+    area, which is a real filing now: an unfiled action is in every pool.
     """
     name = (area_name or '').strip()
     if name:
@@ -4390,7 +4373,7 @@ def sheets_area_id(conn, area_name=''):
             (name,)).fetchone()
         if row:
             return row['id']
-    return default_area_id(conn)
+    return None
 
 
 def _sheets_deadline(due):
@@ -4464,9 +4447,6 @@ def seed_sheets_items(feed, area_name=''):
 
     conn = get_conn()
     area_id = sheets_area_id(conn, area_name)
-    if area_id is None:
-        conn.close()
-        return {'seeded': 0, 'retracted': 0, 'area_id': None}
 
     known = {r['sheets_key']: dict(r) for r in conn.execute(
         'SELECT * FROM sheets_item_seed WHERE tab = ?', (tab,)).fetchall()}
@@ -6154,7 +6134,7 @@ def create_flow(name, period='day'):
 
 def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node_id=_UNSET,
                 source_uid=_UNSET, as_task=_UNSET, days_of_week=_UNSET, area_id=_UNSET,
-                period=_UNSET):
+                period=_UNSET, domain_id=_UNSET):
     conn = get_conn()
     # BEING A TASK is not an easing and has no money in it: it only decides
     # whether the routine also shows up in the pool. Applies at once, and
@@ -6175,8 +6155,11 @@ def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node
     if days_of_week is not _UNSET:
         conn.execute('UPDATE flow SET days_of_week = ? WHERE id = ?',
                      (_norm_days(days_of_week), id))
-    if area_id is not _UNSET:
-        conn.execute('UPDATE flow SET area_id = ? WHERE id = ?', (area_id or None, id))
+    if area_id is not _UNSET or domain_id is not _UNSET:
+        f = filing_updates(None if area_id is _UNSET else area_id,
+                           None if domain_id is _UNSET else domain_id)
+        conn.execute('UPDATE flow SET area_id = ?, domain_id = ? WHERE id = ?',
+                     (f['area_id'], f['domain_id'], id))
     if source_uid is not _UNSET:
         # Its own window applies at once. The 24h easing gate guards the GATE's
         # hours (the money window); a routine's deadline is the reference you
@@ -6917,8 +6900,6 @@ SOCIAL_ITEM_PREFIX = 'Social plan: '
 
 def sync_social_spec_items(date):
     existing = get_inbox_items_like(SOCIAL_ITEM_PREFIX + '%', date)
-    # The pool JOINs area, so an area-less row would never show: default area.
-    default = next((a for a in get_areas() if a.get('is_default') and a.get('active')), None)
     labels = []
     # Disabled: reconcile against an EMPTY plan, so the loop below retires the
     # minted rows by the road that already retires them. Deleting them here
@@ -6932,8 +6913,7 @@ def sync_social_spec_items(date):
         if row['content'] != label:
             update_inbox_item(row['id'], content=label)
     for label in labels[len(existing):]:
-        item = create_inbox_item(label, 'active',
-                                 default['id'] if default else None, None, '5m')
+        item = create_inbox_item(label, 'active', None, None, '5m')
         update_inbox_item(item['id'], deadline=date)
     for row in existing[len(labels):]:
         delete_inbox_item(row['id'])
@@ -8330,7 +8310,9 @@ def get_plan_span(id):
 
 
 def create_plan_span(ymd, start_min, end_min, area_id=None, id=None,
-                     location=None):
+                     location=None, domain_id=None):
+    f = filing_updates(area_id, domain_id)
+    area_id, domain_id = f['area_id'], f['domain_id']
     # `id` re-inserts an ORIGINAL id, which is what an undo of a delete needs:
     # a re-create under a new id would leave the undo stack, and anything else
     # holding the old one, pointing at a row that no longer exists — the
@@ -8338,14 +8320,14 @@ def create_plan_span(ymd, start_min, end_min, area_id=None, id=None,
     conn = get_conn()
     if id:
         cur = conn.execute(
-            'INSERT INTO plan_span (id, date, start_min, end_min, area_id, location)'
-            ' VALUES (?,?,?,?,?,?)',
-            (id, ymd, int(start_min), int(end_min), area_id, location))
+            'INSERT INTO plan_span (id, date, start_min, end_min, area_id, domain_id, location)'
+            ' VALUES (?,?,?,?,?,?,?)',
+            (id, ymd, int(start_min), int(end_min), area_id, domain_id, location))
     else:
         cur = conn.execute(
-            'INSERT INTO plan_span (date, start_min, end_min, area_id, location)'
-            ' VALUES (?,?,?,?,?)',
-            (ymd, int(start_min), int(end_min), area_id, location))
+            'INSERT INTO plan_span (date, start_min, end_min, area_id, domain_id, location)'
+            ' VALUES (?,?,?,?,?,?)',
+            (ymd, int(start_min), int(end_min), area_id, domain_id, location))
     conn.commit()
     row_id = id or cur.lastrowid
     conn.close()
@@ -8353,14 +8335,15 @@ def create_plan_span(ymd, start_min, end_min, area_id=None, id=None,
 
 
 def update_plan_span(id, start_min=_UNSET, end_min=_UNSET, area_id=_UNSET,
-                     location=_UNSET):
+                     location=_UNSET, domain_id=_UNSET):
     updates = {}
     if start_min is not _UNSET:
         updates['start_min'] = int(start_min)
     if end_min is not _UNSET:
         updates['end_min'] = int(end_min)
-    if area_id is not _UNSET:
-        updates['area_id'] = area_id or None
+    if area_id is not _UNSET or domain_id is not _UNSET:
+        updates.update(filing_updates(None if area_id is _UNSET else area_id,
+                                      None if domain_id is _UNSET else domain_id))
     if location is not _UNSET:
         updates['location'] = location or None
     if updates:

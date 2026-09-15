@@ -75,6 +75,7 @@ eq('no override names a table that no longer exists', bad_override, [])
 # ── a day with data renders it ───────────────────────────────
 
 storage.create_inbox_item('write the history exporter')
+storage.create_area('Home', 'standard')
 storage.set_journal_day(TODAY, {'bottleneck': 'the exporter', 'rating': 6}) \
     if hasattr(storage, 'set_journal_day') else None
 review = [f for f in storage.get_flows(TODAY) if f['name'] == 'Weekly review'][0]

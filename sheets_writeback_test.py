@@ -131,10 +131,11 @@ check('seed: the M/D due date resolves to a real deadline',
 check('seed: the ledger remembers the address, not just the fact',
       seeds()['M:CN 3: Optimization:2/15']['row_number'] == 4)
 
-# an unmatched area name falls back rather than filing nowhere
+# an unmatched area name files under nothing - a real filing since 2026-09-15,
+# when nothing had to have an area any more
 conn = storage.get_conn()
-check('area: an unknown name falls back to the default area',
-      storage.sheets_area_id(conn, 'Nonexistent') is not None)
+check('area: an unknown name files under no area',
+      storage.sheets_area_id(conn, 'Nonexistent') is None)
 check('area: a known name wins', storage.sheets_area_id(conn, 'academics') == acad)
 conn.close()
 

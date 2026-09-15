@@ -385,9 +385,7 @@ def patch_area(id):
             return jsonify({'error': 'type must be standard, review, sleep, or routine'}), 400
         project = storage.set_project_type(id, data['type'])
     elif 'domain_id' in data:
-        refusal = storage.area_move_refusal(id, data['domain_id'])
-        if refusal:
-            return jsonify({'error': refusal}), 400
+        # Null takes the area out of every domain; an area needs none.
         project = storage.set_area_domain(id, data['domain_id'])
     elif 'qr_node_id' in data:
         project = storage.set_area_qr_node(id, data['qr_node_id'])
@@ -497,10 +495,11 @@ def post_recurring():
     if err:
         return jsonify({'error': err}), 400
     task = storage.create_recurring_task(
-        data['name'], data['area_id'], data['kind'],
+        data['name'], data.get('area_id'), data['kind'],
         data.get('days_of_week'), data.get('nth'), data.get('weekday'),
         data.get('interval') or 1, data['anchor_date'], data.get('project_id'),
-        spawn=data.get('spawn') or 'item', deadline_md=md, notes=data.get('notes')
+        spawn=data.get('spawn') or 'item', deadline_md=md, notes=data.get('notes'),
+        domain_id=data.get('domain_id')
     )
     return jsonify(task), 201
 
@@ -512,7 +511,7 @@ def patch_recurring(id):
     # The whole editable set, because the clarify sheet a recurring PROJECT is
     # edited in saves its wording, area, notes, deadline rule and schedule at
     # once. storage.RECURRING_FIELDS is the list; this is the validation.
-    for key in ('active', 'project_id', 'name', 'area_id', 'days_of_week', 'nth',
+    for key in ('active', 'project_id', 'name', 'area_id', 'domain_id', 'days_of_week', 'nth',
                 'weekday', 'interval', 'anchor_date', 'notes'):
         if key in data:
             kwargs[key] = data[key]
@@ -549,7 +548,7 @@ def post_inbox():
         return jsonify({'error': 'status must be null, active, waiting, or on_hold'}), 400
     item = storage.create_inbox_item(data['content'], status,
                                      data.get('area_id'), data.get('project_id'),
-                                     data.get('tags'))
+                                     data.get('tags'), domain_id=data.get('domain_id'))
     _touch_and_sync_inbox()
     # A hotkey capture lands while the main window is open — show it (same
     # pattern as /api/panel/saved). The window's own captures re-render
@@ -595,6 +594,7 @@ def patch_inbox(id):
     content = data.get('content', _s)
     status = data.get('status', _s)
     area_id = data.get('area_id', _s)
+    domain_id = data.get('domain_id', _s)
     defer_until = data.get('defer_until', _s)
     project_id = data.get('project_id', _s)
     tags = data.get('tags', _s)
@@ -614,6 +614,8 @@ def patch_inbox(id):
         kwargs['status'] = status
     if area_id is not _s:
         kwargs['area_id'] = area_id
+    if domain_id is not _s:
+        kwargs['domain_id'] = domain_id
     if defer_until is not _s:
         kwargs['defer_until'] = defer_until
     if project_id is not _s:
@@ -812,7 +814,8 @@ def post_occasion_item_route(id):
     return jsonify(storage.add_occasion_item(
         id, content,
         area_id=data.get('area_id'), project_id=data.get('project_id'),
-        tags=data.get('tags') or '', notes=data.get('notes') or '')), 201
+        tags=data.get('tags') or '', notes=data.get('notes') or '',
+        domain_id=data.get('domain_id'))), 201
 
 
 @app.route('/api/occasions/items/<int:item_id>', methods=['DELETE'])
@@ -1097,12 +1100,10 @@ def list_projects():
 def post_project():
     data = request.get_json()
     content = (data.get('content') or '').strip()
-    area_id = data.get('area_id')
     if not content:
         return jsonify({'error': 'content is required'}), 400
-    if not area_id:
-        return jsonify({'error': 'area_id is required'}), 400
-    return jsonify(storage.create_project(content, area_id)), 201
+    return jsonify(storage.create_project(content, data.get('area_id'),
+                                          data.get('domain_id'))), 201
 
 
 @app.route('/api/projects/<int:id>', methods=['PATCH'])
@@ -1122,11 +1123,6 @@ def delete_project_route(id):
 
 @app.route('/api/areas/<int:id>', methods=['DELETE'])
 def delete_area(id):
-    # A domain's general area is where "file this under the domain" lands, so
-    # it is as undeletable as the default area for the same reason.
-    if storage.area_is_domain_general(id):
-        return jsonify({'error': 'That is its domain’s general area — delete the '
-                                 'domain itself if you want it gone.'}), 400
     storage.delete_area(id)
     return '', 204
 
@@ -1149,7 +1145,7 @@ def post_block():
         block = storage.create_block(
             data['label'], data['color'], day,
             data['start_time'], data['end_time'], data.get('area_id'),
-            data.get('location_id')
+            data.get('location_id'), data.get('domain_id')
         )
         blocks.append(block)
     return jsonify(blocks), 201
@@ -1205,7 +1201,7 @@ def patch_block(id):
     block = storage.update_block(
         id, data['label'], data['color'], data['day_of_week'],
         data['start_time'], data['end_time'], data.get('area_id'),
-        data.get('location_id')
+        data.get('location_id'), data.get('domain_id')
     )
     return jsonify(block)
 
@@ -1624,8 +1620,6 @@ def refresh_sheets():
     storage.upsert_deadlines(feed['rows'])
     result = storage.seed_sheets_items(feed, area)
     _touch_and_sync_inbox()
-    if result.get('area_id') is None:
-        return jsonify(dict(result, error='no active area to file under')), 400
     return jsonify(result)
 
 
@@ -2521,7 +2515,8 @@ def post_plan_span():
     return jsonify(storage.create_plan_span(ymd, span[0], span[1],
                                             data.get('area_id') or None,
                                             id=data.get('id') or None,
-                                            location=_plan_span_location(data)))
+                                            location=_plan_span_location(data),
+                                            domain_id=data.get('domain_id') or None))
 
 
 @app.route('/api/plan/spans/<int:id>', methods=['PATCH', 'DELETE'])
@@ -2540,6 +2535,8 @@ def plan_span(id):
         fields['start_min'], fields['end_min'] = span
     if 'area_id' in data:
         fields['area_id'] = data.get('area_id') or None
+    if 'domain_id' in data:
+        fields['domain_id'] = data.get('domain_id') or None
     if 'location' in data:
         fields['location'] = _plan_span_location(data)
     return jsonify(storage.update_plan_span(id, **fields))
@@ -3131,7 +3128,7 @@ def patch_flow(id):
         kwargs['before_node_id'] = data['before_node_id']
     if 'source_uid' in data:
         kwargs['source_uid'] = data['source_uid']
-    for f in ('as_task', 'days_of_week', 'area_id', 'period'):
+    for f in ('as_task', 'days_of_week', 'area_id', 'domain_id', 'period'):
         if f in data:
             kwargs[f] = data[f]
     try:

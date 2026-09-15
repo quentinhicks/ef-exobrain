@@ -132,7 +132,7 @@ check('with that year\'s deadline',
       rows and rows[0].get('deadline'))
 
 # ── an ACTION template is untouched by any of this ────────────
-area = [a for a in storage.get_areas() if a['active']][0]
+area = storage.create_area('Home', 'standard')
 act = storage.create_recurring_task('Water the plants', area['id'], 'weekly', '0',
                                     None, None, 1, '2029-02-01')
 check('a recurring task still defaults to seeding an action',
