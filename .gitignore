@@ -44,3 +44,6 @@ personal/
 
 # Needs `gh auth refresh -s workflow` before it can be pushed (Worker CI).
 .github/
+
+# Google Drive sync duplicates ("app (1).js") — never code
+* (1)*
