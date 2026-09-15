@@ -3242,6 +3242,7 @@ function paintSettingsNav() {
   document.getElementById('be-back').classList.toggle('hidden', !inSection);
   document.getElementById('be-title').classList.toggle('hidden', inSection);
   document.getElementById('be-sec-title').textContent = sec ? sec.name : '';
+  syncRoute();
   document.getElementById('be-sec-desc').textContent = sec ? sec.desc : '';
   document.querySelectorAll('#be-panes .be-section').forEach(s =>
     s.classList.toggle('active', s.dataset.betabPanel === settingsView.section));
@@ -6934,35 +6935,135 @@ function initHub() {
     if (open) closeM(open.id);
   });
   document.querySelectorAll('.hub-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       hub.classList.add('hidden');
-      const dest = btn.dataset.hub;
-      if (dest === 'calendar') { openM('cal-overlay'); renderTimeline(); }
-      else if (dest === 'lists') {
-        refView.open = null;
-        refView.openFlow = null;
-        openM('tab-lists');
-        refreshRef();
-      }
-      else if (dest === 'map') { openMap(); }
-      else if (dest === 'tracking') { openM('tab-tracking'); openTracking(); }
-      else if (dest === 'social') {
-        // Belt-and-braces: the button is hidden below, but the hub is also
-        // reachable by keyboard and a dead door is worse than an absent one.
-        if (!socialEnabled()) return;
-        socialView.form = null; openM('tab-social'); refreshSocial();
-      }
-      else if (dest === 'logs') {
-        logsView.logs = await fetch('/api/logs').then(r => r.json());
-        logsView.open = null;
-        // Unhide FIRST: renderLogs repaints the global bar, and the bar
-        // derives its ✎ log mode from this overlay being visible.
-        document.getElementById('logs-overlay').classList.remove('hidden');
-        renderLogs();
-      }
-      else if (dest === 'settings') { openBlockEditor(); }
+      openSurface(btn.dataset.hub);
     });
   });
+}
+
+// THE ONE OPENER for a hub surface, asked by the hub's buttons and by the
+// address bar alike — a route that re-did what a button does would be the
+// parallel implementation that agrees until one of them grows a step. `sub` is
+// the level inside it (a list, a routine's editor, a log, a settings section).
+async function openSurface(dest, sub) {
+  sub = sub || {};
+  if (dest === 'calendar') { openM('cal-overlay'); renderTimeline(); }
+  else if (dest === 'lists') {
+    refView.open = sub.list != null ? sub.list : null;
+    refView.openFlow = sub.flow != null ? sub.flow : null;
+    openM('tab-lists');
+    refreshRef();
+  }
+  else if (dest === 'map') { openMap(); }
+  else if (dest === 'tracking') { openM('tab-tracking'); openTracking(); }
+  else if (dest === 'social') {
+    // Belt-and-braces: the button is hidden below, but the hub is also
+    // reachable by keyboard and a dead door is worse than an absent one.
+    if (!socialEnabled()) return;
+    socialView.form = null; openM('tab-social'); refreshSocial();
+  }
+  else if (dest === 'logs') {
+    logsView.logs = await fetch('/api/logs').then(r => r.json());
+    logsView.open = null;
+    // Unhide FIRST: renderLogs repaints the global bar, and the bar
+    // derives its ✎ log mode from this overlay being visible.
+    document.getElementById('logs-overlay').classList.remove('hidden');
+    renderLogs();
+    if (sub.log && logsView.logs.some(l => l.name === sub.log)) await openLog(sub.log);
+  }
+  else if (dest === 'settings') {
+    await openBlockEditor();
+    if (sub.section && SETTINGS_SECTIONS.some(s => s.key === sub.section)) {
+      openSettingsSection(sub.section);
+    }
+  }
+}
+
+// ── WHERE YOU WERE: every surface has an address ─────────────
+//
+// (2026-09-15, Quentin's instruction: "start back where I was operating
+// from".) The address is a HASH (`#/lists/12`) because Flask serves one shell
+// at `/` and must stay JSON-only; nothing server-side routes on it.
+//
+// It is DERIVED from what is on screen, never kept beside it: a second record
+// of "which overlay is open" would be one more thing the Esc ladder had to
+// remember to update. Openers stay unaware of it — the overlays' class changes
+// and the three renders that change a level inside a surface call syncRoute.
+//
+// The last address is ALSO a setting row, not only localStorage: pywebview
+// runs in private mode, so the desktop window forgets its storage on every
+// launch, and a phone and the laptop reading one server is where "where was
+// I" is actually asked. An address in the URL itself wins over the remembered
+// one. The routine runner outranks the surface under it — a run is the thing
+// you were in the middle of, and a surface raised over it cannot reopen
+// without it.
+function currentRoute() {
+  const shown = id => {
+    const el = document.getElementById(id);
+    return !!el && !el.classList.contains('hidden');
+  };
+  if (flowRunView.open && flowRunView.flow) return `run/${flowRunView.flow.id}`;
+  if (shown('modal-overlay')) return settingsView.section ? `settings/${settingsView.section}` : 'settings';
+  if (shown('logs-overlay')) return logsView.open ? `logs/${encodeURIComponent(logsView.open)}` : 'logs';
+  if (shown('map-overlay')) return 'map';
+  if (shown('tab-lists')) {
+    if (refView.openFlow != null) return `lists/routine/${refView.openFlow}`;
+    return refView.open != null ? `lists/${refView.open}` : 'lists';
+  }
+  for (const [id, name] of [['cal-overlay', 'calendar'], ['tab-tracking', 'tracking'],
+                            ['tab-social', 'social']]) {
+    if (shown(id)) return name;
+  }
+  return '';
+}
+
+const routeView = { ready: false, saved: null, timer: null };
+
+function syncRoute() {
+  // Nothing is written until the remembered address has been reopened, or
+  // the empty screen of a page still loading would overwrite it.
+  if (!routeView.ready) return;
+  const route = currentRoute();
+  const want = route ? `#/${route}` : location.pathname + location.search;
+  if ((location.hash || '') !== (route ? `#/${route}` : '')) history.replaceState(null, '', want);
+  if (route === routeView.saved) return;
+  clearTimeout(routeView.timer);
+  routeView.timer = setTimeout(() => {
+    routeView.saved = route;
+    apiSend('/api/settings', 'PATCH', { last_route: route }).catch(() => {});
+  }, 1000);
+}
+
+async function openRoute(route) {
+  const [top, a, b] = String(route || '').replace(/^#?\/?/, '').split('/');
+  const num = v => (/^\d+$/.test(v || '') ? parseInt(v) : null);
+  if (top === 'run' && num(a) != null) await openFlowRun(num(a));
+  else if (top === 'lists') {
+    await openSurface('lists', a === 'routine' ? { flow: num(b) } : { list: num(a) });
+  }
+  else if (top === 'logs') await openSurface('logs', { log: a ? decodeURIComponent(a) : null });
+  else if (top === 'settings') await openSurface('settings', { section: a });
+  else if (['calendar', 'map', 'tracking', 'social'].includes(top)) await openSurface(top);
+}
+
+async function initRoutes() {
+  const saved = (state.settings || {}).last_route;
+  routeView.saved = saved == null ? '' : saved;
+  const route = location.hash.length > 2 ? location.hash : routeView.saved;
+  try { await openRoute(route); } catch (e) {}
+  routeView.ready = true;
+  const watch = new MutationObserver(syncRoute);
+  ['modal-overlay', 'logs-overlay', 'map-overlay', 'cal-overlay', 'tab-lists',
+   'tab-tracking', 'tab-social', 'flow-run'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) watch.observe(el, { attributes: true, attributeFilter: ['class'] });
+  });
+  // A pasted or hand-typed address goes where it says.
+  window.addEventListener('hashchange', () => {
+    if (location.hash !== (currentRoute() ? `#/${currentRoute()}` : '')) openRoute(location.hash);
+  });
+  syncRoute();
 }
 
 
@@ -7182,6 +7283,7 @@ function renderRef() {
   const body = document.getElementById('ref-body');
   const title = document.getElementById('ref-title');
   if (!body) return;
+  syncRoute();
 
   const openFlow = refView.flows.find(f => f.id === refView.openFlow);
   if (openFlow) { renderFlowEditor(body, title, openFlow); return; }
@@ -10835,6 +10937,7 @@ function renderLogs() {
   const body = document.getElementById('logs-body');
   const title = document.getElementById('logs-title');
   if (!body) return;
+  syncRoute();
   renderLogsFilter();
   if (!logsView.open) {
     title.textContent = 'Logs';
@@ -11420,7 +11523,7 @@ document.addEventListener('DOMContentLoaded', () => {
     flushOpenNotes();
     flushLogSave();
   });
-  loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); });
+  loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); initRoutes(); });
   setInterval(() => { releaseStaleRunPin(); checkDayRollover(); checkActiveBlock(); paintNowRows(); }, 60000);
 });
 
@@ -15523,7 +15626,7 @@ function renderEngage() {
       // would say nothing where it matters. Moving happens on the timeline —
       // this row only reports it.
       return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}${r.moved ? ' eg-event-moved' : ''}"${nowAttrs(r)}
-        data-ekey="${escHtml(r.ekey)}" title="${r.moved ? 'Moved here — the calendar has it elsewhere. ' : ''}⌘-click / long-press to hide from the day"
+        data-ekey="${escHtml(r.ekey)}" title="${r.moved ? 'Moved here — the calendar has it elsewhere. ' : ''}Right-click / long-press to remove from the day"
         ${r.color ? `style="box-shadow: inset 3px 0 0 ${escHtml(r.color)}"` : ''}>
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-text eg-event-text">${escHtml(r.label)}</span>
@@ -16083,7 +16186,17 @@ function renderEngage() {
       // onLongPress swallows the click a fired hold would otherwise send here.
       openEventPop(el.dataset.ekey, el);
     });
-    onLongPress(el, hide);
+    // RIGHT-CLICK REMOVES IT FROM THE DAY (2026-09-15, Quentin's instruction)
+    // — it used to do nothing here but raise the browser's own menu. It goes
+    // through the object menu, as a block's does beside it, so the verb is
+    // read before it is picked; the long press is the same menu for a finger.
+    const menu = (x, y) => openObjectMenu(x, y, 'event', el.dataset.ekey,
+      [{ label: 'Remove from the day', danger: true, run: hide }]);
+    el.addEventListener('contextmenu', e => { e.preventDefault(); menu(e.clientX, e.clientY); });
+    onLongPress(el, () => {
+      const r = el.getBoundingClientRect();
+      menu(r.left + r.width / 2, r.top + 8);
+    });
   });
 
   body.querySelectorAll('.eg-unplace').forEach(el => {
