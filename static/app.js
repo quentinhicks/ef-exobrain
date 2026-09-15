@@ -760,7 +760,7 @@ function renderPlanBar() {
           }${escHtml(d.name)}</button>`).join('')}
       </div>`
     + '<span class="tl-plan-hint">drag an empty stretch to draw · drag a span to move it'
-      + ' · tap it for its menu, double-click to edit it</span>';
+      + ' · tap it for its menu, double-click to type where</span>';
   bar.querySelectorAll('[data-plandomain]').forEach(b => b.addEventListener('click', () => {
     state.planDomainId = b.dataset.plandomain === '' ? null : parseInt(b.dataset.plandomain);
     renderPlanBar();
@@ -781,14 +781,18 @@ function renderPlanLayer(bodyH = 600) {
   const plan = state.plan && state.plan.date === dateStr ? state.plan : null;
   const spans = (plan && plan.spans) || [];
   const areasById = Object.fromEntries((state.areas || []).map(a => [a.id, a]));
-  const locsById = Object.fromEntries((state.locations || []).map(l => [l.id, l]));
+
+  // A span's location being typed into is HALF-TYPED TEXT, and this layer is
+  // rebuilt by the 60s tick, every day change and every write. innerHTML would
+  // destroy the box mid-word — the `checkActiveBlock` rule, one surface along.
+  if (document.activeElement && document.activeElement.classList.contains('tl-plan-loc-input')
+      && layer.contains(document.activeElement)) return;
 
   layer.innerHTML = spans.map(s => {
     const top = Math.max(0, minutesToViewPercent(s.start_min));
     const bottom = Math.min(100, minutesToViewPercent(s.end_min));
     if (bottom - top <= 0) return '';
     const area = s.area_id ? areasById[s.area_id] : null;
-    const loc = s.location_id ? locsById[s.location_id] : null;
     const tight = ((bottom - top) * bodyH / 100) < 18;
     const color = planSpanColor(s);
     return `<div class="tl-plan-span${tight ? ' tl-event-tight' : ''}"
@@ -798,9 +802,8 @@ function renderPlanLayer(bodyH = 600) {
                    color ? `;--plan-color:${color}` : ''}">
               <div class="tl-plan-bar-grip"></div>
               <span class="tl-plan-label">${escHtml(humanMinutes(s.end_min - s.start_min))}${
-                area ? ' · ' + escHtml(planSpanWhatFor(area)) : ''}</span>${loc
-                ? `<span class="tl-plan-sublabel" data-obj="location:${loc.id}">📍︎ ${
-                    escHtml(loc.name)}</span>` : ''}
+                area ? ' · ' + escHtml(planSpanWhatFor(area)) : ''}</span>${s.location
+                ? `<span class="tl-plan-sublabel">📍︎ ${escHtml(s.location)}</span>` : ''}
             </div>`;
   }).join('');
 
@@ -954,6 +957,8 @@ function wirePlanSpanDrags(layer, dateStr) {
 
     onPointerDrag(el, { keepClick: true, start(e) {
       if (e.pointerType === 'mouse' && e.button !== 0) return null;
+      // A press in the location box is placing a caret or selecting a word.
+      if (e.target.closest('.tl-plan-loc-input')) return null;
       e.stopPropagation();
       const r = el.getBoundingClientRect();
       // Thirds for a finger, a 10px edge for a mouse — the block bar's rule,
@@ -1019,13 +1024,62 @@ async function deletePlanSpan(span) {
   pushUndo(`removed ${humanMinutes(span.end_min - span.start_min)}`, async () => {
     await apiSend('/api/plan/spans', 'POST', {
       id: span.id, date: span.date, start_min: span.start_min,
-      end_min: span.end_min, area_id: span.area_id });
+      end_min: span.end_min, area_id: span.area_id, location: span.location });
     await refreshPlan(span.date);
     renderTimeline();
   });
   await refreshPlan(span.date);
   renderTimeline();
   renderPlanBar();
+}
+
+// DOUBLE-CLICK A SPAN AND TYPE WHERE (2026-09-14, Quentin's instruction). The
+// span's second line becomes a text box, in place: no sheet, no picker, and
+// nothing from Settings' locations, which are geofences and not the words you
+// would use for a place you mean to work. Enter or leaving the box saves,
+// Esc puts the words back, blank clears. One edit, one undo entry.
+function editPlanSpanLocation(id, el) {
+  const span = ((state.plan || {}).spans || []).find(s => String(s.id) === String(id));
+  if (!span || el.querySelector('.tl-plan-loc-input')) return;
+  const was = span.location || '';
+  const sub = el.querySelector('.tl-plan-sublabel');
+  if (sub) sub.remove();
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'tl-plan-loc-input';
+  input.placeholder = 'where?';
+  input.value = was;
+  input.setAttribute('aria-label', 'Where this span happens');
+  el.appendChild(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  async function finish(save) {
+    if (done) return;
+    done = true;
+    const now = input.value.trim();
+    input.blur();
+    if (!save || now === was) { renderTimeline(); return; }
+    const res = await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: now });
+    if (!res.ok) { toast('Could not save where'); renderTimeline(); return; }
+    pushUndo(now ? `set where to "${now}"` : 'cleared where', async () => {
+      await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: was });
+      await refreshPlan(span.date);
+      renderTimeline();
+    });
+    await refreshPlan(span.date);
+    renderTimeline();
+  }
+  input.addEventListener('keydown', e => {
+    // Handled HERE and stopped: Esc on the document would peel the calendar
+    // overlay out from under the box, and Enter means nothing else in it.
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  // A click in the box belongs to the box, not to the span's menu door.
+  input.addEventListener('click', e => e.stopPropagation());
 }
 
 registerObjectVerbs('timeline-plan-span', (kind, id) => {
@@ -4571,23 +4625,21 @@ const SETTINGS_SHEETS = {
     removeLabel: 'Remove span',
     blank: () => ({ start: '', end: '', area: '', location: '' }),
     load: s => ({ start: clockHHMM(s.start_min), end: clockHHMM(s.end_min),
-                  area: s.area_id || '', location: s.location_id || '' }),
+                  area: s.area_id || '', location: s.location || '' }),
     fields: v => [
       { key: 'start', label: 'From', kind: 'time', half: true },
       { key: 'end', label: 'To', kind: 'time', half: true },
-      { key: 'area', label: 'Area', kind: 'select', half: true,
+      { key: 'area', label: 'Area', kind: 'select',
         options: () => seAreaOptions(v.area),
         hint: 'What this stretch is for. The area carries its domain, which is '
               + 'what the pool already filters on — so naming it here needs no '
               + 'second filter of its own.' },
-      // WHERE it is meant to happen (2026-09-10, Quentin's instruction). It is
-      // a plain reference to the location row, not a copy of its coordinates
-      // the way a gate takes one: nothing judges a span, so there is no
-      // commitment here for a moved pin to silently redefine.
-      { key: 'location', label: 'Location', kind: 'select', half: true,
-        options: () => seLocationOptions(null, v.location),
-        hint: 'Where you mean to be. It gates nothing — the plan is a claim '
-              + 'about the day, never a geofence.' },
+      // WHERE, as typed words — the same field the span's double-click edits
+      // in place. This sheet is the finger's road to it (the menu's
+      // `Edit span…`), since a double-click is a poor phone gesture.
+      { key: 'location', label: 'Where', kind: 'text', placeholder: 'e.g. Firestone, 3rd floor',
+        hint: 'Just words. It gates nothing — the plan is a claim about the '
+              + 'day, never a geofence.' },
     ],
     submit: async (v, s) => {
       if (!v.start || !v.end) return 'From and to are required.';
@@ -4601,7 +4653,7 @@ const SETTINGS_SHEETS = {
       if (isNaN(end) || end - lo < 5) return 'A span runs at least 5 minutes.';
       const res = await apiSend(`/api/plan/spans/${s.id}`, 'PATCH',
         { start_min: lo, end_min: end, area_id: v.area || null,
-          location_id: v.location || null });
+          location: (v.location || '').trim() });
       if (!res.ok) return 'Error saving that span.';
       await refreshPlan(s.date);
       renderTimeline();
@@ -6589,7 +6641,10 @@ function initObjectDoors() {
     if (el.dataset.objDbl) {
       if (objTap.el === el && objTap.timer) {
         objTapCancel();
-        openObjectSheet(kind, id);
+        // A span's double-click is its location, typed in place; any other
+        // artifact that opts in still gets its editor.
+        if (kind === 'planspan') editPlanSpanLocation(id, el);
+        else openObjectSheet(kind, id);
         return;
       }
       objTap.el = el;

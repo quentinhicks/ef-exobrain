@@ -1179,22 +1179,32 @@ def init_db():
             start_min  INTEGER NOT NULL,
             end_min    INTEGER NOT NULL,
             area_id    INTEGER REFERENCES area(id),
-            -- WHERE the stretch is meant to happen (2026-09-10, Quentin's
-            -- instruction). A reference, not a copy: the plan is not a
-            -- geofence and nothing judges it, so unlike a gate — which copies
-            -- a location's coordinates so moving the place cannot move the
-            -- commitment — a span may simply point at the row and follow it.
-            location_id INTEGER REFERENCES location(id),
+            -- WHERE the stretch is meant to happen, as the words you typed
+            -- (2026-09-14, Quentin's instruction). Free TEXT, not a row in
+            -- `location`: those are Settings' geofences, pinned and offered
+            -- to gates, and a place you mean to study is not one of them —
+            -- making it one first was a form standing between a double-click
+            -- and a word. Nothing judges a span, so nothing needs coordinates.
+            location   TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
     # The same column on a db that already had the table. It lives HERE, not up
     # with the other ALTERs: those run before this CREATE, so on a fresh db the
     # migration fired against a table that did not exist yet and init_db threw.
     # A migration belongs after the shape it migrates.
-    try:
-        conn.execute('SELECT location_id FROM plan_span LIMIT 1')
-    except Exception:
-        conn.execute('ALTER TABLE plan_span ADD COLUMN location_id INTEGER')
+    #
+    # `location_id` (2026-09-10 to -14) pointed at the `location` table and is
+    # RETIRED: nothing reads or writes it. It is not dropped because SQLite
+    # refuses DROP COLUMN on a column with a REFERENCES clause. A span that had
+    # one is carried over as that location's NAME, once, in the same branch
+    # that adds the column — so it cannot re-fill a location you later cleared.
+    cols = {r['name'] for r in conn.execute('PRAGMA table_info(plan_span)')}
+    if 'location' not in cols:
+        conn.execute('ALTER TABLE plan_span ADD COLUMN location TEXT')
+        if 'location_id' in cols:
+            conn.execute('''UPDATE plan_span SET location =
+                              (SELECT name FROM location WHERE id = plan_span.location_id)
+                            WHERE location_id IS NOT NULL''')
         conn.commit()
     conn.execute('''
         CREATE TABLE IF NOT EXISTS study_entry (
@@ -8320,7 +8330,7 @@ def get_plan_span(id):
 
 
 def create_plan_span(ymd, start_min, end_min, area_id=None, id=None,
-                     location_id=None):
+                     location=None):
     # `id` re-inserts an ORIGINAL id, which is what an undo of a delete needs:
     # a re-create under a new id would leave the undo stack, and anything else
     # holding the old one, pointing at a row that no longer exists — the
@@ -8328,14 +8338,14 @@ def create_plan_span(ymd, start_min, end_min, area_id=None, id=None,
     conn = get_conn()
     if id:
         cur = conn.execute(
-            'INSERT INTO plan_span (id, date, start_min, end_min, area_id, location_id)'
+            'INSERT INTO plan_span (id, date, start_min, end_min, area_id, location)'
             ' VALUES (?,?,?,?,?,?)',
-            (id, ymd, int(start_min), int(end_min), area_id, location_id))
+            (id, ymd, int(start_min), int(end_min), area_id, location))
     else:
         cur = conn.execute(
-            'INSERT INTO plan_span (date, start_min, end_min, area_id, location_id)'
+            'INSERT INTO plan_span (date, start_min, end_min, area_id, location)'
             ' VALUES (?,?,?,?,?)',
-            (ymd, int(start_min), int(end_min), area_id, location_id))
+            (ymd, int(start_min), int(end_min), area_id, location))
     conn.commit()
     row_id = id or cur.lastrowid
     conn.close()
@@ -8343,7 +8353,7 @@ def create_plan_span(ymd, start_min, end_min, area_id=None, id=None,
 
 
 def update_plan_span(id, start_min=_UNSET, end_min=_UNSET, area_id=_UNSET,
-                     location_id=_UNSET):
+                     location=_UNSET):
     updates = {}
     if start_min is not _UNSET:
         updates['start_min'] = int(start_min)
@@ -8351,8 +8361,8 @@ def update_plan_span(id, start_min=_UNSET, end_min=_UNSET, area_id=_UNSET,
         updates['end_min'] = int(end_min)
     if area_id is not _UNSET:
         updates['area_id'] = area_id or None
-    if location_id is not _UNSET:
-        updates['location_id'] = location_id or None
+    if location is not _UNSET:
+        updates['location'] = location or None
     if updates:
         conn = get_conn()
         sets = ', '.join(f'{k} = ?' for k in updates)

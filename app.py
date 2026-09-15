@@ -2521,7 +2521,7 @@ def post_plan_span():
     return jsonify(storage.create_plan_span(ymd, span[0], span[1],
                                             data.get('area_id') or None,
                                             id=data.get('id') or None,
-                                            location_id=data.get('location_id') or None))
+                                            location=_plan_span_location(data)))
 
 
 @app.route('/api/plan/spans/<int:id>', methods=['PATCH', 'DELETE'])
@@ -2540,9 +2540,14 @@ def plan_span(id):
         fields['start_min'], fields['end_min'] = span
     if 'area_id' in data:
         fields['area_id'] = data.get('area_id') or None
-    if 'location_id' in data:
-        fields['location_id'] = data.get('location_id') or None
+    if 'location' in data:
+        fields['location'] = _plan_span_location(data)
     return jsonify(storage.update_plan_span(id, **fields))
+
+
+# Typed text, trimmed; blank clears it.
+def _plan_span_location(data):
+    return (data.get('location') or '').strip() or None
 
 
 def _plan_span_bounds(data):

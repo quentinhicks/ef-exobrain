@@ -6482,6 +6482,28 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 
 .tl-plan-ghost { border-style: solid; pointer-events: none; }
 
+/* The span's location, being typed in place after a double-click. It sits on
+   the span's own tinted fill, so it paints its own ground (--surface) and
+   takes a control's outline, --text-secondary: text owes 4.5:1 and an input's
+   edge 3:1, and the tint under it is any of ten colours. 16px, not the span's
+   11px, because anything smaller makes a phone zoom the page on focus. */
+.tl-plan-loc-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 1px 4px;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.2;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--text-secondary);
+  border-radius: 3px;
+  cursor: text;
+  touch-action: auto;
+}
+
 /* The rail: the affordance, not the target. It reads as "this can be grabbed"
    the way the block bar's does, but the span itself takes the drag — a 14px
    rail is a mouse target, and the rule here is thirds for a finger. */
@@ -6507,9 +6529,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    rather than more of the first: the length and the area are what the span is
    read for at a glance, and a place appended to them pushes them out of a row
    that is often 18px tall. `tl-event-tight` already hides the overflow, so a
-   short span simply keeps the line that matters. It is its own object door
-   (the location's), which is why it may not inherit the label's colour - it
-   is a thing you can open, not a caption. */
+   short span simply keeps the line that matters. */
 .tl-plan-sublabel {
   display: block;
   line-height: 1.25;
