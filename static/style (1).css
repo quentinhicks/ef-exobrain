@@ -3,11 +3,7 @@
   --surface: #161616;
   --border: #2a2a2a;
   --text-primary: #e8e8e8;
-  /* #666666 was 3.21:1 on the row surfaces — under 4.5:1, so every muted label
-     (tags, list meta, hints) failed as text. Measured, not eyeballed: #8a8a8a
-     is 5.4:1 on #141414 and still clearly secondary next to #e8e8e8. The light
-     half already passed at 5.84:1 and is unchanged. */
-  --text-secondary: #8a8a8a;
+  --text-secondary: #666666;
   --accent: #98b9dd;
   --danger: #d9a3a8;
   --on-hold: #a0a0a0;
@@ -35,36 +31,6 @@
   --block-teal: #8fc6cf;
 
   --gold: #d8cb96;
-
-  /* THE CALENDAR'S BOOKENDS (2026-08-22, from the Calendar Page design).
-     Wake and sleep are not events inside the day, they are its EDGES — the
-     view window is literally bounded by them — so they are drawn as bands at
-     the top and bottom rather than as hairlines floating in the grid. Named
-     here so the light appendix answers with the design's own values and no
-     second rule has to know about them. */
-  /* WHAT COLOUR A GATE IS (2026-08-22, Quentin's instruction). THREE STATES,
-     and all three are about the SCAN:
-
-        grey   still to be done - the window has not closed, or no verdict yet
-        green  met - a scan that counted
-        red    missed
-
-     plus amber for the half-met day the 50/50 split created, which is a real
-     price and would otherwise have to lie in one direction or the other.
-
-     The values are the app's own block colours and the on-hold grey, so the
-     light appendix already answers for every one of them and nothing here is a
-     new hardcoded colour. --on-gate is the ink for all four: the fills are
-     pastel on dark and deep on light, so it flips with the theme - as a TOKEN,
-     never as a theme-scoped rule, because a rule outranks the state list and
-     silently wins it. */
-  --gate-open: var(--on-hold);
-  --gate-met: var(--block-green);
-  --gate-half: var(--block-amber);
-  --gate-missed: var(--block-red);
-  --on-gate: #1a1200;
-  --gate-dismissed: #1f1f1f;
-  --on-gate-dismissed: #e8e8e8;
 
   --font-ui: 'Inter', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
@@ -145,17 +111,11 @@ select option {
 /* One phone-sized column. On a desktop/larger window the app letterboxes
    in the center; on a phone it is full-bleed. */
 
-/* --vvh is the VISIBLE height, written by initVisibleHeight() from
-   visualViewport; 100dvh is the fallback where that API is missing, and 100vh
-   the fallback before that. Everything fixed and full-height below is sized
-   from the same variable — see the comment on initVisibleHeight for why the
-   layout viewport is the wrong ruler on a phone. */
 #app {
   display: flex;
   justify-content: center;
   height: 100vh;
   height: 100dvh;
-  height: var(--vvh, 100dvh);
   overflow: hidden;
   background: var(--bg);
 }
@@ -170,7 +130,7 @@ select option {
 .m-overlay {
   position: fixed;
   top: 0;
-  bottom: 0;                  /* the bar contract at the end of the file wins */
+  bottom: 0;
   left: 50%;
   transform: translateX(-50%);
   background: var(--surface-mid);
@@ -282,7 +242,10 @@ select option {
 
 #right-panel {
   flex: 1;
-  min-height: 0;
+  background: var(--surface-mid);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  margin: 8px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -290,18 +253,11 @@ select option {
 
 /* ── Modal ──────────────────────────────────────────────────── */
 
-/* 155: ABOVE the .m-overlay band (140) and the map/logs/person overlays (150),
-   below the hub (160). Settings is opened FROM the hub while another surface is
-   still up, and openBlockEditor does not close it — at z 100 it opened silently
-   BEHIND whatever you were looking at, which reads as a dead button. It is the
-   newest thing you asked for, so it stacks on top, and Esc peels it first
-   (initHub's overlay loop lists it before the rest) putting you back where you
-   were. */
 #modal-overlay {
   position: fixed;
   inset: 0;
   background: var(--overlay);
-  z-index: 155;
+  z-index: 100;
   display: flex;
   align-items: stretch;
   justify-content: flex-start;
@@ -517,16 +473,6 @@ select option {
   padding: 13px 20px;
 }
 
-/* WHERE THE REST OF THEM ARE. A list that holds fewer things than you have has
-   to say so and say where — the same bargain the pool's gates struck, in one
-   line under the heading rather than a band of chrome. */
-.be-note {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.45;
-  padding: 8px 20px 10px;
-}
-
 .be-hint {
   font-size: 12px;
   line-height: 1.5;
@@ -622,14 +568,8 @@ select option {
 
 .se-select { cursor: pointer; }
 
-/* A read-out row. It carries URLs and 32-character keys with no spaces in
-   them, so it WRAPS rather than pushing the sheet sideways — the page body may
-   never scroll horizontally, and flex children do not shrink below their
-   content without min-width: 0. */
 .se-static {
   flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
   font-size: 14px;
   color: var(--text-primary);
   padding: 4px 0;
@@ -639,114 +579,6 @@ select option {
 .se-fsuffix { font: 11px var(--font-mono); color: var(--text-secondary); }
 
 .se-inline-act { font-size: 13px; color: var(--accent); flex: none; }
-
-/* The tag-programming steps, folded under the Proof row. A DISCLOSURE and not
-   a tooltip: the button is a full-width finger target, and the body opens in
-   place — a hover tooltip is a control that does not exist on a phone. The
-   outline is --text-secondary, not --border: this is an interactive control
-   and owes 3:1. Code lines scroll inside themselves so the sheet never does. */
-.se-info { gap: 8px; }
-
-.se-info-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 40px;
-  padding: 9px 11px;
-  background: var(--surface-2);
-  border: 1px solid var(--text-secondary);
-  border-radius: 8px;
-  color: var(--text-primary);
-  font: 13px var(--font-ui);
-  text-align: left;
-  cursor: pointer;
-}
-
-.se-info-i { color: var(--accent); font-size: 15px; flex: none; }
-.se-info-t { flex: 1; min-width: 0; }
-
-.se-info-body {
-  margin-top: 8px;
-  padding: 10px 12px;
-  background: var(--surface-low);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-primary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.se-info-h {
-  font: 11px var(--font-mono);
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin: 12px 0 6px;
-}
-
-.se-info-body .se-info-h:first-child { margin-top: 0; }
-
-.se-info-list { margin: 0; padding-left: 20px; }
-.se-info-list > li { margin-bottom: 8px; }
-.se-info-sub { margin: 6px 0 0; padding-left: 16px; }
-.se-info-sub > li { margin-bottom: 4px; }
-
-.se-info-code {
-  display: block;
-  margin-top: 6px;
-  padding: 7px 9px;
-  background: var(--surface-2);
-  border-radius: 6px;
-  font: 11px var(--font-mono);
-  color: var(--text-primary);
-  white-space: pre;
-  overflow-x: auto;
-}
-
-/* Address lookup, so a location costs a search instead of a typed latitude.
-   Colours are vars only — the light appendix swaps them and nothing here needs
-   a second entry. Hit targets are full-width rows: on a phone there is no
-   hover to find a small one with. */
-/* The whole chain needs min-width:0. The control is a FLEX ITEM in .se-frow,
-   so without it the item sizes to max-content — and one nowrap address label
-   is enough max-content to push the search buttons off a 430px screen. The
-   ellipsis only clips once every ancestor can shrink. */
-.se-geocode { flex: 1 1 auto; min-width: 0; }
-.se-geo-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
-.se-geo-q { flex: 1 1 auto; min-width: 0; }
-.se-geo-out { min-width: 0; }
-.se-geo-out:not(:empty) { margin-top: 8px; }
-.se-geo-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-
-.se-geo-hit {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  text-align: left;
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  padding: 7px 8px;
-  border: 1px solid var(--border-soft);
-  border-radius: 4px;
-  background: var(--surface-2);
-  cursor: pointer;
-}
-.se-geo-hit:hover { border-color: var(--accent); }
-.se-geo-name,
-.se-geo-label {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.se-geo-name { font-size: 13px; color: var(--text-primary); }
-.se-geo-label { font-size: 11px; color: var(--text-secondary); }
-.se-geo-picked { font-size: 13px; color: var(--accent); overflow-wrap: anywhere; }
-.se-geo-coords { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
 
 /* Pawning: the step's own setting, and the note the receiving routine shows. */
 .fr-pawn-sel { font: 12px var(--font-ui); max-width: 170px; }
@@ -814,18 +646,6 @@ select option {
 }
 
 .se-swatch.se-on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--text-primary); }
-
-/* NO COLOUR is an answer, so it is a chip like the others rather than an
-   absence you reach by unpicking. It is the one swatch with no fill, so it
-   needs an outline to be a target at all - a control's outline, which owes
-   3:1 and therefore takes --text-secondary, never --border. */
-.se-swatch-none {
-  background: transparent;
-  border: 1px dashed var(--text-secondary);
-  color: var(--text-secondary);
-  font-size: 14px;
-  line-height: 1;
-}
 
 .se-check {
   flex: 1;
@@ -1171,22 +991,13 @@ select option {
 
 /* ── Timeline ────────────────────────────────────────────────── */
 
-/* ONE ROW, on a 430px phone. The design draws the nav and the three controls
-   on a single line; letting them wrap produced a four-line header that ate a
-   sixth of the day. Everything here is nowrap and the date label shrinks
-   rather than pushing. */
 .tl-header {
   display: flex;
   align-items: center;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  gap: 8px;
-  /* WRAPS, since 2026-09-02. nowrap was fine with two buttons and overlapped
-     "Today" the moment a third arrived — on a 430px column the header is the
-     one row with no spare width, so it has to fold rather than collide. */
-  flex-wrap: wrap;
-  white-space: nowrap;
+  gap: 12px;
 }
 
 .tl-nav {
@@ -1196,17 +1007,18 @@ select option {
 }
 
 .tl-nav-btn {
-  min-width: 32px;
-  min-height: 34px;
-  padding: 0 4px;
-  font-size: 18px;
+  padding: 2px 8px;
+  font-size: 15px;
   color: var(--text-secondary);
-  border: none;
-  background: none;
-  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  line-height: 1.5;
 }
 
-.tl-nav-btn:hover { color: var(--text-primary); }
+.tl-nav-btn:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
 
 .tl-nav-btn:disabled {
   opacity: 0.3;
@@ -1214,59 +1026,11 @@ select option {
 }
 
 #tl-date-label {
-  flex: none;
-  width: var(--daynav-slot);
-  display: inline-flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 6px;
   font-size: 15px;
   font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
+  min-width: 104px;
+  text-align: center;
 }
-
-/* The weekday is what you read, the date is what you check — the design's two
-   weights. 17px rather than the mock's 20px: the mock is 538px wide and this
-   column is 430, and at 20px "Wednesday" pushed the controls off the line. */
-#tl-date-label .tl-dow { font-size: 17px; font-weight: 700; color: var(--text-primary); }
-#tl-date-label .tl-dm {
-  font: 12px var(--font-mono);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-/* The name is what overflows on a long weekday; the date must never be the
-   thing that gets cut, since it is the half that changes as you page. */
-#tl-date-label .tl-dow { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-
-/* The fetch status is the one thing in the header that may go missing: it is a
-   footnote, and it was taking a column of its own and wrapping to four lines. */
-/* WHAT GIVES WAY FIRST. The date is what the header is FOR, so it never
-   shrinks; the fetch note is a footnote and absorbs the whole squeeze, down to
-   nothing. Getting this backwards ellipsised "Saturday" to "Saturd..." while
-   "Last fetched: j..." kept its column. */
-#fetch-status {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-#fetch-status:empty { display: none; }
-
-.tl-refresh-area {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1 1 auto;
-  min-width: 0;
-  justify-content: flex-end;
-}
-
-.tl-nav { flex: none; }
-#tl-date-label { flex: none; }
 
 .tl-today-btn {
   font-size: 12px;
@@ -1398,27 +1162,10 @@ body.calendar-minimized #review-modal {
   display: none;
 }
 
-/* A CALENDAR EVENT WEARS ITS CALENDAR'S COLOUR, and stays readable doing it.
-   The hue arrives as --ev-color (set per event in renderGcalLayer); the fill,
-   the rule and the text are derived here so the light appendix can answer
-   differently. --ev-ink is what the hue is pulled TOWARD to become text: away
-   from the surface, which is white here and near-black in light. Mixing
-   toward a hardcoded #fff was fine on the dark surface and unreadable on the
-   pale one — measured at 1.2:1, which is not text, it is a watermark. */
-.tl-allday-event,
-.tl-gcal-event {
-  --ev-ink: #ffffff;
-  background: color-mix(in srgb, var(--ev-color, var(--accent)) 14%, transparent);
-  color: color-mix(in srgb, var(--ev-color, var(--accent)) 50%, var(--ev-ink));
-}
-
 .tl-allday-event {
   height: 26px;
   padding: 0 10px;
-  /* The chip keeps its edge — it is a chip, not a column of them — but in the
-     calendar's own colour. A bare `var(--accent)` here reset the colour the
-     shared rule above sets, which is why every event's bar was the same blue. */
-  border-left: 5px solid var(--ev-color, var(--accent));
+  border-left: 5px solid var(--accent);
   border-radius: 3px;
   font-size: 12px;
   font-weight: 700;
@@ -1476,14 +1223,12 @@ body.calendar-minimized #review-modal {
   align-items: flex-start;
 }
 
-/* The design's gutter: the hour reads down the left edge in mono, and the rule
-   starts clear of it at 56px rather than butting against the digits. */
 .tl-hour-label {
-  width: 56px;
-  padding-left: 12px;
-  font: 12px var(--font-mono);
+  width: 44px;
+  padding-right: 6px;
+  font-size: 11px;
   color: var(--text-secondary);
-  text-align: left;
+  text-align: right;
   margin-top: -7px;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
@@ -1512,22 +1257,12 @@ body.calendar-minimized #review-modal {
   z-index: 2;
 }
 
-/* The right padding RESERVES the event column (events start at 20% of the
-   body, which is most of the way across). Without it a block's label printed
-   underneath the events and was cut mid-word by an opaque box rather than
-   ellipsised — the label was still "there", just unreadable, which is the
-   worst of both. */
 .tl-block {
   position: absolute;
   left: 0;
   right: 0;
   border-radius: 2px;
   padding: 2px 6px 2px 18px;
-  /* Exactly the event column. The events layer and the blocks layer share a
-     left edge (48px), and events begin at 20% of it, so 80% is where a block's
-     label has to stop. At 72% it still ran a few characters under the first
-     event and was cut mid-word by an opaque box. */
-  padding-right: 81%;
   overflow: hidden;
   min-height: 16px;
 }
@@ -1591,92 +1326,29 @@ body.calendar-minimized #review-modal {
   color: var(--danger);
 }
 
-/* NO LEFT RULE. Every event carried a 5px bar, so a morning of back-to-back
-   events drew one unbroken vertical line down the column — a divider between
-   nothing and nothing, since the events are already told apart by their fills
-   and their rows. (It was also painting accent rather than the event's own
-   colour: the shorthand here reset the border-left-color set above it.) */
-/* Events start at 20% and run to the edge (the design), which is a wider
-   column than the old 35% — a meeting title is the thing you are reading, and
-   it was being ellipsised into uselessness. The fill stays the calendar's own
-   hue (see the --ev-color rule above): the design draws one green because the
-   day it drew had one calendar, and flattening every calendar to that colour
-   would throw away which calendar an event is on. Square, not rounded: a row
-   of soft rectangles reads as chips floating over the day, and these ARE the
-   day. */
 .tl-gcal-event {
   position: absolute;
-  left: 20%;
-  right: 14px;
-  padding: 2px 10px 2px 10px;
+  left: 35%;
+  right: 4px;
+  border-left: 5px solid var(--accent);
+  border-radius: 3px;
+  padding: 4px 10px;
   overflow: hidden;
-  min-height: 22px;
-}
-
-/* The event's grab bar — a HAIRLINE (2026-08-24, asked for: it was a thick
-   coloured box on every event, which is a lot of furniture for a handle).
-   2px of paint, and the target is an invisible band around it, the same split
-   the gate square and the gate lines use.
-
-   It exists at all so a finger can have BOTH gestures: a 550ms hold on the box
-   hides the event, the same hold here drags it, and one element cannot arm two
-   long presses. A MOUSE has no such conflict, so it drags from anywhere on the
-   box (initEventDrag) and never needs to find this. */
-.tl-ev-bar {
-  position: absolute;
-  left: 0;
-  top: 2px;
-  bottom: 2px;
-  width: 2px;
-  border-radius: 1px;
-  background: color-mix(in srgb, var(--ev-color, var(--accent)) 70%, transparent);
-}
-.tl-ev-bar::after {
-  content: '';
-  position: absolute;
-  top: -4px;
-  bottom: -4px;
-  left: -6px;
-  right: -12px;
-}
-.tl-ev-bar:hover { filter: brightness(1.35); }
-
-/* MOVED — this event is not where the calendar says it is (2026-08-24, asked
-   for). A darker, fuller edge in the event's OWN colour: against a 14% fill it
-   reads as a defined outline in both themes, where a mix toward the surface
-   would vanish into it on one of them. outline-offset:-1px keeps it inside the
-   box, so marking an event never nudges the ones beside it. */
-.tl-event-moved {
-  outline: 1px solid color-mix(in srgb, var(--ev-color, var(--accent)) 70%, #000);
-  outline-offset: -1px;
-}
-
-/* The same statement on the day's own list, where the row has no colour of its
-   own to deepen — so it borrows the ink the theme already trusts at this size
-   and stays a thin edge rather than a badge. */
-.eg-event-moved {
-  outline: 1px solid var(--text-secondary);
-  outline-offset: -1px;
+  min-height: 16px;
 }
 
 /* ── Shared event/block layout ───────────────────────────────── */
 
-/* Title left, time right, on ONE line — the design's row. The time is the
-   thing you check second, so it sits at the far edge where it can be scanned
-   down the column instead of interrupting each title. */
 .tl-event-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  align-items: baseline;
+  gap: 8px;
   overflow: hidden;
 }
 
 .tl-event-summary {
   display: block;
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   line-height: 1.3;
   white-space: nowrap;
@@ -1699,22 +1371,22 @@ body.calendar-minimized #review-modal {
   white-space: nowrap;
 }
 
+
 .tl-event-tight {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
 }
 
-/* Two pixels, not one: at one it read as another hour rule, and it is the only
-   line on the page that says WHERE YOU ARE. */
 #tl-current-time {
   position: absolute;
-  left: 56px;
+  left: 44px;
   right: 0;
-  height: 2px;
+  height: 1px;
   background: var(--accent);
   z-index: 10;
   pointer-events: none;
 }
+
 
 /* ── Deadlines strip ─────────────────────────────────────────── */
 
@@ -1870,9 +1542,9 @@ body.calendar-minimized #review-modal {
   content: '';
   position: absolute;
   left: -4px;
-  top: -4px;
-  width: 9px;
-  height: 9px;
+  top: -3px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--accent);
 }
@@ -2534,6 +2206,62 @@ body.calendar-minimized #review-modal {
 
 /* ── Sheets Inbox (Due items) ─────────────────────────────── */
 
+#sheets-inbox-section {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px 6px;
+}
+
+.si-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+
+.si-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.si-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.si-item:last-child {
+  border-bottom: none;
+}
+
+.si-course {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.si-title {
+  flex: 1;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.si-date {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* ==================== Review Tab & Nav ==================== */
 
 .review-nav-item {
@@ -2662,149 +2390,9 @@ body.calendar-minimized #review-modal {
   color: var(--text-primary);
 }
 
-/* A finger target, not a 12px word: this is the one control in the bar that
-   opens the camera, and there is no hover to find it with. */
-.log-photo-btn {
-  color: var(--text-secondary);
-  font-size: 12px;
-  padding: 8px 12px;
-  min-height: 36px;
-  border: 1px solid var(--border-soft);
-  border-radius: 4px;
-}
-
-.log-photo-btn:hover {
-  color: var(--text-primary);
-}
-
 .log-save-status {
   color: var(--text-secondary);
   font-size: 11px;
-}
-
-/* The open log's photos. A strip, not a grid: it sits between the bar and the
-   editor, so it may cost one row of typing space and no more. Scrolls sideways
-   on its own — the overlay body must never scroll horizontally. */
-.log-photos {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  flex: 0 0 auto;
-  padding-bottom: 2px;
-}
-
-/* 56px, because a thumbnail is a finger target with no hover to find it. */
-.log-thumb {
-  flex: 0 0 auto;
-  width: 56px;
-  height: 56px;
-  padding: 0;
-  border: 1px solid var(--text-secondary);
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--surface-low);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.log-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.log-thumb-fallback {
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-/* Full-screen, and DARK IN BOTH THEMES on purpose (the NOW panel's precedent,
-   inverted): a photo is judged against a neutral ground, and a light frame
-   around a phone snapshot changes what you think you are looking at. Above the
-   sheet band (200) so the picture is never behind something that was already
-   up; below dangerous writing (240), which nothing may cover. */
-#log-photo-view {
-  position: fixed;
-  inset: 0;
-  height: var(--vvh, 100dvh);
-  z-index: 210;
-  background: #000;            /* solid: the log's text showing through a
-                                  scrim is noise behind a photograph */
-  display: flex;
-  flex-direction: column;
-}
-
-#log-photo-view.hidden { display: none; }
-
-.lpv-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 12px;
-}
-
-.lpv-close {
-  color: #fff;
-  font-size: 13px;
-  padding: 8px 10px;
-  min-height: 36px;
-}
-
-.lpv-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lpv-stage {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
-}
-
-.lpv-stage img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-
-.lpv-fallback {
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 13px;
-  line-height: 1.5;
-  text-align: center;
-  padding: 0 24px;
-}
-
-.lpv-nav {
-  display: flex;
-  justify-content: space-between;
-  padding: 10px 14px 18px;
-}
-
-/* Thirds of nothing to aim at otherwise: these are the only two controls on a
-   screen filled with picture, so they are 48px targets at the bottom, where a
-   thumb reaches. */
-.lpv-step {
-  color: #fff;
-  font-size: 20px;
-  min-width: 72px;
-  min-height: 48px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 4px;
-}
-
-.lpv-step:disabled {
-  color: rgba(255, 255, 255, 0.3);
-  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .log-editor-wrap {
@@ -2881,7 +2469,6 @@ body.calendar-minimized #review-modal {
 #review-overlay {
   position: fixed;
   inset: 0;
-  height: var(--vvh, 100dvh);
   background: var(--overlay);
   z-index: 150;
   display: flex;
@@ -2936,33 +2523,13 @@ body.calendar-minimized #review-modal {
 
 .gr-phase { margin-bottom: 22px; }
 
-/* The header is the phase's HANDLE: dragging it moves the run of steps under
-   it (wireReviewPhaseDrag). Padded to a finger target — the label itself is
-   11px, which is a size to read, not a size to grab. */
 .gr-phase-name {
   font: 11px var(--font-ui);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-secondary);
-  margin-bottom: 4px;
-  padding: 8px 0;
-  cursor: grab;
-  user-select: none;
+  margin-bottom: 8px;
 }
-
-.gr-phase-name::before {
-  content: '⠿ ';
-  letter-spacing: 0;
-  opacity: 0.45;
-}
-
-.gr-phase-dragging {
-  opacity: 0.65;
-  background: var(--surface-2);
-  border-radius: 6px;
-}
-
-.gr-phase-dragging .gr-phase-name { cursor: grabbing; }
 
 .gr-step {
   display: flex;
@@ -3003,41 +2570,22 @@ body.calendar-minimized #review-modal {
 .gr-badge-ok { color: var(--accent); border-color: var(--accent); }
 .gr-badge-bad { color: var(--danger); border-color: var(--danger); }
 
-/* The merged projects step: every active project, its actions under it, and
-   the ones with none carrying the danger rule the old stalled-only list wore.
-   Replaces .gr-stalled — one list answers both halves now. */
-.gr-projects { margin: 6px 0 0; }
-
-.gr-proj {
-  margin: 0 0 8px;
+.gr-stalled {
+  list-style: none;
+  margin: 6px 0 0;
   padding: 0 0 0 10px;
-  border-left: 2px solid var(--border-soft);
+  border-left: 2px solid var(--danger);
 }
 
-.gr-proj-stalled { border-left-color: var(--danger); }
-
-.gr-proj-head {
+.gr-stalled li {
+  font-size: 12px;
+  color: var(--text-primary);
+  padding: 2px 0;
   display: flex;
   gap: 8px;
-  align-items: baseline;
-  font-size: 12px;
 }
 
-.gr-proj-name { flex: 1; color: var(--text-primary); font-weight: 600; }
-
-.gr-proj-sum {
-  font-size: 11px;
-  color: var(--text-secondary);
-  padding: 0 0 6px;
-}
-
-.gr-proj-acts { margin: 2px 0 0; }
-
-.gr-proj-none {
-  font-size: 11px;
-  color: var(--danger);
-  padding: 2px 0;
-}
+.gr-stalled-area { color: var(--text-secondary); font-size: 11px; }
 
 .gr-footer {
   border-top: 1px solid var(--border);
@@ -3090,191 +2638,6 @@ body.calendar-minimized #review-modal {
 }
 
 /* invisible anchor at the deadline time — the pill label is the drag target */
-/* THE GATE READ-OUT (2026-08-21). A popup rather than a sheet, and the
-   difference is the point: a sheet takes the bottom of the screen and covers
-   the timeline, and this exists to be read AGAINST the day it describes. It is
-   anchored to the pill, capped at the phone column's width, and scrolls inside
-   itself when a day has a lot of scans to account for.
-
-   z 190: over the calendar overlay (140/150) and the global bar (170), under
-   the sheet band (200) — nothing here writes, so a sheet always wins. */
-#event-pop-backdrop,
-#gate-pop-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 189;
-  background: transparent;
-}
-
-#event-pop,
-#gate-pop {
-  position: fixed;
-  z-index: 190;
-  width: min(360px, calc(100vw - 24px));
-  max-height: min(560px, 78vh);
-  overflow-y: auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
-  padding: 12px 14px 14px;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.gp-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 2px;
-}
-
-.gp-title { font-size: 15px; font-weight: 600; flex: 1; min-width: 0; }
-
-/* A finger target, not a 10px ×. */
-.gp-close {
-  flex: none;
-  min-width: 36px;
-  min-height: 36px;
-  margin: -8px -8px -8px 0;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 18px;
-  cursor: pointer;
-}
-
-.gp-date { font: 11px var(--font-mono); color: var(--text-secondary); }
-
-.gp-sect {
-  margin-top: 12px;
-  font: 11px var(--font-mono);
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.gp-row {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  padding: 3px 0;
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.gp-row:last-child { border-bottom: none; }
-.gp-k { flex: none; width: 92px; color: var(--text-secondary); }
-.gp-v { flex: 1; min-width: 0; }
-.gp-mono { font: 11px var(--font-mono); }
-
-/* The verdict words carry the meaning, so they carry the colour too. */
-.gp-ok { color: var(--success); }
-.gp-no { color: var(--danger); }
-
-/* The read-out's one verb. It sits at the foot, apart from the facts above it,
-   because everything else in this popup is something the box knows and this is
-   something you are doing. */
-/* Two verbs that are about DIFFERENT things - this day, and the gate itself -
-   so they sit at opposite ends rather than reading as a pair of options. The
-   day-level label can run long ("Too late to call this day off (within 24h)")
-   inside a 360px popup, so the row wraps instead of squeezing the finger
-   target below the 36px floor. */
-/* ── THE OBJECT MENU ───────────────────────────────────────────────────────
-   An object's verbs, named, at the pointer. It replaced an edit MODE - the
-   mode meant the same tap did different things depending on invisible state,
-   and a labelled item cannot be misread the way an overloaded gesture can.
-
-   Above the sheets (200), because a menu is always the innermost thing on
-   screen, and below the people timer (250) and dangerous writing (240), which
-   nothing may cover. */
-#obj-menu {
-  position: fixed;
-  z-index: 205;
-  min-width: 168px;
-  max-width: min(280px, calc(100vw - 24px));
-  padding: 4px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
-}
-
-/* 36px is the finger floor the touch-parity rules set, and a menu is the one
-   place every verb has room to meet it. */
-.om-item {
-  display: block;
-  width: 100%;
-  min-height: 36px;
-  padding: 8px 12px;
-  border: 0;
-  border-radius: 7px;
-  background: none;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.om-item:hover,
-.om-item:focus-visible { background: var(--surface-2); }
-
-.om-danger { color: var(--block-red); }
-
-/* THE RECORD STRIP. One cell a day, oldest left, in the same four colours the
-   timeline pills use - the vocabulary is shared on purpose, so a day cannot
-   look like one thing on the calendar and another in the read-out. A day the
-   gate did not run is hollow rather than grey: absence of a verdict is not a
-   verdict. Cells shrink to fit a fortnight inside a 360px popup but keep a
-   real height, and the row scrolls rather than pushing the popup wide. */
-.gh-strip {
-  display: flex;
-  gap: 3px;
-  margin: 8px 0 10px;
-  overflow-x: auto;
-}
-
-.gh-d {
-  flex: 1 1 0;
-  min-width: 10px;
-  height: 18px;
-  border-radius: 3px;
-  background: var(--gate-dismissed);
-}
-
-.gh-success { background: var(--gate-met); }
-.gh-partial { background: var(--gate-half); }
-.gh-failed  { background: var(--gate-missed); }
-/* MEASURED, not eyeballed. --border put this edge at 1.26:1 on dark and 1.20:1
-   on light against the popup - the same failure CLAUDE.md already recorded for
-   --border on a control, one surface over. A hollow cell is CARRYING DATA (the
-   gate did not run that day), so an edge nobody can see reads as a gap in the
-   fortnight rather than as a fact about it. --text-secondary is the app's own
-   answer for an outline that has to be visible: 5.24:1 and 5.06:1. */
-.gh-off {
-  background: transparent;
-  border: 1px solid var(--text-secondary);
-}
-
-.gp-foot {
-  margin-top: 14px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-soft);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.gp-foot button { min-height: 36px; }
-
-.gp-note {
-  margin-top: 8px;
-  color: var(--text-secondary);
-  line-height: 1.45;
-}
-
 .tl-qr-line {
   position: absolute;
   left: 0;
@@ -3283,180 +2646,61 @@ body.calendar-minimized #review-modal {
   pointer-events: none;
 }
 
-/* ── A GATE IS ONE SMALL SQUARE (2026-08-22, Quentin's instruction) ───────
-   It was a chip carrying a name, a time, a lock and a verdict. All four are
-   readable somewhere else: the TIME is WHERE the square sits on the timeline
-   (the hour gutter is right beside it), and the rest is one tap away in the
-   read-out. What is left is the only thing a glance needs — is this gate done,
-   still to do, or missed — and colour says that without any words at all.
-
-   The state list is one ordered set of variable declarations at one
-   specificity, so precedence is simply the order you read them in: open, then
-   the three verdicts, then dismissed over everything. */
-.tl-qr-line {
-  --pill-bg: var(--gate-open);
-  --pill-ink: var(--on-gate);
-}
-
-.tl-qr-line.tl-qr-success { --pill-bg: var(--gate-met); }
-.tl-qr-line.tl-qr-partial { --pill-bg: var(--gate-half); }
-.tl-qr-line.tl-qr-failed  { --pill-bg: var(--gate-missed); }
-
-/* CALLED OFF for this day. Not merely greyed: the gate is still drawn, still
-   tappable and still the only way back on, so it has to read as a decision
-   rather than as a dim gate. The rule through the square is what says so —
-   grey alone is what "locked" already means two lines down. */
-.tl-qr-line.tl-qr-skipped {
-  --pill-bg: var(--gate-dismissed);
-  --pill-ink: var(--on-gate-dismissed);
-}
-
-.tl-qr-line.tl-qr-skipped .tl-qr-label::after {
-  content: '';
-  position: absolute;
-  left: -2px;
-  right: -2px;
-  top: 50%;
-  height: 2px;
-  background: var(--on-gate-dismissed);
-  pointer-events: none;
-}
-
-.tl-qr-line.tl-qr-skipped .tl-qr-label,
-.tl-qr-line.tl-qr-locked .tl-qr-label { cursor: default; }
-
-.tl-qr-line:not(.tl-qr-skipped):not(.tl-qr-locked) .tl-qr-label:hover,
+.tl-qr-line:not(.tl-qr-dismissed):not(.tl-qr-locked) .tl-qr-label:hover,
 .tl-qr-line.tl-qr-dragging .tl-qr-label {
-  filter: brightness(1.15);
+  background: #e7cfa5;
+}
+
+.tl-qr-line.tl-qr-locked .tl-qr-label {
+  cursor: default;
+}
+
+.tl-qr-line.tl-qr-dismissed .tl-qr-label {
+  background: #333333;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.tl-qr-line.tl-qr-dismissed .tl-qr-x {
+  color: var(--text-secondary);
+}
+
+/* judged deadlines (window closed): green = satisfied, red = failed */
+.tl-qr-line.tl-qr-success .tl-qr-label {
+  background: var(--block-green);
+}
+
+.tl-qr-line.tl-qr-failed .tl-qr-label {
+  background: var(--block-red);
 }
 
 .tl-qr-label {
   position: absolute;
-  right: 10px;
+  right: 8px;
   top: -9px;
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  line-height: 1;
-  background: var(--pill-bg);
-  color: var(--pill-ink);
-  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1a1200;
+  white-space: nowrap;
   pointer-events: auto;
   cursor: ns-resize;
-}
-
-/* THE MINUTE, WHILE IT IS MOVING. Hidden by default and shown only during a
-   drag: the square's POSITION is what says when, which is enough at a glance
-   and not enough while you are choosing a minute. It sits to the left of the
-   square so the thing under your finger is not the thing you are reading. */
-.tl-qr-time {
-  position: absolute;
-  right: 34px;
-  top: -9px;
-  height: 18px;
-  display: none;
-  align-items: center;
-  padding: 0 6px;
+  background: #d9bd92;
+  padding: 2px 8px;
   border-radius: 3px;
-  background: var(--pill-bg);
-  color: var(--pill-ink);
-  font: 700 10px var(--font-mono);
-  white-space: nowrap;
-  pointer-events: none;
 }
 
-.tl-qr-line.tl-qr-dragging .tl-qr-time { display: inline-flex; }
-
-/* THE SQUARE IS 18px AND THE TARGET IS 36px. A finger cannot hit 18, and
-   growing the paint to meet it would undo the point of the change — so the hit
-   area is an invisible ring around it. */
-.tl-qr-label::after {
-  content: '';
-  position: absolute;
-  inset: -9px;
-}
-
-/* The selected gate's square: a ring, so the four dotted lines on screen are
-   obviously ABOUT this one when several gates share the day. */
-.tl-qr-selected .tl-qr-label {
-  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--pill-bg);
-}
-
-/* ── THE SELECTED GATE'S WINDOW, DRAWN (2026-08-24, Quentin's instruction) ──
-   Four dotted lines across the day: when the scan window opens and closes, and
-   when the linked routine starts and is due. Dotted, not solid, because these
-   are BOUNDARIES rather than things occupying time — a solid rule reads as a
-   block, and the day already has enough of those.
-
-   The colour is the gate's own state colour, so the lines and the square that
-   opened them are visibly one object. */
-.tl-gate-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 0;
-  border-top: 1px dashed var(--gate-open);
+.tl-qr-x {
   pointer-events: auto;
-  cursor: ns-resize;
-  z-index: 2;
+  background: none;
+  border: none;
+  color: #1a1200;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0 2px;
+  margin-left: 4px;
 }
 
-/* The routine's pair is the same grammar in the quieter ink: the scan window
-   is the gate (it is what the money hangs on), the routine is what has to
-   happen inside it. */
-.tl-gate-line-routine-open,
-.tl-gate-line-routine-due {
-  border-top-style: dotted;
-  border-top-color: var(--text-secondary);
-}
-
-.tl-gate-line-tag {
-  position: absolute;
-  left: 10px;
-  top: -8px;
-  padding: 0 5px;
-  border-radius: 3px;
-  background: var(--surface-low);
-  color: var(--text-secondary);
-  font: 600 9px var(--font-mono);
-  white-space: nowrap;
-  pointer-events: none;
-}
-
-.tl-gate-line-scan-open .tl-gate-line-tag,
-.tl-gate-line-scan-close .tl-gate-line-tag { color: var(--gate-open); }
-
-/* A line is 1px of paint and a finger is not. The grab area is an invisible
-   band around it — the same trick the square uses, in the one dimension a
-   horizontal line can be missed in.
-
-   It STOPS SHORT OF THE SQUARE. The scan-close line is drawn at exactly the
-   deadline the square marks, so a band running the full width sat on top of
-   the one control you press to open the read-out: the second tap never
-   reached it. The square keeps its own 36px ring, the line takes the rest of
-   the row, and neither has to guess which one you meant. */
-.tl-gate-line::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 52px;
-  top: -11px;
-  height: 22px;
-}
-
-.tl-gate-line.tl-gate-line-dragging { border-top-width: 2px; }
-
-/* A line that cannot be moved says so by looking inert — and says WHY out loud
-   when you press it (gateLineRefusal). A dead control that stays dressed as a
-   live one is the phone version of a button that does nothing. */
-.tl-gate-line-fixed { cursor: default; opacity: 0.75; }
-
-/* Belt and braces on the same collision: the gate squares stack above the
-   lines they opened. */
-#tl-qr-layer .tl-qr-line { z-index: 3; }
+.tl-qr-x:hover { color: #000000; }
 
 /* ---- NOW panel ---- */
 
@@ -3686,7 +2930,96 @@ body.np-body {
   padding: 2px 12px;
 }
 
-body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #cal-overlay, body.over-runner #logs-overlay { z-index: 170; }
+/* ---- People tab ---- */
+
+#tab-people {
+  flex-direction: column;
+  padding: 16px;
+  gap: 14px;
+  overflow: hidden;
+}
+
+#people-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  gap: 14px;
+}
+
+#people-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+#people-due-strip {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex: 1;
+}
+
+#people-due-strip:empty {
+  display: none;
+}
+
+.due-strip-label {
+  align-self: center;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.due-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-width: 180px;
+  max-width: 240px;
+}
+
+.due-name {
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.due-action {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin: 2px 0 6px;
+  cursor: pointer;
+}
+
+.due-skip {
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 10px;
+}
+
+.due-skip:hover {
+  background: var(--surface-2);
+}
+
+#people-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+#people-grid {
+  flex: 1;
+  min-height: 0;
+}
 
 /* Journal tab */
 #tab-journal {
@@ -3694,22 +3027,24 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   padding: 20px 24px;
 }
 
-#tracking-wrap {
+#journal-wrap {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
   width: 100%;
+  gap: 14px;
 }
 
-#tracking-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 0 14px 20px;
+#journal-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
 }
 
-#tracking-habit {
+#journal-habit {
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -3717,20 +3052,54 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   min-width: 0;
 }
 
-#tracking-habit .jh-label {
+#journal-habit .jh-label {
   color: var(--text-secondary);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
-#tracking-habit .jh-value {
+#journal-habit .jh-value {
   font-weight: 600;
   color: var(--text-primary);
 }
 
-#tracking-habit .jh-since { color: var(--text-secondary); font-size: 12px; }
-#tracking-habit .jh-empty { color: var(--text-secondary); }
+#journal-habit .jh-since { color: var(--text-secondary); font-size: 12px; }
+#journal-habit .jh-empty { color: var(--text-secondary); }
+
+#journal-grid {
+  flex: 1;
+  min-height: 0;
+}
+
+.people-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin: 0 3px 0 0;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.people-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.people-open {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.people-open:hover {
+  color: var(--accent);
+}
 
 /* Tabulator dark-theme overrides */
 
@@ -3838,10 +3207,17 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 .tabulator-edit-select-list .tabulator-edit-select-list-item:hover {
   background: var(--accent);
   color: var(--on-accent);
-}#map-overlay {
+}
+
+/* People overlays (detail / buckets / add) */
+
+#person-detail-overlay,
+#map-overlay,
+#bucket-mgr-overlay,
+#person-add-overlay {
   position: fixed;
   inset: 0;
-    background: var(--overlay);
+  background: var(--overlay);
   z-index: 150;
   display: flex;
   align-items: stretch;
@@ -3851,7 +3227,12 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 @keyframes modal-slide-in-right {
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
-}#map-modal {
+}
+
+#person-detail-modal,
+#map-modal,
+#bucket-mgr-modal,
+#person-add-modal {
   background: var(--surface);
   border-left: 1px solid var(--border);
   width: 480px;
@@ -3866,70 +3247,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
    --surface-mid is what #engage-root uses, which is the white card in light
    mode (the ladder inverts there — see the theme section of CLAUDE.md). */
 #map-modal { background: var(--surface-mid); }
-
-/* ── MAP's one filter menu (23a) ─────────────────────────────
-   The lens joins domain and tags in the header's menu, so there is ONE place
-   that narrows the list and no permanent band of chrome. The pill names what
-   you are looking at; the menu is transient and hangs under the header.
-   Chips reuse .ctx-chip / .ctx-req / .ctx-off — the same grammar the Engage
-   context picker uses, so "required" looks the same everywhere it is said. */
-.map-filter-pill {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font: 13px var(--font-ui);
-  color: var(--text-primary);
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 7px;
-  padding: 5px 10px;
-  margin-left: auto;
-  margin-right: 10px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.map-filter-pill:hover { border-color: var(--accent); }
-/* Non-default only: a pill that is always accented says nothing. */
-.map-filter-pill.map-filter-on {
-  background: var(--gold);
-  border-color: var(--gold);
-  color: var(--on-accent);
-  font-weight: 500;
-}
-#map-filter-menu {
-  position: absolute;
-  top: 50px;
-  right: 12px;
-  z-index: 3;
-  width: 300px;
-  max-width: calc(100% - 24px);
-  max-height: 70%;
-  overflow-y: auto;
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.map-filter-sec {
-  font: 10px var(--font-mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-.map-filter-sec:not(:first-child) { margin-top: 4px; }
-.map-filter-chips { display: flex; flex-wrap: wrap; gap: 7px; }
-.map-filter-foot {
-  margin-top: 6px;
-  padding-top: 9px;
-  border-top: 1px solid var(--border-soft);
-}
-/* The menu is positioned against the modal, not the viewport. */
-#map-modal { position: relative; }
 
 /* MAP search: fixed above the scrolling body, so the query stays put while
    the results move under it. */
@@ -3963,7 +3280,12 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.map-row-hit { cursor: default; }#map-body {
+.map-row-hit { cursor: default; }
+
+#person-detail-body,
+#map-body,
+#bucket-mgr-body,
+#person-add-body {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
@@ -4011,6 +3333,346 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   color: var(--text-secondary);
   font-size: 13px;
 }
+
+.pd-sub {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.pd-metas {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pd-meta {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.pd-meta span {
+  display: inline-block;
+  width: 96px;
+  color: var(--text-secondary);
+}
+
+.pd-label,
+.pd-log-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.pd-notes {
+  min-height: 90px;
+  resize: vertical;
+}
+
+.pd-add-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.pd-add-form input[type="text"] {
+  flex: 1;
+}
+
+.pd-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pd-log-row {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.pd-log-date {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.pd-log-note {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.pd-log-src {
+  color: var(--text-secondary);
+}
+
+.pd-empty {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.bm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bm-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.bm-name {
+  flex: 1;
+}
+
+.bm-toggle {
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 10px;
+}
+
+.bm-toggle:hover {
+  color: var(--text-primary);
+  background: var(--surface-2);
+}
+
+.pa-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pa-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pa-row > label {
+  width: 96px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.pa-row input[type="text"],
+.pa-row select {
+  flex: 1;
+}
+
+.pa-row-buckets {
+  align-items: flex-start;
+}
+
+.pa-buckets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.pa-check {
+  font-size: 12px;
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pa-actions {
+  padding-top: 6px;
+}
+
+/* ---- People add form: name autocomplete + first-interaction section ---- */
+.pa-name-wrap {
+  flex: 1;
+  position: relative;
+}
+
+.pa-name-wrap input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.pa-suggest {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.pa-suggest-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.pa-suggest-item:last-child {
+  border-bottom: none;
+}
+
+.pa-suggest-item:hover {
+  background: var(--surface-2);
+}
+
+.pa-suggest-name {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.pa-suggest-sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.pa-existing {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: rgba(90, 140, 255, 0.10);
+  border: 1px solid rgba(90, 140, 255, 0.35);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.pa-existing strong {
+  color: var(--text-primary);
+}
+
+.pa-contact {
+  font-size: 13px;
+}
+
+.pa-row-notes { align-items: flex-start; }
+
+.pa-notes-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* What's already on file, read-only. This form only ever APPENDS, so showing an
+   editable copy would invite overwriting notes it may not have loaded. */
+.pa-notes-current {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  max-height: 96px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-left: 2px solid var(--border);
+  background: var(--tint-faint);
+  border-radius: 3px;
+  scrollbar-width: thin;
+}
+
+.pa-notes-add {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+}
+
+.pa-int {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---- Bucket manager: color swatch + palette picker ---- */
+.bm-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 0;
+}
+
+.bm-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 2px 10px 28px;
+}
+
+.bm-pal-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  padding: 0;
+}
+
+.bm-pal-swatch:hover {
+  outline: 2px solid var(--text-secondary);
+  outline-offset: 1px;
+}
+
+/* ---- Person detail: delete footer ---- */
+.pd-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pd-delete {
+  font-size: 12px;
+  color: #ff6b6b;
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  border-radius: 4px;
+  padding: 5px 14px;
+}
+
+.pd-delete:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.pd-delete:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- People tab: nightly-fill session bar + locked state ---- */
+#people-session-bar.psb {
+  padding: 8px 12px;
+  font-size: 12.5px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.psb-closed { background: var(--surface); color: var(--text-secondary); }
+.psb-open { background: var(--surface); color: var(--text-primary); border: 1px solid var(--accent); }
+.psb-active { background: rgba(152, 185, 221, 0.12); color: var(--text-primary); border: 1px solid var(--accent); }
+.psb-timer { font-family: var(--font-mono); font-weight: 600; }
+/* Read-only outside the window: hide the day-editing write affordances. */
+#people-wrap.people-locked #people-toolbar,
+#people-wrap.people-locked .due-skip { display: none; }
 
 /* ── NOW — the next-actions lens ─────────────────────────────
    Flat by construction: no group containers, no indentation. The parent chain
@@ -4148,73 +3810,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 
 .map-count { font-size: 10px; color: var(--text-secondary); margin-left: 6px; }
 
-/* -- Areas of focus, the roster at the foot of MAP --------------------------
-   The standing structure, below the inventory it files. Visually quieter than
-   the tree above it - a rule and a muted head - because it is a list you come
-   to REVIEW, not one you read every visit; MAP is weekly, and this is the
-   part of it that is weekly-most. */
-.map-af {
-  display: flex;
-  flex-direction: column;
-  margin-top: 22px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.map-af-head {
-  display: flex;
-  align-items: center;
-  font: 600 12px var(--font-ui);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-secondary);
-}
-.map-af-head .map-acts { margin-left: auto; gap: 8px; }
-
-.map-af-add {
-  font: 11px var(--font-ui);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--text-secondary);
-  padding: 2px 4px;
-}
-.map-af-add:hover { color: var(--accent); }
-
-.map-af-hint {
-  font: 11px/1.4 var(--font-ui);
-  color: var(--text-secondary);
-  margin: 4px 0 10px;
-}
-
-.map-af-domain { display: flex; flex-direction: column; margin-bottom: 10px; }
-
-.map-af-dhead {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font: 600 11px var(--font-ui);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--accent);
-  padding: 2px 0;
-}
-.map-af-dname { flex: 1; min-width: 0; }
-.map-af-dhead .map-acts, .map-af-row .map-acts { margin-left: auto; }
-
-.map-af-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 0 3px 10px;
-  border-left: 2px solid var(--border);
-  margin-left: 4px;
-}
-
-.map-af-name { flex: 1; font-size: 13px; color: var(--text-primary); min-width: 0; }
-
-.map-af-open { font-size: 15px; line-height: 1; padding: 0 4px; color: var(--text-secondary); }
-.map-af-open:hover { color: var(--accent); }
-
 .map-row {
   display: flex;
   align-items: center;
@@ -4321,8 +3916,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   padding: 12px 14px 10px;
   border-bottom: 1px solid var(--border);
   flex: none;
-  flex-wrap: wrap;
-  row-gap: 6px;
 }
 
 #eg-panel-btn {
@@ -4339,7 +3932,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
    to today. Off-today gets the accent so a planning view can never be
    mistaken for the real day. */
 .eg-nav {
-  flex: none;
   font-size: 17px;
   line-height: 1;
   color: var(--text-secondary);
@@ -4349,24 +3941,9 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 .eg-day-btn {
   display: inline-flex;
   align-items: baseline;
-  justify-content: center;
   gap: 8px;
   padding: 0;
-  /* The same hard slot as the calendar's: the arrows either side of it hold
-     still whatever day is being looked at. */
-  flex: none;
-  width: var(--daynav-slot);
-  overflow: hidden;
 }
-
-.eg-day-btn .eg-day-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.eg-day-btn .eg-day-date { white-space: nowrap; }
 .eg-day-off .eg-day-name, .eg-day-off .eg-day-date { color: var(--accent); }
 #eg-today {
   font: 10px var(--font-mono);
@@ -4385,12 +3962,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 .due-chip-inherited { border-style: dashed; opacity: 0.8; }
 .eg-spacer { flex: 1; }
 
-/* The context formula GROWS (2026-08-12). It is a sentence — `General ∧ ¬SF ∧
-   deep` — so with a few tags selected it outgrew one line and was clipped by the
-   header's row, which meant the thing telling you what the pool is filtered by
-   could not be read. It wraps instead, and the header grows with it: the formula
-   is the receipt for every hidden item, so it is the last thing that should be
-   truncated to save a few pixels. Right-aligned, because it is the row's tail. */
 .eg-domain {
   font: 11px var(--font-mono);
   background: var(--surface-2);
@@ -4398,11 +3969,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 4px 8px;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: right;
-  line-height: 1.45;
-  max-width: 62%;
 }
 
 /* The bar is fixed, so the day's scroller pads under it. */
@@ -4421,25 +3987,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 .eg-event-text { font-weight: 500; }
 .eg-past .eg-text { color: var(--text-secondary); }
 .eg-cancelled .eg-text { color: var(--text-secondary); text-decoration: line-through; }
-
-/* What is happening RIGHT NOW (2026-08-16). The day already said what was
-   PAST by dimming it; the present said nothing, so finding your place meant
-   reading the clock and then the times. Only ever true on today.
-   Built from existing vars so it carries a light value for free — and it is a
-   tint, not a colour: the day has exactly one accent (the gate outcomes) and
-   "now" must not compete with judged money. Cancelled and past win over it in
-   source order below, so a cancelled block does not glow. */
-.eg-now {
-  background: var(--tint);
-  border-radius: 6px;
-}
-.eg-now .eg-time,
-.eg-now .eg-end { color: var(--accent); }
-.eg-now .eg-text { color: var(--text-primary); }
-/* A cancelled row is not happening, whatever the clock says. */
-.eg-now.eg-cancelled { background: none; }
-.eg-now.eg-cancelled .eg-time,
-.eg-now.eg-cancelled .eg-end { color: var(--text-secondary); }
 
 /* gate eyebrows are NEUTRAL until judged: green only on success, red on fail. */
 .eg-qr { display: flex; align-items: center; gap: 9px; padding: 7px 14px 3px; }
@@ -4468,17 +4015,11 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 .eg-qr-failed .eg-time,
 .eg-qr-failed .eg-qr-label { color: var(--danger); }
 
-/* The box is an INTERACTIVE control, so its outline owes 3:1 against what it
-   sits on — --border is 1.28:1 on dark and 1.38:1 on light, which drew a
-   checkbox you could barely find. --text-secondary carries it in both themes
-   (5.4:1 / 5.8:1) and needs no light-appendix entry, being a var the appendix
-   already swaps. Panel edges keep --border: an edge is decoration, a control
-   is not. */
 .eg-check {
   width: 14px;
   height: 14px;
   flex: none;
-  border: 1.5px solid var(--text-secondary);
+  border: 1.5px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
   /* Long-press = in progress; keep iOS from selecting/calling out instead. */
@@ -4488,41 +4029,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   touch-action: manipulation;
 }
 .eg-check:hover { border-color: var(--accent); background: var(--tint); }
-
-/* ▶ INSTEAD OF THE TICK on a row a routine seeded (flow.as_task). Same 14px
-   box the checkbox occupies so the column of controls stays a column, but it
-   carries the mark: the row's one control is "run it", not "call it done".
-   Ticking such a row off would retire the seed with the routine never run.
-   The finger target is padded past the 14px box — below ~36px a sub-target
-   cannot be hit on a phone.
-   The MARK is what distinguishes it from the tick box, not a colour: it used
-   to be outlined in accent, which made the one blue thing in a column of
-   ordinary rows read as a status rather than a verb. Ink, like every other
-   run mark in the app; the outline keeps --text-secondary, the same control
-   outline the checkbox beside it uses (3:1 in both themes). */
-.eg-run {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  border: 1.5px solid var(--text-secondary);
-  border-radius: 4px;
-  color: var(--text-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
-  touch-action: manipulation;
-}
-.eg-run:hover { background: var(--tint); }
-
-/* The routine's length, derived from its steps rather than stored as a tag —
-   it sits with the estimate tags and reads as one, in accent so it is legible
-   as "this came with the routine". Two classes, because .eg-tag is defined
-   further down the file and a single-class rule here would simply lose to it. */
-.eg-tag.eg-tag-len { color: var(--accent); border-color: var(--accent); }
 /* ◐ in progress (press-and-hold): accent, half-filled, floats first in the
    pool. A glance state only — nothing else reads it. */
 .eg-check-started {
@@ -4651,17 +4157,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 }
 .eg-rt-add:focus { border-bottom-color: var(--accent); }
 
-/* THE CALENDAR ENDS HERE. The day and the pool are two different claims —
-   what you have committed to, and what is merely available — and the line
-   between them used to be carried by the pool header's border-top. That band
-   is gone, so the rule moves to the thing it was always about: the end of the
-   day. :not(:empty) because a lone rule under nothing is a line about
-   nothing. */
-.eg-day:not(:empty) {
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
 .eg-pool-head {
   padding: 14px 14px 4px;
   font: 10px var(--font-mono);
@@ -4670,13 +4165,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   color: var(--text-secondary);
   border-top: 1px solid var(--border);
 }
-
-/* One rule, not two: the deferred block brings its own border-top, and when
-   it sits directly under the day that would draw the same line twice. */
-.eg-day + .eg-pool-head { border-top: none; }
-
-/* The first pool row should not sit on the line. */
-.eg-day + .eg-pool { padding-top: 10px; }
 
 .eg-tag {
   flex: none;
@@ -4688,45 +4176,10 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   white-space: nowrap;
 }
 
-/* The tags are a COLUMN, not a tail (2026-08-16). They used to be direct
-   children of the row, so the row was one flex line: the text wrapped and the
-   tags could only squeeze, and a well-tagged action on a 430px phone pushed
-   them into a crush of 10px chips. Wrapping them in their own flex box makes
-   the row two columns that each wrap, and the height negotiation is what
-   flexbox already does — no library, and none would be allowed (vanilla JS,
-   no new dependencies). `flex-basis` is the whole balance: the text asks for
-   55% and the tags take what they need, both give way when the other needs it
-   more, and the row is as tall as the taller column rather than as tall as
-   the worst single line. */
-.eg-pool-item {
-  align-items: flex-start;
-  row-gap: 3px;
-}
-
-/* A checkbox centred against a three-line row floats in the middle of nowhere;
-   against the FIRST line it reads as belonging to the item. */
-.eg-pool-item .eg-check { margin-top: 2px; }
-
-/* The balance is a FLOOR on the text, not a ceiling on the tags. Capping the
-   tags column forces it to stack even when the row had width to spare — three
-   chips became three lines and the row got TALLER than the crush it replaced.
-   Giving the text a minimum instead lets the tags take their natural width
-   and wrap only when they genuinely run out, which is the shorter row in
-   every case measured. */
-.eg-pool-item .eg-text { flex: 1 1 auto; min-width: 45%; }
-
-.eg-tags {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: flex-end;
-  gap: 4px;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
 .eg-empty { font-size: 12px; color: var(--text-secondary); padding: 8px 14px; }
 /* Items hidden by a location-bound tag — counted, never silent. */
+.eg-geo-hidden,
+.eg-dev-hidden { font: 10px var(--font-mono); color: var(--text-secondary); margin-left: 8px; }
 
 /* THE global bar — one context bar for the whole app, fixed under everything.
    --gbar-h is the layout contract: every overlay (and the clarify sheet)
@@ -4738,11 +4191,7 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  /* The VISIBLE bottom. 100% is the viewport and --vvh is what you can see, so
-     the difference is the strip hidden under the browser chrome or the
-     keyboard; it is 0 on a desktop and 0 wherever --vvh is not set. Without
-     this the capture bar sits behind the keyboard it just opened. */
-  bottom: calc(100% - var(--vvh, 100%));
+  bottom: 0;
   width: 100%;
   max-width: 430px;
   height: var(--gbar-h);
@@ -4781,11 +4230,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   font: 11px var(--font-mono);
   color: var(--accent);
   padding: 2px 4px;
-  /* The device split ("Clarify 3 · 2 pc") must stay on ONE line: wrapped, it
-     doubles the bar's height and pushes the capture input off the row. The
-     input is what gives here — it flexes. */
-  white-space: nowrap;
-  flex: none;
 }
 #eg-clarify:hover { text-decoration: underline; }
 
@@ -4892,12 +4336,61 @@ button.eg-domain { cursor: pointer; }
   outline-offset: -4px;
 }
 
-/* ── Lists: the review fold-out and the section heads ───────
-   The GTD overlay is gone (2026-08-16) — its four lists were MAP's
-   lenses said twice, and the weekly review moved into Lists. These
-   three survive: Lists uses them for its Routines / Reference heads
-   and its empty states. */
+/* ── GTD overlay — the four lists, one column ───────────────── */
+
+/* The overlay is ONE scroll column: the split-pane scrolling (#gtd-left
+   flex:none made its overflow rule inert, and a tall left list crushed
+   #gtd-right to nothing inside the overlay's overflow:hidden) never worked
+   on the phone. The ID selector out-specifies .m-overlay's hidden. */
+#tab-gtd { overflow-y: auto; }
+#tab-gtd > .m-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-mid);
+}
+
+/* One ground, the same --surface-mid MAP and the day sit on. The two halves
+   used to be --surface and --surface-mid, which is what made this tab look
+   like a different app. */
+#gtd-body { padding: 16px 20px; }
+
+.gtd-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.gtd-title {
+  font: 600 12px var(--font-ui);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+
+.gtd-counts { font-size: 11px; color: var(--text-secondary); }
+
+#gtd-review-btn { margin-left: auto; position: relative; }
+
+#gtd-review-btn.has-due::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gold);
+}
+
 .gtd-section { margin-bottom: 18px; }
+
+/* The list head is the collapse control — the whole row is the target, so it
+   works on a phone without hunting for a chevron. */
 .gtd-section-head {
   display: flex;
   align-items: center;
@@ -4913,8 +4406,84 @@ button.eg-domain { cursor: pointer; }
   cursor: pointer;
   text-align: left;
 }
-
 .gtd-section-head:hover { color: var(--text-primary); }
+.gtd-chev { margin-left: auto; font-size: 11px; color: var(--text-secondary); }
+/* Domain groups, the same shape MAP uses. */
+.gtd-domain-head {
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin: 8px 0 2px;
+}
+
+.gtd-stalled-n { font-size: 10px; color: var(--danger); margin-left: 8px; }
+
+.gtd-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.gtd-text { flex: 1; font-size: 13px; color: var(--text-primary); min-width: 0; }
+.gtd-row-project > .gtd-text { color: var(--accent); font-weight: 500; }
+
+.gtd-crumb {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-secondary);
+  max-width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gtd-age {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.gtd-acts { display: flex; align-items: center; gap: 3px; flex: none; opacity: 0.35; }
+.gtd-row:hover .gtd-acts { opacity: 1; }
+
+.gtd-acts button {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 3px;
+  white-space: nowrap;
+}
+
+.gtd-acts button:hover { color: var(--accent); }
+.gtd-del:hover { color: var(--danger); }
+
+.gtd-tag-edit {
+  flex: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 0 3px;
+  opacity: 0.35;
+}
+.gtd-row:hover .gtd-tag-edit { opacity: 1; }
+.gtd-tag-edit:hover { color: var(--accent); }
+
+.gtd-tags-input {
+  flex: none;
+  width: 110px;
+  font: 10px var(--font-ui);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--text-primary);
+  padding: 1px 4px;
+}
+
 .gtd-empty { font-size: 12px; color: var(--text-secondary); padding: 6px 0; }
 
 /* ── Reference lists (tab-lists) — GTD's non-actionable keeps ── */
@@ -4949,22 +4518,14 @@ button.eg-domain { cursor: pointer; }
 
 /* ── Routines (flows): index rows, step editor, the runner ──── */
 .fr-due { font: 10px var(--font-mono); color: var(--gold); flex: none; }
-/* Running a routine is that row's own verb, so the mark takes the row's ink
-   rather than the accent — the same call as the review fold-out's. 32px
-   because it is the control you tap to start a routine on a phone. */
 .fr-play {
-  color: var(--text-primary);
+  color: var(--accent);
   font-size: 13px;
-  padding: 6px 8px;
-  min-height: 32px;
+  padding: 2px 8px;
 }
-
-/* The drawn ▶ (playMark). Inline beside a label it needs the optical nudge a
-   text glyph would have carried; on its own it is centred by its button. */
-.play-mark { vertical-align: -1px; }
 .fr-play-big {
   margin: 12px 0 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent);
   border-radius: 8px;
   padding: 8px 16px;
   align-self: flex-start;
@@ -5018,13 +4579,6 @@ button.eg-domain { cursor: pointer; }
   padding: 1px 5px;
   flex: none;
 }
-/* What the routine adds up to. A statement under the list, not a badge on it —
-   it belongs to the whole routine rather than any one step. */
-.fr-total {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  padding: 6px 2px 0;
-}
 .fr-open { color: var(--text-secondary); padding: 2px 6px; font-size: 14px; }
 .fr-open:hover { color: var(--accent); }
 .fr-sheet-del { color: var(--danger); }
@@ -5034,7 +4588,7 @@ button.eg-domain { cursor: pointer; }
   left: 50%;
   transform: translateX(-50%);
   top: 0;
-  height: calc(var(--vvh, 100dvh) - var(--gbar-h));
+  bottom: var(--gbar-h);
   width: 100%;
   max-width: 430px;
   background: var(--surface-mid);
@@ -5053,82 +4607,26 @@ button.eg-domain { cursor: pointer; }
 }
 .fr-title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .fr-meta { font: 11px var(--font-mono); color: var(--text-secondary); }
-/* ONE SCROLL, NOT A DECK OF PAGES (2026-09-02). The page used to hold exactly
-   one step and a foot of verbs; it holds every step of the run now, a plain one
-   as a checkbox row and a step that ASKS something as a card. The bottom
-   padding clears the global bar so the last row is reachable with a thumb. */
 .fr-page {
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 14px calc(26px + env(safe-area-inset-bottom));
-}
-.fr-step { flex-shrink: 0; }
-/* A ROW is a finger-sized target end to end: the tick, the sentence, and the
-   step's own verbs if it has any. 44px is the floor, not the height - a long
-   step wraps and the row grows with it. */
-.fr-row {
-  display: flex;
-  align-items: flex-start;
   gap: 12px;
-  min-height: 44px;
-  padding: 10px 4px;
-  border-bottom: 1px solid var(--border-soft);
+  padding: 26px 18px;
 }
-.fr-row-main { flex: 1; min-width: 0; padding-top: 2px; }
-.fr-row-text { font-size: 15px; color: var(--text-primary); overflow-wrap: anywhere; }
-.fr-row-verbs { display: flex; gap: 6px; flex-shrink: 0; }
-.eg-check.fr-tick {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-  /* The outline of a CONTROL owes 3:1, which --border does not carry
-     (2026-08-17) - so it takes --text-secondary, like every other one. */
-  border: 1px solid var(--text-secondary);
-}
-/* .eg-check:hover paints --tint, which is two classes deep and therefore beat a
-   bare .fr-tick-on: the ticked box came back accent-BORDERED but transparent,
-   with a dark ✓ on it that could not be seen. The on-state has to be at least
-   as specific as the hover it is overriding. */
-.eg-check.fr-tick-on,
-.eg-check.fr-tick-on:hover {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-/* A CARD is the old page, in place. */
-.fr-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-}
-.fr-card > * { flex-shrink: 0; }
-.fr-card-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: 2px;
-}
-.fr-card-foot .fr-done { margin-left: auto; }
-/* Done is DIM, not gone: the run is a list of what today asked, and a finished
-   step disappearing would make the list shorter every time you looked at it. */
-.fr-step-done { opacity: 0.5; }
-.fr-step-done .fr-row-text { text-decoration: line-through; }
-.fr-step-big { font-size: 17px; font-weight: 600; color: var(--text-primary); }
+.fr-step-big { font-size: 22px; font-weight: 600; color: var(--text-primary); }
 .fr-note { font: 12px var(--font-ui); color: var(--text-secondary); }
 .fr-note-hard { color: var(--danger); }
+.fr-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+.fr-foot #fr-back { color: var(--text-secondary); }
+.fr-foot #fr-done { margin-left: auto; }
 .fr-rating { display: flex; gap: 6px; }
 .fr-rate {
   width: 34px;
@@ -5138,24 +4636,6 @@ button.eg-domain { cursor: pointer; }
   color: var(--text-primary);
 }
 .fr-rate-on { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
-
-/* The runner page is a flex COLUMN, so every child shrinks by default. On a
-   phone that squeezed the nightly journal — the two textareas collapsed to a
-   sliver and the experiment block below them was clipped — because the page is
-   taller than the viewport and flex paid for it out of the children. Nothing
-   here may be compressed: the page SCROLLS instead (2026-08-15). Still true of
-   the cards, which are flex columns of their own (.fr-card > *). */
-.fr-page > * { flex-shrink: 0; }
-/* .cl-notes is written for a sheet, which supplies its own 14px gutter; inside
-   the runner the card already has one, so it spans the width it is given. */
-.fr-page .cl-notes { width: 100%; margin: 0; min-height: 68px; }
-.fr-exp { display: flex; flex-direction: column; gap: 8px; }
-.fr-exp-head { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.fr-exp .cl-row { padding: 0; }
-.fr-exp .cl-action { width: 100%; }
-/* Wrap onto the next line rather than truncating: three verbs on one phone-wide
-   row do not fit, and a half-word button is unreadable. */
-.fr-exp .cl-pill { white-space: nowrap; }
 
 /* ── Dependency chains (clarify's ⛓ editor + the [n] badges) ── */
 .cl-chain {
@@ -5187,9 +4667,12 @@ button.eg-domain { cursor: pointer; }
                margin-left: auto; line-height: 1; }
 .cl-chain-go:hover { color: var(--text); }
 
+.gtd-chips,
 .now-chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 
+.gtd-tag,
 .now-tag,
+.gtd-chip,
 .now-chip {
   flex: none;
   font-size: 10px;
@@ -5200,8 +4683,10 @@ button.eg-domain { cursor: pointer; }
   white-space: nowrap;
 }
 
+.gtd-chip:hover,
 .now-chip:hover { color: var(--accent); border-color: var(--accent); }
 
+.gtd-chip-on,
 .now-chip-on {
   color: var(--accent);
   border-color: var(--accent);
@@ -5227,13 +4712,29 @@ button.eg-domain { cursor: pointer; }
 }
 
 .gr-list li > span:first-child { flex: 1; color: var(--text-primary); }
-.gr-list-meta { flex: none; font-size: 11px; color: var(--text-secondary); }/* ── Mobile modal overrides ─────────────────────────────────── */
+.gr-list-meta { flex: none; font-size: 11px; color: var(--text-secondary); }
+
+/* ── Mobile modal overrides ─────────────────────────────────── */
 /* Every modal is a phone-sized surface now: full width, capped at the shell,
    centered over the letterboxed column on a big screen. */
 
-#modal-overlay, #logs-overlay, #review-overlay, #map-overlay {
+#modal-overlay,
+#logs-overlay,
+#review-overlay,
+#person-detail-overlay,
+#map-overlay,
+#bucket-mgr-overlay,
+#person-add-overlay {
   justify-content: center;
-}#block-editor-modal, #logs-modal, #review-modal, #map-modal {
+}
+
+#block-editor-modal,
+#logs-modal,
+#review-modal,
+#person-detail-modal,
+#map-modal,
+#bucket-mgr-modal,
+#person-add-modal {
   width: 100%;
   max-width: 430px;
   border-left: 1px solid var(--border);
@@ -5241,6 +4742,7 @@ button.eg-domain { cursor: pointer; }
 }
 
 #cal-strips { flex: none; }
+#cal-strips #sheets-inbox-section { padding: 0 10px; }
 
 /* GTD overlay: weekly-review fold-out at the top */
 #gtd-review-head {
@@ -5264,16 +4766,11 @@ button.eg-domain { cursor: pointer; }
    end of the row and the chevron follows it. */
 .gr-run {
   margin-left: auto;
-  /* The same ink as the label it sits beside, not the accent: running the
-     review is the row's own verb, not a second thing competing with it. */
-  color: var(--text-primary);
+  color: var(--accent);
+  font-size: 13px;
   padding: 4px 8px;
-  /* Centres the mark against the text rather than against a line box that a
-     glyph's own metrics were deciding. */
-  display: flex;
-  align-items: center;
 }
-.gr-run:hover { color: var(--text-secondary); }
+.gr-run:hover { color: var(--text-primary); }
 .gtd-review-chevron { margin-left: 4px; color: var(--text-secondary); }
 #review-panel {
   flex: none;
@@ -5282,71 +4779,78 @@ button.eg-domain { cursor: pointer; }
   background: var(--surface);
   border-bottom: 1px solid var(--border-soft);
   padding: 0 14px 12px;
-}#tracking-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+}
 
-/* Journal: day cards */
-/* -- Tracking: the metric list, and one metric's days -------------------- */
-
-/* A row is the metric, where it has been going, and its last answer. The
-   sparkline takes currentColor so it is the row's own ink rather than a
-   colour that has to be checked against the surface twice. */
-.mx-list { display: flex; flex-direction: column; }
-
-.mx-row {
+/* People: mobile list */
+#people-wrap, #journal-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+#people-grid { flex: 1; overflow-y: auto; }
+.people-search {
+  margin: 10px 14px 6px;
+  width: calc(100% - 28px);
+  padding: 8px 11px;
+  font: 13px var(--font-ui);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  outline: none;
+}
+.pl-row {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 12px 2px;
-  text-align: left;
+  padding: 10px 14px;
   width: 100%;
-  border-bottom: 1px solid var(--border-soft);
-  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  color: var(--text-primary);
 }
-.mx-row:hover { background: var(--tint); }
-
-.mx-top { display: flex; align-items: center; gap: 10px; }
-.mx-name { font-size: 14px; font-weight: 600; color: var(--text-primary); flex: 1; min-width: 0; }
-.mx-right { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
-.mx-spark { color: var(--text-secondary); flex: none; }
-.mx-last { font: 600 12px var(--font-mono); color: var(--text-primary); }
-.mx-meta { font: 10px var(--font-mono); color: var(--text-secondary); }
-
-/* A text metric has no line, so it says its last answers instead — the answer
-   IS the trend when the question is prose. */
-.mx-quote {
+.pl-row:hover { background: var(--surface-2); }
+.pl-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pl-name { font-size: 14px; font-weight: 600; }
+.pl-meta { display: flex; gap: 8px; align-items: center; width: 100%; }
+.pl-next {
   font-size: 12px;
-  color: var(--text-secondary);
-  border-left: 2px solid var(--border);
-  padding-left: 8px;
-  margin-top: 2px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
+.pl-last { font: 10px var(--font-mono); color: var(--text-secondary); margin-left: auto; flex: none; }
 
-.mx-sec {
+/* Journal: day cards */
+#journal-grid { flex: 1; overflow-y: auto; padding: 0 14px 20px; }
+.jn-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.jn-head { display: flex; align-items: center; gap: 8px; }
+.jn-date { font: 600 11px var(--font-mono); color: var(--text-primary); }
+.jn-spacer { flex: 1; }
+.jn-sel-label { font: 10px var(--font-mono); color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+.jn-sel {
+  font: 11px var(--font-mono);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+.jn-lab {
   font: 10px var(--font-mono);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   color: var(--text-secondary);
-  margin: 22px 0 6px;
+  margin-top: 4px;
 }
-
-.mx-detail-bar { display: flex; align-items: center; gap: 10px; padding: 8px 0 12px; }
-
-.mx-day {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border-soft);
-}
-.mx-day-date { font: 11px var(--font-mono); color: var(--text-secondary); flex: none; width: 76px; }
-.mx-day-step { font: 10px var(--font-mono); color: var(--text-secondary); flex: none; }
-
-/* Editing a past answer is the one thing the Journal tab could do that nothing
-   else could, so the control is a real control: 32px, not a hairline. */
-.mx-edit {
-  flex: 1;
-  min-width: 0;
-  min-height: 32px;
+.jn-ta {
   font: 13px var(--font-ui);
   background: var(--surface-low);
   color: var(--text-primary);
@@ -5355,19 +4859,27 @@ button.eg-domain { cursor: pointer; }
   padding: 6px 8px;
   resize: vertical;
 }
-.mx-num { font-family: var(--font-mono); max-width: 90px; flex: none; }
 
-.mx-yn { display: flex; gap: 6px; flex: 1; }
-.mx-set {
-  font: 11px var(--font-mono);
-  color: var(--text-secondary);
+/* Person detail: editable fields during the nightly-fill session */
+.pd-meta .pd-edit {
+  flex: 1;
+  min-width: 0;
+  font: 12px var(--font-ui);
+  background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 6px 12px;
-  min-height: 32px;
-  cursor: pointer;
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 4px 6px;
 }
-.mx-set-on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.pd-bucket-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pd-bucket-chip {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+.pd-bucket-on { background: var(--accent); color: var(--on-accent); }
 
 /* Full-screen NOW view (phone) */
 #now-full-body {
@@ -5415,10 +4927,37 @@ button.eg-domain { cursor: pointer; }
   max-width: 220px;
 }
 
+/* (The global bar's overlay-offset contract lives at the very END of this
+   file — it must out-cascade every overlay's own inset/bottom declaration,
+   including #clarify-sheet's, which is defined after this point.) */
+
+/* Nightly-fill countdown, over every surface including People's own fixed
+   add/log forms. Rides below the offline marker via --stale-h so the two can
+   never stack on top of each other. */
+#people-timer {
+  position: fixed;
+  top: var(--stale-h, 0px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 250;
+  padding: 5px 14px;
+  padding-top: max(5px, env(safe-area-inset-top));
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: 0 0 8px 8px;
+  font: 600 11.5px/1.35 var(--font-mono);
+  letter-spacing: 0.03em;
+  /* left:50% with no right caps shrink-to-fit at half the viewport, which wraps
+     the countdown onto two lines. nowrap, then the transform re-centres it. */
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 14px var(--overlay);
+}
+
 #app-toast {
   position: fixed;
   left: 50%;
-  bottom: calc(76px + 100% - var(--vvh, 100%));
+  bottom: 76px;
   transform: translateX(-50%) translateY(8px);
   background: var(--surface-2);
   color: var(--text-primary);
@@ -5462,6 +5001,36 @@ button.eg-domain { cursor: pointer; }
    marker's measured height (--stale-h, set in markStale) rather than pushing
    the footer off the bottom. */
 body.pt-stale #app { padding-top: var(--stale-h, 20px); }
+
+/* ── Project notes (Allen's support material) ───────────────── */
+.gtd-notes-btn {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 0 4px;
+  opacity: 0.35;
+}
+.gtd-row:hover .gtd-notes-btn { opacity: 1; }
+.gtd-notes-btn:hover { color: var(--accent); }
+/* A project that HAS notes shows it at rest — that's the point of support
+   material you're meant to re-read in the weekly review. */
+.gtd-notes-on { opacity: 1; color: var(--accent); }
+
+.gtd-notes {
+  display: block;
+  width: 100%;
+  font: 12px var(--font-ui);
+  line-height: 1.45;
+  background: var(--surface-low);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 2px 0 6px;
+  resize: vertical;
+  outline: none;
+}
+.gtd-notes:focus { border-color: var(--accent); }
 
 /* Rendered-markdown notes (GTD + MAP): the read view; tap to edit raw text. */
 .md-body {
@@ -5511,12 +5080,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #se-sheet-backdrop,
 #sp-sheet-backdrop,
 #ev-sheet-backdrop,
-#en-sheet-backdrop,
-#ex-sheet-backdrop,
-#oc-sheet-backdrop {
+#en-sheet-backdrop {
   position: fixed;
   inset: 0;
-    z-index: 199;
+  z-index: 199;
   background: transparent;
 }
 
@@ -5529,20 +5096,14 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #se-sheet,
 #sp-sheet,
 #ev-sheet,
-#en-sheet,
-#ex-sheet,
-#oc-sheet {
+#en-sheet {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
   width: 100%;
   max-width: 430px;
-  bottom: 0;                  /* the bar contract at the end of the file wins */
-  /* 88% of the VISIBLE screen. A percentage resolves against the layout
-     viewport, so on a phone with the keyboard up a sheet could be taller than
-     the room it had — which is how a Save button ends up under the keyboard
-     with no way to scroll to it. */
-  max-height: calc(var(--vvh, 100dvh) * 0.88);
+  bottom: 0;
+  max-height: 88%;
   overflow-y: auto;
   background: var(--surface);
   border-top: 1px solid var(--border-soft);
@@ -5672,11 +5233,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* Clears the Show-on time; only rendered while a time is set. */
 .cl-x { font-size: 12px; padding: 6px 4px; background: transparent; color: var(--text-secondary); }
 .cl-x:hover { color: var(--text-primary); }
-/* The carried-over show-on date says so and clears in one tap. It is wider
-   than a bare ✕ because it is also the LABEL for where the value came from,
-   and a suggestion that defers an item out of the pool has to be readable
-   before it is dismissed. min-height so the tap target survives on a phone. */
-#cl-show-date-x { min-height: 32px; white-space: nowrap; }
 
 /* The event sheet's When row, compact: native date/time inputs default wide
    enough to wrap the 430px column, and three of them plus a dash must read
@@ -5793,129 +5349,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .so-cal-row .so-input { width: 52px; flex: none; margin: 0; font: 12px var(--font-mono); }
 .so-cal-row .so-rep-text { font-size: 12px; color: var(--text-secondary); }
 
-/* ── Connections (config.json) ──────────────────────────────
-   Each row is name · field · Save · Clear · hint, and it wraps on a phone
-   rather than squeezing the field to nothing. A secret's field is empty by
-   design — the value never leaves the server — so the placeholder is what
-   tells you whether one is stored. */
-.be-config-row {
-  flex-wrap: wrap;
-  align-items: center;
-  row-gap: 6px;
-}
-
-.be-config-row .be-set-name { flex: 0 0 auto; min-width: 132px; }
-
-.be-config-input {
-  flex: 1 1 150px;
-  min-width: 0;
-  min-height: 34px;
-  padding: 6px 9px;
-  font: 12px var(--font-mono);
-  color: var(--text-primary);
-  background: var(--surface-low);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.be-config-input:focus { outline: none; border-color: var(--accent); }
-
-.be-config-hint {
-  flex: 1 0 100%;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-/* ── Self-monitoring: metrics ───────────────────────────────
-   The runner page asks a set of questions on ONE page, so each row is
-   name · optional prompt · control. Chips are finger targets (a 1-7 likert is
-   seven of them across 430px), not the 10px marks a mouse could manage. */
-.mt-list { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
-
-.mt-row { display: flex; flex-direction: column; gap: 6px; }
-
-.mt-name { font-size: 14px; color: var(--text-primary); }
-.mt-unit { font: 10px var(--font-mono); color: var(--text-secondary); }
-.mt-prompt { font-size: 12px; color: var(--text-secondary); }
-
-.mt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-
-.mt-chip {
-  min-width: 40px;
-  min-height: 40px;
-  padding: 0 10px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.mt-chip:hover { color: var(--text-primary); border-color: var(--accent); }
-
-.mt-chip-on {
-  color: var(--on-accent);
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.mt-input {
-  min-height: 40px;
-  padding: 8px 10px;
-  font-size: 13px;
-  color: var(--text-primary);
-  background: var(--surface-low);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.mt-input:focus { outline: none; border-color: var(--accent); }
-
-/* The settings row: name, shape, where it is asked, then the three verbs. */
-/* A metric with nowhere to be asked is a question that will never be put —
-   the one state on this list worth colouring. */
-.be-list-row .be-row-sub.be-row-warn { color: var(--danger); }
-
-/* ── The event read-out ──────────────────────────────────────
-   Shares #gate-pop's box, layer and backdrop (see the two selector groups
-   above): one geometry, two read-outs, the same rule the sheets follow. Only
-   what an event has that a gate does not is written here. */
-.ep-when {
-  color: var(--text-secondary);
-  font-size: 12px;
-  margin-bottom: 10px;
-}
-
-.ep-loc {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  margin-bottom: 10px;
-  line-height: 1.4;
-}
-
-.ep-loc-mark { flex: none; color: var(--text-secondary); }
-
-/* A description is prose out of someone else's system: it keeps its own line
-   breaks (white-space: pre-wrap) and wraps a pasted meeting URL rather than
-   pushing the popup wide (overflow-wrap). */
-.ep-desc {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.45;
-  border-top: 1px solid var(--border-soft);
-  padding-top: 10px;
-  margin-top: 2px;
-}
-
-.ep-foot {
-  border-top: 1px solid var(--border-soft);
-  margin-top: 12px;
-  padding-top: 10px;
-}
-
-.ep-none { color: var(--text-secondary); font-style: italic; }
-
 /* ---- Light theme ---- */
 
 /* One contiguous appendix: the palette swap, then the handful of rules whose
@@ -5970,37 +5403,30 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 :root.theme-light .md-codeblock { color: #8a5326; }
 :root.theme-light .md-quote { color: #47693a; }
 
-/* A calendar event's text is pulled toward INK here, not toward white, and
-   further than the dark theme pulls it: a pastel is already close to a white
-   page, so half of it is still a pastel. The percentages are measured, not
-   picked — see the ratios in the commit. The fill lightens a touch for the
-   same reason: 14% of a pastel on white is nearly nothing to sit text on. */
-:root.theme-light .tl-allday-event,
-:root.theme-light .tl-gcal-event {
-  --ev-ink: #10141a;
-  background: color-mix(in srgb, var(--ev-color, var(--accent)) 22%, transparent);
-  color: color-mix(in srgb, var(--ev-color, var(--accent)) 28%, var(--ev-ink));
-}
-
-/* The gate states, light. The fills themselves are the block colours and the
-   on-hold grey, which this appendix already answers for; only the ink flips —
-   they are DEEP here (--block-red #a8434c, --block-green #2f7d63, --on-hold
-   #6b7480) because they sit on a white page. */
-:root.theme-light {
-  --on-gate: #ffffff;
-  --gate-dismissed: #c4c9cf;
-  --on-gate-dismissed: #1f2328;
-}
-
 /* Accent tints: keyed to the pastel accent, so they vanish on a light bg. */
 :root.theme-light .s2-drop-target { background: rgba(47, 111, 181, 0.10); }
 :root.theme-light .log-editor::selection { background: rgba(47, 111, 181, 0.22); }
-
+:root.theme-light .psb-active { background: rgba(47, 111, 181, 0.10); }
 :root.theme-light .now-row:focus { background: rgba(47, 111, 181, 0.08); }
 :root.theme-light .s2-item-recurring { background: rgba(186, 160, 40, 0.16); }
+:root.theme-light .pa-existing {
+  background: rgba(47, 111, 181, 0.08);
+  border-color: rgba(47, 111, 181, 0.30);
+}
 
+/* Reds: #ff6b6b is a dark-UI red and glares on white. */
+:root.theme-light .pd-delete { color: #c0392b; border-color: rgba(192, 57, 43, 0.40); }
+:root.theme-light .pd-delete:hover:not(:disabled) { background: rgba(192, 57, 43, 0.10); }
 :root.theme-light .map-badge-push { color: #8a6a12; border-color: #c9b978; }
+:root.theme-light .gtd-chip-on,
 :root.theme-light .now-chip-on { background: rgba(47, 111, 181, 0.10); }
+
+/* The gate pill is a tan chip with dark text — it reads on either theme; only
+   the dismissed (grayed-out) state needs to stop being near-black. */
+:root.theme-light .tl-qr-line.tl-qr-dismissed .tl-qr-label { background: #c4c9cf; }
+
+/* Shadows: a 0.4-alpha black drop is a smudge on a light surface. */
+:root.theme-light .pa-suggest { box-shadow: 0 6px 20px rgba(15, 20, 25, 0.14); }
 
 /* ── The global bar's layout contract with every overlay ──────────────────
    LAST ON PURPOSE: overlays open ABOVE the bar rather than covering it — that
@@ -6010,65 +5436,30 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    #clarify-sheet's bottom: 0 sits late in the file. Listed by id because a
    few non-overlay fixed elements (toast, stale banner) legitimately keep
    inset: 0. Theme-independent, hence after the light appendix. */
-.m-overlay, #hub-overlay, #logs-overlay, #map-overlay, #modal-overlay, #clarify-backdrop, #clarify-sheet, #fr-sheet-backdrop, #fr-sheet, #ctx-sheet-backdrop, #ctx-sheet, #se-sheet-backdrop, #se-sheet, #sp-sheet-backdrop, #sp-sheet, #ev-sheet-backdrop, #ev-sheet, #en-sheet-backdrop, #en-sheet, #ex-sheet-backdrop, #ex-sheet, #oc-sheet-backdrop, #oc-sheet {
-  /* Above the bar, AND above whatever the browser chrome or the keyboard is
-     covering: 100% is the viewport, --vvh is what you can see, so the
-     difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
-     unset. Every layer's bottom is decided here, which is why the correction
-     only has to be written once. */
-  bottom: calc(var(--gbar-h) + 100% - var(--vvh, 100%));
+.m-overlay,
+#hub-overlay,
+#logs-overlay,
+#person-detail-overlay,
+#map-overlay,
+#bucket-mgr-overlay,
+#person-add-overlay,
+#modal-overlay,
+#clarify-backdrop,
+#clarify-sheet,
+#fr-sheet-backdrop,
+#fr-sheet,
+#ctx-sheet-backdrop,
+#ctx-sheet,
+#se-sheet-backdrop,
+#se-sheet,
+#sp-sheet-backdrop,
+#sp-sheet,
+#ev-sheet-backdrop,
+#ev-sheet,
+#en-sheet-backdrop,
+#en-sheet {
+  bottom: var(--gbar-h);
 }
-
-/* The ending sheet's own two lines: WHAT is being ended and since when. The
-   rest is the clarify vocabulary (.cl-head, .cl-sec, .cl-row, .cl-pill) — a
-   clarify-shaped sheet, not a new grammar. */
-.ex-subject { padding: 10px 14px 0; font-size: 15px; color: var(--text); }
-.ex-meta { padding: 2px 14px 8px; font: 12px var(--font-mono); color: var(--text-secondary); }
-
-/* ── The occasion sheet's own rows ───────────────────────────
-   Reuses the clarify vocabulary (.cl-head, .cl-sec, .cl-row, .cl-pill) — this
-   is a clarify-shaped sheet, not a new grammar. Only the template list and the
-   match-word field need anything of their own. */
-.oc-ev {
-  font: 12px var(--font-mono);
-  color: var(--text-secondary);
-  padding: 0 14px 8px;
-}
-.oc-match {
-  width: 100%;
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  color: var(--text-primary);
-  font: 13px var(--font-mono);
-  padding: 8px 10px;
-}
-.oc-hint {
-  font-size: 11px;
-  color: var(--text-secondary);
-  padding: 6px 14px 0;
-  line-height: 1.45;
-}
-.oc-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 14px;
-  border-top: 1px solid var(--border-soft);
-}
-.oc-item-text { flex: 1; font-size: 13px; color: var(--text); }
-.oc-item-meta { font: 11px var(--font-mono); color: var(--text-secondary); }
-/* A finger target, not a 10px edge — the whole right third of the row. */
-.oc-item-go {
-  min-width: 40px;
-  min-height: 36px;
-  background: none;
-  border: 0;
-  color: var(--text-secondary);
-  font-size: 16px;
-  cursor: pointer;
-}
-.oc-del { color: var(--danger); }
 
 /* ── Dangerous writing ───────────────────────────────────────
    z 240: ABOVE the global bar (170) and the clarify sheet (200), below
@@ -6078,7 +5469,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #dw-session {
   position: fixed;
   inset: 0;
-  height: var(--vvh, 100dvh);
   left: 50%;
   transform: translateX(-50%);
   width: 100%;
@@ -6340,262 +5730,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .gr-ht-suggest { font: 12px var(--font-sans); color: var(--success); }
 .gr-ht-verbs { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .gr-ht-input { flex: 1; min-width: 160px; font: 12px var(--font-sans); }
-/* About: the app link. Wraps, because a tailnet host is long and the column is
-   430px — truncating the one thing this pane exists to hand over would be
-   absurd. Uses named vars only, so the light appendix needs no entry. */
-.be-about-link {
-  padding: 0 20px 10px;
-  word-break: break-all;
-  line-height: 1.6;
-  color: var(--text-primary);
-}
-.be-section .cl-hint { display: block; padding: 6px 20px 12px; line-height: 1.6; }
-.be-about-row { border-bottom: none; }
-
-/* Log search: the field, and the matched lines under a row. */
-#logs-search-wrap { padding: 8px 20px 4px; }
-#logs-q {
-  width: 100%;
-  font: 13px var(--font-sans);
-  padding: 7px 10px;
-  background: var(--surface-2);
-  color: var(--text-primary);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-}
-.log-hit {
-  display: block;
-  width: 100%;
-  font: 11px/1.6 var(--font-mono);
-  color: var(--text-secondary);
-  padding-left: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* The accent at low alpha: readable as a highlight in BOTH themes without a
-   second variable, since --accent is already redefined in the light appendix. */
-.log-hit mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--text-primary); }
-
-/* A log row's tags, inline after the title. Named vars only, so the light
-   appendix needs no entry of its own. */
-.log-tag {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-soft);
-  border-radius: 999px;
-  padding: 1px 6px;
-  margin-left: 6px;
-  white-space: nowrap;
-}
-.log-hidden-note { font: 11px var(--font-mono); color: var(--text-secondary); padding: 6px 20px; }
-/* The new-tag field sits in the chip row and must not stretch it. */
-.en-tag-new { flex: 0 0 90px; min-width: 90px; font: 12px var(--font-mono); padding: 2px 8px; }
-
 /* The health spectrum: inline hsl (computed red->green), grey under 5 marks. */
 .gr-hb-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; align-self: center; }
 .jh-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font: 13px/1.7 var(--font-sans); }
 .jh-done { color: var(--text-secondary); }
 .jh-legacy { color: var(--text-secondary); font-size: 12px; }
-
-/* A tags metric's vocabulary grows from the runner, so the + sits with the
-   chips rather than in Settings. Dashed to read as "not an answer". */
-.mt-chip-add { border-style: dashed; color: var(--text-secondary); }
-
-/* ── The plan layer: hours drawn on the day, before they are worked ───────
-   Under the blocks layer on purpose (z-index 0 against its 1): a block is a
-   commitment already made and a plan is an intention about the same hours, so
-   where they overlap the commitment stays legible and the plan tints behind
-   it. Colours are the accent mixed down — no new value, so the light appendix
-   already answers for both themes and nothing here can rot. */
-#tl-plan-layer {
-  position: absolute;
-  top: 0;
-  left: 48px;
-  right: 4px;
-  bottom: 0;
-  z-index: 0;
-}
-
-/* Only in draw mode does the empty track take the pointer. Off, the layer is
-   inert and every gesture on the timeline means exactly what it always did —
-   which is what makes the mode safe to have at all. */
-#tl-body.tl-planning #tl-plan-layer { pointer-events: auto; cursor: crosshair; }
-#tl-plan-layer { pointer-events: none; }
-#tl-plan-layer .tl-plan-span { pointer-events: auto; }
-
-/* While the mode is on, the day IS a drawing surface: the layers above stop
-   taking the pointer so a press on empty track reaches the plan layer under
-   them. They are still DRAWN — you draw against your blocks and events, which
-   is the whole point of drawing here rather than in a form — they are just not
-   grabbable, and the moment the mode is off they are again. Setting it on the
-   layer covers its children too; .tl-plan-span re-enables itself above because
-   it is the one thing in here you must still be able to grab. */
-#tl-body.tl-planning #tl-blocks-layer,
-#tl-body.tl-planning #tl-gcal-layer,
-#tl-body.tl-planning #tl-qr-layer { pointer-events: none; }
-
-.tl-plan-span {
-  position: absolute;
-  left: 0;
-  right: 0;
-  border-radius: 2px;
-  padding: 2px 6px 2px 14px;
-  /* A SPAN DRAWS IN ITS DOMAIN'S COLOUR (2026-09-10). The colour arrives as
-     `--plan-color` on the element, set from the DOMAIN the span's area carries
-     - never from the span, which would be a second answer to what the area
-     already says. The fallback here is what makes the feature optional: a
-     domain with no colour of its own leaves the var unset and every rule below
-     resolves to the accent the plan has always drawn in, so nothing has to be
-     coloured for the surface to work. */
-  --plan-color: var(--accent);
-  background: color-mix(in srgb, var(--plan-color) 12%, transparent);
-  /* MEASURED, not eyeballed. A span is draggable, so its outline is an
-     INTERACTIVE control's and owes 3:1 against the painted backdrop. At 55%
-     of the accent over transparent it measured 2.40:1 in light — the exact
-     shape of the 2026-08-17 finding, where the accent was fine and the
-     translucent edge was not. Blended with --text-secondary and fully opaque
-     instead, which is the rule's own answer for a control's outline. */
-  /* 40%, not the 55% the accent alone was tuned at. The accent is ONE colour
-     and could be measured once; --plan-color is now any of the ten block
-     pastels, and the palest of them (#d8cb96) measured 2.73:1 in light at 55%
-     — a control's outline owing 3:1. Swept across the whole palette, 40% is
-     the first step where the WORST colour clears it (3.31 light, 6.39 dark),
-     so the ratio is set by the palette rather than by the colour that happened
-     to be picked while looking at it. */
-  border: 1px dashed color-mix(in srgb, var(--plan-color) 40%, var(--text-secondary));
-  font-size: 11px;
-  /* TEXT OWES 4.5:1, and --text-secondary did not pay it here: the label sits
-     on the span's own tinted fill, not on the flat surface the var was
-     measured against, and it came out 4.31:1 in dark on the accent alone —
-     4.16 once a domain colour could set the tint. --text-primary measures 11.7
-     dark / 13.5 light across every fill in the palette. The size stays 11px;
-     it is the colour that was wrong, which is the cheaper half to change. */
-  color: var(--text-primary);
-  overflow: hidden;
-  touch-action: none;
-  /* The whole span is the handle now, so the whole span says so — the layer's
-     crosshair means "draw here", and over a span that is not what a press
-     does. */
-  cursor: grab;
-}
-
-.tl-plan-ghost { border-style: solid; pointer-events: none; }
-
-/* The span's location, being typed in place after a double-click. It sits on
-   the span's own tinted fill, so it paints its own ground (--surface) and
-   takes a control's outline, --text-secondary: text owes 4.5:1 and an input's
-   edge 3:1, and the tint under it is any of ten colours. 16px, not the span's
-   11px, because anything smaller makes a phone zoom the page on focus. */
-.tl-plan-loc-input {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  margin-top: 2px;
-  padding: 1px 4px;
-  font: inherit;
-  font-size: 16px;
-  line-height: 1.2;
-  color: var(--text-primary);
-  background: var(--surface);
-  border: 1px solid var(--text-secondary);
-  border-radius: 3px;
-  cursor: text;
-  touch-action: auto;
-}
-
-/* The rail: the affordance, not the target. It reads as "this can be grabbed"
-   the way the block bar's does, but the span itself takes the drag — a 14px
-   rail is a mouse target, and the rule here is thirds for a finger. */
-.tl-plan-bar-grip {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 14px;
-  cursor: grab;
-  /* The grip IS the control, so it owes 3:1 too; at 38% over transparent it
-     measured 2.31:1 dark and 1.62:1 light — nearly invisible on the theme it
-     was designed in. Opaque, and blended at the same 40% the outline above is,
-     for the same reason: the share is set by the palest colour in the palette,
-     not by the accent it was first tuned against. */
-  background: color-mix(in srgb, var(--plan-color) 40%, var(--text-secondary));
-  border-radius: 2px 0 0 2px;
-}
-
-.tl-plan-label { display: block; line-height: 1.25; }
-
-/* WHERE the stretch is meant to happen, under what it is for. A second line
-   rather than more of the first: the length and the area are what the span is
-   read for at a glance, and a place appended to them pushes them out of a row
-   that is often 18px tall. `tl-event-tight` already hides the overflow, so a
-   short span simply keeps the line that matters. */
-.tl-plan-sublabel {
-  display: block;
-  line-height: 1.25;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* A BOX'S TEXT MAY RUN PAST ITS BOX (2026-09-15). settleTimelineLabels pushes a
-   label down until it clears every label above it, whichever layer that one
-   is on, so the text has to be allowed out of the bottom of the box it names
-   rather than clipped by it. Each label still ellipsises inside its own width.
-   A block's and a span's text is only as wide as what it says: a span is
-   full-width, and a label claiming the whole strip would collide with
-   everything beside it. */
-.tl-block, .tl-gcal-event, .tl-plan-span { overflow: visible; }
-.tl-block .tl-text, .tl-plan-span .tl-text { width: fit-content; max-width: 100%; }
-/* Pushed text can land over the track or another box's fill, so it brings its
-   own ground — the page's, a little translucent, so the day still shows. */
-.tl-text-pushed {
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
-  border-radius: 2px;
-}
-
-/* The mode is VISIBLE while it is on — this bar, the pressed button and the
-   crosshair. That visibility is the whole difference between this and the
-   edit mode that was removed for being invisible state. */
-#tl-plan-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  align-items: baseline;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface-mid));
-  font-size: 12px;
-}
-
-.tl-plan-sum { color: var(--text-primary); font-weight: 600; }
-.tl-plan-hint { color: var(--text-secondary); font-size: 11px; }
-
-/* What the next drawn span is FOR. Wraps to its own line on a phone-width
-   banner rather than squeezing the summary, and the chips are the app's own
-   ctx-chip so a pick reads the same here as it does in MAP's filter menu. */
-.tl-plan-domains {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  flex-basis: 100%;
-}
-.tl-plan-dlabel { color: var(--text-secondary); font-size: 11px; margin-right: 2px; }
-
-/* The chip wears the colour its spans will draw in, so the pick and the result
-   are the same fact seen twice. Decoration on a control that is already
-   labelled by name, so it owes --border, not a control's 3:1 - the chip's own
-   outline is what has to be hittable and readable, and it is unchanged. */
-.tl-plan-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 5px;
-  vertical-align: baseline;
-  border: 1px solid var(--border);
-}
-.tl-refresh-btn.tl-plan-on { border-color: var(--text-secondary); color: var(--accent); }
-

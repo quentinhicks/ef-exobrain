@@ -332,6 +332,82 @@ function renderTimeline() {
   updateCurrentTimeLine();
   updateFetchStatus();
   startCurrentTimeTick();
+  settleTimelineLabels();
+}
+
+// ── WHAT A TIMELINE BOX HAS ROOM TO SAY (2026-09-15, Quentin's instruction) ──
+//
+// A box's text is sized to the box's own height, in tiers, rather than being
+// cut mid-word: `full` (every line it has — a block's area and place, an
+// event's time, a span's place), `title` (the one line that names it), `short`
+// (its first word; a span's length) and `none`. Nothing is lost by the lower
+// tiers: every box is still tappable, and its menu or read-out names it in full.
+// `lines` is how many lines the full tier would print.
+const TL_LINE_PX = 17;
+
+// The title keeps its whole line down to ~70% of a line's height: the text may
+// run a few pixels past a short box, which reads fine, and cutting a meeting to
+// its first word at half an hour was worse than that.
+function tlTier(px, lines) {
+  if (px >= lines * TL_LINE_PX + 2) return 'full';
+  if (px >= 12) return 'title';
+  if (px >= 7) return 'short';
+  return 'none';
+}
+
+function tlShort(text) {
+  return String(text || '').trim().split(/\s+/)[0] || '';
+}
+
+// ── TWO LABELS NEVER SHARE SPACE (2026-09-15, Quentin's instruction) ──
+//
+// The timeline draws three kinds of thing on one strip — planned hours under
+// blocks (a span is MEANT to overlap the block it plans), blocks, events — and
+// each positions its text by its own time, so a span's "1h · Study" printed
+// straight over the block label beside it. The BOXES may overlap; their text
+// may not. Every box's text is one `.tl-text` element, and this walks them all,
+// across the three layers, in order down the day: any label that would touch
+// one already placed is pushed down below it, and the push carries on down the
+// column. Only a collision moves anything, and only the TEXT moves — the box
+// still starts and ends when it does, so the text is allowed to run past the
+// bottom of its box (it paints its own ground when it does).
+//
+// Measured, not computed: widths come from the rendered text, so a short label
+// beside a long one does not collide just because the column could hold more.
+// When two start at the same height the block keeps its place, then the span,
+// then the event (`data-tl-rank`). The calendar has to be ON SCREEN to measure;
+// a hidden render leaves the text where its times put it and openM settles it
+// the moment the calendar is shown.
+function settleTimelineLabels() {
+  const body = document.getElementById('tl-body');
+  if (!body || !body.offsetHeight) return;
+  const labels = [...body.querySelectorAll('.tl-text')];
+  labels.forEach(el => { el.style.transform = ''; el.classList.remove('tl-text-pushed'); });
+  const items = labels.map(el => ({ el, r: el.getBoundingClientRect(),
+                                    rank: parseInt(el.dataset.tlRank) || 0 }))
+    .filter(x => x.r.width > 0 && x.r.height > 0)
+    .sort((a, b) => (Math.abs(a.r.top - b.r.top) > 1 ? a.r.top - b.r.top : 0)
+                    || a.rank - b.rank || a.r.left - b.r.left);
+  const placed = [];
+  for (const it of items) {
+    let top = it.r.top;
+    for (let moved = true; moved;) {
+      moved = false;
+      for (const q of placed) {
+        if (it.r.left < q.right && q.left < it.r.right
+            && top < q.bottom + 1 && q.top < top + it.r.height) {
+          top = q.bottom + 1;
+          moved = true;
+        }
+      }
+    }
+    const dy = Math.round(top - it.r.top);
+    if (dy > 0) {
+      it.el.style.transform = `translateY(${dy}px)`;
+      it.el.classList.add('tl-text-pushed');
+    }
+    placed.push({ left: it.r.left, right: it.r.right, top, bottom: top + it.r.height });
+  }
 }
 
 // Touch has no right-click and no ⌘-click: a ~550ms STILL press is the same
@@ -779,17 +855,20 @@ function renderPlanLayer(bodyH = 600) {
     const bottom = Math.min(100, minutesToViewPercent(s.end_min));
     if (bottom - top <= 0) return '';
     const what = filingLabel(s);
-    const tight = ((bottom - top) * bodyH / 100) < 18;
+    const px = (bottom - top) * bodyH / 100;
+    const tight = px < 18;
+    const tier = tlTier(px, s.location ? 2 : 1);
+    const len = humanMinutes(s.end_min - s.start_min);
     const color = planSpanColor(s);
     return `<div class="tl-plan-span${tight ? ' tl-event-tight' : ''}"
                  data-span-id="${s.id}" data-obj="planspan:${s.id}" data-obj-dbl="1"
                  data-start-min="${s.start_min}" data-end-min="${s.end_min}"
                  style="top:${top}%;height:${bottom - top}%${
                    color ? `;--plan-color:${color}` : ''}">
-              <div class="tl-plan-bar-grip"></div>
-              <span class="tl-plan-label">${escHtml(humanMinutes(s.end_min - s.start_min))}${
-                what ? ' · ' + escHtml(what) : ''}</span>${s.location
-                ? `<span class="tl-plan-sublabel">📍︎ ${escHtml(s.location)}</span>` : ''}
+              <div class="tl-plan-bar-grip"></div>${tier === 'none' ? '' : `
+              <div class="tl-text" data-tl-rank="1"><span class="tl-plan-label">${escHtml(len)}${
+                what && tier !== 'short' ? ' · ' + escHtml(what) : ''}</span>${s.location && tier === 'full'
+                ? `<span class="tl-plan-sublabel">📍︎ ${escHtml(s.location)}</span>` : ''}</div>`}
             </div>`;
   }).join('');
 
@@ -1093,15 +1172,20 @@ function renderBlocksLayer(bodyH = 600) {
 
   const blocksHtml = visible.map(({ b, top, height, cancelled, label, cont, startMin, endMin }) => {
     const proj = b.area_id ? projectsById[b.area_id] : null;
-    const tight = (height * bodyH / 100) < 18;
-    const labelSpan = `<span class="tl-block-label${cancelled ? ' tl-cancelled-text' : ''}">${escHtml(label)}</span>`;
+    const px = height * bodyH / 100;
+    const tight = px < 18;
+    const tier = tlTier(px, 1 + (proj ? 1 : 0) + (b.location_name ? 1 : 0));
+    const labelSpan = `<span class="tl-block-label${cancelled ? ' tl-cancelled-text' : ''}">${
+      escHtml(tier === 'short' ? tlShort(label) : label)}</span>`;
     const locLabel = b.location_name
       ? `<span class="tl-block-sublabel"${b.location_id ? ` data-obj="location:${b.location_id}"` : ''
         }>📍︎ ${escHtml(b.location_name)}</span>` : '';
-    const inner = `<div class="tl-block-bar"></div>${labelSpan}${proj
+    const subs = tier !== 'full' ? '' : `${proj
       ? `<span class="tl-block-sublabel" data-obj="area:${proj.id}">${escHtml(proj.name)}</span>` : ''}${locLabel}`;
+    const inner = `<div class="tl-block-bar"></div>${tier === 'none' ? ''
+      : `<div class="tl-text" data-tl-rank="0">${labelSpan}${subs}</div>`}`;
     return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}"
-                 data-block-id="${b.id}" data-obj="block:${b.id}"
+                 data-block-id="${b.id}" data-obj="block:${b.id}"${tier === 'full' ? '' : ` title="${escHtml(label)}"`}
                  data-start-min="${startMin}" data-end-min="${endMin}"
                  style="top:${top}%;height:${height}%;cursor:${cont ? 'default' : 'pointer'};
                         --block-color:${b.color}">${inner}</div>`;
@@ -1343,17 +1427,22 @@ function renderGcalLayer(bodyH = 600) {
 
   layer.innerHTML = boxes.map(({ e, top, bottom, startMin, endMin }) => {
     const height = Math.max(bottom - top, 2);
-    const tight = (height * bodyH / 100) < 18;
+    const px = height * bodyH / 100;
+    const tight = px < 18;
+    const tier = tlTier(px, 1);
     const timeStr = `${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`;
     // The bar is the manipulation surface, exactly as it is on a block: a long
     // press on the BOX still hides the event, so the two touch gestures cannot
     // both arm on the same 550ms hold.
-    const inner = `<div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${escHtml(e.summary || '')}</span><span class="tl-event-time">${escHtml(timeStr)}</span></div>`;
+    const inner = `<div class="tl-ev-bar"></div>${tier === 'none' ? ''
+      : `<div class="tl-event-row tl-text" data-tl-rank="2"><span class="tl-event-summary">${
+        escHtml(tier === 'short' ? tlShort(e.summary) : (e.summary || ''))}</span>${tier === 'full'
+        ? `<span class="tl-event-time">${escHtml(timeStr)}</span>` : ''}</div>`}`;
     const col = e.color || '#888888';
     const key = eventKey(e);
     const moved = e.moved
       ? ` title="Moved here — the calendar still says ${escHtml(isoToAmPm(e.orig_start))}. Right-click or long-press the bar to put it back."`
-      : '';
+      : tier === 'full' ? '' : ` title="${escHtml(`${e.summary || 'Event'} · ${timeStr}`)}"`;
     return `<div class="tl-gcal-event${tight ? ' tl-event-tight' : ''}${e.moved ? ' tl-event-moved' : ''}"
                  data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}"
                  data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
@@ -6790,6 +6879,8 @@ function openM(id) {
   document.querySelectorAll('.m-overlay').forEach(o => o.classList.add('hidden'));
   document.getElementById('hub-overlay').classList.add('hidden');
   document.getElementById(id).classList.remove('hidden');
+  // Labels are measured, and a hidden calendar measures nothing.
+  if (id === 'cal-overlay') requestAnimationFrame(settleTimelineLabels);
   renderBar();   // derived modes (✎ log / ✎ list / ◉ <list>) follow the surface
 }
 
