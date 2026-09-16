@@ -9,6 +9,7 @@
 ;   Ctrl+Alt+M  -> hide the NOW panel for 10 seconds (it returns on its own)
 ;   Ctrl+Alt+S  -> open the NOW panel's switch form (focuses the panel to type)
 ;   Ctrl+Alt+X  -> mark interrupted on the NOW panel (no focus steal)
+;   Ctrl+Alt+P  -> privacy mode: wash BOTH windows out to a quarter contrast
 ; Both inbox windows open at the mouse cursor. Hide/show is a pure local window
 ; operation; switch/interrupted go through python.exe like the inbox commands.
 
@@ -69,6 +70,14 @@ ShowNowPanel() {
 ; Mark interrupted — fire and forget, never takes focus.
 ^!x:: {
     PanelPost("interrupted")
+}
+
+; Privacy mode. GLOBAL on purpose: the app is read over your shoulder while it
+; is in the background as easily as while you are typing in it, so the one
+; keystroke that hides it must not require focusing it first. No body = toggle;
+; the app owns which way, and drives both of its windows.
+^!p:: {
+    PanelPost("privacy")
 }
 
 ; Drive the panel. Hit the local endpoint DIRECTLY from AHK (WinHttp to

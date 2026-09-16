@@ -22,6 +22,74 @@ function applyTheme(theme) {
 
 applyTheme(localStorage.getItem('theme') || 'dark');
 
+// ── Privacy mode ──────────────────────────────────────────────
+// SOMEBODY IS STANDING BEHIND YOU (2026-09-16, Quentin's instruction). The
+// whole app washes out to a quarter of its contrast: still legible to the one
+// person leaning into it, not to a room. Ctrl+Alt+P, and the eye in Engage's
+// header.
+//
+// ONE CLASS ON <html>, the theme's idiom — and a filter on the ROOT element is
+// the one place a filter does NOT make a containing block for fixed
+// descendants, which every sheet, every overlay and the global bar depend on.
+// It is read synchronously here for the theme's reason (a washed screen that
+// paints bright first has failed at the one moment it existed for).
+//
+// sessionStorage, not localStorage: a reload must not drop the guard while the
+// person is still standing there, and a fresh launch must not come up grey
+// with nobody remembering why. Nothing is stored server-side for the same
+// reason — this is a fact about the room, not about the day.
+function privacyOn() {
+  return document.documentElement.classList.contains('priv-mode');
+}
+
+function setPrivacy(on) {
+  document.documentElement.classList.toggle('priv-mode', !!on);
+  try {
+    if (on) sessionStorage.setItem('privacy', '1');
+    else sessionStorage.removeItem('privacy');
+  } catch (e) { /* private mode: the class is still on, which is the feature */ }
+  paintPrivacyEye();
+}
+
+try {
+  if (sessionStorage.getItem('privacy') === '1') {
+    document.documentElement.classList.add('priv-mode');
+  }
+} catch (e) { /* no store, no memory — it starts off */ }
+
+// The eye now says PRIVACY, not the panel: struck through means hidden, which
+// is what the mode does, and the panel's own state is read in Settings where
+// it is set. Patched in place, never through renderEngage — the hotkey must
+// not repaint the day (or the focused capture input under it).
+function paintPrivacyEye() {
+  const eg = document.getElementById('eg-panel-btn');
+  if (!eg) return;
+  eg.innerHTML = panelEyeSvg(privacyOn());
+  eg.title = privacyEyeTitle();
+  eg.classList.toggle('eg-priv-on', privacyOn());
+}
+
+function privacyEyeTitle() {
+  return `${privacyOn() ? 'Privacy mode — on' : 'Privacy mode'} (Ctrl+Alt+P)`
+    + ` · right-click or long-press for ${window.pywebview ? 'the NOW panel' : 'NOW'}`;
+}
+
+async function togglePrivacy() {
+  const on = !privacyOn();
+  setPrivacy(on);
+  // The NOW panel is its own document in its own window, and it is the one
+  // always on top of everything else — so it follows, down the same road the
+  // global hotkeys already drive it with.
+  if (window.pywebview) {
+    if (window.pywebview.api && window.pywebview.api.set_privacy) {
+      await window.pywebview.api.set_privacy(on);
+    } else {
+      await apiSend('/api/panel/privacy', 'POST', { on });
+    }
+  }
+  toast(on ? 'Privacy mode on · Ctrl+Alt+P' : 'Privacy mode off');
+}
+
 function initThemeToggle() {
   applyTheme(localStorage.getItem('theme') || 'dark');  // now that the icons exist
   document.getElementById('theme-toggle').addEventListener('click', async () => {
@@ -49,14 +117,11 @@ function panelEyeSvg(hidden) {
 }
 
 function paintPanelToggle(hidden) {
-  // Engage's eye says which state the panel is in, not just that a panel
-  // exists — patched in place rather than through renderEngage, so toggling
-  // never repaints the day (or the focused capture input under it).
-  const eg = document.getElementById('eg-panel-btn');
-  if (eg && window.pywebview) {
-    eg.innerHTML = panelEyeSvg(hidden);
-    eg.title = hidden ? 'NOW panel — off' : 'NOW panel';
-  }
+  // Settings only. Engage's eye USED to say which state the panel is in; it
+  // says privacy now (2026-09-16), and the panel's state is read where it is
+  // set. One drawing cannot carry two states, and the eye's own drawing —
+  // struck through for hidden — is the truer picture of the mode that hides
+  // the screen than of the window that sits beside it.
   const label = document.getElementById('panel-toggle-label');
   if (!label) return;
   label.textContent = hidden ? 'Panel off' : 'Panel';
@@ -11629,6 +11694,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initObjectDoors();
   initSwipe();
   initUndo();
+  initPrivacyHotkey();
   renderBar();
   initGeo();
   initEngage();
@@ -15305,6 +15371,19 @@ function initUndo() {
   });
 }
 
+// Ctrl+Alt+P, and it fires from ANYWHERE — inside a text field too, unlike
+// Ctrl+Z above. This is not an editing verb whose meaning changes with what
+// has focus; it is the one keystroke you want to work while you are typing,
+// because typing is when somebody walks up behind you.
+function initPrivacyHotkey() {
+  document.addEventListener('keydown', e => {
+    if (!e.altKey || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+    if (e.key !== 'p' && e.key !== 'P') return;
+    e.preventDefault();
+    togglePrivacy();
+  });
+}
+
 function initEngage() {
   // Engage IS the home screen now (9c) — nothing to open or close. Esc peels
   // one layer at a time: project search → clarify sheet → routine card.
@@ -15867,10 +15946,8 @@ function renderEngage() {
 
   // 9c header: NOW-panel button top-left, the day as the title, domain chip.
   header.innerHTML = `
-    <button id="eg-panel-btn" title="${window.pywebview && state.settings.panel_hidden === '1'
-      ? 'NOW panel — off' : 'NOW panel'}">
-      ${panelEyeSvg(!!window.pywebview && state.settings.panel_hidden === '1')}
-    </button>
+    <button id="eg-panel-btn" class="${privacyOn() ? 'eg-priv-on' : ''}"
+      title="${escHtml(privacyEyeTitle())}">${panelEyeSvg(privacyOn())}</button>
     <button class="eg-nav" id="eg-prev" title="Previous day">‹</button>
     <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
       title="Open this day in calendar view">
@@ -15995,16 +16072,31 @@ function renderEngage() {
     refreshEngage();
   });
 
-  header.querySelector('#eg-panel-btn').addEventListener('click', async () => {
-    // PC: toggles the evergreen pywebview panel. Phone (no pywebview): the
-    // same active section, full-screened.
+  // TWO VERBS ON ONE EYE (2026-09-16, Quentin's instruction). The plain click
+  // is the one you reach for in a hurry — privacy — and the panel, which is
+  // set once and then left alone for weeks, moves to the second gesture. Both
+  // halves of that second gesture, since a right-click is not a thing a finger
+  // has: right-click AND the 550ms long press, the app's own touch rule.
+  const eye = header.querySelector('#eg-panel-btn');
+  // onLongPress swallows the click that trails a fired hold (capture phase,
+  // before this one), so the plain click here is only ever a plain click.
+  eye.addEventListener('click', togglePrivacy);
+  // PC: the evergreen pywebview panel. Phone (no pywebview): the same active
+  // section, full-screened.
+  const nowDoor = async () => {
     if (window.pywebview) {
       await togglePanel();
     } else {
       openM('now-full');
       renderNowFull();
     }
+  };
+  eye.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    nowDoor();
   });
+  onLongPress(eye, nowDoor);
   header.querySelector('#eg-ctx-btn').addEventListener('click', () => {
     engageView.ctxOpen = !engageView.ctxOpen;
     engageView.ctxDomainPick = false;

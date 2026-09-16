@@ -388,9 +388,31 @@ function initPanel() {
     }
   });
 
+  // Privacy mode, the same keystroke and the same class as the main window —
+  // this window is the one that sits on top of everything, so leaving it bright
+  // while the app behind it washed out would be the whole feature undone. Each
+  // window flips its own document and tells the other through the bridge the
+  // global hotkeys already use; the class is all the state there is.
+  document.addEventListener('keydown', e => {
+    if (!e.altKey || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+    if (e.key !== 'p' && e.key !== 'P') return;
+    e.preventDefault();
+    const on = !document.documentElement.classList.contains('priv-mode');
+    npSetPrivacy(on);
+    fetch('/api/panel/privacy', { method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ on }) }).catch(() => {});
+  });
+
   npFetchDay();
   setInterval(npFetchDay, 60000);
   setInterval(npTick, 5000);
+}
+
+// Driven from app.py when the main window or a global hotkey flips the mode.
+// Idempotent on purpose: the window that started it gets told again.
+function npSetPrivacy(on) {
+  document.documentElement.classList.toggle('priv-mode', !!on);
 }
 
 initPanel();

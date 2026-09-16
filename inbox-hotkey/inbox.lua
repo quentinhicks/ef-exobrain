@@ -9,6 +9,7 @@
 --                 macOS has no external per-window hide, so the app does it)
 --   Ctrl+Alt+S -> open the NOW panel's switch form (focuses the panel first)
 --   Ctrl+Alt+X -> mark interrupted on the NOW panel (no focus steal)
+--   Ctrl+Alt+P -> privacy mode: wash BOTH windows out to a quarter contrast
 -- Loaded by a one-line ~/.hammerspoon/init.lua: dofile("<repo>/inbox-hotkey/
 -- inbox.lua"). Paths derive from this file's own location — nothing personal
 -- is hardcoded here.
@@ -78,4 +79,10 @@ end)
 
 hs.hotkey.bind({'ctrl', 'alt'}, 'x', function()
     panelPost('interrupted')
+end)
+
+-- Privacy mode. Global for the same reason the hide is: the screen is read
+-- over your shoulder whether or not the app has focus. No body = toggle.
+hs.hotkey.bind({'ctrl', 'alt'}, 'p', function()
+    panelPost('privacy')
 end)

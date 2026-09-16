@@ -86,6 +86,23 @@
 :root { color-scheme: dark; }
 :root.theme-light { color-scheme: light; }
 
+/* PRIVACY MODE: the whole document at a quarter of its contrast (2026-09-16).
+   Ctrl+Alt+P, or the eye in Engage's header; the NOW panel is this same class
+   on its own document, which is why the rule lives out here beside the theme
+   rather than in either surface's section.
+
+   ONE declaration, on the ROOT element and nowhere else. Contrast is the one
+   knob that washes text, badges, pills and a gate's colour by the same amount
+   without touching a single var — every named colour keeps its value, so
+   nothing here can rot the way a hardcoded second palette would. And the root
+   is the ONE element where a filter does not become a containing block for
+   fixed descendants: on body it would re-anchor every sheet, every overlay and
+   the global bar, which is a layout bug dressed as a privacy feature.
+
+   It is deliberately NOT paired with a light-appendix entry: the factor is a
+   ratio, not a colour, and it reads the same either way. */
+:root.priv-mode { filter: contrast(0.25); }
+
 html, body {
   height: 100%;
   background: var(--bg);
@@ -4332,6 +4349,10 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   line-height: 0;
 }
 #eg-panel-btn:hover { color: var(--accent); }
+/* The eye while the mode is on. It is the one control that must stay findable
+   in a washed-out app — the accent survives the filter better than
+   --text-secondary does, and the struck-through drawing says the rest. */
+#eg-panel-btn.eg-priv-on { color: var(--accent); }
 
 .eg-day-name { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); }
 .eg-day-date { font: 11px var(--font-mono); color: var(--text-secondary); }

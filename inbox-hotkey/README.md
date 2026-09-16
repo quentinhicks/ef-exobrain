@@ -14,8 +14,13 @@ Both windows open centered on the mouse cursor.
   one activates the panel first, so the reason field gets your typing.
 - **Ctrl+Alt+X** — marks "interrupted" on the NOW panel. Fire-and-forget; it
   never takes focus, so it won't interrupt what you're doing.
+- **Ctrl+Alt+P** — privacy mode: washes BOTH windows out to about a quarter of
+  their contrast, and again to turn it off. Global because a screen is read
+  over your shoulder whether or not the app has focus. The app window has the
+  same keystroke in-page (and the eye in Engage's header), for when it's the
+  browser on a phone and there's no AHK at all.
 
-Ctrl+Alt+S and Ctrl+Alt+X POST to `localhost:5000/api/panel/…` **directly from
+Ctrl+Alt+S, Ctrl+Alt+X and Ctrl+Alt+P POST to `localhost:5000/api/panel/…` **directly from
 AHK** (WinHttp to `127.0.0.1`), and the app calls into the panel window's JS
 (`evaluate_js`) — that's why interrupted can fire without stealing focus.
 Loopback isn't the internet, so Plucky lets it through; spawning `python.exe`
@@ -101,7 +106,7 @@ runs fine on Mac). Differences from Windows:
 ## Change the hotkeys
 
 Edit the `^!i` (Ctrl+Alt+I), `^!o` (Ctrl+Alt+O), `^!m` (Ctrl+Alt+M), `^!s`
-(Ctrl+Alt+S), and `^!x` (Ctrl+Alt+X) lines in `inbox.ahk`.
+(Ctrl+Alt+S), `^!x` (Ctrl+Alt+X), and `^!p` (Ctrl+Alt+P) lines in `inbox.ahk`.
 `^`=Ctrl, `!`=Alt, `+`=Shift, `#`=Win.
 
 After editing, reload the running script (right-click the tray "H" → Reload

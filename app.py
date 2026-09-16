@@ -359,6 +359,39 @@ def panel_saved():
     return '', 204
 
 
+# PRIVACY MODE (2026-09-16, Quentin's instruction): the app washes out to a
+# quarter of its contrast so the person behind you cannot read it.
+#
+# The state lives in the two DOCUMENTS — one class on <html>, the theme's own
+# idiom — and NOTHING is stored: it is a fact about the room, not about the
+# day, so a restart must never come up grey with nobody remembering why. This
+# route exists only because there are two windows: whichever one flipped says
+# `on` and the other follows, down the road the global hotkeys already drive
+# the panel with. A body-less POST is the GLOBAL hotkey, which knows no state
+# and means "toggle" — which is the only reason the flag below exists.
+_privacy_on = False
+
+
+@app.route('/api/panel/privacy', methods=['POST'])
+def panel_privacy():
+    global _privacy_on
+    body = request.get_json(silent=True) or {}
+    _privacy_on = (not _privacy_on) if body.get('on') is None else bool(body['on'])
+    _drive_privacy(_privacy_on)
+    return jsonify({'on': _privacy_on})
+
+
+# A HIDDEN PANEL IS DRIVEN TOO, unlike switch/interrupted: those are acts on a
+# panel that is not there, this is how the thing looks when it comes back. And
+# evaluate_js never shows a window, so the resize rule above is not in play.
+def _drive_privacy(on):
+    js = 'true' if on else 'false'
+    if _main_window:
+        _main_window.evaluate_js('setPrivacy(%s)' % js)
+    if _panel_window:
+        _panel_window.evaluate_js('npSetPrivacy(%s)' % js)
+
+
 @app.route('/api/areas')
 def get_areas():
     return jsonify(storage.get_areas())
@@ -3676,6 +3709,18 @@ class WindowApi:
                 _panel_show()
         return hidden
 
+    # The main window flipped its own document; the panel is another document
+    # in another window and follows here. One implementation for both launch
+    # modes, like toggle_panel above — in client mode the windows live in THIS
+    # process, which is exactly why the call comes through the api object
+    # rather than the route.
+    def set_privacy(self, on):
+        global _privacy_on
+        _privacy_on = bool(on)
+        if _panel_window:
+            _panel_window.evaluate_js('npSetPrivacy(%s)' % ('true' if _privacy_on else 'false'))
+        return _privacy_on
+
 
 def _remote_settings(server):
     try:
@@ -3730,6 +3775,16 @@ def _client_bridge():
             elif self.path == '/api/panel/interrupted':
                 if _panel_window and not _client_panel_hidden:
                     _panel_window.evaluate_js('npMarkInterrupted()')
+                self._done()
+            elif self.path == '/api/panel/privacy':
+                # Privacy in client mode: both windows live HERE, so this is
+                # the same answer the Flask route gives in local mode — a body
+                # says which way, a bare POST is the global hotkey and toggles.
+                global _privacy_on
+                length = int(self.headers.get('Content-Length') or 0)
+                body = json.loads(self.rfile.read(length).decode()) if length else {}
+                _privacy_on = (not _privacy_on) if body.get('on') is None else bool(body['on'])
+                _drive_privacy(_privacy_on)
                 self._done()
             elif self.path == '/api/panel/hide':
                 if _panel_window and not _client_panel_hidden:
