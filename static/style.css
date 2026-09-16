@@ -6480,6 +6480,24 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   cursor: grab;
 }
 
+/* THE EDGE'S GRAB BAND, hanging OUTSIDE the span (2026-09-16). A finger aims at
+   the edge, not at a third of a box that is often 22px tall — under ~36px the
+   thirds are dropped, so without this a short span could not be resized by hand
+   at all. Invisible and transparent: the dashed outline it sits against is
+   already the affordance, and a visible pair of handles on every span would
+   print furniture over a surface read at a glance. renderPlanLayer sizes each
+   side (0 where another span abuts, so a shared boundary is never ambiguous);
+   the fallback is 0px, which is what the draw ghost gets. */
+.tl-plan-span::before,
+.tl-plan-span::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+.tl-plan-span::before { top: calc(-1 * var(--grab-top, 0px)); height: var(--grab-top, 0px); }
+.tl-plan-span::after { bottom: calc(-1 * var(--grab-bot, 0px)); height: var(--grab-bot, 0px); }
+
 .tl-plan-ghost { border-style: solid; pointer-events: none; }
 
 /* The span's location, being typed in place after a double-click. It sits on

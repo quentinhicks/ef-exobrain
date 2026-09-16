@@ -850,7 +850,34 @@ function renderPlanLayer(bodyH = 600) {
   if (document.activeElement && document.activeElement.classList.contains('tl-plan-loc-input')
       && layer.contains(document.activeElement)) return;
 
-  layer.innerHTML = spans.map(s => {
+  // THE EDGE TARGET REACHES OUTSIDE THE SPAN (2026-09-16, Quentin's report:
+  // dragging an edge on a phone was too hard). Inside the box a finger got
+  // THIRDS, and below ~36px no sub-target at all — which at a day-long zoom is
+  // most spans, so the commonest one could not be resized by hand at all. The
+  // grab band now OVERHANGS the top and bottom edges: the target is the edge
+  // itself rather than a share of the box, so a 20-minute span is as grabbable
+  // as an hour and the thirds stay as they were for the spans big enough.
+  //
+  // It only overhangs into FREE TRACK. Spans abut exactly (planClamp snaps a
+  // drag to a neighbour's edge), and a band reaching over a shared boundary
+  // would resize whichever of the two happened to be drawn later — the ONE
+  // pixel-level ambiguity this could introduce, so each side gets min(8, gap/2)
+  // and none at all where there is no room for it.
+  const geom = spans.map(s => [
+    Math.max(0, minutesToViewPercent(s.start_min)) * bodyH / 100,
+    Math.min(100, minutesToViewPercent(s.end_min)) * bodyH / 100]);
+  const grabBand = (i, edge) => {
+    let gap = Infinity;
+    geom.forEach(([t, b], j) => {
+      if (j === i) return;
+      const d = edge === 'top' ? geom[i][0] - b : t - geom[i][1];
+      if (d >= 0) gap = Math.min(gap, d);
+    });
+    const px = Math.min(8, Math.floor(gap / 2));
+    return px >= 3 ? px : 0;
+  };
+
+  layer.innerHTML = spans.map((s, i) => {
     const top = Math.max(0, minutesToViewPercent(s.start_min));
     const bottom = Math.min(100, minutesToViewPercent(s.end_min));
     if (bottom - top <= 0) return '';
@@ -863,7 +890,8 @@ function renderPlanLayer(bodyH = 600) {
     return `<div class="tl-plan-span${tight ? ' tl-event-tight' : ''}"
                  data-span-id="${s.id}" data-obj="planspan:${s.id}" data-obj-dbl="1"
                  data-start-min="${s.start_min}" data-end-min="${s.end_min}"
-                 style="top:${top}%;height:${bottom - top}%${
+                 style="top:${top}%;height:${bottom - top}%;--grab-top:${
+                   grabBand(i, 'top')}px;--grab-bot:${grabBand(i, 'bot')}px${
                    color ? `;--plan-color:${color}` : ''}">
               <div class="tl-plan-bar-grip"></div>${tier === 'none' ? '' : `
               <div class="tl-text" data-tl-rank="1"><span class="tl-plan-label">${escHtml(len)}${
@@ -1018,9 +1046,14 @@ function wirePlanSpanDrags(layer, dateStr) {
       const r = el.getBoundingClientRect();
       // Thirds for a finger, a 10px edge for a mouse — the block bar's rule,
       // and below ~36px the sub-targets are dropped rather than offered
-      // where they cannot be hit.
+      // where they cannot be hit. OUTSIDE the box is the edge itself: the
+      // overhanging band renderPlanLayer sized (which is why this asks about
+      // the rect and not about a class), and it is the only target a short
+      // span has, so it answers before the height rule does.
       const touch = e.pointerType !== 'mouse';
-      const mode = touch
+      const mode = e.clientY < r.top ? 'start'
+        : e.clientY > r.bottom ? 'end'
+        : touch
         ? (r.height < 36 ? 'move'
           : e.clientY - r.top < r.height / 3 ? 'start'
           : r.bottom - e.clientY < r.height / 3 ? 'end' : 'move')
