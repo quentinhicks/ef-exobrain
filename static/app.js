@@ -14235,6 +14235,7 @@ function wireMapRows(body, byId, afterFn) {
         const content = input.value.trim();
         row.draggable = true;
         if (!save || !content || content === item.content) { await after(); return; }
+        undoablePatch(item, ['content'], `renamed "${item.content}"`);
         await apiSend(`/api/inbox/${id}`, 'PATCH', { content });
         await after();
       };
@@ -14530,7 +14531,7 @@ function renderMap() {
 //
 // One row is always SELECTED — the first when MAP opens — and single keys act
 // on it: ↑↓ move, 1/2/3 priority, d due, s show-on, t then an arrow for the
-// estimate, m multitask, l a location, Enter clarifies, ⌫ deletes. The selection is view
+// estimate, m multitask, l a location, r renames, Enter clarifies, ⌫ deletes. The selection is view
 // state held by ID, so the re-render after a write keeps the row you were on.
 // Every write registers its inverse first, like any other button.
 //
@@ -14747,6 +14748,14 @@ document.addEventListener('keydown', e => {
   }
   else if (k === 'l') { e.preventDefault(); mapPromptLocation(item); }
   else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); mapDeleteSel(item); }
+  else if (k === 'r') {
+    // The row's own rename (its double-click), not a second editor. The
+    // preventDefault is load-bearing: the field takes focus inside this
+    // keydown, and the r would otherwise be typed into it.
+    e.preventDefault();
+    const text = document.querySelector('#map-body .map-row-sel .map-text');
+    if (text) text.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  }
 });
 
 // ── Export — the list as Markdown ────────────────────────────
