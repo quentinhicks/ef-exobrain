@@ -4268,6 +4268,17 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   padding-right: 4px;
 }
 
+/* A project waiting for its second ⌫ says what that press will do. */
+.map-row-delarm { flex-wrap: wrap; box-shadow: inset 0 0 0 1.5px var(--danger); }
+.map-row-delarm::after {
+  content: '⌫ again: delete project, actions move up';
+  flex-basis: 100%;
+  text-align: right;
+  font: 11px var(--font-mono);
+  color: var(--danger);
+  padding-right: 4px;
+}
+
 /* The in-page date picker (renderEntryWhen) — never the browser's own, which
    privacy mode's filter cannot reach. */
 .enw-picked { font-size: 15px; font-weight: 500; color: var(--text-primary); padding: 8px 14px; }

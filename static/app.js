@@ -2743,16 +2743,25 @@ function flushOpenNotes() {
   return Promise.all(all.map(ta => ta.__flushNotes()));
 }
 
-// A delete whose inverse restores the captured snapshot.
+// A delete whose inverse restores the captured snapshot. A REFUSED delete (a
+// sheet row whose tick failed is a 502 and the item stays) says so and
+// registers nothing — an undo for a delete that never happened would restore
+// over a live row. Returns whether the row is gone.
 async function undoableDelete(id, label) {
   const snap = await snapshotItem(id);
-  await apiSend(`/api/inbox/${id}`, 'DELETE');
+  const res = await apiSend(`/api/inbox/${id}`, 'DELETE');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    toast(err.error || 'Could not delete that');
+    return false;
+  }
   if (snap) {
     pushUndo(label, async () => {
       await apiSend('/api/inbox/restore', 'POST', snap);
       await refreshAfterUndo();
     });
   }
+  return true;
 }
 
 // Time-estimate tags: one of these on an item means "takes about this long".
@@ -13773,8 +13782,9 @@ const MAP_LENSES = [
 
 // `sel` is the keyboard's row (by id) and `tMode` the armed `t` — see MAP BY
 // KEYBOARD below.
+// `delArm` is a project waiting for its second ⌫.
 const mapView = { q: '', lens: 'all', domainId: null, tags: new Set(), menuOpen: false,
-                  sel: null, tMode: false };
+                  sel: null, tMode: false, delArm: null };
 
 function mapLens() {
   return MAP_LENSES.find(l => l.key === mapView.lens) || MAP_LENSES[0];
@@ -13871,6 +13881,7 @@ async function openMap() {
   // Opening MAP selects its FIRST row (mapSelSync falls back to it).
   mapView.sel = null;
   mapView.tMode = false;
+  mapView.delArm = null;
   await refreshMap();
   document.getElementById('map-overlay').classList.remove('hidden');
 }
@@ -14519,7 +14530,7 @@ function renderMap() {
 //
 // One row is always SELECTED — the first when MAP opens — and single keys act
 // on it: ↑↓ move, 1/2/3 priority, d due, s show-on, t then an arrow for the
-// estimate, m multitask, l a location, Enter clarifies. The selection is view
+// estimate, m multitask, l a location, Enter clarifies, ⌫ deletes. The selection is view
 // state held by ID, so the re-render after a write keeps the row you were on.
 // Every write registers its inverse first, like any other button.
 //
@@ -14542,6 +14553,7 @@ function mapSelSync() {
   rows.forEach(r => {
     r.classList.toggle('map-row-sel', r === row);
     r.classList.toggle('map-row-tmode', r === row && mapView.tMode);
+    r.classList.toggle('map-row-delarm', r === row && mapView.delArm === mapView.sel);
   });
   return row;
 }
@@ -14646,6 +14658,25 @@ async function mapPromptShow(item) {
   });
 }
 
+// ⌫ deletes the selected row — the clarify sheet's Trash, undoable, and the
+// selection steps to the row below (or above, at the end). A PROJECT takes a
+// second press, as its Trash does in clarify: deleting one moves its actions
+// up a level, which is more than one keystroke should do on its own.
+async function mapDeleteSel(item) {
+  if (item.kind === 'project' && mapView.delArm !== item.id) {
+    mapView.delArm = item.id;
+    mapSelSync();
+    return;
+  }
+  mapView.delArm = null;
+  const rows = mapRows();
+  const at = rows.findIndex(r => r.dataset.id === String(item.id));
+  const next = rows[at + 1] || rows[at - 1];
+  if (!await undoableDelete(item.id, `deleted "${item.content}"`)) { mapSelSync(); return; }
+  mapView.sel = next ? parseInt(next.dataset.id) : null;
+  await mapAfterWrite();
+}
+
 // A location is a TAG — the thing a place gates by once it is bound to one in
 // the context sheet — so the prompt offers the tags already bound to a place
 // and mints whatever else you type.
@@ -14676,6 +14707,11 @@ document.addEventListener('keydown', e => {
             || t.tagName === 'SELECT' || t.isContentEditable)) return;
   if (e.key === 'Shift') return;
   const item = mapSelItem();
+  // A project armed for deletion is disarmed by any key but the second ⌫.
+  if (mapView.delArm != null && !(e.key === 'Backspace' || e.key === 'Delete')) {
+    mapView.delArm = null;
+    mapSelSync();
+  }
   // `t` arms the next arrow. Anything else disarms it — Esc only that, so it
   // does not also close MAP (this listener runs before initHub's ladder).
   if (mapView.tMode) {
@@ -14710,6 +14746,7 @@ document.addEventListener('keydown', e => {
       `${on ? 'cleared' : 'set'} multitask on "${item.content}"`);
   }
   else if (k === 'l') { e.preventDefault(); mapPromptLocation(item); }
+  else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); mapDeleteSel(item); }
 });
 
 // ── Export — the list as Markdown ────────────────────────────
