@@ -235,6 +235,38 @@ def step_control_fails(body):
     return out
 
 
+# ONE COPY, ONE REFRESH (2026-09-23). A block added in Settings did not
+# appear: the list was handed a FETCHED copy while it drew from state.blocks,
+# which nothing had updated, and the day refreshed only when Settings closed.
+# Two halves, both scanned. A renderer of a dataset that lives in state takes
+# NO argument, so there is no second copy to pass it; and the two doors every
+# sheet write goes through call the one refresh.
+STATE_RENDERERS = ('renderBeAreas', 'renderBeDomains', 'renderBeBlocks',
+                   'renderBeCalendars')
+SETTINGS_DOORS = ('async function submitSeSheet()', 'async function removeSeItem()')
+
+
+def settings_refresh_fails(lines):
+    fails = []
+    for n, line in enumerate(lines):
+        for name in STATE_RENDERERS:
+            m = re.search(r'\b%s\(([^)]*)\)' % name, line)
+            if m and m.group(1).strip():
+                fails.append((n + 1, line.strip()[:88],
+                              '%s() — it reads state; refresh state instead '
+                              '(reloadSettingsState)' % name))
+    for door in SETTINGS_DOORS:
+        start = next((i for i, l in enumerate(lines) if l.startswith(door)), None)
+        if start is None:
+            fails.append((0, door, 'the settings write door is missing'))
+            continue
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith('}'))
+        if not any('refreshAfterSettingsWrite()' in l for l in lines[start:end]):
+            fails.append((start + 1, door,
+                          'await refreshAfterSettingsWrite() after the write lands'))
+    return fails
+
+
 def main():
     with open(APP_JS, encoding='utf-8') as f:
         body = f.read()
@@ -245,6 +277,7 @@ def main():
     fails = object_door_fails(body)
     fails += runner_eviction_fails(lines)
     fails += step_control_fails(body)
+    fails += settings_refresh_fails(lines)
     for n, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('//') or stripped.startswith('*'):
@@ -296,6 +329,8 @@ midnight, a paused row, or a config change.""")
     print("  the runner    no step handler closes the run you are sitting in")
     print('  step controls %d selector(s) in wireFlowStep, all of them live'
           % len(set(STEP_SELECTOR.findall(body))))
+    print('  settings      %d list(s) read state, both write doors refresh'
+          % len(STATE_RENDERERS))
     return 0
 
 

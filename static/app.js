@@ -4092,6 +4092,7 @@ async function submitSeSheet() {
     seSheetRefuse(error);
     return;
   }
+  await refreshAfterSettingsWrite();
   // A sheet that NAVIGATES has already opened the one you land on (a tag hands
   // back to its gate), so closing here would shut that. Same bargain as an
   // action row's keepOpen.
@@ -4106,6 +4107,7 @@ async function removeSeItem() {
   const spec = SETTINGS_SHEETS[seSheet.kind];
   if (spec.confirm && !confirm(spec.confirm(seSheet.item))) return;
   await spec.remove(seSheet.item);
+  await refreshAfterSettingsWrite();
   const back = seSheet.returnTo;
   if (back) { await back(); return; }
   if (spec.navigates) return;
@@ -5561,18 +5563,10 @@ function initBlockEditor() {
 }
 
 async function openBlockEditor() {
-  const [projects, domains, blocks, locations] = await Promise.all([
-    fetch('/api/areas').then(r => r.json()),
-    apiGet('/api/domains', []),
-    fetch('/api/blocks').then(r => r.json()),
-    fetch('/api/locations').then(r => r.json()),
-  ]);
-  state.locations = locations;
-  state.areas = projects;
-  state.domains = domains;
-  renderBeAreas(projects);
+  await reloadSettingsState();
+  renderBeAreas();
   renderBeDomains();
-  renderBeBlocks(blocks);
+  renderBeBlocks();
   await renderQrManager();
   // Routines are the third recurring kind now, and they have their own fetch —
   // so the loader is asked for the section rather than being half-fed here.
@@ -5583,7 +5577,7 @@ async function openBlockEditor() {
   // worse than no count.
   await loadMetrics();
   renderMetricsSettings();
-  renderBeCalendars(await apiGet('/api/calendars', []));
+  renderBeCalendars();
   await renderSchedules();
   settingsView.section = null;
   closeSeSheet();
@@ -5595,44 +5589,74 @@ async function openBlockEditor() {
 async function closeBlockEditor() {
   closeSeSheet();
   document.getElementById('modal-overlay').classList.add('hidden');
-  const [projects, domains, blocks, gcal, calendars] = await Promise.all([
-    fetch('/api/areas').then(r => r.json()),
-    apiGet('/api/domains', []),
-    fetch('/api/blocks').then(r => r.json()),
-    fetch('/api/gcal').then(r => r.json()),
-    apiGet('/api/calendars', []),
+  // The calendar FEED is re-read here and not after every write: a calendar
+  // added in here is fetched once, on the way out, rather than per keystroke.
+  state.gcalEvents = await apiGet('/api/gcal', state.gcalEvents);
+  await refreshDayAfterSettings();
+}
+
+// ── ONE COPY, ONE REFRESH (2026-09-23, Quentin's report) ─────
+//
+// Adding a block did not show it. openBlockEditor and refreshBlockEditor each
+// FETCHED the blocks and handed that copy to renderBeBlocks — which drew from
+// state.blocks instead (beBlockGroups, so the list and the object door agree
+// on group ids), and state.blocks was written only by loadAll and by closing
+// Settings. Two copies of one dataset, a renderer reading the stale one, and
+// the rest of the app brought up to date only on CLOSE — which a sheet opened
+// from the calendar, a gate's read-out or MAP never reaches at all.
+//
+// So: Settings' datasets are read INTO state (reloadSettingsState) and every
+// renderer of one takes no argument and reads state — there is no second copy
+// to disagree with. And every sheet write passes through ONE refresh
+// (submitSeSheet / removeSeItem → refreshAfterSettingsWrite), which re-reads
+// them, redraws the lists and then the day that depends on them, wherever the
+// sheet was opened from. client_rules_test holds both halves.
+async function reloadSettingsState() {
+  const [areas, domains, blocks, locations, calendars] = await Promise.all([
+    apiGet('/api/areas', state.areas),
+    apiGet('/api/domains', state.domains),
+    apiGet('/api/blocks', state.blocks),
+    apiGet('/api/locations', state.locations),
+    apiGet('/api/calendars', state.calendars),
   ]);
-  state.areas = projects;
-  state.domains = domains;
-  state.blocks = blocks;
-  state.gcalEvents = gcal;
-  state.calendars = calendars;
-  // Domains and area assignments can have changed in here, so section 2's
-  // obligation may now be a different one. This goes before renderTimeline so a
-  // timeline failure (a dead gate fetch, say) can't take section 2 down with it.
+  Object.assign(state, { areas, domains, blocks, locations, calendars });
+}
+
+// What the day reads from those: the block in force now, the viewed day's
+// served segments, the pool and the timeline.
+async function refreshDayAfterSettings() {
+  await refreshTodaySegments();
+  // Domains and area assignments can have changed, so section 2's obligation
+  // may now be a different one. This goes before renderTimeline so a timeline
+  // failure (a dead gate fetch, say) can't take section 2 down with it.
   state.activeDomainId = filingDomainId(state.activeBlock);
   state.section2OverrideDomainId = null;
   state.section2OverrideItems = null;
+  await fetchOverridesForDate(state.currentDate);
   await refreshActiveItems();
   renderTimeline();
 }
 
+// The settings lists, from state. Also what a write INSIDE a sheet (an action
+// row's Call off) asks for, since it has not been through the door yet.
 async function refreshBlockEditor() {
-  const [projects, domains, blocks] = await Promise.all([
-    fetch('/api/areas').then(r => r.json()),
-    apiGet('/api/domains', []),
-    fetch('/api/blocks').then(r => r.json()),
-  ]);
-  state.areas = projects;
-  state.domains = domains;
-  renderBeAreas(projects);
+  await reloadSettingsState();
+  renderBeAreas();
   renderBeDomains();
-  renderBeBlocks(blocks);
+  renderBeBlocks();
+  renderBeCalendars();
   renderInbox();
 }
 
+async function refreshAfterSettingsWrite() {
+  await refreshBlockEditor();
+  renderSettingsIndex();
+  await refreshDayAfterSettings();
+}
+
 async function refreshCalendars() {
-  renderBeCalendars(await fetch('/api/calendars').then(r => r.json()));
+  state.calendars = await apiGet('/api/calendars', state.calendars);
+  renderBeCalendars();
 }
 
 async function patchCalendar(id, body) {
@@ -5684,9 +5708,10 @@ async function refreshBeOccasions() {
   if (settingsView.section == null) renderSettingsIndex();
 }
 
-function renderBeCalendars(calendars) {
+function renderBeCalendars() {
   const list = document.getElementById('be-calendars-list');
   if (!list) return;
+  const calendars = state.calendars || [];
   beCounts.calendars = calendars.filter(c => c.active).length;
   list.innerHTML = calendars.map(c => beRow({
     id: c.id, color: c.color, name: c.name, dim: !c.active,
@@ -5696,9 +5721,10 @@ function renderBeCalendars(calendars) {
   wireBeList(list, 'calendar', calendars);
 }
 
-function renderBeAreas(projects) {
+function renderBeAreas() {
   const list = document.getElementById('be-areas-list');
   if (!list) return;
+  const projects = state.areas || [];
   beCounts.areas = projects.filter(p => p.active).length;
   const domainName = id => (state.domains.find(d => d.id === id) || {}).name || 'no domain';
   list.innerHTML = projects.map(p => beRow({
@@ -5754,7 +5780,7 @@ function formatDays(days) {
   return sorted.map(d => DAY_NAMES[d]).join(', ');
 }
 
-function renderBeBlocks(blocks) {
+function renderBeBlocks() {
   const list = document.getElementById('be-blocks-list');
   if (!list) return;
   // A block row's identity is its GROUP, which has no server id — index it.
