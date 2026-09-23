@@ -3301,6 +3301,25 @@ function renderAbout() {
   }
 }
 
+// EVERY DOWNLOAD GOES THROUGH HERE, and lands in the Downloads folder
+// (2026-09-23, Quentin's instruction). In the desktop window the file is handed
+// to the window's own save_download, which writes it into ~/Downloads with no
+// dialog; anywhere else — a browser, the phone — it is an ordinary download,
+// which the browser files in Downloads by itself. Returns the path when it
+// knows one.
+async function saveDownload(name, text, type) {
+  const api = window.pywebview && window.pywebview.api;
+  if (api && api.save_download) return api.save_download(name, text);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: type || 'text/plain' }));
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  return null;
+}
+
 // COPY THAT WORKS OFF LOCALHOST. navigator.clipboard is gated on a SECURE
 // CONTEXT, so it is undefined over http://<tailnet-name>:5000 — which is every
 // Windows and Mac client running in PT_SERVER mode. The old code was
@@ -3875,6 +3894,10 @@ function seFieldHtml(f, v) {
         <button type="button" class="se-wk-off${w.offset ? ' se-on' : ''}">+1d</button>
       </div>`;
     }).join('')}</div>`;
+  } else if (f.kind === 'textarea') {
+    control = `<textarea class="se-input se-textarea" data-f="${f.key}" rows="3"`
+      + `${f.placeholder ? ` placeholder="${escHtml(f.placeholder)}"` : ''}>${
+        escHtml(String(val == null ? '' : val))}</textarea>`;
   } else {
     control = `<input class="se-input${f.kind === 'time' || f.kind === 'number' ? ' se-mono' : ''}"`
       + ` type="${f.kind}" data-f="${f.key}" value="${escHtml(String(val == null ? '' : val))}"`
@@ -4193,12 +4216,23 @@ function seWhenLabel(ymd) {
 const BLOCK_FIELDS = {
   label: 'Label', color: 'Colour', day_of_week: 'Day', start_time: 'From',
   end_time: 'To', area_id: 'Area', domain_id: 'Domain', location_id: 'Location', active: 'State',
-  delete: 'Deleted',
+  description: 'Description', priority: 'Priority', delete: 'Deleted',
 };
+
+// A block's priority (2026-09-23, Quentin's instruction): 1 is the most
+// important and may not be infringed, 3 the least and may be. Settings and the
+// export say it; the calendar deliberately does not draw it.
+const BLOCK_PRIORITY_OPTIONS = [
+  { value: '', name: '— none —' },
+  { value: '1', name: '1 — most important, can\'t be infringed' },
+  { value: '2', name: '2' },
+  { value: '3', name: '3 — least important, can be infringed' },
+];
 
 function blockChangeValue(c) {
   if (c.field === 'day_of_week') return DAY_NAMES[parseInt(c.new_value)] || c.new_value;
   if (c.field === 'active') return c.new_value ? 'Active' : 'Paused';
+  if (c.field === 'priority') return c.new_value ? `P${c.new_value}` : 'none';
   if (c.field === 'area_id') {
     return ((state.areas || []).find(a => String(a.id) === String(c.new_value)) || {}).name || '—';
   }
@@ -4248,6 +4282,10 @@ async function scheduleBlockGroup(g, v) {
   if (v.end !== g.end_time) fields.end_time = v.end;
   if (String(v.area || '') !== filingKey(g)) Object.assign(fields, filingBody(v.area));
   if (String(v.location || '') !== String(g.location_id || '')) fields.location_id = v.location || null;
+  if (v.description.trim() !== (g.description || '')) fields.description = v.description.trim();
+  if (String(v.priority || '') !== String(g.priority || '')) {
+    fields.priority = v.priority ? Number(v.priority) : null;
+  }
   const wasActive = g.rows.some(r => r.active);
   if (v.active !== wasActive) fields.active = v.active ? 1 : 0;
 
@@ -4279,11 +4317,13 @@ const SETTINGS_SHEETS = {
     save: () => 'Save block',
     removeLabel: 'Delete block',
     blank: () => ({ label: '', color: BLOCK_COLORS[0], days: [], start: '', end: '',
-                    area: '', location: '', active: true, effective: '' }),
+                    area: '', location: '', description: '', priority: '',
+                    active: true, effective: '' }),
     load: g => ({
       label: g.label, color: g.color, days: g.days.slice(),
       start: g.start_time, end: g.end_time,
       area: filingKey(g), location: g.location_id || '',
+      description: g.description || '', priority: g.priority ? String(g.priority) : '',
       // A group is paused when every row in it is — the rows only ever move
       // together, and a half-paused group has no meaning on the timeline.
       active: g.rows.some(r => r.active),
@@ -4299,6 +4339,11 @@ const SETTINGS_SHEETS = {
         options: () => seFilingOptions(v.area) },
       { key: 'location', label: 'Location', kind: 'select', half: true,
         options: () => seLocationOptions(null, v.location) },
+      { key: 'description', label: 'Description', kind: 'textarea',
+        placeholder: 'What these hours are for' },
+      { key: 'priority', label: 'Priority', kind: 'select', options: () => BLOCK_PRIORITY_OPTIONS,
+        hint: 'How firmly these hours hold against something else wanting them. '
+          + 'Not drawn on the calendar.' },
       ...(g ? [seStateRow('Paused: off the timeline, and its hours are free for '
                           + 'another block. Nothing is deleted.')] : []),
       ...(g ? [seWhenRow('Blank: now, as always. A date leaves this week alone and '
@@ -4333,6 +4378,7 @@ const SETTINGS_SHEETS = {
           label: v.label.trim(), color: v.color, days: v.days,
           start_time: v.start, end_time: v.end,
           ...filingBody(v.area), location_id: v.location || null,
+          description: v.description.trim(), priority: v.priority ? Number(v.priority) : null,
         });
       const data = await res.json();
       if (!res.ok) {
@@ -4345,6 +4391,7 @@ const SETTINGS_SHEETS = {
               start_time: g.start_time, end_time: g.end_time,
               area_id: g.area_id || null, domain_id: g.domain_id || null,
               location_id: g.location_id || null,
+              description: g.description || '', priority: g.priority || null,
             }).catch(() => {});
           await refreshBlockEditor();
         }
@@ -5550,15 +5597,23 @@ function initBlockEditor() {
   });
   document.getElementById('se-sheet-backdrop').addEventListener('click', closeSeSheet);
 
+  // The block calendar, built by the server from the same resolved days the
+  // timeline draws, saved on THIS device through the one download door.
   document.getElementById('be-download-ics-btn').addEventListener('click', async () => {
     const btn = document.getElementById('be-download-ics-btn');
     const status = document.getElementById('be-ics-status');
     btn.disabled = true;
     status.textContent = 'Saving…';
-    const res = await apiSend('/api/blocks/export-ics', 'POST');
-    const data = await res.json();
+    const res = await fetch('/api/blocks/export.ics').catch(() => null);
+    if (!res || !res.ok) {
+      btn.disabled = false;
+      status.textContent = 'Could not build the calendar';
+      toast('Could not build the calendar');
+      return;
+    }
+    const path = await saveDownload(`blocks-${wallDay()}.ics`, await res.text(), 'text/calendar');
     btn.disabled = false;
-    status.textContent = res.ok ? `Saved to ${data.path}` : 'Error';
+    status.textContent = `Saved ${path || 'blocks.ics'} to Downloads`;
   });
 }
 
@@ -5755,7 +5810,8 @@ function renderBeDomains() {
 function groupBlocks(blocks) {
   const groups = new Map();
   for (const b of blocks) {
-    const key = `${b.label}|${b.color}|${b.start_time}|${b.end_time}|${filingKey(b)}|${b.location_id ?? ''}`;
+    const key = `${b.label}|${b.color}|${b.start_time}|${b.end_time}|${filingKey(b)}|${
+      b.location_id ?? ''}|${b.description || ''}|${b.priority || ''}`;
     if (!groups.has(key)) {
       groups.set(key, { ...b, days: [b.day_of_week], rows: [b] });
     } else {
@@ -5797,9 +5853,10 @@ function renderBeBlocks() {
     return beRow({
       id: g.id, color: g.color, name: g.label,
       dim: !g.rows.some(r => r.active),
-      meta: `${formatDays(g.days)} · ${g.start_time}–${g.end_time}`,
+      meta: `${g.priority ? `P${g.priority} · ` : ''}${formatDays(g.days)} · ${g.start_time}–${g.end_time}`,
       sub: [g.project_name, g.location_name,
-            from ? `changes ${seWhenLabel(from)}` : null].filter(Boolean).join(' · '),
+            from ? `changes ${seWhenLabel(from)}` : null, g.description || null]
+        .filter(Boolean).join(' · '),
       badge: g.rows.some(r => r.active) ? (from ? 'scheduled' : '') : 'paused',
     });
   }).join('') + beAddRow('Add block');
@@ -14795,8 +14852,8 @@ document.addEventListener('keydown', e => {
 //
 // What MAP is showing under its lens and filters (search is a ranked view,
 // not a list, so it is not what gets saved), in the tree's own grouping and
-// order via mapGroups / mapAreaForest. Downloaded AND copied: the pywebview
-// shell does not always honour a download, and the clipboard always works.
+// order via mapGroups / mapAreaForest. Saved through saveDownload (the
+// Downloads folder) and copied too, since pasting it is often the point.
 function mapMarkdown() {
   const todayStr = wallDay();
   const items = mapVisibleItems(state.mapItems || [], todayStr);
@@ -14842,14 +14899,8 @@ async function exportMap() {
   const text = mapMarkdown();
   const name = `map-${wallDay()}.md`;
   const copied = await copyText(text);
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  toast(copied ? `Exported ${name} — and copied as Markdown` : `Exported ${name}`);
+  const path = await saveDownload(name, text, 'text/markdown');
+  toast(`Saved ${path || name} to Downloads${copied ? ' — and copied' : ''}`);
 }
 
 // Historical name: the NOW list (section 2) is gone — the engage pool is the

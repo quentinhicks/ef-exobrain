@@ -509,3 +509,49 @@ def notify(kind, url, message, title=None, token=None, user=None, priority=None)
         raise ValueError(f'unknown notify_kind: {kind}')
     with urllib.request.urlopen(req, timeout=15) as response:
         return response.status
+
+
+# ── The block calendar as iCalendar (2026-09-23) ──────────────
+#
+# One VEVENT per block per day, from `days` = [(date, segments)], where the
+# segments are storage.block_segments_for(date) — the ONE answer to which
+# blocks run on a date, with overrides, cancellations, dated changes and the
+# overnight wrap already applied. The old export decided all of that again for
+# itself, comparing 'HH:MM' strings to find the wrap. A segment belongs to the
+# date it STARTS on (`date`), so the tail of yesterday's block, which
+# block_segments_for also returns, is skipped and written once, on its own day.
+# Times are floating local, like the timeline.
+ICS_PRIORITY = {1: 1, 2: 5, 3: 9}      # iCalendar's scale: 1 highest, 9 lowest
+
+
+def _ics_text(s):
+    return (s.replace('\\', '\\\\').replace(';', '\\;').replace(',', '\\,')
+            .replace('\r\n', '\\n').replace('\n', '\\n'))
+
+
+def blocks_ics(days):
+    lines = ['BEGIN:VCALENDAR', 'VERSION:2.0',
+             'PRODID:-//ef-exobrain//blocks//EN', 'CALSCALE:GREGORIAN']
+    for day, segments in days:
+        ymd = day.isoformat()
+        midnight = datetime.combine(day, datetime.min.time())
+        for seg in segments:
+            if seg['date'] != ymd:
+                continue
+            start = midnight + timedelta(minutes=seg['start'])
+            end = midnight + timedelta(minutes=seg['end'])
+            desc = seg.get('description') or ''
+            if seg.get('priority'):
+                desc = f"Priority {seg['priority']}" + (f'\n\n{desc}' if desc else '')
+            lines += ['BEGIN:VEVENT',
+                      f"UID:block-{seg['block_id']}-{day.strftime('%Y%m%d')}@ef-exobrain",
+                      f"DTSTART:{start.strftime('%Y%m%dT%H%M%S')}",
+                      f"DTEND:{end.strftime('%Y%m%dT%H%M%S')}",
+                      f"SUMMARY:{_ics_text(seg['label'])}"]
+            if desc:
+                lines.append(f'DESCRIPTION:{_ics_text(desc)}')
+            if seg.get('priority') in ICS_PRIORITY:
+                lines.append(f"PRIORITY:{ICS_PRIORITY[seg['priority']]}")
+            lines.append('END:VEVENT')
+    lines.append('END:VCALENDAR')
+    return '\r\n'.join(lines) + '\r\n'

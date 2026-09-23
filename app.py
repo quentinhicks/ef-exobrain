@@ -20,7 +20,7 @@ try:
     import webview
 except ImportError:
     webview = None  # headless server (PT_HEADLESS): Flask only, no windows
-from flask import Flask, jsonify, redirect, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory
 
 import storage
 import schedule
@@ -1178,7 +1178,8 @@ def post_block():
         block = storage.create_block(
             data['label'], data['color'], day,
             data['start_time'], data['end_time'], data.get('area_id'),
-            data.get('location_id'), data.get('domain_id')
+            data.get('location_id'), data.get('domain_id'),
+            data.get('description') or '', data.get('priority')
         )
         blocks.append(block)
     return jsonify(blocks), 201
@@ -1234,7 +1235,8 @@ def patch_block(id):
     block = storage.update_block(
         id, data['label'], data['color'], data['day_of_week'],
         data['start_time'], data['end_time'], data.get('area_id'),
-        data.get('location_id'), data.get('domain_id')
+        data.get('location_id'), data.get('domain_id'),
+        {k: data[k] for k in ('description', 'priority') if k in data}
     )
     return jsonify(block)
 
@@ -1662,51 +1664,19 @@ def patch_sheets_done(row_index):
     return jsonify({})
 
 
-def _build_ics(blocks, cancelled_set):
-    today = date_cls.today()
-    window_end = today + timedelta(weeks=8)
-    lines = [
-        'BEGIN:VCALENDAR',
-        'VERSION:2.0',
-        'PRODID:-//Productivity Tracker//blocks//EN',
-        'CALSCALE:GREGORIAN',
-    ]
-    cur = today
-    while cur <= window_end:
-        dow = cur.weekday()
-        for block in blocks:
-            if not block['active'] or block['day_of_week'] != dow:
-                continue
-            if (block['id'], cur.isoformat()) in cancelled_set:
-                continue
-            end_date = cur + timedelta(days=1) if block['end_time'] <= block['start_time'] else cur
-            dtstart = cur.strftime('%Y%m%d') + 'T' + block['start_time'].replace(':', '') + '00'
-            dtend = end_date.strftime('%Y%m%d') + 'T' + block['end_time'].replace(':', '') + '00'
-            lines += [
-                'BEGIN:VEVENT',
-                f'DTSTART:{dtstart}',
-                f'DTEND:{dtend}',
-                f'SUMMARY:{block["label"]}',
-                f'UID:block-{block["id"]}-{cur.strftime("%Y%m%d")}@productivity-tracker',
-                'END:VEVENT',
-            ]
-        cur += timedelta(days=1)
-    lines.append('END:VCALENDAR')
-    return '\r\n'.join(lines) + '\r\n'
+# The block calendar as an .ics file, handed to the CLIENT to save through its
+# one download door (saveDownload). It used to be written into the SERVER's
+# ~/Downloads, which on the VM is nobody's Downloads folder.
+EXPORT_DAYS = 8 * 7
 
 
-@app.route('/api/blocks/export-ics', methods=['POST'])
+@app.route('/api/blocks/export.ics')
 def export_blocks_ics():
-    today = date_cls.today()
-    window_end = (today + timedelta(weeks=8)).isoformat()
-    blocks = storage.get_blocks()
-    overrides = storage.get_overrides_for_window(today.isoformat(), window_end)
-    cancelled = {(o['block_id'], o['date']) for o in overrides}
-    ics = _build_ics(blocks, cancelled)
-    path = os.path.join(os.path.expanduser('~'), 'Downloads', 'blocks.ics')
-    with open(path, 'w', newline='') as f:
-        f.write(ics)
-    return jsonify({'path': path})
+    first = date_cls.today()
+    days = [first + timedelta(days=n) for n in range(EXPORT_DAYS)]
+    return Response(aggregator.blocks_ics(
+        [(d, storage.block_segments_for(d.isoformat())) for d in days]),
+        mimetype='text/calendar')
 
 
 # --- Block Feedback ---
@@ -3720,6 +3690,25 @@ class WindowApi:
         if _panel_window:
             _panel_window.evaluate_js('npSetPrivacy(%s)' % ('true' if _privacy_on else 'false'))
         return _privacy_on
+
+    # EVERY DOWNLOAD LANDS IN THE DOWNLOADS FOLDER (2026-09-23, Quentin's
+    # instruction). The window's webview drops a page's downloads unless told
+    # otherwise, asks where to put each one when it is told, and on macOS cannot
+    # save a file the page made itself — so the page hands the file here and it
+    # is written straight into ~/Downloads of THIS machine (the laptop, in
+    # client mode too: the windows live in this process). Never overwrites: a
+    # second export the same day is "name (1).md". Returns where it went.
+    def save_download(self, name, text):
+        folder = os.path.join(os.path.expanduser('~'), 'Downloads')
+        base, ext = os.path.splitext(os.path.basename(name) or 'download')
+        path = os.path.join(folder, base + ext)
+        n = 1
+        while os.path.exists(path):
+            path = os.path.join(folder, f'{base} ({n}){ext}')
+            n += 1
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+        return path
 
 
 def _remote_settings(server):

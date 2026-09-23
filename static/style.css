@@ -636,6 +636,7 @@ select option {
 }
 
 .se-input:focus { border-color: var(--accent); }
+.se-textarea { resize: vertical; min-height: 64px; line-height: 1.4; }
 
 /* Times and counts are read digit by digit. */
 .se-mono { font: 14px var(--font-mono); }

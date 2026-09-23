@@ -602,6 +602,20 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE recurring_block ADD COLUMN location_id INTEGER')
         conn.commit()
+    # A block's DESCRIPTION (what the hours are for, in words) and PRIORITY
+    # (2026-09-23, Quentin's instruction): 1 is the most important and may not
+    # be infringed, 3 the least and may be; NULL says nothing. Stated, not yet
+    # enforced — no surface moves or refuses anything on it.
+    try:
+        conn.execute('SELECT description FROM recurring_block LIMIT 1')
+    except Exception:
+        conn.execute("ALTER TABLE recurring_block ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    try:
+        conn.execute('SELECT priority FROM recurring_block LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE recurring_block ADD COLUMN priority INTEGER')
+        conn.commit()
     try:
         conn.execute('SELECT now_block FROM observation LIMIT 1')
     except Exception:
@@ -2865,6 +2879,8 @@ def block_segments_for(date_str, with_cancelled=False):
                         # dated change to a colour or a place has to travel
                         # with the day it belongs to, not be joined on later.
                         'color': b['color'], 'location_id': b['location_id'],
+                        'description': b.get('description') or '',
+                        'priority': b.get('priority'),
                         'scheduled_change': any(r['effective_date'] <= on_date
                                                 for r in revisions.get(raw['id'], ()))})
 
@@ -3755,12 +3771,13 @@ def _fetch_block(conn, id):
 
 
 def create_block(label, color, day_of_week, start_time, end_time, area_id, location_id,
-                 domain_id=None):
+                 domain_id=None, description='', priority=None):
     f = filing_updates(area_id, domain_id)
     conn = get_conn()
     cur = conn.execute(
-        'INSERT INTO recurring_block (label, color, day_of_week, start_time, end_time, area_id, domain_id, location_id) VALUES (?,?,?,?,?,?,?,?)',
-        (label, color, day_of_week, start_time, end_time, f['area_id'], f['domain_id'], location_id)
+        'INSERT INTO recurring_block (label, color, day_of_week, start_time, end_time, area_id, domain_id, location_id, description, priority) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        (label, color, day_of_week, start_time, end_time, f['area_id'], f['domain_id'], location_id,
+         description or '', block_priority(priority))
     )
     row_id = cur.lastrowid
     conn.commit()
@@ -3770,13 +3787,22 @@ def create_block(label, color, day_of_week, start_time, end_time, area_id, locat
 
 
 def update_block(id, label, color, day_of_week, start_time, end_time, area_id, location_id,
-                 domain_id=None):
+                 domain_id=None, extra=None):
     f = filing_updates(area_id, domain_id)
     conn = get_conn()
     conn.execute(
         'UPDATE recurring_block SET label=?, color=?, day_of_week=?, start_time=?, end_time=?, area_id=?, domain_id=?, location_id=? WHERE id=?',
         (label, color, day_of_week, start_time, end_time, f['area_id'], f['domain_id'], location_id, id)
     )
+    # Description and priority only when the patch SAYS them — a caller that
+    # predates them must not blank what is there.
+    extra = extra or {}
+    if 'description' in extra:
+        conn.execute('UPDATE recurring_block SET description = ? WHERE id = ?',
+                     (extra['description'] or '', id))
+    if 'priority' in extra:
+        conn.execute('UPDATE recurring_block SET priority = ? WHERE id = ?',
+                     (block_priority(extra['priority']), id))
     conn.commit()
     result = _fetch_block(conn, id)
     conn.close()
@@ -3790,7 +3816,19 @@ def update_block(id, label, color, day_of_week, start_time, end_time, area_id, l
 # money path, so a change lands exactly when you said and nothing waits 24h.
 # The date is the whole mechanism here.
 BLOCK_SCHEDULED_FIELDS = ('label', 'color', 'day_of_week', 'start_time', 'end_time',
-                          'area_id', 'domain_id', 'location_id', 'active')
+                          'area_id', 'domain_id', 'location_id', 'active',
+                          'description', 'priority')
+
+BLOCK_PRIORITIES = (1, 2, 3)
+
+
+# 1, 2 or 3, or None for no priority — whatever shape it arrived in.
+def block_priority(value):
+    try:
+        p = int(value)
+    except (TypeError, ValueError):
+        return None
+    return p if p in BLOCK_PRIORITIES else None
 
 # The pseudo-field a dated removal is filed under, matching the flow half's
 # spelling. Not a column, so nothing can UPDATE a block with it.
@@ -4323,16 +4361,6 @@ def delete_override(id):
     conn.execute('DELETE FROM block_override WHERE id = ?', (id,))
     conn.commit()
     conn.close()
-
-
-def get_overrides_for_window(start_date, end_date):
-    conn = get_conn()
-    rows = conn.execute(
-        'SELECT * FROM block_override WHERE date >= ? AND date <= ? AND cancelled = 1',
-        (start_date, end_date)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
 
 
 def validate_no_overlap(day_of_week, start_time, end_time, exclude_id=None):
