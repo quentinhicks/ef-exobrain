@@ -21,6 +21,9 @@
   --grid-line: #232323;      /* timeline hour lines */
   --on-accent: #0d0d0d;      /* text ON an accent-filled button */
   --success: #4caf7d;        /* Gates requirement met */
+  --prio-1: rgba(217, 90, 100, 0.17);   /* MAP row tints for p1 / p2 / p3 */
+  --prio-2: rgba(222, 188, 72, 0.15);
+  --prio-3: rgba(76, 175, 125, 0.15);
   --overlay: rgba(0, 0, 0, 0.92);
   --block-label: #8a8a8a;
   --block-mix: #3a3a3a;      /* color-mix partner that mutes block bars */
@@ -4236,7 +4239,7 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 0;
+  padding: 3px 4px;
 }
 
 .map-row[draggable="true"] { cursor: grab; }
@@ -4244,6 +4247,47 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 .map-text { flex: 1; font-size: 13px; color: var(--text-primary); min-width: 0; }
 .map-row-project > .map-text { color: var(--accent); font-weight: 500; }
 .map-row-stalled > .map-text { color: var(--danger); }
+
+/* Priority tints and the keyboard's selected row. Background and an INSET
+   shadow only — nothing that moves the row, so selecting never shifts layout. */
+.map-row-p1 { background: var(--prio-1); }
+.map-row-p2 { background: var(--prio-2); }
+.map-row-p3 { background: var(--prio-3); }
+.map-row-p1, .map-row-p2, .map-row-p3, .map-row-sel { border-radius: 4px; }
+.map-row-sel { box-shadow: inset 0 0 0 1.5px var(--accent); }
+/* `t` is armed: the row says which arrow sets which estimate, on a line of
+   its own — beside the text it would crush the row at phone width. */
+.map-row-tmode { flex-wrap: wrap; }
+.map-row-tmode::after {
+  content: '← 5m  ↑ 15m  → 45m  ↓ 2h';
+  flex-basis: 100%;
+  text-align: right;
+  font: 11px var(--font-mono);
+  color: var(--accent);
+  white-space: pre;
+  padding-right: 4px;
+}
+
+/* The in-page date picker (renderEntryWhen) — never the browser's own, which
+   privacy mode's filter cannot reach. */
+.enw-picked { font-size: 15px; font-weight: 500; color: var(--text-primary); padding: 8px 14px; }
+.enw-nav { display: flex; align-items: center; gap: 8px; padding: 0 14px 6px; }
+.enw-month { flex: 1; text-align: center; font-size: 13px; color: var(--text-secondary); }
+.enw-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; padding: 0 14px 10px; }
+.enw-dow { text-align: center; font-size: 11px; color: var(--text-secondary); padding: 2px 0; }
+.enw-day {
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.enw-day.enw-out { color: var(--text-secondary); background: transparent; }
+.enw-day.enw-today { border-color: var(--text-secondary); }
+.enw-day.enw-on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
 .map-kids {
   border-left: 2px solid var(--border);
@@ -5963,6 +6007,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   --danger: #c0392b;
   --success: #1c7a4a;
   --on-hold: #6b7480;
+  --prio-1: rgba(192, 57, 43, 0.11);
+  --prio-2: rgba(214, 170, 0, 0.17);
+  --prio-3: rgba(28, 122, 74, 0.11);
 
   --gold: #8a6a12;
 

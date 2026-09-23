@@ -2758,8 +2758,15 @@ async function undoableDelete(id, label) {
 // Time-estimate tags: one of these on an item means "takes about this long".
 // They are ordinary tags everywhere (chips, filters, #5m in an add bar) —
 // only the clarify picker treats them as exclusive, because a thing doesn't
-// take 5 AND 90 minutes.
-const EST_TAGS = ['5m', '15m', '30m', '90m'];
+// take 5 AND 120 minutes. The four are MAP's `t` arrows (2026-09-23, Quentin's
+// instruction: ← 5m, ↑ 15m, → 45m, ↓ 2h), which replaced 30m/90m — a row
+// still carrying one of those keeps it as a plain tag.
+const EST_TAGS = ['5m', '15m', '45m', '2h'];
+
+// Priority tags, set from MAP's 1/2/3 keys and exclusive there: p1 is the
+// highest. Inert tokens like every other tag — the tint MAP gives a row is the
+// only thing that reads them.
+const PRIORITY_TAGS = ['p1', 'p2', 'p3'];
 
 // The due chip for inbox_item.deadline (REAL deadlines only — that discipline
 // is the user's, not the app's). One renderer so every surface says it the
@@ -8795,6 +8802,11 @@ function openEntrySheet(spec) {
   entrySheet.open = true;
   entrySheet.spec = spec;
   entrySheet.tags = new Set(spec.initialTags || []);
+  if (spec.when) {
+    const date = spec.when.date || '';
+    entrySheet.when = { date, month: (date || wallDay()).slice(0, 7),
+                        time: spec.when.minute != null ? clockHHMM(spec.when.minute) : '' };
+  }
   renderEntrySheet();
 }
 
@@ -8811,6 +8823,7 @@ function renderEntrySheet() {
   const spec = entrySheet.spec;
   sheet.classList.remove('hidden');
   back.classList.remove('hidden');
+  if (spec.when) { renderEntryWhen(sheet, back, spec); return; }
   sheet.innerHTML = `
     <div class="cl-head">
       <span class="cl-eyebrow">${escHtml(spec.title)}</span>
@@ -8822,6 +8835,10 @@ function renderEntrySheet() {
         placeholder="${escHtml(spec.placeholder || '')}" autocomplete="off">
     </div>
     ${spec.hint ? `<div class="cl-donow">${escHtml(spec.hint)}</div>` : ''}
+    ${spec.suggest && spec.suggest.length ? `
+    <div class="cl-chips">
+      ${spec.suggest.map(t => `<button class="ctx-chip ctx-off" data-ensug="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+    </div>` : ''}
     ${spec.tags ? `
     <div class="cl-sec"><span class="cl-label">Tags</span></div>
     <div class="cl-chips" id="en-tag-chips">
@@ -8877,6 +8894,11 @@ function renderEntrySheet() {
     if (spec.closeOnAdd) { closeEntrySheet(); return; }
     input.focus();
   };
+  // A suggestion is the same as typing it and pressing Enter.
+  sheet.querySelectorAll('[data-ensug]').forEach(b => b.addEventListener('click', () => {
+    input.value = b.dataset.ensug;
+    add();
+  }));
   sheet.querySelector('#en-close').addEventListener('click', closeEntrySheet);
   sheet.querySelector('#en-done').addEventListener('click', closeEntrySheet);
   sheet.querySelector('#en-add').addEventListener('click', add);
@@ -8890,6 +8912,143 @@ function renderEntrySheet() {
   });
   back.addEventListener('click', closeEntrySheet);
   input.focus();
+}
+
+// A DAY, AND OPTIONALLY A TIME, PICKED INSIDE THE PAGE. Deliberately not
+// <input type="date"> / type="time": the browser draws those pickers OUTSIDE
+// the document, where privacy mode's filter on <html> cannot reach them, and
+// every popup has to fade with the rest (Quentin, 2026-09-23). So the month is
+// a grid of buttons and the time a text field parsed by parseClockText.
+// Arrows move the day (←→ one, ↑↓ a week), Enter saves, Esc closes — each
+// stopped here, or the same key would also reach the surface underneath.
+// `spec.save({ date, minute })`: date '' clears, minute is null without a time.
+function renderEntryWhen(sheet, back, spec) {
+  const w = entrySheet.when;
+  const today = wallDay();
+  const first = w.month + '-01';
+  const lead = jsDateToDayOfWeek(new Date(first + 'T12:00:00'));   // weeks start Monday
+  const [y, m] = w.month.split('-').map(Number);
+  const weeks = Math.ceil((lead + new Date(y, m, 0).getDate()) / 7);
+  const cells = [];
+  for (let n = 0; n < weeks * 7; n++) cells.push(localDatePlusDays(first, n - lead));
+  const monthName = new Date(first + 'T12:00:00')
+    .toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const picked = w.date
+    ? new Date(w.date + 'T12:00:00').toLocaleDateString('en-US',
+        { weekday: 'long', month: 'short', day: 'numeric' })
+    : 'No date';
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">${escHtml(spec.title)}</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="en-close">✕</button>
+    </div>
+    <div class="enw-picked">${escHtml(picked)}</div>
+    <div class="enw-nav">
+      <button class="cl-pill" data-enw-month="-1" title="Previous month">‹</button>
+      <span class="enw-month">${escHtml(monthName)}</span>
+      <button class="cl-pill" data-enw-month="1" title="Next month">›</button>
+    </div>
+    <div class="enw-grid">
+      ${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => `<span class="enw-dow">${d}</span>`).join('')}
+      ${cells.map(d => `<button class="enw-day${d.slice(0, 7) !== w.month ? ' enw-out' : ''}${
+        d === today ? ' enw-today' : ''}${d === w.date ? ' enw-on' : ''}" data-enw-day="${d}"
+        >${Number(d.slice(8))}</button>`).join('')}
+    </div>
+    <div class="cl-row">
+      <button class="cl-pill" data-enw-day="${today}">Today</button>
+      <button class="cl-pill" data-enw-day="${localDatePlusDays(today, 1)}">Tomorrow</button>
+      <button class="cl-pill" data-enw-day="${localDatePlusDays(today, 7)}">+1 week</button>
+      <button class="cl-pill" data-enw-day="">Clear</button>
+    </div>
+    ${spec.when.withTime ? `
+    <div class="cl-sec"><span class="cl-label">Time</span>
+      <span class="cl-hint">optional — a time also puts it on that day's schedule</span></div>
+    <div class="cl-action-wrap">
+      <input type="text" class="cl-action" id="enw-time" inputmode="numeric"
+        placeholder="e.g. 9:30, 14:00, 7pm" autocomplete="off" value="${escHtml(w.time)}">
+    </div>` : ''}
+    <div class="cl-row">
+      <button class="cl-pill" id="en-add">Save</button>
+      <button class="cl-pill" id="en-done">Cancel</button>
+    </div>`;
+
+  const timeEl = sheet.querySelector('#enw-time');
+  const refocus = () => {
+    renderEntrySheet();
+    document.getElementById('en-sheet').focus();
+  };
+  const setDay = d => {
+    w.date = d;
+    if (d) w.month = d.slice(0, 7);
+    refocus();
+  };
+  const save = async () => {
+    let minute = null;
+    if (timeEl && timeEl.value.trim()) {
+      minute = parseClockText(timeEl.value);
+      if (minute == null) { toast('A time looks like 9:30, 14:00 or 7pm'); return; }
+      if (!w.date) { toast('Pick a day for that time'); return; }
+    }
+    closeEntrySheet();
+    await spec.save({ date: w.date, minute });
+  };
+  sheet.querySelectorAll('[data-enw-day]').forEach(b =>
+    b.addEventListener('click', () => setDay(b.dataset.enwDay)));
+  sheet.querySelectorAll('[data-enw-month]').forEach(b => b.addEventListener('click', () => {
+    const d = new Date(w.month + '-15T12:00:00');
+    d.setMonth(d.getMonth() + Number(b.dataset.enwMonth));
+    w.month = formatDateYMD(d).slice(0, 7);
+    refocus();
+  }));
+  if (timeEl) timeEl.addEventListener('input', () => { w.time = timeEl.value; });
+  sheet.querySelector('#en-close').addEventListener('click', closeEntrySheet);
+  sheet.querySelector('#en-done').addEventListener('click', closeEntrySheet);
+  sheet.querySelector('#en-add').addEventListener('click', save);
+  back.onclick = closeEntrySheet;
+  sheet.tabIndex = -1;
+  sheet.focus();
+}
+
+// The date picker's keys, on the sheet itself and wired ONCE (the sheet is
+// re-rendered on every arrow, its element is not). A no-op for the text form.
+document.getElementById('en-sheet').addEventListener('keydown', e => {
+  if (!entrySheet.open || !entrySheet.spec || !entrySheet.spec.when) return;
+  const w = entrySheet.when;
+  const sheet = e.currentTarget;
+  if (e.key === 'Escape') { e.stopPropagation(); closeEntrySheet(); return; }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    e.stopPropagation();
+    sheet.querySelector('#en-add').click();
+    return;
+  }
+  if (e.target.id === 'enw-time') return;
+  const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
+  if (!step) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const d = localDatePlusDays(w.date || wallDay(), w.date ? step : 0);
+  w.date = d;
+  w.month = d.slice(0, 7);
+  renderEntrySheet();
+  sheet.focus();
+});
+
+// Typed clock text → minutes from midnight, or null. Accepts 9, 930, 9:30,
+// 21:00, 7pm, 7:15 am. The parse happens ONCE, here; minutes from then on.
+function parseClockText(text) {
+  const m = String(text).trim().toLowerCase()
+    .match(/^(\d{1,2})(?::?(\d{2}))?\s*(am?|pm?)?$/);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = m[2] ? Number(m[2]) : 0;
+  if (m[3]) {
+    if (h < 1 || h > 12) return null;
+    h = (h % 12) + (m[3][0] === 'p' ? 12 : 0);
+  }
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
 }
 
 // THE NIGHT'S ENTRY, SAVED WITHOUT CREDITING THE STEP. The journal page holds
@@ -9297,8 +9456,8 @@ function egRowControl(i, started, title) {
 }
 
 // The length chip. It rides where the estimate tags ride and looks like them,
-// but it is DERIVED, never stored: EST_TAGS is a closed vocabulary (5m/15m/30m/
-// 90m) and a routine's real length is whatever its steps add up to. Writing it
+// but it is DERIVED, never stored: EST_TAGS is a closed vocabulary (5m/15m/45m/
+// 2h) and a routine's real length is whatever its steps add up to. Writing it
 // as a tag would either lie or break that vocabulary.
 function flowLenChip(i) {
   const m = flowTaskMinutes(i);
@@ -13612,7 +13771,10 @@ const MAP_LENSES = [
   { key: 'someday', name: 'Someday / maybe', keep: i => i.status === 'on_hold' },
 ];
 
-const mapView = { q: '', lens: 'all', domainId: null, tags: new Set(), menuOpen: false };
+// `sel` is the keyboard's row (by id) and `tMode` the armed `t` — see MAP BY
+// KEYBOARD below.
+const mapView = { q: '', lens: 'all', domainId: null, tags: new Set(), menuOpen: false,
+                  sel: null, tMode: false };
 
 function mapLens() {
   return MAP_LENSES.find(l => l.key === mapView.lens) || MAP_LENSES[0];
@@ -13632,6 +13794,14 @@ function mapVisibleItems(items, today) {
     lens.keep(i, today)
     && (mapView.domainId == null || String(i.domain_id) === String(mapView.domainId))
     && [...mapView.tags].every(t => itemTags(i).includes(t)));
+}
+
+// "In" is not a next action, a project or a someday — it is what has not been
+// decided yet. It belongs to the whole inventory and to no lens, so any lens
+// at all puts it away rather than showing it under a heading it contradicts.
+function mapInboxItems() {
+  return (mapView.lens === 'all' && mapView.domainId == null && !mapView.tags.size)
+    ? (state.inbox || []) : [];
 }
 
 // MAP at a NAMED LENS, for the review steps that are really "go look at this
@@ -13667,6 +13837,14 @@ async function openMap() {
       else localStorage.removeItem('mapSort');   // absent = on, one default
       renderMap();
     });
+    document.getElementById('map-export').addEventListener('click', exportMap);
+    // A tap or click on a row selects it too, so the keys act where you are.
+    document.getElementById('map-body').addEventListener('pointerdown', e => {
+      const row = e.target.closest('.map-row[data-id]');
+      if (!row) return;
+      mapView.sel = parseInt(row.dataset.id);
+      mapSelSync();
+    });
     document.getElementById('map-filter').addEventListener('click', e => {
       e.stopPropagation();
       mapView.menuOpen = !mapView.menuOpen;
@@ -13690,6 +13868,9 @@ async function openMap() {
     });
     mapWired = true;
   }
+  // Opening MAP selects its FIRST row (mapSelSync falls back to it).
+  mapView.sel = null;
+  mapView.tMode = false;
   await refreshMap();
   document.getElementById('map-overlay').classList.remove('hidden');
 }
@@ -13955,6 +14136,55 @@ function mapSortSiblings(list, todayStr) {
     .map(x => x[2]);
 }
 
+// domain → area → items, each level by name. Area cascades down a subtree in
+// storage, so a parent is always in the same area group as its children. ONE
+// grouping, read by the tree and by the export, so the file you save is the
+// list you were looking at.
+function mapGroups(items) {
+  const domains = {};
+  items.forEach(i => {
+    const dk = i.domain_id || 0;
+    const ak = i.area_id || 0;
+    const d = domains[dk] = domains[dk] || { name: i.domain_name || '—', areas: {} };
+    const a = d.areas[ak] = d.areas[ak] || { name: i.area_name || '(no area)', items: [] };
+    a.items.push(i);
+  });
+  const byName = o => Object.values(o).sort((x, y) => x.name.localeCompare(y.name));
+  return byName(domains).map(d => ({ name: d.name, areas: byName(d.areas) }));
+}
+
+// SOMEDAY IS SPLIT OUT (2026-08-10). It used to be interleaved with live
+// work, and since MAP deliberately badges no 'someday' marker, a parked item
+// was indistinguishable from an active one — so reading the tree meant
+// re-deciding the state of every row. Two piles, two levels of rigour.
+//
+// The split is at the ROOT: a subtree goes wherever its root goes. An
+// on_hold PROJECT takes its children with it (they are parked with it), and
+// a parked action under a live project stays inside that project's
+// structure, where its absence from the pool is the project's problem.
+function mapAreaForest(areaItems, wantSomeday, todayStr) {
+  const inView = new Set(areaItems.map(i => i.id));
+  const kidsOf = {};
+  const roots = [];
+  areaItems.forEach(item => {
+    const pid = item.project_id && inView.has(item.project_id) ? item.project_id : null;
+    if (pid) (kidsOf[pid] = kidsOf[pid] || []).push(item);
+    else roots.push(item);
+  });
+  const parked = r => r.status === 'on_hold';
+  return {
+    roots: mapSortSiblings(roots.filter(r => (wantSomeday ? parked(r) : !parked(r))), todayStr),
+    kids: item => mapSortSiblings(kidsOf[item.id] || [], todayStr),
+  };
+}
+
+// The row's tint, from its OWN priority tag — MAP shows a row's own tags, so
+// the colour sits where the priority was set, not on everything beneath it.
+function mapPriorityClass(item) {
+  const p = PRIORITY_TAGS.find(t => ownTags(item).includes(t));
+  return p ? ` map-row-${p}` : '';
+}
+
 // The gestures every MAP row carries, wherever it is rendered — the tree and
 // the flat search results share them, so a hit behaves exactly like the row it
 // stands for. Drag is NOT here: it is the tree's alone (see renderMap).
@@ -14029,11 +14259,7 @@ function renderMap() {
   // Everything below reads the NARROWED set, search included — a search inside
   // "Waiting & deferred" must not turn up an action you are not asking about.
   const items = mapVisibleItems(state.mapItems || [], todayStr);
-  // "In" is not a next action, a project or a someday — it is what has not been
-  // decided yet. It belongs to the whole inventory and to no lens, so any lens
-  // at all puts it away rather than showing it under a heading it contradicts.
-  const inboxItems = (mapView.lens === 'all' && mapView.domainId == null && !mapView.tags.size)
-    ? (state.inbox || []) : [];
+  const inboxItems = mapInboxItems();
   const byId = {};
   items.forEach(i => { byId[i.id] = i; });
   // "In" rows join the lookup so the shared .map-text click/rename handlers
@@ -14084,7 +14310,7 @@ function renderMap() {
     const isProject = item.kind === 'project';
     const isStalled = isProject && stalled.has(item.id);
     return `<div class="map-row${isProject ? ' map-row-project' : ''}${
-        isStalled ? ' map-row-stalled' : ''}" data-id="${item.id}" draggable="true">
+        isStalled ? ' map-row-stalled' : ''}${mapPriorityClass(item)}" data-id="${item.id}" draggable="true">
       ${chainN[item.id] ? `<span class="cl-chain-n" title="Position in this project's dependency chain">[${chainN[item.id]}]</span>` : ''}
       <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
       ${ownTags(item).map(t =>
@@ -14098,50 +14324,20 @@ function renderMap() {
     </div>`;
   };
 
-  // domain → area → tree. Area cascades down a subtree in storage, so a parent
-  // is always in the same area group as its children.
-  const domains = {};
-  items.forEach(i => {
-    const dk = i.domain_id || 0;
-    const ak = i.area_id || 0;
-    const d = domains[dk] = domains[dk] || { name: i.domain_name || '—', areas: {} };
-    const a = d.areas[ak] = d.areas[ak] || { name: i.area_name || '(no area)', items: [] };
-    a.items.push(i);
-  });
-
-  // SOMEDAY IS SPLIT OUT (2026-08-10). It used to be interleaved with live
-  // work, and since MAP deliberately badges no 'someday' marker, a parked item
-  // was indistinguishable from an active one — so reading the tree meant
-  // re-deciding the state of every row. Two piles, two levels of rigour.
-  //
-  // The split is at the ROOT: a subtree goes wherever its root goes. An
-  // on_hold PROJECT takes its children with it (they are parked with it), and
-  // a parked action under a live project stays inside that project's
-  // structure, where its absence from the pool is the project's problem.
+  // No add affordance here any more: MAP is a reading surface, and "give
+  // this project a next action" already has a home on GTD's Projects list
+  // (the same + that puts the global bar in the project's mode).
   const areaTreeHtml = (areaItems, wantSomeday) => {
-    const inView = new Set(areaItems.map(i => i.id));
-    const kidsOf = {};
-    const roots = [];
-    areaItems.forEach(item => {
-      const pid = item.project_id && inView.has(item.project_id) ? item.project_id : null;
-      if (pid) (kidsOf[pid] = kidsOf[pid] || []).push(item);
-      else roots.push(item);
-    });
-    // No add affordance here any more: MAP is a reading surface, and "give
-    // this project a next action" already has a home on GTD's Projects list
-    // (the same + that puts the global bar in the project's mode).
+    const forest = mapAreaForest(areaItems, wantSomeday, todayStr);
     const subtree = item => {
-      const kids = mapSortSiblings(kidsOf[item.id] || [], todayStr);
+      const kids = forest.kids(item);
       return rowHtml(item) + (kids.length
         ? `<div class="map-kids">${kids.map(subtree).join('')}</div>` : '');
     };
-    const parked = r => r.status === 'on_hold';
-    const picked = roots.filter(r => (wantSomeday ? parked(r) : !parked(r)));
-    return mapSortSiblings(picked, todayStr).map(subtree).join('');
+    return forest.roots.map(subtree).join('');
   };
 
-  const domainKeys = Object.keys(domains).sort((a, b) =>
-    domains[a].name.localeCompare(domains[b].name));
+  const groups = mapGroups(items);
 
   // "In" is not part of the inventory — it is what hasn't been decided yet, so
   // get_map_items excludes it. But MAP is the read-EVERYTHING surface, and an
@@ -14151,7 +14347,7 @@ function renderMap() {
   const inboxHtml = inboxItems.length ? `
     <div class="map-area-group">
       <div class="map-area-head">In — not yet clarified<span class="map-count">${inboxItems.length}</span></div>
-      ${inboxItems.map(i => `<div class="map-row map-row-in" data-id="${i.id}">
+      ${inboxItems.map(i => `<div class="map-row map-row-in${mapPriorityClass(i)}" data-id="${i.id}">
         <span class="map-text" title="Tap to clarify · double-click to reword">${escHtml(i.content)}</span>
         <span class="map-acts"><button class="map-open" data-id="${i.id}" title="Clarify this">›</button></span>
       </div>`).join('')}
@@ -14209,7 +14405,7 @@ function renderMap() {
       const isProject = i.kind === 'project';
       return `<div class="map-row map-row-hit${isProject ? ' map-row-project' : ''}${
           isProject && stalled.has(i.id) ? ' map-row-stalled' : ''}${
-          isIn && !i.area_id ? ' map-row-in' : ''}" data-id="${i.id}">
+          isIn && !i.area_id ? ' map-row-in' : ''}${mapPriorityClass(i)}" data-id="${i.id}">
         <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(i.content)}</span>
         ${ownTags(i).map(t =>
           `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
@@ -14221,23 +14417,22 @@ function renderMap() {
       </div>`;
     }).join('') : `<div class="pm-empty">Nothing matches "${escHtml(q)}".</div>`;
     wireMapRows(body, byId);
+    mapSelSync();
     return;
   }
   if (countEl) countEl.textContent = '';
 
-  body.innerHTML = (domainKeys.length ? domainKeys.map(dk => {
-    const d = domains[dk];
-    const areaKeys = Object.keys(d.areas).sort((a, b) => d.areas[a].name.localeCompare(d.areas[b].name));
-    const total = areaKeys.reduce((n, ak) => n + d.areas[ak].items.length, 0);
+  body.innerHTML = (groups.length ? groups.map(d => {
+    const total = d.areas.reduce((n, a) => n + a.items.length, 0);
     return `<div class="map-domain">
       <div class="map-domain-head">${escHtml(d.name)}<span class="map-count">${total}</span></div>
-      ${areaKeys.map(ak => {
-        const live = areaTreeHtml(d.areas[ak].items, false);
-        const later = areaTreeHtml(d.areas[ak].items, true);
-        const nLive = d.areas[ak].items.filter(i => i.status !== 'on_hold').length;
-        const nLater = d.areas[ak].items.length - nLive;
+      ${d.areas.map(a => {
+        const live = areaTreeHtml(a.items, false);
+        const later = areaTreeHtml(a.items, true);
+        const nLive = a.items.filter(i => i.status !== 'on_hold').length;
+        const nLater = a.items.length - nLive;
         return `<div class="map-area-group">
-        <div class="map-area-head">${escHtml(d.areas[ak].name)}<span class="map-count">${nLive}</span></div>
+        <div class="map-area-head">${escHtml(a.name)}<span class="map-count">${nLive}</span></div>
         ${live}
         ${later ? `<div class="map-someday-head">Someday / maybe<span class="map-count">${nLater}</span></div>${later}` : ''}
       </div>`;
@@ -14317,6 +14512,265 @@ function renderMap() {
   });
 
   dragEdgeScroll(body);
+  mapSelSync();
+}
+
+// ── MAP BY KEYBOARD (2026-09-23, Quentin's instruction) ───────
+//
+// One row is always SELECTED — the first when MAP opens — and single keys act
+// on it: ↑↓ move, 1/2/3 priority, d due, s show-on, t then an arrow for the
+// estimate, m multitask, l a location, Enter clarifies. The selection is view
+// state held by ID, so the re-render after a write keeps the row you were on.
+// Every write registers its inverse first, like any other button.
+//
+// Only while MAP is the top layer: a sheet, menu or Settings over it owns the
+// keys, and a focused field keeps its typing.
+
+function mapRows() {
+  return [...document.querySelectorAll('#map-body .map-row[data-id]')];
+}
+
+// Marks the selected row, falling back to the first when the one held is not
+// on screen (MAP just opened, or a filter took it away).
+function mapSelSync() {
+  const rows = mapRows();
+  let row = rows.find(r => r.dataset.id === String(mapView.sel));
+  if (!row) {
+    row = rows[0];
+    mapView.sel = row ? parseInt(row.dataset.id) : null;
+  }
+  rows.forEach(r => {
+    r.classList.toggle('map-row-sel', r === row);
+    r.classList.toggle('map-row-tmode', r === row && mapView.tMode);
+  });
+  return row;
+}
+
+function mapSelItem() {
+  const id = mapView.sel;
+  return (state.mapItems || []).find(i => i.id === id)
+    || (state.inbox || []).find(i => i.id === id) || null;
+}
+
+function mapMoveSel(step) {
+  const rows = mapRows();
+  if (!rows.length) return;
+  const at = rows.findIndex(r => r.dataset.id === String(mapView.sel));
+  const next = rows[Math.max(0, Math.min(rows.length - 1, at + step))];
+  mapView.sel = parseInt(next.dataset.id);
+  mapSelSync();
+  next.scrollIntoView({ block: 'nearest' });
+}
+
+function mapKeysLive() {
+  const ov = document.getElementById('map-overlay');
+  const settings = document.getElementById('modal-overlay');
+  return !!ov && !ov.classList.contains('hidden')
+    && !(settings && !settings.classList.contains('hidden'))
+    && !clarifyView.open && !entrySheet.open && !seSheet.kind && !objMenu.open
+    && !mapView.menuOpen && !occasionView.open && !ctxSheet.tag && !dwView.open;
+}
+
+async function mapAfterWrite() {
+  await refreshMap();
+  await refreshActiveItems();
+}
+
+async function mapSetTags(item, tags, label) {
+  undoablePatch(item, ['tags'], label);
+  await patchInboxItem(item.id, { tags: tags.join(' ') });
+  await mapAfterWrite();
+}
+
+// A tag out of a set that is exclusive here (priority, estimate): the same key
+// again takes it off, another key swaps it. `drop` says which tags the set
+// holds, so the estimate can also clear the retired 30m/90m.
+function mapToggleIn(item, tag, drop, what) {
+  const own = ownTags(item);
+  const had = own.includes(tag);
+  const rest = own.filter(t => !drop(t));
+  return mapSetTags(item, had ? rest : [...rest, tag],
+    `${had ? 'cleared' : 'set'} ${what} ${tag} on "${item.content}"`);
+}
+
+const MAP_EST_KEYS = { ArrowLeft: '5m', ArrowUp: '15m', ArrowRight: '45m', ArrowDown: '2h' };
+
+function mapPromptDue(item) {
+  openEntrySheet({
+    title: `Due — ${item.content}`,
+    when: { date: item.deadline || '' },
+    save: async ({ date }) => {
+      if ((date || null) === (item.deadline || null)) return;
+      undoablePatch(item, ['deadline'], `due date on "${item.content}"`);
+      await patchInboxItem(item.id, { deadline: date || null });
+      await mapAfterWrite();
+    },
+  });
+}
+
+// The show-on date is the clarify sheet's Defer, asked alone: a date defers, a
+// time ALSO schedules it into that day (the placement replaces any earlier
+// one, as clarify's does). A date alone leaves placements alone — deferring is
+// about the pool, a placement about a day already planned.
+async function mapPromptShow(item) {
+  const snap = await snapshotItem(item.id);
+  const prevPlaces = (snap && snap.placements) || [];
+  const onDay = prevPlaces.find(p => p.date === item.defer_until);
+  openEntrySheet({
+    title: `Show on — ${item.content}`,
+    when: { date: item.defer_until || '', minute: onDay ? onDay.minute : null, withTime: true },
+    save: async ({ date, minute }) => {
+      const prevDefer = item.defer_until || null;
+      const placing = !!date && minute != null;
+      pushUndo(`show-on date for "${item.content}"`, async () => {
+        await patchInboxItem(item.id, { defer_until: prevDefer });
+        if (placing) {
+          await apiSend(`/api/engage/placements/${item.id}?date=${date}`, 'DELETE');
+          for (const p of prevPlaces) {
+            await apiSend('/api/engage/placements', 'POST',
+                          { item_id: item.id, date: p.date, minute: p.minute });
+          }
+        }
+        await refreshAfterUndo();
+      });
+      await patchInboxItem(item.id, { defer_until: date || null });
+      stickyRemember('showDate', date || '');
+      if (placing) {
+        for (const p of prevPlaces) {
+          await apiSend(`/api/engage/placements/${item.id}?date=${p.date}`, 'DELETE');
+        }
+        await apiSend('/api/engage/placements', 'POST', { item_id: item.id, date, minute });
+      }
+      await mapAfterWrite();
+    },
+  });
+}
+
+// A location is a TAG — the thing a place gates by once it is bound to one in
+// the context sheet — so the prompt offers the tags already bound to a place
+// and mints whatever else you type.
+function mapPromptLocation(item) {
+  const bound = [...new Set((state.tagLocations || []).map(b => b.tag))].sort();
+  openEntrySheet({
+    title: `Location — ${item.content}`,
+    placeholder: 'Where? e.g. home, office, errands',
+    suggest: bound,
+    button: 'Add',
+    closeOnAdd: true,
+    add: async raw => {
+      const tag = raw.trim().toLowerCase().replace(/^[#@]/, '')
+        .replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
+      if (!tag) { toast('A location is letters, numbers and dashes'); return; }
+      const own = ownTags(item);
+      if (own.includes(tag)) return;
+      await mapSetTags(item, [...own, tag], `location ${tag} on "${item.content}"`);
+    },
+  });
+}
+
+document.addEventListener('keydown', e => {
+  if (!mapKeysLive()) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+            || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  if (e.key === 'Shift') return;
+  const item = mapSelItem();
+  // `t` arms the next arrow. Anything else disarms it — Esc only that, so it
+  // does not also close MAP (this listener runs before initHub's ladder).
+  if (mapView.tMode) {
+    mapView.tMode = false;
+    mapSelSync();
+    const est = MAP_EST_KEYS[e.key];
+    if (est && item) {
+      e.preventDefault();
+      mapToggleIn(item, est, x => EST_TAGS.includes(x) || /^\d+[mh]$/.test(x), 'estimate');
+      return;
+    }
+    if (e.key === 'Escape') { e.stopImmediatePropagation(); return; }
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    mapMoveSel(e.key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  if (!item) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (k === 'Enter') { e.preventDefault(); openClarifyForItem(item, mapAfterWrite); }
+  else if (k === '1' || k === '2' || k === '3') {
+    mapToggleIn(item, `p${k}`, x => PRIORITY_TAGS.includes(x), 'priority');
+  }
+  else if (k === 'd') { e.preventDefault(); mapPromptDue(item); }
+  else if (k === 's') { e.preventDefault(); mapPromptShow(item); }
+  else if (k === 't') { mapView.tMode = true; mapSelSync(); }
+  else if (k === 'm') {
+    const own = ownTags(item);
+    const on = own.includes('multitask');
+    mapSetTags(item, on ? own.filter(x => x !== 'multitask') : [...own, 'multitask'],
+      `${on ? 'cleared' : 'set'} multitask on "${item.content}"`);
+  }
+  else if (k === 'l') { e.preventDefault(); mapPromptLocation(item); }
+});
+
+// ── Export — the list as Markdown ────────────────────────────
+//
+// What MAP is showing under its lens and filters (search is a ranked view,
+// not a list, so it is not what gets saved), in the tree's own grouping and
+// order via mapGroups / mapAreaForest. Downloaded AND copied: the pywebview
+// shell does not always honour a download, and the clipboard always works.
+function mapMarkdown() {
+  const todayStr = wallDay();
+  const items = mapVisibleItems(state.mapItems || [], todayStr);
+  const inbox = mapInboxItems();
+  const fmtDay = ymd => new Date(ymd + 'T12:00:00')
+    .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const line = (i, depth) => {
+    const bits = [];
+    if (i.status === 'waiting') bits.push(`waiting${i.waiting_on ? ` on ${i.waiting_on}` : ''}`);
+    const due = dueOf(i);
+    if (due) bits.push(`due ${fmtDay(due)}`);
+    if (i.defer_until && i.defer_until > todayStr) bits.push(`shows ${fmtDay(i.defer_until)}`);
+    const tags = ownTags(i).map(x => `#${x}`).join(' ');
+    return `${'  '.repeat(depth)}- ${i.kind === 'project' ? `**${i.content}**` : i.content}${
+      bits.length ? ` — ${bits.join(' · ')}` : ''}${tags ? `  ${tags}` : ''}`;
+  };
+  const forestLines = (areaItems, someday) => {
+    const f = mapAreaForest(areaItems, someday, todayStr);
+    const out = [];
+    const walk = (i, depth) => { out.push(line(i, depth)); f.kids(i).forEach(k => walk(k, depth + 1)); };
+    f.roots.forEach(r => walk(r, 0));
+    return out;
+  };
+  const extras = mapFilterExtras();
+  const out = [`# MAP — ${fmtDay(todayStr)}`, '',
+    `_${mapLens().name}${extras ? ` · ${plural(extras, 'filter')}` : ''} · ${
+      plural(items.length + inbox.length, 'item')}_`, ''];
+  mapGroups(items).forEach(d => {
+    out.push(`## ${d.name}`, '');
+    d.areas.forEach(a => {
+      out.push(`### ${a.name}`, '');
+      const live = forestLines(a.items, false);
+      const later = forestLines(a.items, true);
+      if (live.length) out.push(...live, '');
+      if (later.length) out.push('#### Someday / maybe', '', ...later, '');
+    });
+  });
+  if (inbox.length) out.push('## In — not yet clarified', '', ...inbox.map(i => line(i, 0)), '');
+  return out.join('\n');
+}
+
+async function exportMap() {
+  const text = mapMarkdown();
+  const name = `map-${wallDay()}.md`;
+  const copied = await copyText(text);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast(copied ? `Exported ${name} — and copied as Markdown` : `Exported ${name}`);
 }
 
 // Historical name: the NOW list (section 2) is gone — the engage pool is the
