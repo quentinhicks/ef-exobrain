@@ -4765,34 +4765,25 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   white-space: nowrap;
 }
 
-/* ── TAGS FLOW AFTER THE TEXT (2026-09-23, Quentin's instruction) ──
-   Every item row — MAP's (tree, inbox, search), Engage's pool, placed and
-   returning rows, the composer's — puts its text and its chips in ONE inline
-   flow: the chips follow the last word and wrap only when that line is full,
-   the way words do, which is the fewest lines the row can take. The column
-   layout below it (2026-08-16) was two lanes each wrapping on its own, so a
-   one-line name with four chips stood four lines tall. The row's control
-   stays outside the flow, top-aligned against the first line. */
-.map-flow, .eg-flow, .cl-chain-flow {
-  flex: 1 1 auto;
+/* THE SAME COLUMN ON EVERY ROW (2026-09-23, Quentin's instruction): MAP's rows
+   and the composer's hold their tags the way the pool below does — right-
+   aligned beside the text, wrapping onto more lines inside their own column
+   when they run out of width, the text keeping at least 45% of the row. They
+   used to be loose children of a one-line flex row and could only crush. */
+.map-tags, .cl-chain-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 1 auto;
   min-width: 0;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
+  margin-top: 2px;
 }
-.map-flow .map-text, .eg-flow .eg-text, .cl-chain-flow .cl-chain-text { flex: none; }
-.map-flow .map-badge, .map-flow .cl-chain-n, .map-flow .map-crumb,
-.eg-flow .eg-tag, .cl-chain-flow .map-tag, .cl-chain-flow .map-badge {
-  display: inline-block;
-  vertical-align: 1px;
-  line-height: 1.35;
-}
-.map-flow .cl-chain-n { min-width: 0; }
-.map-flow .map-crumb { max-width: 100%; vertical-align: -2px; }
-.map-flow .s2-rename-input { width: 100%; }
-.eg-flow .eg-tags { display: inline; }
-.eg-flow .eg-tag:empty { display: none; }
-.map-row, .eg-row:has(> .eg-flow), .cl-chain-row { align-items: flex-start; }
-.map-row .map-acts, .cl-chain-row > button { margin-top: 1px; }
+.map-tags:empty, .cl-chain-tags:empty { display: none; }
+.map-row > .map-text, .cl-chain-row > .cl-chain-text { flex: 1 1 auto; min-width: 45%; }
+.map-row, .cl-chain-row { align-items: flex-start; }
+.map-tags .map-crumb { max-width: 100%; }
 
 /* The tags are a COLUMN, not a tail (2026-08-16). They used to be direct
    children of the row, so the row was one flex line: the text wrapped and the
@@ -4820,7 +4811,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
    and wrap only when they genuinely run out, which is the shorter row in
    every case measured. */
 .eg-pool-item .eg-text { flex: 1 1 auto; min-width: 45%; }
-.eg-pool-item .eg-flow .eg-text { min-width: 0; }
 
 .eg-tags {
   display: flex;
