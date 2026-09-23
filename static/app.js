@@ -14323,12 +14323,11 @@ function renderMap() {
     const isStalled = isProject && stalled.has(item.id);
     return `<div class="map-row${isProject ? ' map-row-project' : ''}${
         isStalled ? ' map-row-stalled' : ''}${mapPriorityClass(item)}" data-id="${item.id}" draggable="true">
-      ${chainN[item.id] ? `<span class="cl-chain-n" title="Position in this project's dependency chain">[${chainN[item.id]}]</span>` : ''}
-      <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
+      <span class="map-flow">${chainN[item.id] ? `<span class="cl-chain-n" title="Position in this project's dependency chain">[${chainN[item.id]}]</span> ` : ''}<span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
       ${ownTags(item).map(t =>
-        `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
+        `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join(' ')}
       ${badge(item)}
-      ${item.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${item.pushed} times — too big, not real, or being avoided">pushed ${item.pushed}x</span>` : ''}
+      ${item.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${item.pushed} times — too big, not real, or being avoided">pushed ${item.pushed}x</span>` : ''}</span>
       <span class="map-acts">
         <button class="map-open" data-id="${item.id}"
           title="${isProject ? 'Clarify this project' : 'Clarify this action'}">›</button>
@@ -14360,7 +14359,7 @@ function renderMap() {
     <div class="map-area-group">
       <div class="map-area-head">In — not yet clarified<span class="map-count">${inboxItems.length}</span></div>
       ${inboxItems.map(i => `<div class="map-row map-row-in${mapPriorityClass(i)}" data-id="${i.id}">
-        <span class="map-text" title="Tap to clarify · double-click to reword">${escHtml(i.content)}</span>
+        <span class="map-flow"><span class="map-text" title="Tap to clarify · double-click to reword">${escHtml(i.content)}</span></span>
         <span class="map-acts"><button class="map-open" data-id="${i.id}" title="Clarify this">›</button></span>
       </div>`).join('')}
     </div>` : '';
@@ -14418,11 +14417,11 @@ function renderMap() {
       return `<div class="map-row map-row-hit${isProject ? ' map-row-project' : ''}${
           isProject && stalled.has(i.id) ? ' map-row-stalled' : ''}${
           isIn && !i.area_id ? ' map-row-in' : ''}${mapPriorityClass(i)}" data-id="${i.id}">
-        <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(i.content)}</span>
+        <span class="map-flow"><span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(i.content)}</span>
         ${ownTags(i).map(t =>
-          `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}
+          `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join(' ')}
         ${badge(i)}
-        <span class="map-crumb">${escHtml(crumb(i)) || 'in'}</span>
+        <span class="map-crumb">${escHtml(crumb(i)) || 'in'}</span></span>
         <span class="map-acts">
           <button class="map-open" data-id="${i.id}" title="Clarify this">›</button>
         </span>
@@ -14531,7 +14530,8 @@ function renderMap() {
 //
 // One row is always SELECTED — the first when MAP opens — and single keys act
 // on it: ↑↓ move, 1/2/3 priority, d due, s show-on, t then an arrow for the
-// estimate, m multitask, l a location, r renames, Enter clarifies, ⌫ deletes. The selection is view
+// estimate, m multitask, l a location, r renames, p parks it in someday /
+// maybe or brings it back, Enter clarifies, ⌫ deletes. The selection is view
 // state held by ID, so the re-render after a write keeps the row you were on.
 // Every write registers its inverse first, like any other button.
 //
@@ -14748,6 +14748,13 @@ document.addEventListener('keydown', e => {
   }
   else if (k === 'l') { e.preventDefault(); mapPromptLocation(item); }
   else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); mapDeleteSel(item); }
+  else if (k === 'p') {
+    // Clarify's Someday exit, one key, and its way back: someday → active,
+    // anything else (active, waiting, still in the inbox) → someday.
+    const parked = item.status === 'on_hold';
+    undoablePatch(item, ['status'], `${parked ? 'un-parked' : 'parked'} "${item.content}"`);
+    patchInboxItem(item.id, { status: parked ? 'active' : 'on_hold' }).then(mapAfterWrite);
+  }
   else if (k === 'r') {
     // The row's own rename (its double-click), not a second editor. The
     // preventDefault is load-bearing: the field takes focus inside this
@@ -16269,9 +16276,9 @@ function renderEngage() {
     <div class="eg-pool">
       ${returning.map(i => `
         <div class="eg-row eg-pool-item eg-defer-row" data-id="${i.id}">
-          <span class="eg-text">${escHtml(i.content)}</span>
-          <span class="eg-tags">${itemTags(i).map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}${
-            dueChip(i, 'eg-tag')}<span class="eg-tag">${escHtml(i.project_name || i.area_name || '')}</span></span>
+          <span class="eg-flow"><span class="eg-text">${escHtml(i.content)}</span>
+          <span class="eg-tags">${itemTags(i).map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join(' ')} ${
+            dueChip(i, 'eg-tag')} <span class="eg-tag">${escHtml(i.project_name || i.area_name || '')}</span></span></span>
         </div>`).join('')}
     </div>` : '';
 
@@ -16359,8 +16366,8 @@ function renderEngage() {
       ${egRowControl(r, r.started, r.started
         ? 'In progress — tap for done, hold to clear'
         : 'Tap = done · hold = in progress')}
-      <span class="eg-text">${escHtml(r.label)}</span>
-      <span class="eg-tags">${flowLenChip(r)}</span>
+      <span class="eg-flow"><span class="eg-text">${escHtml(r.label)}</span>
+      <span class="eg-tags">${flowLenChip(r)}</span></span>
       <button class="eg-unplace" data-id="${r.id}" title="Back to Not scheduled">↩︎</button>
     </div>`;
   };
@@ -16526,11 +16533,11 @@ function renderEngage() {
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
           ${egRowControl(i, i.started_at, 'Done')}
-          <span class="eg-text">${escHtml(i.content)}</span>
-          <span class="eg-tags">${flowLenChip(i)}${itemTags(i).filter(t => EST_TAGS.includes(t))
-            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}${dueChip(i, 'eg-tag')}${
+          <span class="eg-flow"><span class="eg-text">${escHtml(i.content)}</span>
+          <span class="eg-tags">${flowLenChip(i)} ${itemTags(i).filter(t => EST_TAGS.includes(t))
+            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join(' ')} ${dueChip(i, 'eg-tag')} ${
             itemTags(i).filter(t => !EST_TAGS.includes(t))
-            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}</span>
+            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join(' ')}</span></span>
         </div>`).join('') || '<div class="eg-empty">Nothing available — done, parked, or handed off.</div>'}
     </div>
     ${popHtml}
@@ -18732,10 +18739,10 @@ function renderClarifyCompose(sheet) {
           draggable="true" data-id="${a.id}">
           ${nums[a.id] ? `<span class="cl-chain-n">[${nums[a.id]}]</span>`
             : '<span class="cl-chain-n cl-chain-free"></span>'}
-          <span class="cl-chain-text">${escHtml(a.content)}</span>
+          <span class="cl-chain-flow"><span class="cl-chain-text">${escHtml(a.content)}</span>
           ${(a.tags || '').split(' ').filter(Boolean)
-            .map(t => `<span class="map-tag">${escHtml(t)}</span>`).join('')}
-          ${dueOf(a) ? dueChip(a, 'map-badge') : ''}
+            .map(t => `<span class="map-tag">${escHtml(t)}</span>`).join(' ')}
+          ${dueOf(a) ? dueChip(a, 'map-badge') : ''}</span>
           ${a.after_id ? `<button class="cl-chain-x" data-id="${a.id}"
             title="Unchain — it stops waiting on ${escHtml((byId[a.after_id] || {}).content || 'that')}">✕</button>` : ''}
           <button class="cl-chain-go" data-go="${a.id}"
