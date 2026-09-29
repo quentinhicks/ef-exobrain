@@ -1,4 +1,5 @@
 import ctypes
+import gzip
 import json
 import os
 import re
@@ -274,6 +275,44 @@ def _no_stale_static(resp):
     if (request.path in ('/', '/panel', '/sw.js', '/manifest.webmanifest')
             or request.path.startswith('/static/')):
         resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
+
+# Nothing in front of Flask compresses (`tailscale serve` is a plain proxy), so
+# every deploy made the phone re-download app.js + style.css raw: 1.14 MB, 333 KB
+# gzipped. A static file is compressed once per version (its ETag), never per
+# request — app.js alone costs ~30ms. A generator Response (is_streamed without
+# direct_passthrough) is left alone: reading it here would drain the stream.
+_GZIP_TYPES = ('text/', 'application/javascript', 'application/json', 'application/manifest+json')
+_gzip_static = {}
+
+
+@app.after_request
+def _gzip(resp):
+    if (resp.status_code != 200 or 'Content-Encoding' in resp.headers
+            or 'gzip' not in request.headers.get('Accept-Encoding', '')
+            or not resp.mimetype.startswith(_GZIP_TYPES)
+            or (resp.is_streamed and not resp.direct_passthrough)):
+        return resp
+    etag = resp.headers.get('ETag')
+    cached = _gzip_static.get(request.path)
+    if etag and cached and cached[0] == etag:
+        body = cached[1]
+        close = getattr(resp.response, 'close', None)
+        if close:
+            resp.call_on_close(close)
+    else:
+        resp.direct_passthrough = False
+        raw = resp.get_data()
+        if len(raw) < 1024:
+            return resp
+        body = gzip.compress(raw, compresslevel=6, mtime=0)
+        if etag and request.path.startswith('/static/'):
+            _gzip_static[request.path] = (etag, body)
+    resp.direct_passthrough = False
+    resp.set_data(body)
+    resp.headers['Content-Encoding'] = 'gzip'
+    resp.vary.add('Accept-Encoding')
     return resp
 
 
