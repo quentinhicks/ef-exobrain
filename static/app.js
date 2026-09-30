@@ -1346,6 +1346,55 @@ function renderBlocksLayer(bodyH = 600) {
   initBlockBarDrag(layer, dateStr);
 }
 
+// CANCEL A BLOCK FOR ONE DAY, or put it back — for the day the SURFACE is
+// showing, passed in (Engage browses its own day, a week column is its own
+// date). It was Engage's alone; the week needed it too, and a third copy of a
+// money-adjacent write is how two surfaces start filing under different days.
+// `overrides` is that day's override rows, read before the write so the undo
+// is the state the day was in.
+async function toggleBlockCancelOn(blockId, dateStr, overrides, after) {
+  const existing = (overrides || []).find(o => o.block_id === blockId && o.date === dateStr);
+  const hasTimes = existing && (existing.start_time || existing.end_time);
+  const label = (state.blocks.find(b => b.id === blockId) || {}).label || 'block';
+  if (existing && existing.cancelled === 1 && !hasTimes) {
+    // Un-cancel with nothing else on the row — drop the override entirely
+    // (same rule as the timeline's toggle).
+    await apiSend(`/api/overrides/${existing.id}`, 'DELETE');
+    pushUndo(`restored "${label}"`, async () => {
+      await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: true });
+      await refreshAfterUndo();
+    });
+  } else {
+    const target = !(existing && existing.cancelled === 1);
+    await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: target });
+    pushUndo(`${target ? 'cancelled' : 'restored'} "${label}"`, async () => {
+      await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: !target });
+      await refreshAfterUndo();
+    });
+  }
+  await after();
+}
+
+// A WEEK COLUMN'S VERBS for a block: the same two the day view offers, for
+// the column's own date.
+registerObjectVerbs('week-block', (kind, id, el) => {
+  if (kind !== 'block' || !el.closest('#cal-week')) return [];
+  const blockEl = el.closest('.tl-block') || el;
+  const d = blockEl.dataset.date;
+  if (!d) return [];
+  const overrides = (calWeek.days[d] || {}).overrides || [];
+  const ov = overrides.find(o => o.block_id === parseInt(id) && o.date === d);
+  const cancelled = ov && ov.cancelled === 1;
+  const label = blockEl.querySelector('.tl-block-label')?.textContent || 'Block';
+  return [
+    { label: cancelled ? 'Restore for this day' : 'Cancel for this day',
+      danger: !cancelled,
+      run: () => toggleBlockCancelOn(parseInt(id), d, overrides, refreshCalWeek) },
+    { label: 'Hide for this day',
+      run: () => hideTimelineItem('block', `${id}:${d}`, label) },
+  ];
+});
+
 // THE TIMELINE'S OWN VERBS for a block, handed to the object menu. They need
 // the DAY being looked at, which is the surface's to know and not the menu's —
 // so the surface registers them rather than the menu reaching for a date.
@@ -1368,11 +1417,44 @@ registerObjectVerbs('timeline-block', (kind, id, el) => {
   ];
 });
 
+// HOW A CALENDAR SURFACE MAPS PIXELS TO MINUTES (2026-09-29). The day view is
+// percent-positioned inside #tl-body; a week column is pixel-positioned at
+// WK_HOUR_PX. The block and event drags take this as a parameter so ONE drag
+// body serves both — a week copy of them would be the parallel implementation
+// that agrees until one of them grows a step (a clamp, a slop, an undo).
+//   start/end   the minutes the surface shows
+//   px()        its height in pixels, measured at drag start
+//   place()     draw an element at a span while it is being dragged
+//   overrides() the day's block overrides — what a drop's undo restores
+//   dropped()   re-read the surface after a block drop wrote
+//   repaint()   put a drag that wrote nothing back where it was
+function dayDragGeo() {
+  const body = document.getElementById('tl-body');
+  return {
+    start: state.view.start, end: state.view.end,
+    px: () => body.getBoundingClientRect().height,
+    place: (el, s, e) => {
+      el.style.top = `${Math.max(0, minutesToViewPercent(s))}%`;
+      el.style.height = `${Math.min(100, minutesToViewPercent(e)) - Math.max(0, minutesToViewPercent(s))}%`;
+    },
+    overrides: () => state.overrides,
+    dropped: async (blockId, dateStr, data) => {
+      const idx = state.overrides.findIndex(o => o.block_id === blockId && o.date === dateStr);
+      if (idx !== -1) state.overrides[idx] = data; else state.overrides.push(data);
+      // The times on screen are the SERVER's resolution of this day, so a
+      // dropped block moves once the day is re-resolved — not when the local
+      // override array is patched.
+      await fetchOverridesForDate(state.currentDate);
+    },
+    repaint: () => renderTimeline(),
+  };
+}
+
 // The color bar is the manipulation surface (mirrors gate pills): top/bottom
 // edges resize, the middle moves the whole block — each writes a one-day
 // override on drop. Block defaults stay in the Block Editor.
-function initBlockBarDrag(layer, dateStr) {
-  const body = document.getElementById('tl-body');
+function initBlockBarDrag(layer, dateStr, geo) {
+  const g = geo || dayDragGeo();
   layer.querySelectorAll('.tl-block:not(.tl-block-cont):not(.tl-block-cancelled) .tl-block-bar').forEach(bar => {
     const blockEl = bar.parentElement;
     const blockId = parseInt(blockEl.dataset.blockId);
@@ -1389,7 +1471,7 @@ function initBlockBarDrag(layer, dateStr) {
     onPointerDrag(bar, { start(e) {
       if (e.pointerType === 'mouse' && e.button !== 0) return null;
       e.stopPropagation();
-      const span = state.view.end - state.view.start;
+      const span = g.end - g.start;
       if (origEnd - origStart >= span) return null;
       const r = bar.getBoundingClientRect();
       // A 10px edge is a mouse target, not a finger one, and touch has no hover
@@ -1403,7 +1485,7 @@ function initBlockBarDrag(layer, dateStr) {
           : r.bottom - e.clientY < r.height / 3 ? 'end' : 'move')
         : ((e.clientY - r.top < 10) ? 'start' : (r.bottom - e.clientY < 10) ? 'end' : 'move');
       const startY = e.clientY;
-      const bodyPx = body.getBoundingClientRect().height;
+      const bodyPx = g.px();
       let moved = false;
       let curS = origStart, curE = origEnd;
       // A finger has already committed by holding still for 550ms, so it must
@@ -1418,24 +1500,23 @@ function initBlockBarDrag(layer, dateStr) {
         const deltaMin = Math.round(((clientY - startY) / bodyPx) * span / 5) * 5;
         if (mode === 'move') {
           const len = origEnd - origStart;
-          curS = Math.min(Math.max(state.view.start, origStart + deltaMin), state.view.end - len);
+          curS = Math.min(Math.max(g.start, origStart + deltaMin), g.end - len);
           curE = curS + len;
         } else if (mode === 'start') {
-          curS = Math.min(Math.max(state.view.start, origStart + deltaMin), origEnd - 15);
+          curS = Math.min(Math.max(g.start, origStart + deltaMin), origEnd - 15);
         } else {
-          curE = Math.max(Math.min(state.view.end, origEnd + deltaMin), origStart + 15);
+          curE = Math.max(Math.min(g.end, origEnd + deltaMin), origStart + 15);
         }
-        blockEl.style.top = `${Math.max(0, minutesToViewPercent(curS))}%`;
-        blockEl.style.height = `${Math.min(100, minutesToViewPercent(curE)) - Math.max(0, minutesToViewPercent(curS))}%`;
+        g.place(blockEl, curS, curE);
       }
 
       async function onUp() {
         document.body.style.cursor = '';
-        if (!moved || (curS === origStart && curE === origEnd)) { renderTimeline(); return; }
+        if (!moved || (curS === origStart && curE === origEnd)) { g.repaint(); return; }
         // Read BEFORE the write: the inverse of this drop is the override the
         // day had before it, and "none" is a delete of whatever the POST
         // creates — see restoreBlockOverride.
-        const prevOv = state.overrides.find(o => o.block_id === blockId && o.date === dateStr) || null;
+        const prevOv = g.overrides().find(o => o.block_id === blockId && o.date === dateStr) || null;
         const res = await apiSend('/api/overrides', 'POST', {
             block_id: blockId, date: dateStr, cancelled: false,
             start_time: clockHHMM(curS),
@@ -1445,14 +1526,9 @@ function initBlockBarDrag(layer, dateStr) {
           const data = await res.json();
           undoableBlockOverride(blockId, dateStr, prevOv, data.id,
             `moved "${blockEl.querySelector('.tl-block-label')?.textContent || 'block'}"`);
-          const idx = state.overrides.findIndex(o => o.block_id === blockId && o.date === dateStr);
-          if (idx !== -1) state.overrides[idx] = data; else state.overrides.push(data);
-          // The times on screen are the SERVER's resolution of this day, so a
-          // dropped block moves once the day is re-resolved — not when the
-          // local override array is patched.
-          await fetchOverridesForDate(state.currentDate);
+          await g.dropped(blockId, dateStr, data);
         }
-        renderTimeline();
+        g.repaint();
       }
 
       document.body.style.cursor = mode === 'move' ? 'grabbing' : 'ns-resize';
@@ -1559,8 +1635,8 @@ function renderGcalLayer(bodyH = 600) {
 // outline to say the two now disagree, which is the whole reason the mark
 // exists. Right-click or long-press the BAR puts it back; the same gestures on
 // the box still hide the event, which is why the bar exists at all.
-function initEventDrag(layer) {
-  const body = document.getElementById('tl-body');
+function initEventDrag(layer, dateOf, geo) {
+  const g = geo || dayDragGeo();
   // TWO SURFACES, because the two inputs have different collisions. A MOUSE
   // drags the event from anywhere on it (2026-08-24, asked for): its press
   // starts the drag immediately, a press that never moves is still a click, and
@@ -1577,8 +1653,9 @@ function initEventDrag(layer) {
     const origStart = parseInt(el.dataset.startMin);
     const origEnd = parseInt(el.dataset.endMin);
     // The day this occurrence is drawn on: a write files under the day being
-    // LOOKED AT, sent explicitly, never the wall clock at drop time.
-    const dateStr = viewDay();
+    // LOOKED AT (the week column's own date there), sent explicitly, never the
+    // wall clock at drop time.
+    const dateStr = dateOf || viewDay();
 
     bar.addEventListener('mousemove', e => {
       const r = bar.getBoundingClientRect();
@@ -1610,7 +1687,7 @@ function initEventDrag(layer) {
       // The box declines touch: that hold belongs to hide.
       if (inputs === 'mouse' && e.pointerType !== 'mouse') return null;
       e.stopPropagation();
-      const span = state.view.end - state.view.start;
+      const span = g.end - g.start;
       if (origEnd - origStart >= span) return null;
       const r = bar.getBoundingClientRect();
       const touch = e.pointerType !== 'mouse';
@@ -1624,7 +1701,7 @@ function initEventDrag(layer) {
           : r.bottom - e.clientY < r.height / 3 ? 'end' : 'move')
         : ((e.clientY - r.top < 10) ? 'start' : (r.bottom - e.clientY < 10) ? 'end' : 'move');
       const startY = e.clientY;
-      const bodyPx = body.getBoundingClientRect().height;
+      const bodyPx = g.px();
       let moved = false;
       let curS = origStart, curE = origEnd;
       // A finger has already committed by holding still, so it does not also
@@ -1640,15 +1717,14 @@ function initEventDrag(layer) {
         const deltaMin = Math.round(((clientY - startY) / bodyPx) * span / 5) * 5;
         if (mode === 'move') {
           const len = origEnd - origStart;
-          curS = Math.min(Math.max(state.view.start, origStart + deltaMin), state.view.end - len);
+          curS = Math.min(Math.max(g.start, origStart + deltaMin), g.end - len);
           curE = curS + len;
         } else if (mode === 'start') {
-          curS = Math.min(Math.max(state.view.start, origStart + deltaMin), origEnd - 15);
+          curS = Math.min(Math.max(g.start, origStart + deltaMin), origEnd - 15);
         } else {
-          curE = Math.max(Math.min(state.view.end, origEnd + deltaMin), origStart + 15);
+          curE = Math.max(Math.min(g.end, origEnd + deltaMin), origStart + 15);
         }
-        el.style.top = `${Math.max(0, minutesToViewPercent(curS))}%`;
-        el.style.height = `${Math.min(100, minutesToViewPercent(curE)) - Math.max(0, minutesToViewPercent(curS))}%`;
+        g.place(el, curS, curE);
       }
 
       async function onUp() {
@@ -1661,7 +1737,7 @@ function initEventDrag(layer) {
         if (!moved) return;
         // A real drag that ended where it started still has inline top/height
         // from the move, so that one does repaint.
-        if (curS === origStart && curE === origEnd) { renderTimeline(); return; }
+        if (curS === origStart && curE === origEnd) { g.repaint(); return; }
         await moveEvent(el.dataset.evUid, el.dataset.evStart, el.dataset.evLabel,
                         dateStr, curS, curE);
       }
@@ -1752,8 +1828,7 @@ function startCurrentTimeTick() {
   if (currentTimeTick) clearInterval(currentTimeTick);
   currentTimeTick = setInterval(() => {
     updateCurrentTimeLine();
-    // The week's now line is part of its paint; a popover open is left alone.
-    if (calWeek.on && !calWeek.pop) renderCalWeek();
+    if (calWeek.on) moveWeekNowLine();
   }, 60000);
 }
 
@@ -2116,8 +2191,13 @@ async function refreshCalWeek() {
     renderCalWeek();
   };
   await Promise.all([
-    Promise.all(dates.map(d => apiGet(`/api/blocks/day?date=${d}`, null)))
+    // ?all=1 keeps a cancelled block, struck through, so "Restore for this
+    // day" has something to be opened from — the day view's rule.
+    Promise.all(dates.map(d => apiGet(`/api/blocks/day?date=${d}&all=1`, null)))
       .then(fill('segments', r => (Array.isArray(r) ? r : null))),
+    // The day's override rows: what a block drop's undo restores.
+    Promise.all(dates.map(d => apiGet(`/api/overrides?date=${d}`, null)))
+      .then(fill('overrides', r => (Array.isArray(r) ? r : null))),
     Promise.all(dates.map(d => apiGet(`/api/gates/day?date=${d}`, null)))
       .then(fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))),
   ]);
@@ -2259,14 +2339,21 @@ function renderCalWeek() {
     const next = new Date(localDatePlusDays(d, 1) + 'T12:00:00');
     const day = calWeek.days[d] || { segments: [], gates: [] };
 
+    // The DAY VIEW'S OWN block element (tl-block + its bar), so the day's drag,
+    // menu and styles are this column's too — one element, two surfaces.
     const blocks = day.segments.map(segmentRow)
-      .filter(s => !s.cancelled && !state.tlHidden.block[`${s.b.id}:${d}`])
+      .filter(s => !state.tlHidden.block[`${s.b.id}:${d}`])
       .map(s => {
         const [a, b] = clip(s.startMin, s.endMin);
         if (b <= a) return '';
-        legendBlocks.set(s.label.replace(/ \(cont\.\)$/, ''), s.b.color);
-        return `<div class="wk-block" data-obj="block:${s.b.id}" title="${escHtml(s.label)}"
-          style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}"></div>`;
+        if (!s.cancelled) legendBlocks.set(s.label.replace(/ \(cont\.\)$/, ''), s.b.color);
+        return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}"
+          data-block-id="${s.b.id}" data-obj="block:${s.b.id}"${s.cont ? '' : ' data-obj-tap="1"'}
+          data-date="${d}" data-start-min="${a}" data-end-min="${b}"
+          title="${escHtml(s.label)}${s.cancelled ? ' · cancelled for this day' : ''}"
+          style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
+          <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
+            escHtml(s.label)}</span></div></div>`;
       }).join('');
 
     // Next-day events count when the week runs past midnight — the day view's
@@ -2287,12 +2374,16 @@ function renderCalWeek() {
       const h = Math.max(14, y(x.e) - y(x.s) - 2);
       const w = 100 / x.lanes;
       const time = isoToAmPm(e.start);
-      return `<div class="wk-ev${h < 30 ? ' wk-ev-short' : ''}${e.moved ? ' wk-ev-moved' : ''}" data-wk="event"
-        data-ev-key="${escHtml(eventKey(e))}" title="${escHtml(`${e.summary || 'Event'} · ${
-          isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"
+      // The day view's own event element too, for the same reason.
+      return `<div class="tl-gcal-event wk-ev${h < 30 ? ' tl-event-tight' : ''}${e.moved ? ' tl-event-moved' : ''}" data-wk="event"
+        data-ev-key="${escHtml(eventKey(e))}" data-ev-label="${escHtml(e.summary || 'Event')}"
+        data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
+        data-start-min="${x.s}" data-end-min="${x.e}"
+        title="${escHtml(e.moved ? `Moved here — the calendar still says ${isoToAmPm(e.orig_start)}. Right-click or long-press the bar to put it back.`
+          : `${e.summary || 'Event'} · ${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"
         style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${e.color || '#888888'}">
-        <div class="wk-ev-name">${escHtml(e.summary || '')}</div>
-        ${h >= 30 ? `<div class="wk-ev-time">${escHtml(time)}</div>` : ''}</div>`;
+        <div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${
+          escHtml(e.summary || '')}</span>${h >= 30 ? `<span class="tl-event-time">${escHtml(time)}</span>` : ''}</div></div>`;
     }).join('');
 
     const gates = wkDayGates(d).filter(g => g.window.end_min >= start && g.window.end_min <= end)
@@ -2311,7 +2402,7 @@ function renderCalWeek() {
     const nowLine = d === today && nowMin >= start && nowMin <= end
       ? `<div class="wk-now" style="top:${y(nowMin)}px"></div>` : '';
 
-    return `<div class="wk-col${d === today ? ' wk-col-today' : ''}" style="height:${H}px">
+    return `<div class="wk-col${d === today ? ' wk-col-today' : ''}" data-date="${d}" style="height:${H}px">
       ${hours.map(m => `<div class="wk-line" style="top:${y(m)}px"></div>`).join('')}
       ${blocks}<div class="wk-evs">${evs}</div>${gates}${nowLine}</div>`;
   }).join('');
@@ -2376,7 +2467,7 @@ function renderCalWeek() {
         <span class="wk-leg"><span class="wk-leg-mark wk-gate-paused"><span class="wk-gate-dot"></span></span>Paused (not judged)</span>
         <span class="wk-leg"><span class="wk-leg-mark wk-gate-open">${WK_SVG.sun}</span>Wake gate</span>
         <span class="wk-leg"><span class="wk-leg-mark wk-gate-open">${WK_SVG.moon}</span>Sleep gate</span>
-        <span class="wk-leg-note">Click a gate to set its role.</span></div>
+        <span class="wk-leg-note">Click a gate to read its day. Its wake/sleep role is set from the hours button.</span></div>
     </div>`;
 
   // The scroll survives a repaint; a new week or a new range starts fresh —
@@ -2417,6 +2508,27 @@ function renderCalWeek() {
       </div>
     </div>`;
 
+  calWeek.range = { start, end };
+  host.querySelectorAll('.wk-col[data-date]').forEach(col => {
+    const d = col.dataset.date;
+    const geo = {
+      start, end,
+      px: () => H,
+      place: (el, s0, e0) => { el.style.top = `${y(s0)}px`; el.style.height = `${y(e0) - y(s0)}px`; },
+      overrides: () => (calWeek.days[d] || {}).overrides || [],
+      dropped: async () => { await refreshCalWeek(); },
+      repaint: () => renderCalWeek(),
+    };
+    initBlockBarDrag(col, d, geo);
+    const evs = col.querySelector('.wk-evs');
+    if (evs) initEventDrag(evs, d, geo);
+    col.querySelectorAll('.tl-gcal-event').forEach(el => {
+      const hide = () => hideTimelineItem('event', el.dataset.evKey, el.dataset.evLabel);
+      el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
+      onLongPress(el, hide);
+    });
+  });
+
   const sc = host.querySelector('.wk-scroll');
   if (calWeek.scrollKey !== key) {
     calWeek.scrollKey = key;
@@ -2445,6 +2557,21 @@ async function refreshCalendar() {
     document.getElementById('cal-overlay').classList.remove('cal-refreshing');
     renderTimeline();
   }
+}
+
+function moveWeekNowLine() {
+  const line = document.querySelector('#cal-week .wk-now');
+  const r = calWeek.range;
+  if (!r) return;
+  const now = new Date();
+  const m = now.getHours() * 60 + now.getMinutes();
+  // Crossed midnight, or out of the hours shown: the paint has to change.
+  const col = line && line.closest('.wk-col');
+  if (!line || !col || col.dataset.date !== wallDay() || m < r.start || m > r.end) {
+    if (!calWeek.pop) renderCalWeek();
+    return;
+  }
+  line.style.top = `${Math.round((m - r.start) / 60 * WK_HOUR_PX)}px`;
 }
 
 function closeCalWeekPops() {
@@ -2502,7 +2629,7 @@ function initCalWeek() {
     const act = a ? a.dataset.wk : null;
     // A click anywhere off an open popover puts it down, and does nothing else
     // unless it landed on a control.
-    if (calWeek.pop && !e.target.closest('.wk-pop') && !['range', 'legend', 'gate'].includes(act)) {
+    if (calWeek.pop && !e.target.closest('.wk-pop') && !['range', 'legend'].includes(act)) {
       calWeek.pop = null;
       calWeek.focus = null;
       renderCalWeek();
@@ -2521,10 +2648,9 @@ function initCalWeek() {
       calWeek.focusDate = null;
       renderCalWeek();
     } else if (act === 'gate') {
-      calWeek.pop = 'range';
-      calWeek.focus = a.dataset.node;
-      calWeek.focusDate = a.dataset.date;
-      renderCalWeek();
+      // What the box knows about that gate on that day — the day view's
+      // read-out, for the column's date. The roles are on the range button.
+      openGatePop(parseInt(a.dataset.node), a.dataset.date, a);
     } else if (act === 'role') {
       await setWeekGateRole(a.dataset.node, a.dataset.role);
     } else if (act === 'clear-roles') {
@@ -3046,6 +3172,8 @@ async function runUndo() {
 // the original action came from.
 async function refreshAfterUndo() {
   await refreshEngage();
+  // The week caches each day it draws, so an undo re-reads it like any surface.
+  if (calWeek.on) await refreshCalWeek();
   if (!document.getElementById('map-overlay').classList.contains('hidden')) await refreshMap();
   if (!document.getElementById('tab-lists').classList.contains('hidden')) await refreshRef();
   // The breakdown composer reads its own list, so an undo that touched a
@@ -3097,6 +3225,7 @@ async function restoreBlockOverride(blockId, date, prev, createdId) {
   }
   if (!res || !res.ok) { toast('Could not undo that block'); return; }
   await fetchOverridesForDate(state.currentDate);
+  if (calWeek.on) await refreshCalWeek();
   renderTimeline();
 }
 
@@ -15914,28 +16043,8 @@ function renderEngage() {
   // body click makes, so it strikes through everywhere); an EVENT joins the
   // timeline's dismissal set (gcal is a read-only mirror — "hide from my day"
   // is the only honest verb for it). Plain click stays inert on both.
-  const egToggleBlockCancel = async blockId => {
-    const existing = engageView.overrides.find(o => o.block_id === blockId && o.date === dateStr);
-    const hasTimes = existing && (existing.start_time || existing.end_time);
-    const label = (state.blocks.find(b => b.id === blockId) || {}).label || 'block';
-    if (existing && existing.cancelled === 1 && !hasTimes) {
-      // Un-cancel with nothing else on the row — drop the override entirely
-      // (same rule as the timeline's toggle).
-      await apiSend(`/api/overrides/${existing.id}`, 'DELETE');
-      pushUndo(`restored "${label}"`, async () => {
-        await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: true });
-        await refreshAfterUndo();
-      });
-    } else {
-      const target = !(existing && existing.cancelled === 1);
-      await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: target });
-      pushUndo(`${target ? 'cancelled' : 'restored'} "${label}"`, async () => {
-        await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: !target });
-        await refreshAfterUndo();
-      });
-    }
-    await refreshEngage();
-  };
+  const egToggleBlockCancel = blockId =>
+    toggleBlockCancelOn(blockId, dateStr, engageView.overrides, refreshEngage);
 
   // ENGAGE'S OWN DAY-LEVEL VERBS, registered fresh each render because they
   // close over the day ENGAGE is showing — which browses independently of the
