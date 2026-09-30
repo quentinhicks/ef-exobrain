@@ -9422,7 +9422,7 @@ function egRowControl(i, started, title) {
       title="Run this routine — ticking it off is not how it gets done">${playMark(8)}</span>`;
   }
   return `<span class="eg-check${started ? ' eg-check-started' : ''}" data-id="${i.id}"
-    title="${title}">${started ? '◐' : ''}</span>`;
+    title="${title}">${started ? '<span class="eg-check-dot"></span>' : ''}</span>`;
 }
 
 // The length chip. It rides where the estimate tags ride and looks like them,
@@ -15325,7 +15325,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   // (a negative start) is skipped here: Engage lists the day's own commitments.
   viewSegmentsFor(dateStr).filter(s => s.start >= 0).forEach(s => {
     const seg = { minute: s.start, endMin: s.end, id: s.block_id,
-                  label: s.label, cancelled: !!s.cancelled };
+                  label: s.label, cancelled: !!s.cancelled, color: s.color };
     if (routineAreaIds.has(s.area_id)) {
       (routineGroups[s.area_id] = routineGroups[s.area_id] || []).push(seg);
       return;
@@ -15344,7 +15344,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
     blocks.forEach(b => {
       rows.push({ kind: 'routine', areaId: parseInt(areaId),
                   label: b.label, minute: b.minute, endMin: b.endMin,
-                  cancelled: b.cancelled, blocks });
+                  cancelled: b.cancelled, color: b.color, blocks });
     });
   });
 
@@ -15387,6 +15387,66 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   rows.sort((a, b) => a.minute - b.minute || (a.kind === 'action') - (b.kind === 'action'));
 
   return { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds };
+}
+
+function egAgendaOpen() {
+  try { return localStorage.getItem('egAgenda') === '1'; } catch (e) { return false; }
+}
+
+function setEgAgendaOpen(on) {
+  try { localStorage.setItem('egAgenda', on ? '1' : '0'); } catch (e) { /* a convenience */ }
+}
+
+// CLICK BELOW THE LIST TO ADD A TO-DO (Now Page Minimal v2). A to-do is an
+// ordinary next action — ACTIVE, unfiled, so it is in every domain's pool —
+// written straight to the list the way the design draws it; the capture bar
+// underneath is still the inbox. Enter adds and keeps the row open, an empty
+// Enter or Esc closes it, and leaving it with text in it adds that text. A
+// failed write keeps the text. Wired ONCE: the row lives outside #eg-main,
+// which is what every repaint replaces.
+function wireEgAdd(body) {
+  const row = body.querySelector('.eg-add-row');
+  const input = body.querySelector('#eg-add-input');
+  const close = () => { input.value = ''; row.classList.add('hidden'); };
+  body.querySelector('#eg-add-fill').addEventListener('click', () => {
+    row.classList.remove('hidden');
+    input.focus();
+  });
+  const add = async keepOpen => {
+    const content = input.value.trim();
+    if (!content) { close(); return; }
+    input.value = '';
+    if (!keepOpen) row.classList.add('hidden');
+    if (!(await addEngageTodo(content))) {
+      input.value = content;
+      row.classList.remove('hidden');
+    }
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+      input.blur();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (!input.value.trim()) { close(); input.blur(); } else add(true);
+    }
+  });
+  input.addEventListener('blur', () => { if (input.value.trim()) add(false); else close(); });
+}
+
+async function addEngageTodo(content) {
+  const res = await apiSend('/api/inbox', 'POST', { content, status: 'active' }).catch(() => null);
+  if (!res || !res.ok) { toast('Could not add that — it is still in the box'); return null; }
+  const item = await res.json();
+  // A create inverts to a delete of the new id.
+  pushUndo(`added "${content}"`, async () => {
+    await apiSend(`/api/inbox/${item.id}`, 'DELETE');
+    await refreshAfterUndo();
+  });
+  await refreshEngage();
+  return item;
 }
 
 function renderEngage() {
@@ -15490,11 +15550,11 @@ function renderEngage() {
       // the most-seen instance of it anywhere in the app — and it was the one
       // place with no way to reach what it names. Left click, right click and
       // the long press all open its verbs.
-      return `<div class="eg-qr${r.outcome ? ` eg-qr-${r.outcome}` : ''}"
+      return `<div class="eg-row eg-qr${r.outcome ? ` eg-qr-${r.outcome}` : ''}"
         data-obj="gate:${r.nodeId}" data-obj-tap="1">
         <span class="eg-time">${hhmm(r.minute)}</span>
-        <span class="eg-qr-label">${escHtml(r.label.toUpperCase())}</span>
-        <span class="eg-qr-rule"></span>
+        <span class="eg-swatch eg-swatch-gate"></span>
+        <span class="eg-text eg-qr-label">${escHtml(r.label)}</span>
         ${r.outcome === 'success' ? '<span class="eg-qr-tick">✓</span>' : ''}
       </div>`;
     }
@@ -15510,6 +15570,7 @@ function renderEngage() {
       return `<div class="eg-row eg-flow-row${r.done ? ' eg-flow-done' : ''}"
         data-obj="routine:${r.flowId}" data-obj-tap="1">
         <span class="eg-time"></span>
+        <span class="eg-swatch eg-swatch-none"></span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-qr-flow${r.done ? ' eg-qr-flow-done' : ''}" data-flow="${r.flowId}"
           title="${r.done ? 'Completed today' : 'Run this routine'} — the gate above judges ✗ unless this completes">${
@@ -15521,6 +15582,7 @@ function renderEngage() {
         data-block="${r.id}" data-obj="block:${r.id}" data-obj-tap="1"
         title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
         <span class="eg-time">${hhmm(r.minute)}</span>
+        <span class="eg-swatch eg-swatch-block" style="--block-color:${escHtml(r.color || '#888888')}"></span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <span class="eg-end">${hhmm(r.endMin)}</span>
       </div>`;
@@ -15535,6 +15597,7 @@ function renderEngage() {
       // hairline as a bare label, exactly like the design's routine rows.
       return `<div class="eg-row eg-routine${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}>
         <span class="eg-time">${hhmm(r.minute)}</span>
+        <span class="eg-swatch eg-swatch-block" style="--block-color:${escHtml(r.color || '#888888')}"></span>
         <span class="eg-text">${escHtml(r.label)}</span>
         <button class="eg-routine-btn${engageView.routinePop === r.areaId ? ' eg-routine-btn-on' : ''}"
           data-area="${r.areaId}" title="Routine details">☰${open ? ` ${open}` : ''}</button>
@@ -15549,9 +15612,9 @@ function renderEngage() {
       // would say nothing where it matters. Moving happens on the timeline —
       // this row only reports it.
       return `<div class="eg-row eg-event${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}${r.moved ? ' eg-event-moved' : ''}"${nowAttrs(r)}
-        data-ekey="${escHtml(r.ekey)}" title="${r.moved ? 'Moved here — the calendar has it elsewhere. ' : ''}Right-click / long-press to remove from the day"
-        ${r.color ? `style="box-shadow: inset 3px 0 0 ${escHtml(r.color)}"` : ''}>
+        data-ekey="${escHtml(r.ekey)}" title="${r.moved ? 'Moved here — the calendar has it elsewhere. ' : ''}Right-click / long-press to remove from the day">
         <span class="eg-time">${hhmm(r.minute)}</span>
+        <span class="eg-swatch eg-swatch-ev" style="--ev-color:${escHtml(r.color || '#888888')}"></span>
         <span class="eg-text eg-event-text">${escHtml(r.label)}</span>
         <span class="eg-end">${hhmm(r.endMin)}</span>
       </div>`;
@@ -15563,8 +15626,8 @@ function renderEngage() {
     return `<div class="eg-row eg-action${r.started ? ' eg-inprog' : ''}" draggable="true" data-id="${r.id}">
       <span class="eg-time"></span>
       ${egRowControl(r, r.started, r.started
-        ? 'In progress — tap for done, hold to clear'
-        : 'Tap = done · hold = in progress')}
+        ? 'Started — tap to complete · hold to clear the dot'
+        : 'Tap to start · tap again to complete')}
       <span class="eg-text">${escHtml(r.label)}</span>
       <span class="eg-tags">${flowLenChip(r)}</span>
       <button class="eg-unplace" data-id="${r.id}" title="Back to Not scheduled">↩︎</button>
@@ -15651,19 +15714,23 @@ function renderEngage() {
   const ctxLabel = [domainName(ctxDomainId), ...tagTerms].join(' ∧ ');
 
   // 9c header: NOW-panel button top-left, the day as the title, domain chip.
+  // NOW PAGE MINIMAL v2 (2026-09-29, Quentin's design): the day and its
+  // arrows on the left, nothing else on the line but the two controls the
+  // design's empty right slot holds — the context formula (the receipt for
+  // everything the pool is hiding, which may never go silent) and the eye.
   header.innerHTML = `
-    <button id="eg-panel-btn" class="${privacyOn() ? 'eg-priv-on' : ''}"
-      title="${escHtml(privacyEyeTitle())}">${panelEyeSvg(privacyOn())}</button>
-    <button class="eg-nav" id="eg-prev" title="Previous day">‹</button>
+    <button class="eg-nav" id="eg-prev" title="Previous day">${WK_SVG.prev}</button>
     <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
       title="Open this day in calendar view">
       <span class="eg-day-name">${viewDate.toLocaleDateString('en-US', { weekday: 'long' })}</span>
       <span class="eg-day-date">${viewDate.getDate()} ${viewDate.toLocaleDateString('en-US', { month: 'short' })}</span>
     </button>
-    <button class="eg-nav" id="eg-next" title="Next day">›</button>
+    <button class="eg-nav" id="eg-next" title="Next day">${WK_SVG.next}</button>
     ${isToday ? '' : '<button id="eg-today" title="Back to today">today</button>'}
     <span class="eg-spacer"></span>
     <button class="eg-domain" id="eg-ctx-btn" title="Contexts — the domain in force, and every selected tag required">${escHtml(ctxLabel)} ▾</button>
+    <button id="eg-panel-btn" class="${privacyOn() ? 'eg-priv-on' : ''}"
+      title="${escHtml(privacyEyeTitle())}">${panelEyeSvg(privacyOn())}</button>
     ${engageView.ctxOpen ? `<div id="eg-ctx-menu">
       <div class="ctx-group">Domain${engageView.ctxDomainPick ? ' — pick one' : ' — in force'}</div>
       <div class="ctx-chips">${engageView.ctxDomainPick ? domainPicker()
@@ -15725,22 +15792,57 @@ function renderEngage() {
     </div>`;
   }
 
-  body.innerHTML = `
-    <div class="eg-day">${parts.join('')}</div>
+  // THE DAY FOLDS UNDER ONE CHIP (Now Page Minimal v2): what is running now,
+  // and a tap opens the whole agenda — the same rows, gaps and doors as ever.
+  // A per-viewer convenience, so it is remembered in localStorage (the
+  // private-mode desktop window forgets it, which only means it starts shut).
+  const nowRow = rows.find(r => (r.kind === 'block' || r.kind === 'routine')
+    && !r.cancelled && isNow(r));
+  const chipLabel = nowRow ? nowRow.label : isToday ? 'Free' : 'The day';
+  const agendaOpen = egAgendaOpen();
+  const chipHtml = `<button class="eg-now-chip${agendaOpen ? ' eg-now-chip-on' : ''}" id="eg-agenda-btn"
+      aria-expanded="${agendaOpen}" title="${agendaOpen ? 'Fold the day away' : 'Show the whole day'}">
+      <span class="eg-swatch ${nowRow ? 'eg-swatch-block' : 'eg-swatch-free'}"${
+        nowRow ? ` style="--block-color:${escHtml(nowRow.color || '#888888')}"` : ''}></span>
+      <span class="eg-now-name">${escHtml(chipLabel)}</span>
+      <svg class="eg-now-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+    </button>`;
+
+  // The body's first child is re-rendered; the add row beside it is NOT —
+  // half-typed text is data, and a repaint from a timer must not take it.
+  let main = body.querySelector('#eg-main');
+  if (!main) {
+    body.innerHTML = `<div id="eg-main"></div>
+      <div id="eg-add-zone">
+        <div class="eg-row eg-add-row hidden"><span class="eg-check eg-check-ghost"></span>
+          <input type="text" id="eg-add-input" placeholder="New to-do" autocomplete="off"></div>
+        <div id="eg-add-fill" title="Click to add a to-do"></div>
+      </div>`;
+    wireEgAdd(body);
+    main = body.querySelector('#eg-main');
+  }
+  main.innerHTML = `
+    ${chipHtml}
+    <div class="eg-day${agendaOpen ? '' : ' eg-day-closed'}">${parts.join('')}</div>
     ${deferHtml}
+    <div class="eg-todo-head">To-do list</div>
     <div class="eg-pool">
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
-          ${egRowControl(i, i.started_at, 'Done')}
+          ${egRowControl(i, i.started_at, i.started_at
+            ? 'Started — tap to complete · hold to clear the dot'
+            : 'Tap to start · tap again to complete')}
           <span class="eg-text">${escHtml(i.content)}</span>
-          <span class="eg-tags">${flowLenChip(i)}${itemTags(i).filter(t => EST_TAGS.includes(t))
-            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}${dueChip(i, 'eg-tag')}${
-            itemTags(i).filter(t => !EST_TAGS.includes(t))
-            .map(t => `<span class="eg-tag">${escHtml(t)}</span>`).join('')}</span>
+          <span class="eg-tags">${flowLenChip(i)}${dueChip(i, 'eg-tag')}</span>
         </div>`).join('') || '<div class="eg-empty">Nothing available — done, parked, or handed off.</div>'}
     </div>
     ${popHtml}
   `;
+  main.querySelector('#eg-agenda-btn').addEventListener('click', () => {
+    setEgAgendaOpen(!egAgendaOpen());
+    renderEngage();
+  });
 
   // The bottom bar is global now (renderBar) — repaint it alongside the day
   // so the Clarify count and undo state stay honest.
@@ -15915,15 +16017,18 @@ function renderEngage() {
     row.addEventListener('contextmenu', e => { e.preventDefault(); startedToggle(id); });
   });
 
-  // The checkbox now does ONE thing, which is what a checkbox should do.
+  // TWO TAPS TO DONE (Now Page Minimal v2): the first tap STARTS it — the dot,
+  // the same started_at the long press has always set — and a tap on a dotted
+  // box completes it. Both undoable. The row's long press / right-click still
+  // toggles the dot, which is how one is cleared without completing.
   body.querySelectorAll('.eg-check[data-id]').forEach(el => {
     const id = parseInt(el.dataset.id);
     el.addEventListener('click', async () => {
-      // HOLDING the box is "in progress" (the row's long press, which this sits
-      // inside). The click the browser synthesizes after that hold must not
-      // also complete the item — see justLongPressed.
+      // HOLDING the box is the row's long press, which this sits inside. The
+      // click the browser synthesizes after that hold must not also act.
       if (justLongPressed()) return;
       const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+      if (item && !item.started_at) { await startedToggle(id); return; }
       await undoableDelete(id, `completed "${(item && item.content) || 'action'}"`);
       await after();
     });

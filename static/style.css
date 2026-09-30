@@ -6429,6 +6429,153 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .cal-refreshing #refresh-btn,
 .cal-refreshing [data-wk="refresh"] svg { animation: wk-spin 0.8s linear infinite; }
 
+/* ── NOW PAGE MINIMAL v2 (2026-09-29, Quentin's design) ───────────────
+   (--eg-ev-swatch: how much of a calendar's colour its swatch carries — a
+   pastel on the dark surface needs more of itself to show at 14px.) */
+:root { --eg-ev-swatch: 55%; }
+   The home screen, turned down: the day and its arrows, one chip naming what
+   is running now that folds the whole agenda out, a plain to-do list, and a
+   click below it to add one. Every behaviour is the one Engage already had;
+   this block is its look. The design's greys are the surface ladder here, and
+   everything is scoped to #engage-header / #engage-body because .eg-check is
+   also the routine runner's box. */
+#engage-header {
+  align-items: center;
+  padding: 18px 12px 10px 8px;
+  border-bottom: none;
+  gap: 4px;
+}
+#engage-header .eg-nav {
+  display: flex;
+  padding: 6px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+#engage-header .eg-nav:hover { background: var(--surface-2); color: var(--text-primary); }
+#engage-header .eg-day-btn { align-items: baseline; gap: 6px; }
+#engage-header .eg-day-name { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+#engage-header .eg-day-date { font: 14px var(--font-mono); color: var(--text-secondary); }
+/* The context formula keeps its place (it is the receipt for what the pool
+   hides) but drops the chip: a quiet line of text in the design's empty slot. */
+#engage-header .eg-domain {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  padding: 4px 6px;
+  border-radius: 6px;
+  max-width: 45%;
+}
+#engage-header .eg-domain:hover { background: var(--surface-2); color: var(--text-primary); }
+#engage-header #eg-panel-btn { padding: 6px; border-radius: 6px; }
+#engage-header #eg-panel-btn:hover { background: var(--surface-2); }
+
+/* The chip. */
+#engage-body .eg-now-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 8px 10px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+#engage-body .eg-now-chip:hover,
+#engage-body .eg-now-chip-on { background: var(--surface-2); }
+.eg-now-name { font-size: 15px; color: var(--text-primary); white-space: nowrap; }
+.eg-now-chev { color: var(--text-secondary); flex: none; transition: transform 0.2s; }
+.eg-now-chip-on .eg-now-chev { transform: rotate(180deg); }
+
+/* A swatch says what KIND of row it is, the way the design draws it: a
+   block's hatch, an event's calendar tint, a gate's dot. */
+.eg-swatch { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+.eg-swatch-block {
+  background: repeating-linear-gradient(135deg,
+    color-mix(in srgb, var(--block-color) 55%, transparent) 0 1.5px,
+    transparent 1.5px 4.5px);
+}
+.eg-swatch-ev { background: color-mix(in srgb, var(--ev-color, var(--accent)) var(--eg-ev-swatch), var(--surface-mid)); }
+.eg-swatch-free { background: var(--surface-2); }
+.eg-swatch-none { visibility: hidden; }
+.eg-swatch-gate { display: flex; align-items: center; justify-content: center; }
+.eg-swatch-gate::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gate-open);
+}
+.eg-qr-success .eg-swatch-gate::before { background: var(--gate-met); }
+.eg-qr-failed .eg-swatch-gate::before { background: var(--gate-missed); }
+.eg-qr-partial .eg-swatch-gate::before { background: var(--gate-half); }
+
+/* The agenda. */
+.eg-day-closed { display: none; }
+#engage-body .eg-day:not(:empty) { padding-bottom: 8px; border-bottom: none; }
+#engage-body .eg-day .eg-row { gap: 12px; padding: 8px 16px; }
+#engage-body .eg-day .eg-time { width: 42px; font: 12.5px var(--font-mono); color: var(--text-secondary); }
+#engage-body .eg-day .eg-end { font: 12.5px var(--font-mono); color: var(--text-secondary); }
+#engage-body .eg-day .eg-text { font-size: 15px; font-weight: 400; }
+#engage-body .eg-day .eg-qr-label { font: 15px var(--font-ui); letter-spacing: 0; color: var(--text-primary); }
+/* The design fades a past row to 45%, which took its text under 4.5:1. The
+   text goes secondary instead (5.4:1, still plainly "done with"), and only
+   the swatch fades. */
+#engage-body .eg-day .eg-past .eg-text { color: var(--text-secondary); }
+#engage-body .eg-day .eg-past .eg-swatch { opacity: 0.45; }
+#engage-body .eg-day .eg-now { background: var(--tint); border-radius: 0; }
+#engage-body .eg-day .eg-now .eg-text { font-weight: 600; }
+#engage-body .eg-day .eg-now .eg-time,
+#engage-body .eg-day .eg-now .eg-end { color: var(--text-secondary); }
+
+/* The to-do list. */
+.eg-todo-head {
+  border-top: 1px solid var(--border-soft);
+  padding: 18px 16px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+#engage-body .eg-pool { padding: 0 8px; }
+#engage-body .eg-pool .eg-row { gap: 12px; padding: 8px; border-radius: 6px; }
+#engage-body .eg-pool .eg-row:hover { background: var(--tint); }
+#engage-body .eg-pool .eg-text { font-size: 16px; line-height: 1.4; color: var(--text-primary); }
+#engage-body .eg-inprog .eg-text { color: var(--text-primary); }
+#engage-body .eg-check,
+#engage-body .eg-run {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border: 1.5px solid var(--text-secondary);
+  border-radius: 4px;
+  background: var(--surface-mid);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#engage-body .eg-check:hover { border-color: var(--accent); }
+#engage-body .eg-check-started { border-color: var(--accent); }
+.eg-check-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+#engage-body .eg-tag { border: none; padding: 0; font-size: 11px; }
+
+/* The add row, and the space under the list that opens it. */
+#eg-add-zone { padding: 0 8px; }
+#engage-body .eg-add-row { gap: 12px; padding: 8px; align-items: flex-start; }
+#engage-body .eg-check-ghost { cursor: default; }
+#eg-add-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 16px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  padding: 0;
+}
+#eg-add-fill { min-height: 120px; cursor: text; }
+
 /* ---- Light theme ---- */
 
 /* One contiguous appendix: the palette swap, then the handful of rules whose
@@ -6503,6 +6650,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    they are DEEP here (--block-red #a8434c, --block-green #2f7d63, --on-hold
    #6b7480) because they sit on a white page. */
 :root.theme-light {
+  --eg-ev-swatch: 30%;
   /* The week: block pastels need more of themselves to show as stripes on
      white, and the pressed half of a switch is the white card, not a grey. */
   --wk-hatch: 28%;
