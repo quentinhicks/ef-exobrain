@@ -253,6 +253,14 @@ def panel():
     return render_template('panel.html')
 
 
+# THE GATES DASHBOARD (2026-09-29, Quentin's instruction): the one place a
+# gate is configured, moved on its day and armed. Its own document and its own
+# gates.js, touching none of app.js — the panel's arrangement.
+@app.route('/gates')
+def gates_dashboard():
+    return render_template('gates.html')
+
+
 # Both files live in static/ but are served from the ROOT, and both have to be.
 # A service worker's scope is its own path, so one served from /static/ could
 # only ever control /static/* — never the app. A manifest's scope defaults to
@@ -272,7 +280,7 @@ def manifest():
 # (304s keep it fast locally) on the two shells and everything static.
 @app.after_request
 def _no_stale_static(resp):
-    if (request.path in ('/', '/panel', '/sw.js', '/manifest.webmanifest')
+    if (request.path in ('/', '/panel', '/gates', '/sw.js', '/manifest.webmanifest')
             or request.path.startswith('/static/')):
         resp.headers['Cache-Control'] = 'no-cache'
     return resp
@@ -2448,6 +2456,9 @@ def _gate_day_payload(node, ymd, now=None):
         # lock had bitten would draw a verb the server is about to refuse.
         'skipped': skipped,
         'skip_locked': qr_judge.override_locked(node, ymd, now),
+        # The day's own override row, as stored — what an undo of a window
+        # drag restores (or DELETEs, when there was none).
+        'override': override,
         'proof_mode': node.get('proof_mode') or 'link',
         # THE MINUTES ARE SERVED, not re-derived. The timeline draws four
         # dotted lines from this payload — scan open/close and the routine's
@@ -2692,6 +2703,38 @@ def _hours_day_payload(node, ymd):
             'required_minutes': req, 'logged_minutes': logged,
             'passes': passed, 'bucket_after_minutes': after,
             'judged': bool(storage.qr_judgment_exists(node['id'], ymd))}
+
+
+# EVERY GATE'S DAY IN ONE READ, for the dashboard's day view. The same payload
+# the per-gate read-out serves, per node — composed here, never a second
+# resolution of it.
+@app.route('/api/gates/day', methods=['GET'])
+def gates_day():
+    ymd = request.args.get('date') or date_cls.today().isoformat()
+    if not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    storage.qr_apply_due_pending_changes(datetime.now().isoformat())
+    now = datetime.now()
+    return jsonify({'date': ymd,
+                    'gates': [_gate_day_payload(n, ymd, now) for n in storage.qr_get_nodes()]})
+
+
+# THE LEDGER: every judged row for every gate — met, missed, called off, and
+# what each one cost — read back off the frozen rows, never re-scored.
+@app.route('/api/gates/ledger', methods=['GET'])
+def gates_ledger():
+    to_date = request.args.get('to') or date_cls.today().isoformat()
+    from_date = request.args.get('from') or (date_cls.fromisoformat(to_date)
+                                             - timedelta(days=29)).isoformat()
+    if not (_YMD_RE.match(from_date) and _YMD_RE.match(to_date)) or from_date > to_date:
+        return jsonify({'error': 'from and to must be YYYY-MM-DD, in order'}), 400
+    labels = {n['id']: n['label'] for n in storage.qr_get_nodes()}
+    rows = []
+    for r in storage.qr_ledger_between(from_date, to_date):
+        off = (r.get('charge_status') or '') == 'n/a'
+        rows.append(dict(r, label=labels.get(r['node_id'], f'gate {r["node_id"]} (deleted)'),
+                         outcome='off' if off else qr_judge.judged_outcome(r)))
+    return jsonify({'from': from_date, 'to': to_date, 'rows': rows})
 
 
 @app.route('/api/accountability/outcomes', methods=['GET'])

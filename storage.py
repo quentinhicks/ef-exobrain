@@ -8481,6 +8481,20 @@ def qr_charge_rows_between(from_date, to_date):
     return [dict(r) for r in rows]
 
 
+def qr_ledger_between(from_date, to_date):
+    # EVERY judged row for EVERY gate, with every column the row froze — the
+    # dashboard's ledger. The failure-only read above is the billing panel's;
+    # this one is the whole record, successes and called-off days included.
+    qr_ensure_charge_columns()
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT * FROM qr_charge_log WHERE date >= ? AND date <= ?
+           ORDER BY date DESC, node_id''',
+        (from_date, to_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def qr_judged_rows_for_node(node_id, from_date, to_date):
     # EVERY judged day for one gate, successes and called-off days included.
     # qr_charge_rows_between is the FAILURE read (it filters failure_reason IS

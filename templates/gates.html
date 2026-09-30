@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gates</title>
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/gates.css">
+</head>
+<body class="gd-body">
+  <header id="gd-head">
+    <a id="gd-back" href="/" title="Back to the app">‹ App</a>
+    <h1>Gates</h1>
+    <button id="gd-undo" class="gd-icon" title="Undo (Ctrl+Z)" disabled>↩</button>
+    <button id="gd-reload" class="gd-icon" title="Re-read everything">↻</button>
+  </header>
+  <main id="gd-main">
+    <section id="gd-money" class="gd-sec"></section>
+    <section id="gd-day" class="gd-sec"></section>
+    <section id="gd-gates" class="gd-sec"></section>
+    <section id="gd-ledger" class="gd-sec"></section>
+    <section id="gd-rules" class="gd-sec"></section>
+  </main>
+  <div id="gd-sheet-back" class="hidden"></div>
+  <div id="gd-sheet" class="hidden" role="dialog" aria-modal="true"></div>
+  <div id="gd-toast" class="hidden" role="status"></div>
+  <script src="/static/gates.js"></script>
+</body>
+</html>

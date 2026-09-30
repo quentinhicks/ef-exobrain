@@ -1,0 +1,218 @@
+/* THE GATES DASHBOARD (2026-09-29). Its own sheet, loaded after style.css for
+   the tokens. EVERY COLOUR HERE IS A VAR: the light appendix at the bottom of
+   style.css already swaps them, so this file needs no light entries and
+   cannot rot. Interactive outlines take --text-secondary (3:1 owed), edges
+   and containers --border — the app's measured rule. */
+
+html, body { height: auto; min-height: 100%; }
+body.gd-body { background: var(--bg); }
+body.gd-sheet-open { overflow: hidden; }
+
+#gd-head {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 8px;
+  max-width: 430px; margin: 0 auto; padding: 10px 16px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+#gd-head h1 { font-size: 17px; font-weight: 600; flex: 1; }
+#gd-back { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 6px 4px; }
+#gd-back:hover { color: var(--text-primary); }
+.gd-icon {
+  min-width: 36px; height: 36px; border-radius: 8px; font-size: 16px;
+  border: 1px solid var(--text-secondary); color: var(--text-primary);
+}
+.gd-icon:disabled { opacity: 0.35; cursor: default; }
+
+#gd-main { max-width: 430px; margin: 0 auto; padding: 0 16px 80px; }
+.gd-sec { padding: 18px 0; border-bottom: 1px solid var(--border); }
+.gd-sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.gd-sec-head h2 { font-size: 15px; font-weight: 600; flex: 1; text-transform: uppercase; letter-spacing: 0.04em; }
+.gd-sec h3 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; color: var(--text-primary); }
+.gd-sec h4, .gd-card h4 { font-size: 12px; font-weight: 600; margin: 12px 0 4px; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.04em; }
+
+.gd-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.45; margin-top: 4px; }
+.gd-empty { font-size: 13px; color: var(--text-secondary); padding: 6px 0; }
+.gd-mono { font-family: var(--font-mono); font-size: 12px; }
+.gd-wrap { word-break: break-all; }
+.gd-good-text { color: var(--success); }
+.gd-bad-text { color: var(--danger); }
+
+.gd-btn {
+  min-height: 36px; padding: 6px 12px; border-radius: 8px; font-size: 13px;
+  border: 1px solid var(--text-secondary); color: var(--text-primary); background: var(--surface);
+}
+.gd-btn:hover:not(:disabled) { background: var(--surface-2); }
+.gd-btn:disabled { opacity: 0.4; cursor: default; }
+.gd-btn.gd-small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
+.gd-btn.gd-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.gd-btn.gd-danger { color: var(--danger); border-color: var(--danger); }
+.gd-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+/* ── Money ── */
+.gd-verdict { border-radius: 10px; padding: 12px 14px; border: 1px solid var(--border); background: var(--surface); }
+.gd-verdict .gd-vtext { font-size: 16px; font-weight: 600; }
+.gd-verdict .gd-vsub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+.gd-verdict.gd-good { border-left: 4px solid var(--success); }
+.gd-verdict.gd-bad { border-left: 4px solid var(--danger); }
+.gd-verdict.gd-live { border: 2px solid var(--danger); }
+.gd-verdict.gd-live .gd-vtext { color: var(--danger); }
+
+.gd-seg { display: flex; margin-top: 12px; border: 1px solid var(--text-secondary); border-radius: 9px; overflow: hidden; }
+.gd-seg button { flex: 1; min-height: 40px; font-size: 13px; border-right: 1px solid var(--text-secondary); }
+.gd-seg button:last-child { border-right: none; }
+.gd-seg button.gd-on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.gd-seg button.gd-on-live { background: var(--danger); color: var(--bg); }
+.gd-seg button.gd-confirm { background: var(--danger); color: var(--bg); font-weight: 600; }
+
+.gd-row { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border-soft); }
+.gd-row-main { flex: 1; min-width: 0; }
+.gd-row-line { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.gd-row-name { font-weight: 600; font-size: 13px; }
+.gd-row-val { font-size: 13px; color: var(--text-secondary); text-align: right; }
+.gd-mark { width: 18px; text-align: center; font-weight: 600; flex: none; }
+.gd-mark.gd-good { color: var(--success); }
+.gd-mark.gd-bad { color: var(--danger); }
+.gd-mark.gd-idle { color: var(--text-secondary); }
+
+.gd-meter { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.gd-meter span { display: block; height: 100%; background: var(--accent); }
+
+.gd-form { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.gd-form.gd-inline { flex-direction: row; flex-wrap: wrap; }
+.gd-form.gd-inline label { flex: 1; min-width: 120px; }
+.gd-form label, .gd-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.gd-field { margin-top: 14px; }
+.gd-flabel { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.gd-field > div:not(.gd-flabel):not(.gd-hint), .gd-strong-line { color: var(--text-primary); font-size: 13px; }
+.gd-strong-line { font-weight: 600; }
+.gd-body input, .gd-body select {
+  min-height: 36px; padding: 6px 10px; border-radius: 8px; font: inherit; font-size: 14px;
+  background: var(--surface-low); color: var(--text-primary); border: 1px solid var(--text-secondary);
+  width: 100%;
+}
+.gd-daynav input[type=date] { width: auto; }
+.gd-money-in { display: flex; align-items: center; gap: 6px; color: var(--text-primary); }
+.gd-money-in input { flex: 1; }
+.gd-body details summary { cursor: pointer; font-size: 13px; color: var(--text-primary); padding: 6px 0; }
+
+/* ── The day ── */
+.gd-daynav { display: flex; align-items: center; gap: 6px; }
+.gd-allday-evs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.gd-chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-secondary); }
+
+.gd-tl { position: relative; margin-top: 12px; }
+.gd-hour { position: absolute; left: 0; right: 0; border-top: 1px solid var(--grid-line); }
+.gd-hour span { position: absolute; top: -8px; left: 0; font-family: var(--font-mono); font-size: 10px;
+  color: var(--text-secondary); background: var(--bg); padding-right: 4px; }
+.gd-ctx { position: absolute; top: 0; bottom: 0; left: 42px; width: calc(52% - 42px); }
+.gd-lanes { position: absolute; top: 0; bottom: 0; left: 52%; right: 0; }
+.gd-seg-band { position: absolute; left: 0; right: 0; border-left: 3px solid var(--c);
+  background: var(--tint-faint); overflow: hidden; }
+.gd-seg-band span { font-size: 10px; color: var(--text-secondary); padding-left: 4px; }
+.gd-ev { position: absolute; left: 10px; right: 2px; border-radius: 4px; background: var(--surface-2);
+  border-left: 3px solid var(--c); overflow: hidden; }
+.gd-ev span { font-size: 10px; color: var(--text-primary); padding: 1px 4px; display: block; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.gd-now { position: absolute; left: 42px; right: 0; border-top: 2px solid var(--danger); z-index: 3; pointer-events: none; }
+
+.gd-gate { position: absolute; border-radius: 6px; padding: 3px 6px; cursor: pointer; overflow: visible;
+  background: var(--gate-open); color: var(--on-gate); border: 1px solid transparent; z-index: 2;
+  display: flex; flex-direction: column; justify-content: flex-start; }
+.gd-gate.gd-st-met { background: var(--gate-met); }
+.gd-gate.gd-st-missed { background: var(--gate-missed); }
+.gd-gate.gd-st-off { background: var(--gate-dismissed); color: var(--on-gate-dismissed); }
+.gd-gate.gd-skipped .gd-gate-name { text-decoration: line-through; }
+.gd-gate.gd-allday { border-style: dashed; border-color: var(--on-gate); }
+.gd-gate.gd-picked { outline: 2px solid var(--text-primary); outline-offset: 1px; }
+.gd-gate.gd-dragging { opacity: 0.85; z-index: 5; }
+.gd-gate-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gd-gate-time { font-family: var(--font-mono); font-size: 10px; }
+/* THE TARGET IS THE EDGE, not a share of a short band: each grab overhangs
+   the gate into FREE track (up to 10px, sized per edge in renderDay — 0 where
+   two gates abut), so a 20-minute window resizes as easily as an hour. The
+   inline top/bottom/height come from there; the mark sits on the real edge. */
+.gd-grab { position: absolute; left: 0; right: 0; cursor: ns-resize; touch-action: pan-y; z-index: 4; }
+.gd-grab::after { content: ''; position: absolute; left: 30%; right: 30%; height: 3px; border-radius: 2px;
+  background: var(--on-gate); opacity: 0.6; }
+.gd-grab-top::after { bottom: 7px; }
+.gd-grab-bot::after { top: 7px; }
+
+.gd-card { margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+.gd-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gd-card-head h3 { margin: 0; font-size: 15px; flex: 1; }
+.gd-verdict-line { font-size: 13px; font-weight: 600; margin-top: 6px; }
+.gd-dl { display: grid; grid-template-columns: 76px 1fr; gap: 4px 10px; margin-top: 10px; font-size: 12px; }
+.gd-dl dt { color: var(--text-secondary); }
+.gd-dl dd { color: var(--text-primary); line-height: 1.45; }
+.gd-list { list-style: none; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.gd-list li { padding: 4px 0; border-top: 1px solid var(--border-soft); }
+
+.gd-record { display: flex; gap: 3px; margin-top: 4px; }
+.gd-rec { flex: 1; height: 14px; border-radius: 3px; border: 1px solid var(--border); }
+.gd-rec-met { background: var(--gate-met); border-color: var(--gate-met); }
+.gd-rec-partial { background: var(--gate-half); border-color: var(--gate-half); }
+.gd-rec-missed { background: var(--gate-missed); border-color: var(--gate-missed); }
+.gd-rec-off { border-color: var(--text-secondary); }
+
+/* ── Gates list ── */
+.gd-gate-row { display: block; width: 100%; text-align: left; padding: 10px 12px; margin-top: 8px;
+  border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
+.gd-gate-row:hover { background: var(--surface-2); }
+.gd-gate-row.gd-dim { opacity: 0.6; }
+.gd-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.gd-badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--border); color: var(--text-secondary); }
+.gd-badge.gd-strong { border-color: var(--success); color: var(--success); }
+.gd-badge.gd-weak { border-color: var(--gold); color: var(--gold); }
+.gd-badge.gd-pend { border-color: var(--accent); color: var(--accent); }
+.gd-threat { font-size: 12px; line-height: 1.45; padding: 8px 10px; border-radius: 8px; margin-top: 6px;
+  background: var(--surface-low); color: var(--text-primary); border-left: 3px solid var(--border); }
+.gd-threat.gd-strong { border-left-color: var(--success); }
+.gd-threat.gd-weak { border-left-color: var(--gold); }
+
+/* ── Ledger ── */
+.gd-ledger { display: flex; flex-direction: column; margin-top: 8px; }
+.gd-lrow { display: grid; grid-template-columns: 84px 1fr; gap: 0 8px; padding: 6px 0; border-top: 1px solid var(--border-soft); font-size: 12px; }
+.gd-ldate { font-family: var(--font-mono); color: var(--text-secondary); grid-row: span 4; }
+.gd-lgate { font-weight: 600; }
+.gd-lout, .gd-lcharge, .gd-lwin { color: var(--text-secondary); }
+.gd-lwin { font-size: 11px; }
+.gd-lo-missed .gd-lout { color: var(--danger); }
+.gd-lo-met .gd-lout { color: var(--success); }
+#gd-lgate { width: auto; min-height: 32px; font-size: 12px; }
+
+.gd-rules { padding-left: 18px; font-size: 12px; line-height: 1.5; color: var(--text-primary); display: flex; flex-direction: column; gap: 8px; }
+.gd-rules li::marker { color: var(--text-secondary); }
+
+/* ── The editor sheet ── */
+#gd-sheet-back { position: fixed; inset: 0; background: var(--overlay); z-index: 40; }
+#gd-sheet { position: fixed; z-index: 41; left: 50%; transform: translateX(-50%); bottom: 0; top: 24px;
+  width: 100%; max-width: 430px; background: var(--bg); border: 1px solid var(--border); border-bottom: none;
+  border-radius: 14px 14px 0 0; display: flex; flex-direction: column; }
+#gd-sheet.hidden, #gd-sheet-back.hidden { display: none; }
+.gd-sheet-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.gd-sheet-head h2 { flex: 1; font-size: 16px; font-weight: 600; }
+.gd-sheet-body { flex: 1; overflow-y: auto; padding: 4px 16px 20px; }
+.gd-sheet-foot { display: flex; gap: 8px; justify-content: space-between; padding: 10px 16px;
+  border-top: 1px solid var(--border); }
+.gd-sheet-foot .gd-primary { margin-left: auto; }
+.gd-error { color: var(--danger); font-size: 13px; margin-top: 12px; }
+.gd-days { display: flex; gap: 4px; }
+.gd-day { flex: 1; min-height: 36px; border-radius: 8px; border: 1px solid var(--text-secondary); font-size: 13px; }
+.gd-day.gd-on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.gd-pend-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0;
+  font-size: 12px; color: var(--text-primary); }
+.gd-tag { padding: 8px 0; border-top: 1px solid var(--border-soft); color: var(--text-primary); }
+.gd-tagform { display: flex; flex-direction: column; gap: 8px; padding: 10px; margin-top: 8px;
+  border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+.gd-tagform label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.gd-keyrow { display: grid; grid-template-columns: 64px 1fr auto; gap: 8px; align-items: center; font-size: 12px; color: var(--text-primary); }
+
+#gd-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 20px; z-index: 60;
+  max-width: 398px; width: calc(100% - 32px); padding: 10px 14px; border-radius: 10px; font-size: 13px;
+  background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--text-secondary); }
+#gd-toast.hidden { display: none; }
+/* Over an open sheet the toast rides above its foot, never on the buttons. */
+body.gd-sheet-open #gd-toast { bottom: 76px; }
+.gd-fold { margin-top: 14px; }
+.gd-fold > summary { font-size: 13px; font-weight: 600; }
