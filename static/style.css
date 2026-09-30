@@ -6119,7 +6119,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     transparent 1.5px 7px);
 }
 
-.wk-evs { position: absolute; left: 6px; right: 18px; top: 0; bottom: 0; pointer-events: none; }
+.wk-evs { position: absolute; left: 10px; right: 18px; top: 0; bottom: 0; pointer-events: none; }
 .wk-ev {
   position: absolute;
   padding: 3px 6px;
@@ -6276,15 +6276,29 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* Unlabelled, as in the week: the name is the block's tooltip and the first
    line of its menu. */
 #cal-overlay .tl-block .tl-text { display: none; }
+/* THE BAR IS IMPLIED (2026-09-30, Quentin's instruction: "remove the ugly left
+   bar"). A painted stripe on every block drew a rule down the left of every
+   column; the handle is now an unpainted 10px band at the block's left edge —
+   the events start just past it, so it is never under one — that tints only
+   while the pointer is on it, which is the one moment it has to be found. */
 #cal-overlay .tl-block-bar {
-  left: 2px;
-  width: 4px;
-  border-radius: 3px;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  border-radius: 0;
+  background: transparent;
+}
+#cal-overlay .tl-block:not(.tl-block-cont):not(.tl-block-cancelled) .tl-block-bar:hover {
+  filter: none;
   background: color-mix(in srgb, var(--block-color) var(--wk-bar), transparent);
 }
-/* The paint is 4px; the grab is not. */
-#cal-overlay .tl-block-bar::after { content: ''; position: absolute; inset: 0 -6px; }
-#cal-overlay .tl-block-cancelled .tl-block-bar { background: var(--danger); }
+/* With no bar to turn red, a cancelled block says so in its hatch. */
+#cal-overlay .tl-block-cancelled {
+  background: repeating-linear-gradient(135deg,
+    color-mix(in srgb, var(--danger) var(--wk-hatch), transparent) 0 1.5px,
+    transparent 1.5px 7px);
+}
 
 #cal-overlay .tl-gcal-event {
   right: auto;
@@ -6323,6 +6337,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: inherit;
   cursor: pointer;
 }
+/* A gate's mark is dragged to move that day's window (2026-09-30); a called-off
+   day has no deadline to move, so it keeps the plain pointer. */
+#cal-overlay .tl-qr-line:not(.wk-gate-off) .tl-qr-label,
+#cal-week .wk-gate:not(.wk-gate-off) { cursor: grab; }
 #cal-overlay .tl-qr-selected .tl-qr-label {
   box-shadow: 0 0 0 2px var(--surface-mid), 0 0 0 3.5px currentColor;
 }

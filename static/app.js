@@ -1338,11 +1338,10 @@ function renderBlocksLayer(bodyH = 600) {
     el.dataset.objTap = '1';
   });
 
-  // Hiding a block for the day used to BE the right-click. It is an item on
-  // the block's menu now, beside cancelling it and editing it — three verbs
-  // that were a click, a right-click and a five-tap walk through Settings, and
-  // are now one gesture and three named things. The gesture itself is wired
-  // once, on the document, by initObjectDoors.
+  // The block's menu (a plain click) names its three verbs; the right-click
+  // and the long press run the first of them, cancelling it for the day
+  // (openObjectMenuOrRemove, 2026-09-30). Both are wired once, on the
+  // document, by initObjectDoors.
   initBlockBarDrag(layer, dateStr);
 }
 
@@ -1350,6 +1349,8 @@ function renderBlocksLayer(bodyH = 600) {
 // showing, passed in (Engage browses its own day, a week column is its own
 // date). It was Engage's alone; the week needed it too, and a third copy of a
 // money-adjacent write is how two surfaces start filing under different days.
+// The day view had exactly that third copy (toggleBlockOverride) — with no
+// undo — until right-click made it one gesture (2026-09-30); it asks here now.
 // `overrides` is that day's override rows, read before the write so the undo
 // is the state the day was in.
 async function toggleBlockCancelOn(blockId, dateStr, overrides, after) {
@@ -1388,7 +1389,7 @@ registerObjectVerbs('week-block', (kind, id, el) => {
   const label = blockEl.querySelector('.tl-block-label')?.textContent || 'Block';
   return [
     { label: cancelled ? 'Restore for this day' : 'Cancel for this day',
-      danger: !cancelled,
+      danger: !cancelled, rightClick: true,
       run: () => toggleBlockCancelOn(parseInt(id), d, overrides, refreshCalWeek) },
     { label: 'Hide for this day',
       run: () => hideTimelineItem('block', `${id}:${d}`, label) },
@@ -1407,8 +1408,11 @@ registerObjectVerbs('timeline-block', (kind, id, el) => {
   const cancelled = ov && ov.cancelled === 1;
   return [
     { label: cancelled ? 'Restore for today' : 'Cancel for today',
-      danger: !cancelled,
-      run: () => toggleBlockOverride(parseInt(id)) },
+      danger: !cancelled, rightClick: true,
+      run: () => toggleBlockCancelOn(parseInt(id), dateStr, state.overrides, async () => {
+        await fetchOverridesForDate(state.currentDate);
+        renderTimeline();
+      }) },
     { label: 'Hide for today',
       run: () => {
         hideTimelineItem('block', `${id}:${dateStr}`, label);
@@ -1605,8 +1609,8 @@ function renderGcalLayer(bodyH = 600) {
                  data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
                  data-start-min="${startMin}" data-end-min="${endMin}"${moved}
                  style="pointer-events:auto;top:${top}%;height:${height}%;--ev-color:${col};
-                        left:calc(6px + (100% - 24px) * ${lane / (n || 1)});
-                        width:calc((100% - 24px) * ${w / 100} - 2px)">${inner}</div>`;
+                        left:calc(10px + (100% - 28px) * ${lane / (n || 1)});
+                        width:calc((100% - 28px) * ${w / 100} - 2px)">${inner}</div>`;
   }).join('');
 
   // Read-only iCal events can't be deleted at source — right-click hides them
@@ -2528,6 +2532,10 @@ function renderCalWeek() {
       repaint: () => renderCalWeek(),
     };
     initBlockBarDrag(col, d, geo);
+    col.querySelectorAll('.wk-gate[data-node]').forEach(btn => {
+      const g = wkDayGates(d).find(x => String(x.node_id) === btn.dataset.node);
+      if (g) initGateDrag(btn, g, d, geo, min => { btn.style.top = `${y(min) - 7}px`; });
+    });
     const evs = col.querySelector('.wk-evs');
     if (evs) initEventDrag(evs, d, geo);
     col.querySelectorAll('.tl-gcal-event').forEach(el => {
@@ -2656,6 +2664,8 @@ function initCalWeek() {
       calWeek.focusDate = null;
       renderCalWeek();
     } else if (act === 'gate') {
+      // A click that trails a drag of the mark is not a tap on it.
+      if (a.dataset.lpDragged === '1' || justPointerDragged()) { delete a.dataset.lpDragged; return; }
       // What the box knows about that gate on that day — the day view's
       // read-out, for the column's date. The roles are on the range button.
       openGatePop(parseInt(a.dataset.node), a.dataset.date, a);
@@ -2686,70 +2696,6 @@ function initCalWeek() {
   WEEK_MQ.addEventListener('change', () => {
     if (overlay.classList.contains('hidden')) return;
     setCalView(WEEK_MQ.matches && calWantsWeek());
-  });
-}
-
-async function toggleBlockOverride(blockId) {
-  const dateStr = viewDay();
-  const existing = state.overrides.find(o => o.block_id === blockId && o.date === dateStr);
-  const hasTimes = existing && (existing.start_time || existing.end_time);
-
-  if (existing && existing.cancelled === 1 && !hasTimes) {
-    // un-cancel with nothing else on the row — drop it
-    const saved = existing;
-    const idx = state.overrides.indexOf(existing);
-    state.overrides.splice(idx, 1);
-    markSegmentCancelled(blockId, dateStr, false);
-    renderTimeline();
-    try {
-      const res = await apiSend(`/api/overrides/${saved.id}`, 'DELETE');
-      if (!res.ok) throw new Error();
-      await fetchOverridesForDate(state.currentDate);
-      renderTimeline();
-    } catch (err) {
-      state.overrides.push(saved);
-      markSegmentCancelled(blockId, dateStr, true);
-      renderTimeline();
-      console.error('Override delete failed:', err);
-    }
-    return;
-  }
-
-  // cancel, or un-cancel while keeping the row's time override
-  const cancelled = existing && existing.cancelled === 1 ? 0 : 1;
-  const prev = existing ? existing.cancelled : null;
-  const optimistic = existing || { id: null, block_id: blockId, date: dateStr, cancelled };
-  if (existing) existing.cancelled = cancelled;
-  else state.overrides.push(optimistic);
-  // The strike-through is drawn from the SERVED day, so the local echo has to
-  // reach that too or the tap looks dead until the fetch returns. It is an
-  // echo of a write just made, not a second copy of the resolution rule —
-  // the refetch below replaces it with the server's answer either way.
-  markSegmentCancelled(blockId, dateStr, !!cancelled);
-  renderTimeline();
-  try {
-    const res = await apiSend('/api/overrides', 'POST', { block_id: blockId, date: dateStr, cancelled: !!cancelled });
-    if (!res.ok) throw new Error();
-    const data = await res.json();
-    const idx = state.overrides.indexOf(optimistic);
-    if (idx !== -1) state.overrides[idx] = data;
-    await fetchOverridesForDate(state.currentDate);
-    renderTimeline();
-  } catch (err) {
-    if (existing) existing.cancelled = prev;
-    else {
-      const idx = state.overrides.indexOf(optimistic);
-      if (idx !== -1) state.overrides.splice(idx, 1);
-    }
-    markSegmentCancelled(blockId, dateStr, !cancelled);
-    renderTimeline();
-    console.error('Override save failed:', err);
-  }
-}
-
-function markSegmentCancelled(blockId, dateStr, cancelled) {
-  viewSegmentsFor(dateStr).forEach(s => {
-    if (s.block_id === blockId && s.date === dateStr) s.cancelled = cancelled;
   });
 }
 
@@ -3182,6 +3128,11 @@ async function refreshAfterUndo() {
   await refreshEngage();
   // The week caches each day it draws, so an undo re-reads it like any surface.
   if (calWeek.on) await refreshCalWeek();
+  // ...and so does the day view, whose served day is cached the same way.
+  else if (!document.getElementById('cal-overlay').classList.contains('hidden')) {
+    await fetchOverridesForDate(state.currentDate);
+    renderTimeline();
+  }
   if (!document.getElementById('map-overlay').classList.contains('hidden')) await refreshMap();
   if (!document.getElementById('tab-lists').classList.contains('hidden')) await refreshRef();
   // The breakdown composer reads its own list, so an undo that touched a
@@ -6741,6 +6692,22 @@ function verbsFor(kind, id, el) {
   return out;
 }
 
+// RIGHT-CLICK REMOVES, ON THE CALENDAR (2026-09-30, Quentin's instruction:
+// "allow me to right click to remove gates/blocks/events"). A surface may mark
+// ONE of its verbs `rightClick` — the Calendar marks the day-level removal of a
+// block (cancel it for that day) and a gate (call that day off) — and then the
+// right-click and the 550ms hold RUN it instead of opening the menu, the way a
+// fetched event's right-click has always hidden it. The menu is still one tap
+// away where it matters: a block's plain click opens it, and a gate's read-out
+// has its door. Every such verb is undoable, and a gate's goes through the
+// store the judge reads, so the 24h lock still decides whether it lands.
+function openObjectMenuOrRemove(x, y, kind, id, el) {
+  const verbs = verbsFor(kind, id, el);
+  const direct = verbs.find(v => v.rightClick);
+  if (direct) { direct.run(); return; }
+  openObjectMenu(x, y, kind, id, verbs);
+}
+
 function initObjectDoors() {
   // LEFT CLICK, where the object has nothing else for it to mean. Opt-in
   // (`data-obj-tap`) rather than automatic: most artifacts that carry a door
@@ -6818,7 +6785,7 @@ function initObjectDoors() {
     if (!OBJECT_KINDS[kind]) return;
     e.preventDefault();
     e.stopPropagation();
-    openObjectMenu(e.clientX, e.clientY, kind, id, verbsFor(kind, id, el));
+    openObjectMenuOrRemove(e.clientX, e.clientY, kind, id, el);
   }, true);
 
   // The finger's way in, and the same 550ms the rest of the app uses. Bound
@@ -6837,7 +6804,7 @@ function initObjectDoors() {
       // A drag that armed on the same press owns it — onPointerDrag claims the
       // press at pointerdown, and the menu stands down exactly like onLongPress.
       if (e.pointerDragClaim) return;
-      openObjectMenu(lpAt.x, lpAt.y, kind, id, verbsFor(kind, id, el));
+      openObjectMenuOrRemove(lpAt.x, lpAt.y, kind, id, el);
     }, 550);
   }, true);
   const cancelLp = e => {
@@ -12455,9 +12422,160 @@ function renderQrLayer() {
     // the read-out. A gate's day is changed on /gates, the one editor.
     label.addEventListener('click', e => {
       e.stopPropagation();
+      if (label.dataset.lpDragged === '1' || justPointerDragged()) { delete label.dataset.lpDragged; return; }
       selectGate(node.id, pageDate, label);
     });
+    initGateDrag(label, g, pageDate, dayDragGeo(), min => {
+      line.style.top = `${Math.min(100, Math.max(0, minutesToViewPercent(min)))}%`;
+    });
   });
+}
+
+// ── A GATE'S DAY, FROM THE CALENDAR (2026-09-30, Quentin's instruction: "allow
+// me to right click to remove gates … and let me drag gates to move them") ──
+//
+// Two DAY-LEVEL verbs come back to the calendar that 2026-09-29 moved to
+// /gates: calling a day off and moving a day's window. Nothing else does — a
+// gate's configuration, its tags, its money are still edited on /gates alone.
+// Both write the stores the dashboard writes (qr_override, through the same
+// two routes), so the judge sees them and the server's 24h lock decides
+// whether an easing lands; a refusal is read back and toasted, never
+// predicted here. The gate is the one the calendar was SERVED
+// (/api/gates/day), found by the date its surface is showing.
+function calGateOn(el, nodeId) {
+  const wk = el.closest('#cal-week [data-date]');
+  const d = wk ? wk.dataset.date : viewDay();
+  const list = wk ? (calWeek.days[d] || {}).gates : viewGatesFor(d);
+  const g = (list || []).find(x => String(x.node_id) === String(nodeId));
+  return g ? { g, d } : null;
+}
+
+// Re-read whichever calendar is up. The marks are the server's answer, so a
+// write is followed by asking again rather than by patching them in place.
+async function reloadCalGates() {
+  state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
+  if (calWeek.on) { await refreshCalWeek(); return; }
+  await fetchOverridesForDate(state.currentDate);
+  if (state.gateSel) await refreshGateSel(); else renderTimeline();
+}
+
+async function calGateSkip(nodeId, dateStr, want) {
+  const res = want
+    ? await apiSend(`/api/accountability/nodes/${nodeId}/overrides`, 'POST', { date: dateStr, skipped: true })
+    : await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${dateStr}`, 'DELETE');
+  if (!res || !res.ok) {
+    const msg = res ? await res.json().catch(() => ({})) : {};
+    toast(msg.error || (want ? 'Could not call that day off' : 'Could not put that day back'));
+    return false;
+  }
+  await reloadCalGates();
+  return true;
+}
+
+// A GESTURE IS A BUTTON, and this one moves money: its inverse is the state
+// the day was in. Putting a day back re-commits it and the lock never refuses
+// that, so the undo of a call-off always lands. The forward act is toasted,
+// unlike most: it has no label on screen, and it is the real-money path.
+async function toggleCalGateSkip(nodeId, label, dateStr, skipped) {
+  if (!await calGateSkip(nodeId, dateStr, !skipped)) return;
+  const when = formatTodoDate(new Date(dateStr + 'T12:00:00'));
+  toast(skipped ? `"${label}" is back on for ${when}` : `"${label}" is called off for ${when}`);
+  pushUndo(skipped ? `put "${label}" back` : `called off "${label}"`,
+    () => calGateSkip(nodeId, dateStr, skipped));
+}
+
+registerObjectVerbs('calendar-gate', (kind, id, el) => {
+  if (kind !== 'gate' || !el.closest('#cal-week, #tl-qr-layer')) return [];
+  const hit = calGateOn(el, id);
+  if (!hit || (!hit.g.applies && !hit.g.skipped)) return [];
+  const { g, d } = hit;
+  return [{
+    label: g.skipped ? 'Put this day back on' : 'Call this day off',
+    danger: !g.skipped, rightClick: true,
+    run: () => toggleCalGateSkip(g.node_id, g.label, d, !!g.skipped),
+  }];
+});
+
+// The inverse of a moved window: the day's own override as the server stored
+// it before the drop, or none, and then a DELETE — an override that merely
+// agrees with the default is not an undo (gates.js's restoreWindow, same rule).
+async function restoreCalGateWindow(nodeId, dateStr, prev) {
+  const res = prev
+    ? await apiSend(`/api/accountability/nodes/${nodeId}/overrides`, 'POST', {
+        date: dateStr, window_start: prev.window_start, window_end: prev.window_end,
+        window_end_offset_days: prev.window_end_offset_days || 0 })
+    : await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${dateStr}`, 'DELETE');
+  if (!res || !res.ok) {
+    const msg = res ? await res.json().catch(() => ({})) : {};
+    toast(msg.error || 'Could not undo that window');
+    return;
+  }
+  await reloadCalGates();
+}
+
+function undoableGateWindow(nodeId, dateStr, prev, label) {
+  pushUndo(label, () => restoreCalGateWindow(nodeId, dateStr, prev));
+}
+
+// DRAG THE MARK, MOVE THE GATE — for that day. The window TRANSLATES: it keeps
+// its length, which is a decision of its own (the 2026-08-24 rule the old pill
+// drag followed), and its opening cannot be pushed back past midnight. A mouse
+// drags on its left button and right-click calls the day off; a finger holds
+// 550ms and then drags, and a hold released WITHOUT moving is the finger's
+// right-click. A called-off day has no deadline to move.
+//   place(min)  draw the mark at a deadline while it is being dragged
+function initGateDrag(handle, g, dateStr, geo, place) {
+  if (g.skipped || !g.window || g.window.start_min == null || g.window.end_min == null) return;
+  const s0 = g.window.start_min, e0 = g.window.end_min;
+  onPointerDrag(handle, { keepClick: true, start(e) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return null;
+    e.stopPropagation();
+    const touch = e.pointerType !== 'mouse';
+    const startY = e.clientY;
+    const bodyPx = geo.px();
+    const span = geo.end - geo.start;
+    const lo = Math.max(-s0, -720), hi = Math.min(2 * DAY_MIN - 5 - e0, 720);
+    const slop = touch ? 0 : 5;
+    const title = handle.title;
+    let moved = false, delta = 0;
+    if (touch) handle.dataset.lpDragged = '1';
+    return {
+      move(clientY) {
+        if (!moved && Math.abs(clientY - startY) < slop) return;
+        moved = true;
+        handle.dataset.lpDragged = '1';
+        delta = Math.min(hi, Math.max(lo, Math.round(((clientY - startY) / bodyPx) * span / 5) * 5));
+        const at = e0 + delta;
+        place(at);
+        handle.title = `${g.label} → ${hhmmToAmPm(clockHHMM(at))}${at >= DAY_MIN ? ' +1d' : ''}`;
+        document.body.style.cursor = 'grabbing';
+      },
+      async end() {
+        document.body.style.cursor = '';
+        handle.title = title;
+        if (!moved) {
+          if (touch) toggleCalGateSkip(g.node_id, g.label, dateStr, !!g.skipped);
+          return;
+        }
+        if (!delta) { geo.repaint(); return; }
+        const prev = g.override && !g.override.skipped ? g.override : null;
+        const ns = s0 + delta, ne = e0 + delta;
+        const res = await apiSend(`/api/accountability/nodes/${g.node_id}/overrides`, 'POST', {
+          date: dateStr, window_start: clockHHMM(ns), window_end: clockHHMM(ne),
+          window_end_offset_days: ne >= DAY_MIN ? 1 : 0,
+        });
+        if (res && res.ok) {
+          undoableGateWindow(g.node_id, dateStr, prev, `moved "${g.label}"`);
+        } else {
+          // The mark already sits where it was dropped, so silence would read
+          // as "saved"; the 24h lock is the refusal a hand can produce.
+          const msg = res ? await res.json().catch(() => ({})) : {};
+          toast(msg.error || 'Could not move it');
+        }
+        await reloadCalGates();
+      },
+    };
+  } });
 }
 
 function timeToMinutes(timeStr) {
