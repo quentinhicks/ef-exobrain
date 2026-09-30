@@ -547,6 +547,10 @@ select option {
   padding: 8px 20px 10px;
 }
 
+/* Settings -> AI changes: a sentence and its reason, stacked. */
+.be-ai-row { align-items: flex-start; }
+.be-ai-main { flex: 1; min-width: 0; }
+
 .be-hint {
   font-size: 12px;
   line-height: 1.5;

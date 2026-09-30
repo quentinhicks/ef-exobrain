@@ -3131,7 +3131,67 @@ const SETTINGS_SECTIONS = [
     desc: 'Theme, timezone, and the NOW panel.',
     summary: () => `${document.documentElement.classList.contains('theme-light') ? 'Light' : 'Dark'}`
       + ` · ${currentTimezone().split('/').pop().replace(/_/g, ' ')}` },
+  { key: 'assistant', name: 'AI changes', group: 'Appendix',
+    desc: 'Every gate deadline an assistant changed, with the reason it gave — refusals too.',
+    summary: () => (assistantView.rows ? plural(assistantView.rows.length, 'change') : '') },
 ];
+
+// ── Appendix: what an assistant changed ─────────────────────
+//
+// The Claude Code gate tool (mcp/gates_mcp.py) may change DEADLINES and marks
+// every write; the server refuses anything else and logs each attempt. This is
+// that log, read-only, in words — the record of what was done on Quentin's
+// behalf, so nothing an assistant did is invisible.
+const assistantView = { rows: null };
+
+async function loadAssistantChanges() {
+  renderAssistantChanges();
+  const rows = await apiGet('/api/assistant/changes', assistantView.rows);
+  assistantView.rows = Array.isArray(rows) ? rows : assistantView.rows;
+  renderAssistantChanges();
+}
+
+function assistantChangeText(r) {
+  let body = {};
+  try { body = JSON.parse(r.body || '{}') || {}; } catch (e) { body = {}; }
+  const m = /\/api\/accountability\/nodes\/(\d+)(?:\/overrides(?:\/(\d{4}-\d{2}-\d{2}))?)?$/.exec(r.path);
+  const node = m && (state.accountabilityNodes || []).find(n => String(n.id) === m[1]);
+  const gate = m ? `"${node ? node.label : `gate ${m[1]}`}"` : '';
+  if (r.path === '/api/schedules') return 'wrote a weekly schedule';
+  if (m && m[2]) return `put ${gate} back to its schedule on ${m[2]}`;
+  if (m && r.path.endsWith('/overrides')) {
+    return body.skipped ? `called off ${gate} on ${body.date}`
+      : `moved ${gate} on ${body.date} to ${body.window_start}–${body.window_end}`
+        + (body.window_end_offset_days ? ' +1d' : '');
+  }
+  const fields = Object.keys(body).filter(k => k !== 'effective_from');
+  if (m && fields.length === 1 && fields[0] === 'source_uid') {
+    return `pointed ${gate} at a new schedule`
+      + (body.effective_from ? ` from ${body.effective_from}` : '');
+  }
+  // Anything else is what the guard refuses: say what was ATTEMPTED.
+  if (m) return `tried to change ${fields.join(', ') || 'nothing'} on ${gate}`;
+  if (r.path === '/api/gates/billing') return `tried to change billing (${fields.join(', ')})`;
+  return `tried ${r.method} ${r.path}`;
+}
+
+function renderAssistantChanges() {
+  const el = document.getElementById('be-assistant');
+  if (!el) return;
+  const rows = assistantView.rows;
+  if (rows == null) { el.innerHTML = '<div class="be-empty">Loading…</div>'; return; }
+  if (!rows.length) {
+    el.innerHTML = '<div class="be-empty">Nothing yet. When an assistant changes a gate deadline'
+      + ' through the Claude Code tool, it is listed here with its reason.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(r => `<div class="be-set-row be-ai-row">
+      <div class="be-ai-main">
+        <div class="be-set-name">${r.status >= 400 ? '✗ refused: ' : ''}${escHtml(assistantChangeText(r))}</div>
+        <div class="be-hint">${escHtml(r.created_at)}${r.reason ? ' · “' + escHtml(r.reason) + '”' : ''}</div>
+      </div>
+    </div>`).join('');
+}
 
 // ── About ────────────────────────────────────────────────────
 //
@@ -3357,6 +3417,7 @@ function openSettingsSection(key) {
   if (key === 'config') { configView.status = ''; loadConfigRows(); }
   if (key === 'metrics') loadMetrics().then(renderMetricsSettings);
   if (key === 'about') loadAbout();
+  if (key === 'assistant') loadAssistantChanges();
 }
 
 function backToSettingsIndex() {

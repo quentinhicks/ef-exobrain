@@ -1147,6 +1147,20 @@ def init_db():
             ok        INTEGER NOT NULL,
             reason    TEXT
         )''')
+    # EVERY WRITE AN ASSISTANT MADE (2026-09-29, Quentin's instruction): what,
+    # when, the reason it gave and the status it got — refusals included. The
+    # Claude Code gate tool marks its requests; app.py's guard and logger are
+    # the only writers. Nothing on the money path reads it.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS assistant_change (
+            id         INTEGER PRIMARY KEY,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            method     TEXT NOT NULL,
+            path       TEXT NOT NULL,
+            body       TEXT,
+            reason     TEXT,
+            status     INTEGER
+        )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS qr_override (
             id                     INTEGER PRIMARY KEY,
@@ -8477,6 +8491,22 @@ def qr_charge_rows_between(from_date, to_date):
              AND failure_reason IS NOT NULL
            ORDER BY date DESC, node_id''',
         (from_date, to_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def log_assistant_change(method, path, body, reason, status):
+    conn = get_conn()
+    conn.execute('''INSERT INTO assistant_change (method, path, body, reason, status)
+                    VALUES (?, ?, ?, ?, ?)''', (method, path, body, reason, status))
+    conn.commit()
+    conn.close()
+
+
+def get_assistant_changes(limit=200):
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM assistant_change ORDER BY id DESC LIMIT ?',
+                        (limit,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

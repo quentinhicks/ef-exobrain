@@ -324,6 +324,64 @@ def _gzip(resp):
     return resp
 
 
+# AN ASSISTANT MAY CHANGE DEADLINES, AND ONLY DEADLINES (2026-09-29, Quentin's
+# instruction). The Claude Code gate tool (mcp/gates_mcp.py) marks every
+# request `X-QPA-Actor: assistant` and says why in `X-QPA-Reason`. A marked
+# write must be one of the four below — a day's window, calling a day off or
+# putting it back, a weekly rule, pointing a gate at a schedule — or it is
+# refused here. Every marked write is logged, refusals included.
+#
+# The mark is for the RECORD, not a lock: the app has no login, and anything
+# on the tailnet can leave the header off. What stops any client dodging a
+# gate is unchanged and applies to everyone — easings wait 24h, nothing moves
+# within 24h of a close, a judged day is frozen.
+ASSISTANT_WRITES = (
+    ('POST', re.compile(r'^/api/accountability/nodes/\d+/overrides$'),
+     {'date', 'window_start', 'window_end', 'window_end_offset_days', 'skipped'}),
+    ('DELETE', re.compile(r'^/api/accountability/nodes/\d+/overrides/\d{4}-\d{2}-\d{2}$'), set()),
+    ('POST', re.compile(r'^/api/schedules$'),
+     {'kind', 'title', 'start', 'duration', 'recurrenceRules'}),
+    ('PATCH', re.compile(r'^/api/accountability/nodes/\d+$'), {'source_uid', 'effective_from'}),
+)
+
+
+def _is_assistant_write():
+    return (request.headers.get('X-QPA-Actor') == 'assistant'
+            and request.method not in ('GET', 'HEAD', 'OPTIONS'))
+
+
+@app.before_request
+def _assistant_scope():
+    if not _is_assistant_write():
+        return None
+    body = request.get_json(silent=True) or {}
+    for method, pattern, keys in ASSISTANT_WRITES:
+        if request.method == method and pattern.match(request.path):
+            extra = set(body) - keys
+            if extra:
+                break
+            if request.path == '/api/schedules' and body.get('kind') != 'rule':
+                break
+            return None
+    return jsonify({'error': 'the assistant may only change gate deadlines: a day\'s '
+                             'window, calling a day off, or the weekly schedule'}), 403
+
+
+@app.after_request
+def _assistant_log(resp):
+    if _is_assistant_write():
+        storage.log_assistant_change(
+            request.method, request.path, request.get_data(as_text=True)[:4000] or None,
+            urllib.parse.unquote(request.headers.get('X-QPA-Reason') or '')[:1000] or None,
+            resp.status_code)
+    return resp
+
+
+@app.route('/api/assistant/changes')
+def assistant_changes():
+    return jsonify(storage.get_assistant_changes())
+
+
 # Set in __main__ once the windows exist. The global hotkeys drive the panel
 # through _panel_window (no focus steal), and a panel edit refreshes the main
 # window through _main_window so its to-do view updates immediately.
