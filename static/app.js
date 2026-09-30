@@ -6368,6 +6368,7 @@ async function openSurface(dest, sub) {
   }
   else if (dest === 'map') { openMap(); }
   else if (dest === 'tracking') { openM('tab-tracking'); openTracking(); }
+  else if (dest === 'gates') { openGatesDashboard(null, null); }
   else if (dest === 'social') {
     // Belt-and-braces: the button is hidden below, but the hub is also
     // reachable by keyboard and a dead door is worse than an absent one.
