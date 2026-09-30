@@ -15490,11 +15490,12 @@ function renderEngage() {
   // header are still where you see and change what is gating.
   const pool = poolBase
     .filter(i => locOk(i) && deviceOk(i) && timeOk(i) && dayOk(i))
-    // In-progress floats first — "what am I on" is the glance the ◐ exists
-    // for — then BY DUE DATE (2026-08-07: deadlines sort the pool; no
-    // deadline sorts last), then oldest-first as always.
-    .sort((a, b) => (!!b.started_at - !!a.started_at)
-      || (dueOf(a) || '9999').localeCompare(dueOf(b) || '9999')
+    // BY DUE DATE (2026-08-07: deadlines sort the pool; no deadline sorts
+    // last), then oldest-first as always. A DOT DOES NOT MOVE A ROW
+    // (2026-09-30, Quentin's instruction): in Forster's Final Version the
+    // order IS the method — you dot down the list and work back up it — so a
+    // dotted row floating to the top scrambled the chain it was dotted into.
+    .sort((a, b) => (dueOf(a) || '9999').localeCompare(dueOf(b) || '9999')
       || (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
 
   // WHAT COMES BACK ON THIS DAY. A deferred item vanishes from every surface
