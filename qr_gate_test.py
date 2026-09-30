@@ -572,5 +572,27 @@ imm, pend = qr_judge.schedule_node_patch(node, {'all_day': 0})
 check('and taking it back applies at once',
       imm == {'all_day': 0} and pend == {}, (imm, pend))
 
+# RESUMING A PAUSED GATE (2026-09-30, Quentin's report: set Paused -> Active,
+# saved, and it stayed paused). /activate only cancelled a PENDING pause; a
+# gate already off stayed off while the sheet said "active". Resuming is a
+# tightening and applies at once.
+fresh()
+storage.set_setting('last_backup_date', date_cls.today().isoformat())
+import app as app_mod   # noqa: E402
+client = app_mod.app.test_client()
+nid = storage.qr_create_node('Resume', 'tok-resume-1', '06:00', '08:00')
+storage.qr_update_node(nid, {'active': 0})
+r = client.patch(f'/api/accountability/nodes/{nid}/activate')
+node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
+check('resuming a paused gate turns it on at once',
+      r.status_code == 200 and node['active'] == 1, (r.status_code, node['active']))
+client.patch(f'/api/accountability/nodes/{nid}/disable')
+node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
+check('pausing it again still waits 24h', node['active'] == 1, node['active'])
+client.patch(f'/api/accountability/nodes/{nid}/activate')
+check('and resuming calls that queued pause off',
+      not any(p['field'] == 'active' for p in storage.qr_get_pending_changes(nid)),
+      storage.qr_get_pending_changes(nid))
+
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

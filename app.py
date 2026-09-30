@@ -2933,13 +2933,23 @@ def cancel_accountability_pending(id, field):
 
 @app.route('/api/accountability/nodes/<int:id>/activate', methods=['PATCH'])
 def activate_accountability_node(id):
-    # Only cancels a PENDING disable inside its 24h window. A node that has
-    # already gone inactive stays inactive — re-activating instantly would let
-    # you park a commitment and resume it once the awkward day had passed.
-    # A queued DELETION is called off too: keeping the gate is the same intent,
-    # and tightening (here, staying committed) always applies at once.
+    # Cancels a PENDING disable, and turns an already-PAUSED gate back on at
+    # once. It used to do only the first, on the reasoning that resuming would
+    # let you park a commitment past an awkward day — but the pause already
+    # waited its 24h, and resuming is a tightening, which is_loosening says
+    # applies immediately. The sheet toasted "active" while the gate stayed
+    # paused, which read as a save that did not take (2026-09-30, Quentin's
+    # report). A queued DELETION is called off too: keeping the gate is the
+    # same intent.
+    node = next((n for n in storage.qr_get_nodes() if n['id'] == id), None)
+    if not node:
+        return jsonify({'error': 'unknown node'}), 404
     storage.qr_cancel_pending_change(id, 'active')
     storage.qr_cancel_pending_change(id, storage.QR_DELETE_FIELD)
+    if not node['active']:
+        immediate, _ = qr_judge.schedule_node_patch(node, {'active': 1})
+        if immediate:
+            storage.qr_update_node(id, immediate)
     return jsonify({'ok': True})
 
 
