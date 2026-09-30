@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Inbox</title>
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* One field, nothing else. Colours are the app's tokens, so the light
+       appendix in style.css already covers this page. */
+    html, body { height: 100%; }
+    body.ib-body { background: var(--bg); display: flex; flex-direction: column;
+      padding: max(20px, env(safe-area-inset-top)) 16px 16px; }
+    #ib-field { width: 100%; max-width: 430px; margin: 0 auto; font: inherit; font-size: 18px;
+      padding: 14px 16px; border-radius: 12px; border: 1px solid var(--text-secondary);
+      background: var(--surface); color: var(--text-primary); outline: none; }
+    #ib-field:focus { border-color: var(--accent); }
+    /* The receipt: transient, and the only other thing that ever appears. */
+    #ib-note { max-width: 430px; width: 100%; margin: 8px auto 0; min-height: 20px;
+      font-size: 13px; color: var(--text-secondary); }
+    #ib-note.ib-bad { color: var(--danger); }
+    #ib-note button { color: var(--accent); font-size: 13px; padding: 0 4px; }
+  </style>
+</head>
+<body class="ib-body">
+  <input id="ib-field" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="sentences"
+         aria-label="Capture to the inbox" autofocus>
+  <div id="ib-note" role="status"></div>
+  <script src="/static/inbox.js"></script>
+</body>
+</html>

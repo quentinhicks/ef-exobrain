@@ -261,6 +261,13 @@ def gates_dashboard():
     return render_template('gates.html')
 
 
+# A BARE CAPTURE PAGE (2026-09-29, Quentin's instruction): one text field, and
+# Enter puts what is in it into the inbox — the global bar's capture, alone.
+@app.route('/inbox')
+def inbox_page():
+    return render_template('inbox.html')
+
+
 # Both files live in static/ but are served from the ROOT, and both have to be.
 # A service worker's scope is its own path, so one served from /static/ could
 # only ever control /static/* — never the app. A manifest's scope defaults to
@@ -280,7 +287,7 @@ def manifest():
 # (304s keep it fast locally) on the two shells and everything static.
 @app.after_request
 def _no_stale_static(resp):
-    if (request.path in ('/', '/panel', '/gates', '/sw.js', '/manifest.webmanifest')
+    if (request.path in ('/', '/panel', '/gates', '/inbox', '/sw.js', '/manifest.webmanifest')
             or request.path.startswith('/static/')):
         resp.headers['Cache-Control'] = 'no-cache'
     return resp
