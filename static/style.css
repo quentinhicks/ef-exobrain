@@ -6019,7 +6019,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 
 /* ── THE WEEK (2026-09-29, the "Calendar Week" design) ─────────
    Seven days side by side, for a computer screen. The overlay widens to the
-   design's 1240px only while the week is on (and only where it fits), so the
+   window only while the week is on (and only where it fits), so the
    day view keeps the phone column it was drawn for. Every colour is a var —
    the design's own greys are the surface ladder here, and its dot colours are
    the app's gate vocabulary (grey due, green met, red missed), not a second
@@ -6030,9 +6030,11 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 
 #tl-view-seg { display: none; }
-@media (min-width: 1000px) {
+/* 800px: the same number as WEEK_MQ in app.js. The week fills the window,
+   less a margin, up to 1600px — a laptop's width is what it is for. */
+@media (min-width: 800px) {
   #tl-view-seg { display: inline-flex; }
-  #cal-overlay.cal-wk { max-width: min(1240px, calc(100vw - 40px)); }
+  #cal-overlay.cal-wk { max-width: min(1600px, calc(100vw - 32px)); }
 }
 #cal-overlay:not(.cal-wk) #cal-week { display: none; }
 #cal-overlay.cal-wk #right-panel,

@@ -2029,18 +2029,26 @@ function segmentRow(s) {
 // closes, and nothing here moves one: the drags stay on the day view and a
 // gate's day stays on /gates. A day's header is the door into that day.
 //
-// WIDE SCREENS ONLY. The phone-shaped column cannot hold seven columns, so the
-// switch is not drawn below WEEK_MQ, and a window narrowed past it drops back
-// to the day rather than squeezing the week into it.
-const WEEK_MQ = window.matchMedia('(min-width: 1000px)');
+// WIDE SCREENS ONLY, AND THE DEFAULT THERE (2026-09-29, Quentin's report: the
+// laptop kept opening the phone's day column). The Calendar follows the window:
+// the week wherever seven columns fit, the day where they do not, re-decided
+// as the window is resized. Pressing Day or Week is a preference for the rest
+// of the session (`pref`); the width still wins, so a phone never gets a week.
+// 800px is where the grid still fits (the design's 760 + margin) — the same
+// number is in style.css's @media, which cannot read this one.
+const WEEK_MQ = window.matchMedia('(min-width: 800px)');
 const WK_HOUR_PX = 46;
 // `days` is keyed by exact date; `pop` is the one popover open ('range' or
 // 'legend'); `focus` the gate the range panel was opened from; `objDate` the
 // date of the gate last pressed, so its menu's "Open in Gates…" lands on it.
 const calWeek = { on: false, start: null, days: {}, pop: null, focus: null,
-                  focusDate: null, objDate: null, scrollKey: null };
+                  focusDate: null, objDate: null, scrollKey: null, pref: null };
 
 function calWeekAvailable() { return WEEK_MQ.matches && !reviewPass.active; }
+
+// What the Calendar shows when nothing more specific was asked: the week,
+// unless Day was picked this session. calWeekAvailable still has the last word.
+function calWantsWeek() { return calWeek.pref !== 'day'; }
 
 function weekStartOf(ymd) {
   return localDatePlusDays(ymd, -jsDateToDayOfWeek(new Date(ymd + 'T12:00:00')));
@@ -2423,7 +2431,8 @@ function initCalWeek() {
   overlay.addEventListener('click', e => {
     const v = e.target.closest('[data-cal-view]');
     if (!v) return;
-    setCalView(v.dataset.calView === 'week');
+    calWeek.pref = v.dataset.calView === 'week' ? 'week' : 'day';
+    setCalView(calWeek.pref === 'week');
   });
 
   // Pressing a gate says which DAY its menu is about.
@@ -2484,8 +2493,10 @@ function initCalWeek() {
   });
 
   // Narrowed past the week's width: back to the day, which fits.
+  // The window was resized across the week's width: follow it, both ways.
   WEEK_MQ.addEventListener('change', () => {
-    if (!WEEK_MQ.matches && calWeek.on) setCalView(false);
+    if (overlay.classList.contains('hidden')) return;
+    setCalView(WEEK_MQ.matches && calWantsWeek());
   });
 }
 
@@ -6902,9 +6913,15 @@ async function openSurface(dest, sub) {
   sub = sub || {};
   if (dest === 'calendar') {
     openM('cal-overlay');
-    // The week is remembered for the session; an address says which it is.
-    if (sub.view === 'week' || sub.view === 'day') await setCalView(sub.view === 'week');
-    else if (calWeek.on) await refreshCalWeek();
+    // An address that names the week asks for it; any other opening follows
+    // the window. A bare `calendar` is NOT a request for the day: the last
+    // route is shared by every device, so the phone's day must not pin the
+    // laptop to it.
+    if (sub.view === 'week') calWeek.pref = 'week';
+    await setCalView(calWantsWeek());
+    if (sub.view === 'week' && !calWeek.on && sub.say) {
+      toast('The week needs a window at least 800px wide — showing the day');
+    }
     renderTimeline();
   }
   else if (dest === 'lists') {
@@ -7004,7 +7021,12 @@ async function openRoute(route) {
   }
   else if (top === 'logs') await openSurface('logs', { log: a ? decodeURIComponent(a) : null });
   else if (top === 'settings') await openSurface('settings', { section: a });
-  else if (top === 'calendar') await openSurface('calendar', { view: a === 'week' ? 'week' : 'day' });
+  else if (top === 'calendar') {
+    // Said out loud only when the ADDRESS BAR asked; a remembered route
+    // restored on the phone is not something to apologise for.
+    await openSurface('calendar', { view: a === 'week' ? 'week' : null,
+                                    say: /calendar\/week/.test(location.hash) });
+  }
   else if (['map', 'tracking', 'social'].includes(top)) await openSurface(top);
 }
 
