@@ -1288,7 +1288,9 @@ function renderBlocksLayer(bodyH = 600) {
     return { ...s, top, height: bottom - top };
   }).filter(s => s.height > 0 && !state.tlHidden.block[`${s.b.id}:${dateStr}`]);
 
-  const blocksHtml = visible.map(({ b, top, height, cancelled, label, cont, startMin, endMin }) => {
+  const blocksHtml = visible.map(seg => {
+    const { b, top, height, cancelled, label, cont, startMin, endMin } = seg;
+    const purpose = blockPurpose(seg);
     const proj = b.area_id ? projectsById[b.area_id] : null;
     const px = height * bodyH / 100;
     const tight = px < 18;
@@ -1303,7 +1305,8 @@ function renderBlocksLayer(bodyH = 600) {
     const inner = `<div class="tl-block-bar"></div>${tier === 'none' ? ''
       : `<div class="tl-text" data-tl-rank="0">${labelSpan}${subs}</div>`}`;
     return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}"
-                 data-block-id="${b.id}" data-obj="block:${b.id}" title="${escHtml(label)}"
+                 data-block-id="${b.id}" data-obj="block:${b.id}" title="${escHtml(purpose)}"
+                 data-purpose="${escHtml(purpose)}"
                  data-start-min="${startMin}" data-end-min="${endMin}"
                  style="top:${top}%;height:${height}%;cursor:${cont ? 'default' : 'pointer'};
                         --block-color:${b.color}">${inner}</div>`;
@@ -1388,6 +1391,7 @@ registerObjectVerbs('week-block', (kind, id, el) => {
   const cancelled = ov && ov.cancelled === 1;
   const label = blockEl.querySelector('.tl-block-label')?.textContent || 'Block';
   return [
+    ...purposeItem(blockEl),
     { label: cancelled ? 'Restore for this day' : 'Cancel for this day',
       danger: !cancelled, rightClick: true,
       run: () => toggleBlockCancelOn(parseInt(id), d, overrides, refreshCalWeek) },
@@ -1407,6 +1411,7 @@ registerObjectVerbs('timeline-block', (kind, id, el) => {
   const ov = (state.overrides || []).find(o => o.block_id === parseInt(id) && o.date === dateStr);
   const cancelled = ov && ov.cancelled === 1;
   return [
+    ...purposeItem(blockEl),
     { label: cancelled ? 'Restore for today' : 'Cancel for today',
       danger: !cancelled, rightClick: true,
       run: () => toggleBlockCancelOn(parseInt(id), dateStr, state.overrides, async () => {
@@ -2119,8 +2124,26 @@ function segmentRow(s) {
     endMin: s.end,
     cancelled: !!s.cancelled,
     label: s.label + (cont ? ' (cont.)' : ''),
+    description: s.description || '',
     cont,
   };
+}
+
+// WHAT A STRETCH OF A BLOCK IS FOR (2026-09-30, Quentin's instruction: "see
+// the purpose of each of these regions in the calendar upon hovering"). A week
+// is built of short regions of one course — COS333's assignment time, then its
+// class, then more assignment time — and each region is its own block row
+// whose DESCRIPTION says what it is for. The calendar draws blocks unlabelled,
+// so the purpose rides the hover tooltip, and — a finger has no hover — heads
+// the menu a tap on the block opens (`purposeItem`).
+function blockPurpose(s) {
+  const when = `${hhmmToAmPm(clockHHMM(s.startMin))}–${hhmmToAmPm(clockHHMM(s.endMin))}`;
+  return [s.label, s.description, when].filter(Boolean).join(' · ');
+}
+
+// The same words as a menu's first line: read, never chosen.
+function purposeItem(blockEl) {
+  return blockEl && blockEl.dataset.purpose ? [{ info: true, label: blockEl.dataset.purpose }] : [];
 }
 
 // ── THE WEEK (2026-09-29, Quentin's "Calendar Week" design) ──────────────
@@ -2362,7 +2385,8 @@ function renderCalWeek() {
         return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}"
           data-block-id="${s.b.id}" data-obj="block:${s.b.id}"${s.cont ? '' : ' data-obj-tap="1"'}
           data-date="${d}" data-start-min="${a}" data-end-min="${b}"
-          title="${escHtml(s.label)}${s.cancelled ? ' · cancelled for this day' : ''}"
+          title="${escHtml(blockPurpose(s))}${s.cancelled ? ' · cancelled for this day' : ''}"
+          data-purpose="${escHtml(blockPurpose(s))}"
           style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
           <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
             escHtml(s.label)}</span></div></div>`;
@@ -6676,8 +6700,9 @@ function openObjectMenu(x, y, kind, id, extra) {
   if (!items.length) return false;
   const el = document.createElement('div');
   el.id = 'obj-menu';
-  el.innerHTML = items.map((it, i) =>
-    `<button class="om-item${it.danger ? ' om-danger' : ''}" data-i="${i}">${escHtml(it.label)}</button>`).join('');
+  el.innerHTML = items.map((it, i) => it.info
+    ? `<div class="om-info">${escHtml(it.label)}</div>`
+    : `<button class="om-item${it.danger ? ' om-danger' : ''}" data-i="${i}">${escHtml(it.label)}</button>`).join('');
   document.body.appendChild(el);
 
   const pad = 8;

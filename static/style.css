@@ -3244,6 +3244,17 @@ body.calendar-minimized #review-modal {
 .om-item:hover,
 .om-item:focus-visible { background: var(--surface-2); }
 
+/* A line the menu SAYS rather than offers: what the thing is for (a block's
+   purpose, 2026-09-30). Text, not a control, so it takes no hover. */
+.om-info {
+  padding: 6px 12px 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .om-danger { color: var(--block-red); }
 
 /* THE RECORD STRIP. One cell a day, oldest left, in the same four colours the
