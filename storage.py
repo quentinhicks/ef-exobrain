@@ -3684,26 +3684,32 @@ def delete_calendar_source(id):
 
 
 def replace_source_events(source_id, occurrences, fetched_at):
-    # THE PAST IS KEPT. This used to delete every row for the source and
-    # re-insert whatever the feed currently returns — and an iCal feed only
-    # publishes a rolling window, so each refresh silently threw the past
-    # away. The calendar was a cache of the future, which is exactly the data
-    # the weekly review's "review previous calendar, 2-3 weeks back" step
-    # needs and never had.
+    # THE PAST BEYOND THE READ WINDOW IS KEPT. This used to delete every row
+    # for the source and re-insert whatever the feed returned, and each refresh
+    # threw away history the weekly review's "previous calendar, 2-3 weeks
+    # back" step needs.
     #
-    # Only from TODAY forward is replaced; anything already stored with an
-    # earlier start stays. Incoming past occurrences are dropped rather than
-    # merged: the feed's version of a past event is not more authoritative
-    # than what we recorded at the time, and re-inserting would resurrect
-    # events you deleted from the calendar after they happened.
-    today = date_cls.today().isoformat()
-    future = [o for o in occurrences if (o.get('start') or '') >= today]
-    occurrences = future
+    # INSIDE the read window the FEED IS THE TRUTH (2026-09-29, Quentin's
+    # report: events he deleted in Google stayed on the calendar). The rows
+    # from GCAL_DAYS_BACK ago forward are replaced by what the feed says now,
+    # so an event deleted after it happened leaves the app too. Older rows
+    # stay exactly as they were recorded — the feed is not read that far.
+    #
+    # One guard: a feed that publishes NO past occurrence at all may simply
+    # not publish the past (some iCal feeds are a rolling window of the
+    # future), and replacing the window from it would wipe the last month. So
+    # then only today forward is replaced, as before.
+    today_d = date_cls.today()
+    today = today_d.isoformat()
+    window_start = (today_d - timedelta(days=GCAL_DAYS_BACK)).isoformat()
+    publishes_past = any((o.get('start') or '') < today for o in occurrences)
+    since = window_start if publishes_past else today
+    occurrences = [o for o in occurrences if (o.get('start') or '') >= since]
     conn = get_conn()
     try:
         conn.execute('BEGIN')
         conn.execute('DELETE FROM gcal_event WHERE source_id = ? AND start >= ?',
-                     (source_id, today))
+                     (source_id, since))
         conn.executemany(
             '''INSERT INTO gcal_event (uid, summary, start, end, allday, source_id,
                                        location, description)

@@ -45,9 +45,11 @@ def expand_rrule(rrule_str, dtstart, duration):
     rule = recurrence.parse(rrule_str)
     if not rule:
         return []
-    # Unbounded rules are capped at a year out, as before — this feeds a
-    # calendar view, not an archive.
-    end = rule.get('UNTIL') or (dtstart.date() + timedelta(days=365))
+    # Unbounded rules are capped at a year out — from TODAY (2026-09-29). It
+    # was a year from the series' first occurrence, so a weekly meeting that
+    # began more than a year ago expanded to nothing at all and fell off the
+    # calendar. This feeds a calendar view, not an archive.
+    end = rule.get('UNTIL') or (max(dtstart.date(), datetime.now().date()) + timedelta(days=365))
     days = recurrence.between(rule, dtstart.date(), dtstart.date(), end)
     out = []
     for d in days:
@@ -117,6 +119,8 @@ def _parse_events(unfolded):
                     'rrule': current.get('rrule'),
                     'allday': current.get('allday', False),
                     'recurrence_id': current.get('recurrence_id'),
+                    'exdates': current.get('exdates', []),
+                    'cancelled': current.get('cancelled', False),
                     'location': current.get('location'),
                     'description': current.get('description'),
                 })
@@ -144,6 +148,19 @@ def _parse_events(unfolded):
                 current['uid'] = line[4:]
             elif line.startswith('RRULE:'):
                 current['rrule'] = line[6:]
+            # WHAT GOOGLE SAYS IS GONE (2026-09-29, Quentin's report: events he
+            # had deleted stayed on the calendar). Deleting one occurrence of a
+            # series does not delete an event — the feed adds an EXDATE to the
+            # series, or republishes that occurrence with STATUS:CANCELLED — and
+            # neither was read, so the occurrence expanded back every refresh.
+            elif line.startswith('EXDATE'):
+                tzid = re.search(r'TZID=([^;:]+)', line)
+                for v in _prop_value(line).split(','):
+                    if v.strip():
+                        current.setdefault('exdates', []).append(
+                            _parse_dt(v, tzid.group(1) if tzid else None))
+            elif line.startswith('STATUS:'):
+                current['cancelled'] = line[7:].strip().upper() == 'CANCELLED'
     return events
 
 

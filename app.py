@@ -1515,10 +1515,15 @@ def get_timezones():
 def _build_occurrences(events):
     # Modified instances of recurring events (RECURRENCE-ID) share the master's
     # uid; they replace the expanded occurrence at their original start time
+    # A CANCELLED instance still supersedes — that is how it removes the
+    # occurrence it replaces — and is then not drawn itself (below).
     superseded = {(ev['uid'], aggregator._fmt(ev['recurrence_id']))
                   for ev in events if ev.get('recurrence_id')}
     by_key = {}
     for ev in events:
+        # Cancelled in Google: gone, whether a whole event or one occurrence.
+        if ev.get('cancelled'):
+            continue
         uid = ev['uid']
         summary = ev['summary']
         dtstart = ev['dtstart']
@@ -1533,8 +1538,10 @@ def _build_occurrences(events):
         extra = {'location': ev.get('location'), 'description': ev.get('description')}
         if rrule:
             duration = dtend - dtstart
+            # Occurrences deleted from the series in Google (EXDATE).
+            removed = {aggregator._fmt(x) for x in ev.get('exdates') or []}
             for s, e in aggregator.expand_rrule(rrule, dtstart, duration):
-                if (uid, s) in superseded:
+                if (uid, s) in superseded or s in removed:
                     continue
                 by_key.setdefault((uid, s), dict(extra, uid=uid, summary=summary,
                                                  start=s, end=e, allday=allday))
