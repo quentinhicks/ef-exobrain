@@ -1,7 +1,15 @@
+import os
 import sys
+import tempfile
 import datetime
-import storage
-import app as A
+
+# A fresh database every run, like the other suites: storage opens tracker.db
+# in the working directory, so without this a rerun found the last run's rows.
+os.chdir(tempfile.mkdtemp())
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import storage          # noqa: E402
+import app as A         # noqa: E402
 
 # The NOW panel's on/off switch, and the one thing that used to defeat it.
 #

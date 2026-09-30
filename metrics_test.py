@@ -9,10 +9,18 @@ The other rule under test: no row means NO DATA, never zero. Clearing an answer
 deletes the row rather than writing a 0, because a false zero lies in exactly
 the direction that ruins a trend.
 """
+import os
 import sys
+import tempfile
 import datetime
-import storage
-import app as A
+
+# A fresh database every run, like the other suites: storage opens tracker.db
+# in the working directory, so without this a rerun found the last run's rows.
+os.chdir(tempfile.mkdtemp())
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import storage          # noqa: E402
+import app as A         # noqa: E402
 
 ok, bad = [], []
 def check(label, cond, extra=''):

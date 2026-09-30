@@ -17,10 +17,18 @@ What the tests are really guarding:
 Run: python project_tags_test.py
 """
 import datetime
+import os
 import sys
+import tempfile
 
-import storage
-import app as A
+# A fresh database every run, like the other suites. This one used to open
+# tracker.db in whatever directory it was run from, so a second run found the
+# first run's rows and 'Buy boxes' resolved to the wrong one (2026-09-30).
+os.chdir(tempfile.mkdtemp())
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import storage          # noqa: E402
+import app as A         # noqa: E402
 
 ok, bad = [], []
 def check(label, cond, extra=''):
