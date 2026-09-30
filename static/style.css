@@ -6025,7 +6025,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    the app's gate vocabulary (grey due, green met, red missed), not a second
    one. The two theme-dependent values are tokens the light appendix answers. */
 :root {
-  --wk-hatch: 30%;           /* how much of a block's colour its stripes carry */
+  /* How much of a block's colour its stripes carry — halved on 2026-09-29
+     (asked for: the pastels were too loud) — and its drag bar on the day. */
+  --wk-hatch: 15%;
+  --wk-bar: 30%;
   --wk-seg-on: var(--surface-2);   /* the pressed half of a segmented switch */
 }
 
@@ -6257,7 +6260,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .wk-gate-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .wk-gate-met { color: var(--gate-met); }
 .wk-gate-missed { color: var(--gate-missed); }
-.wk-gate-off .wk-gate-dot { background: none; box-shadow: inset 0 0 0 1.5px currentColor; }
 .wk-gate-off.wk-gate-role svg { opacity: 0.5; }
 
 .wk-now {
@@ -6330,6 +6332,102 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .wk-leg-ev { background: color-mix(in srgb, var(--ev-color, var(--accent)) 18%, var(--surface-mid)); }
 .wk-leg-note { font-size: 11.5px; line-height: 1.45; color: var(--text-secondary); white-space: normal; }
+
+/* ── THE DAY WEARS A WEEK COLUMN'S STYLE (2026-09-29, Quentin's instruction:
+   "the day calendar the same exact style as an individual day of the week").
+   Only the LOOK changes: every layer, every drag, the plan tool and the gate
+   read-out are the day view's own, so each rule here restyles an element the
+   day already draws rather than adding a second one. Scoped to #cal-overlay so
+   it outranks the older timeline rules wherever they sit in the file.
+
+   The gutter is the week's 52px; blocks are its hatch with the design's 4px
+   bar kept as the drag handle; events are its soft cards, in lanes; a gate is
+   its dot in the right rail; the now line is its line. */
+#cal-overlay .tl-hour-label { width: 52px; padding-left: 10px; font-size: 11px; }
+#cal-overlay #tl-blocks-layer,
+#cal-overlay #tl-gcal-layer,
+#cal-overlay #tl-plan-layer { left: 52px; right: 0; }
+#cal-overlay #tl-blocks-layer { border-left: 1px solid var(--border-soft); }
+
+#cal-overlay .tl-block {
+  padding: 0;
+  border-radius: 0;
+  min-height: 0;
+  background: repeating-linear-gradient(135deg,
+    color-mix(in srgb, var(--block-color) var(--wk-hatch), transparent) 0 1.5px,
+    transparent 1.5px 7px);
+}
+/* Unlabelled, as in the week: the name is the block's tooltip and the first
+   line of its menu. */
+#cal-overlay .tl-block .tl-text { display: none; }
+#cal-overlay .tl-block-bar {
+  left: 2px;
+  width: 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--block-color) var(--wk-bar), transparent);
+}
+/* The paint is 4px; the grab is not. */
+#cal-overlay .tl-block-bar::after { content: ''; position: absolute; inset: 0 -6px; }
+#cal-overlay .tl-block-cancelled .tl-block-bar { background: var(--danger); }
+
+#cal-overlay .tl-gcal-event {
+  right: auto;
+  padding: 3px 6px;
+  border-radius: 5px;
+  min-height: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ev-color, var(--accent)) 18%, var(--surface-mid));
+  box-shadow: 0 0 0 1.5px var(--surface-mid);
+  color: var(--text-primary);
+}
+#cal-overlay .tl-event-tight { display: flex; align-items: center; }
+#cal-overlay .tl-event-row { display: block; }
+#cal-overlay .tl-event-summary { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+#cal-overlay .tl-event-time {
+  font-size: 10.5px;
+  line-height: 1.3;
+  opacity: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: color-mix(in srgb, var(--text-secondary) 65%, var(--text-primary));
+}
+/* The touch drag handle keeps its target and loses its paint. */
+#cal-overlay .tl-ev-bar { background: transparent; }
+
+#cal-overlay .tl-qr-line { color: var(--gate-open); }
+#cal-overlay .tl-qr-line.wk-gate-met { color: var(--gate-met); }
+#cal-overlay .tl-qr-line.wk-gate-missed { color: var(--gate-missed); }
+#cal-overlay .tl-qr-label {
+  right: 3px;
+  top: -7px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface-mid);
+  color: inherit;
+  cursor: pointer;
+}
+#cal-overlay .tl-qr-selected .tl-qr-label {
+  box-shadow: 0 0 0 2px var(--surface-mid), 0 0 0 3.5px currentColor;
+}
+
+#cal-overlay #tl-current-time {
+  left: 52px;
+  height: 0;
+  background: none;
+  border-top: 1.5px solid var(--accent);
+}
+#cal-overlay #tl-current-time::before { left: -4px; top: -4.5px; width: 7px; height: 7px; }
+
+/* The two gate states the week added: called off is a hollow ring, paused a
+   faded mark — shown, and plainly not in force. */
+.wk-gate-off .wk-gate-dot { background: none; box-shadow: inset 0 0 0 1.5px currentColor; }
+.wk-gate-paused { opacity: 0.45; }
+
+/* ↻ says it is working while it re-reads the calendar. */
+@keyframes wk-spin { to { transform: rotate(360deg); } }
+.cal-refreshing #refresh-btn,
+.cal-refreshing [data-wk="refresh"] svg { animation: wk-spin 0.8s linear infinite; }
 
 /* ---- Light theme ---- */
 
@@ -6407,7 +6505,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 :root.theme-light {
   /* The week: block pastels need more of themselves to show as stripes on
      white, and the pressed half of a switch is the white card, not a grey. */
-  --wk-hatch: 55%;
+  --wk-hatch: 28%;
+  --wk-bar: 55%;
   --wk-seg-on: #ffffff;
   --on-gate: #ffffff;
   --gate-dismissed: #c4c9cf;

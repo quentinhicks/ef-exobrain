@@ -282,7 +282,7 @@ const state = {
 // that is already on screen; on first load the initialiser makes that [].
 async function loadAll() {
   const dateStr = viewDay();
-  const [blocks, projects, domains, gcal, overrides, inbox, reviewStatus, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments] = await Promise.all([
+  const [blocks, projects, domains, gcal, overrides, inbox, reviewStatus, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments, viewGates] = await Promise.all([
     apiGet('/api/blocks', state.blocks),
     apiGet('/api/areas', state.areas),
     apiGet('/api/domains', state.domains),
@@ -303,7 +303,9 @@ async function loadAll() {
     // The day's blocks as the SERVER resolves them, for the date being looked
     // at. Fetched here as well as on every nav so the first paint has it.
     apiGet(`/api/blocks/day?date=${dateStr}&all=1`, viewSegmentsFor(dateStr)),
+    apiGet(`/api/gates/day?date=${dateStr}`, null),
   ]);
+  setViewGates(dateStr, viewGates);
 
   state.viewSegments = { date: dateStr, segments: Array.isArray(viewSegments) ? viewSegments : [] };
   state.locations = Array.isArray(locations) ? locations : [];
@@ -716,8 +718,10 @@ function computeViewWindow() {
   if (!wake || !sleep) return { start: 0, end: DAY_MIN };
   const pageDate = viewDay();
   const viewingToday = isToday(state.currentDate);
-  const pageDow = jsDateToDayOfWeek(state.currentDate);
   const deadlineMin = (node) => {
+    // The served day first — the same deadline the week and the judge use.
+    const served = viewGatesFor(pageDate).find(g => g.node_id === node.id);
+    if (served && served.window && served.window.end_min != null) return served.window.end_min;
     const ov = viewingToday ? node.today_override : (state.qrPageOverrides[`${node.id}:${pageDate}`] || null);
     const def = nodeWindowForDate(node, pageDate);
     const end = ov ? ov.window_end : def.window_end;
@@ -1299,7 +1303,7 @@ function renderBlocksLayer(bodyH = 600) {
     const inner = `<div class="tl-block-bar"></div>${tier === 'none' ? ''
       : `<div class="tl-text" data-tl-rank="0">${labelSpan}${subs}</div>`}`;
     return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}"
-                 data-block-id="${b.id}" data-obj="block:${b.id}"${tier === 'full' ? '' : ` title="${escHtml(label)}"`}
+                 data-block-id="${b.id}" data-obj="block:${b.id}" title="${escHtml(label)}"
                  data-start-min="${startMin}" data-end-min="${endMin}"
                  style="top:${top}%;height:${height}%;cursor:${cont ? 'default' : 'pointer'};
                         --block-color:${b.color}">${inner}</div>`;
@@ -1471,9 +1475,6 @@ function renderAlldayStrip() {
   }).join('');
 }
 
-// The height of the row that names an event — what two titles need between
-// them to be two titles rather than one smear. Matched to .tl-event-row.
-const EVENT_ROW_PX = 19;
 
 function renderGcalLayer(bodyH = 600) {
   const layer = document.getElementById('tl-gcal-layer');
@@ -1485,17 +1486,6 @@ function renderGcalLayer(bodyH = 600) {
   const dayEvents = state.gcalEvents.filter(e => !e.allday &&
     !state.tlHidden.event[eventKey(e)] &&
     (sameDay(state.currentDate, e.start) || (state.view.end > DAY_MIN && sameDay(nextDate, e.start))));
-  // TWO TITLES MAY NOT SHARE A LINE. Events are positioned by their start, so
-  // two that begin at the same minute land at the same top and print over each
-  // other — the day showed one smear of overlapping letters and neither event
-  // could be read. Boxes are allowed to overlap (that IS the day: a meeting
-  // inside a longer block); what cannot overlap is the row that names them.
-  //
-  // So the tops are walked in order and any one that would land within a row
-  // of the previous is pushed just below it. Only a collision moves anything:
-  // events far enough apart keep the position their time gives them, and the
-  // BOTTOM never moves, so an event still ends when it ends.
-  const rowPct = (EVENT_ROW_PX / Math.max(bodyH, 1)) * 100;
   const boxes = [];
   for (const e of dayEvents) {
     const base = sameDay(nextDate, e.start) ? DAY_MIN : 0;
@@ -1507,24 +1497,26 @@ function renderGcalLayer(bodyH = 600) {
     if (bottom - top <= 0) continue;
     boxes.push({ e, startMin, endMin, top, bottom });
   }
-  boxes.sort((a, b) => a.top - b.top || a.bottom - b.bottom);
-  let lastTop = -Infinity;
-  for (const box of boxes) {
-    if (box.top < lastTop + rowPct) box.top = lastTop + rowPct;
-    lastTop = box.top;
-  }
+  // TWO TITLES MAY NOT SHARE A LINE — and since 2026-09-29 the answer is the
+  // week column's: events that overlap share the width in LANES, rather than
+  // one being pushed down under the other, so every box still starts and ends
+  // at its own time and no two titles can print over each other.
+  wkLanes(boxes.map(box => ({ box, s: box.startMin, e: box.endMin })))
+    .forEach(l => { l.box.lane = l.lane; l.box.lanes = l.lanes; });
 
-  layer.innerHTML = boxes.map(({ e, top, bottom, startMin, endMin }) => {
+  layer.innerHTML = boxes.map(({ e, top, bottom, startMin, endMin, lane, lanes: n }) => {
     const height = Math.max(bottom - top, 2);
     const px = height * bodyH / 100;
     const tight = px < 18;
-    const tier = tlTier(px, 1);
+    // The name, and under it the time where there is room for a second line.
+    const tier = tlTier(px, 2);
+    const w = 100 / (n || 1);
     const timeStr = `${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`;
     // The bar is the manipulation surface, exactly as it is on a block: a long
     // press on the BOX still hides the event, so the two touch gestures cannot
     // both arm on the same 550ms hold.
     const inner = `<div class="tl-ev-bar"></div>${tier === 'none' ? ''
-      : `<div class="tl-event-row tl-text" data-tl-rank="2"><span class="tl-event-summary">${
+      : `<div class="tl-event-row"><span class="tl-event-summary">${
         escHtml(tier === 'short' ? tlShort(e.summary) : (e.summary || ''))}</span>${tier === 'full'
         ? `<span class="tl-event-time">${escHtml(timeStr)}</span>` : ''}</div>`}`;
     const col = e.color || '#888888';
@@ -1536,7 +1528,9 @@ function renderGcalLayer(bodyH = 600) {
                  data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}"
                  data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
                  data-start-min="${startMin}" data-end-min="${endMin}"${moved}
-                 style="pointer-events:auto;top:${top}%;height:${height}%;--ev-color:${col}">${inner}</div>`;
+                 style="pointer-events:auto;top:${top}%;height:${height}%;--ev-color:${col};
+                        left:calc(6px + (100% - 24px) * ${lane / (n || 1)});
+                        width:calc((100% - 24px) * ${w / 100} - 2px)">${inner}</div>`;
   }).join('');
 
   // Read-only iCal events can't be deleted at source — right-click hides them
@@ -1758,6 +1752,8 @@ function startCurrentTimeTick() {
   if (currentTimeTick) clearInterval(currentTimeTick);
   currentTimeTick = setInterval(() => {
     updateCurrentTimeLine();
+    // The week's now line is part of its paint; a popover open is left alone.
+    if (calWeek.on && !calWeek.pop) renderCalWeek();
   }, 60000);
 }
 
@@ -1932,7 +1928,7 @@ function initTimeline() {
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   });
-  document.getElementById('refresh-btn').addEventListener('click', refreshExternal);
+  document.getElementById('refresh-btn').addEventListener('click', refreshCalendar);
   document.getElementById('tl-add-event').addEventListener('click', openEvSheet);
   // The mode's own switch. It is visible while it is on — the banner, the
   // pressed button and the track's cursor — which is the whole difference
@@ -1982,17 +1978,38 @@ function initTimeline() {
 // question about NOW and must not be served from a viewed-day cache.
 async function fetchOverridesForDate(date) {
   const dateStr = formatDateYMD(date);
-  const [overrides, segments] = await Promise.all([
+  const [overrides, segments, gates] = await Promise.all([
     apiGet(`/api/overrides?date=${dateStr}`, state.overrides),
     apiGet(`/api/blocks/day?date=${dateStr}&all=1`, []),
+    apiGet(`/api/gates/day?date=${dateStr}`, null),
   ]);
   state.overrides = overrides;
   state.viewSegments = { date: dateStr, segments };
+  setViewGates(dateStr, gates);
   // The plan is VIEWED-DAY data and travels with the day, so it can never be
   // one date behind what is drawn. renderPlanLayer still checks the date it
   // came back keyed with rather than trusting it — the guard viewSegmentsFor
   // makes, for the same reason.
   await refreshPlan(dateStr);
+}
+
+// THE VIEWED DAY'S GATES, as /api/gates/day serves them (2026-09-29) — the
+// dashboard's composition of the judge's own resolution: the window with any
+// override and pawn applied, called off or not, the verdict, and whether the
+// gate is paused. The timeline used to assemble this itself from day_windows
+// plus today_override plus a drag cache, and day_windows leaves a PAUSED gate
+// out entirely, so a paused Wake QR vanished from the day. Keyed by the date it
+// answers for, like viewSegments, and read only through viewGatesFor.
+function setViewGates(dateStr, payload) {
+  if (payload && payload.date === dateStr && Array.isArray(payload.gates)) {
+    state.viewGates = { date: dateStr, gates: payload.gates };
+  } else if (!state.viewGates || state.viewGates.date !== dateStr) {
+    state.viewGates = { date: dateStr, gates: [] };
+  }
+}
+
+function viewGatesFor(dateStr) {
+  return state.viewGates && state.viewGates.date === dateStr ? state.viewGates.gates : [];
 }
 
 // The segments for the day being looked at, or nothing if the cache holds
@@ -2071,7 +2088,10 @@ async function setCalView(week) {
     await refreshCalWeek();
   } else if (was) {
     // The week may have paged the viewed date; the day view's own payloads are
-    // keyed by it, so they are re-read for wherever it landed.
+    // keyed by it, so they are re-read for wherever it landed. Painted FIRST
+    // with the new date (the keyed caches answer empty for it rather than
+    // showing the old day), then again once its data is in.
+    renderTimeline();
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   }
@@ -2103,17 +2123,31 @@ async function refreshCalWeek() {
   ]);
 }
 
-// The gates drawn on a day: running, or called off (a called-off day still
-// draws, as it does on the day view — the mark is the answer).
+// The gates drawn on a day: running, called off (a called-off day still draws
+// — the mark is the answer), or PAUSED, drawn muted: a paused gate is not
+// judged, and hiding it made the week look as if it had no gates at all.
+function wkDayGatesFrom(list) {
+  return (list || []).filter(g =>
+    (g.applies || g.skipped) && g.window && g.window.end_min != null);
+}
+
 function wkDayGates(d) {
-  return ((calWeek.days[d] || {}).gates || []).filter(g =>
-    g.active && (g.applies || g.skipped) && g.window && g.window.end_min != null);
+  return wkDayGatesFrom((calWeek.days[d] || {}).gates);
+}
+
+// The mark itself, one drawing for both calendars: a sun for the wake gate, a
+// moon for the sleep gate, a dot for every other.
+function wkGateMark(nodeId) {
+  const role = wkRole(nodeId);
+  return role === 'wake' ? WK_SVG.sun : role === 'sleep' ? WK_SVG.moon
+    : '<span class="wk-gate-dot"></span>';
 }
 
 // Met / missed / still to do / called off — the app's one gate vocabulary,
 // read off the served verdict. A closed day's verdict is the judge's (a frozen
 // row decides its own day); an open one has none yet.
 function wkGateState(g) {
+  if (!g.active) return 'paused';
   if (g.skipped) return 'off';
   if (!g.window.closed) return 'open';
   return g.verdict && g.verdict.passed ? 'met' : 'missed';
@@ -2265,9 +2299,9 @@ function renderCalWeek() {
       .map(g => {
         const st = wkGateState(g);
         const role = wkRole(g.node_id);
-        const mark = role === 'wake' ? WK_SVG.sun : role === 'sleep' ? WK_SVG.moon
-          : '<span class="wk-gate-dot"></span>';
-        const say = { open: 'due', met: 'met', missed: 'missed', off: 'called off' }[st];
+        const mark = wkGateMark(g.node_id);
+        const say = { open: 'due', met: 'met', missed: 'missed', off: 'called off',
+                      paused: 'paused, not judged ·' }[st];
         return `<button class="wk-gate wk-gate-${st}${role !== 'none' ? ' wk-gate-role' : ''}"
           data-wk="gate" data-node="${g.node_id}" data-date="${d}" data-obj="gate:${g.node_id}"
           data-obj-date="${d}" title="${escHtml(`${g.label} · ${say} ${hhmmToAmPm(clockHHMM(g.window.end_min))}`)}"
@@ -2339,6 +2373,7 @@ function renderCalWeek() {
         <span class="wk-leg"><span class="wk-leg-mark wk-gate-met"><span class="wk-gate-dot"></span></span>Met</span>
         <span class="wk-leg"><span class="wk-leg-mark wk-gate-missed"><span class="wk-gate-dot"></span></span>Missed</span>
         <span class="wk-leg"><span class="wk-leg-mark wk-gate-off"><span class="wk-gate-dot"></span></span>Called off</span>
+        <span class="wk-leg"><span class="wk-leg-mark wk-gate-paused"><span class="wk-gate-dot"></span></span>Paused (not judged)</span>
         <span class="wk-leg"><span class="wk-leg-mark wk-gate-open">${WK_SVG.sun}</span>Wake gate</span>
         <span class="wk-leg"><span class="wk-leg-mark wk-gate-open">${WK_SVG.moon}</span>Sleep gate</span>
         <span class="wk-leg-note">Click a gate to set its role.</span></div>
@@ -2388,6 +2423,27 @@ function renderCalWeek() {
     sc.scrollTop = start === 0 ? 7 * WK_HOUR_PX : 0;
   } else {
     sc.scrollTop = keepTop;
+  }
+}
+
+// ↻, on either view. The feed refresh alone left the blocks and gates as they
+// were when the day was first opened — a block edited in Settings or a gate
+// changed on /gates stayed stale until you paged away and back. So it re-reads
+// everything the calendar draws, and says it is working while it does.
+let calRefreshing = false;
+async function refreshCalendar() {
+  if (calRefreshing) return;
+  calRefreshing = true;
+  document.getElementById('cal-overlay').classList.add('cal-refreshing');
+  try {
+    await refreshExternal();
+    state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
+    if (calWeek.on) await refreshCalWeek();
+    else await fetchOverridesForDate(state.currentDate);
+  } finally {
+    calRefreshing = false;
+    document.getElementById('cal-overlay').classList.remove('cal-refreshing');
+    renderTimeline();
   }
 }
 
@@ -2485,8 +2541,7 @@ function initCalWeek() {
       await refreshPlan(viewDay());
       renderTimeline();
     } else if (act === 'refresh') {
-      await refreshExternal();
-      await refreshCalWeek();
+      await refreshCalendar();
     } else if (act === 'event') {
       openEventPop(a.dataset.evKey, a);
     }
@@ -2583,6 +2638,9 @@ function focusRefresh() {
   if (document.hidden || Date.now() - lastFocusRefresh < 30000) return;
   lastFocusRefresh = Date.now();
   refreshTodoNow();
+  // Back at the window with the week up: another device may have changed it.
+  const cal = document.getElementById('cal-overlay');
+  if (calWeek.on && cal && !cal.classList.contains('hidden')) refreshCalWeek();
 }
 
 // ── Section 2: Active project items ──────────────────────────
@@ -12223,91 +12281,49 @@ function renderQrLayer() {
   if (!layer) return;
   layer.innerHTML = '';
   renderGateSelLines(layer);
-  const nodes = (state.accountabilityNodes || []).filter(n => n.active);
-  if (!nodes.length) return;   // the lines above stand on their own
-
-  const body = document.getElementById('tl-body');
   const pageDate = viewDay();
-  const viewingToday = isToday(state.currentDate);
-  const pageDow = String(jsDateToDayOfWeek(state.currentDate));
-
-  nodes.forEach(node => {
-    if (!gateAppliesOnDate(node, pageDate)) return;
-    // today_override from the API is only for the Worker's local today.
-    // For other dates, use the client-side cache populated by drag saves.
-    const cacheKey = `${node.id}:${pageDate}`;
-    const ov = viewingToday ? node.today_override : (state.qrPageOverrides[cacheKey] || null);
-    const def = nodeWindowForDate(node, pageDate);
-    const windowStart = ov ? ov.window_start : def.window_start;
-    const windowEnd = ov ? ov.window_end : def.window_end;
-    const offsetDays = ov ? ov.window_end_offset_days : def.window_end_offset_days;
-
-    const originalMinutes = windowEndMin(windowEnd, offsetDays);
-    const pct = minutesToViewPercent(originalMinutes);
+  // THE SERVED DAY (viewGatesFor), and drawn the way a week column draws it:
+  // one dot at the deadline in the right rail, a sun or moon for the wake and
+  // sleep gates, the state in its colour (2026-09-29, Quentin's instruction:
+  // the day should look exactly like a day of the week). A paused gate draws
+  // too, muted and saying so, rather than vanishing — it is not judged, and
+  // the day should still show that it exists.
+  wkDayGatesFrom(viewGatesFor(pageDate)).forEach(g => {
+    const node = (state.accountabilityNodes || []).find(n => n.id === g.node_id)
+      || { id: g.node_id, label: g.label };
+    const pct = minutesToViewPercent(g.window.end_min);
     if (pct < -0.01 || pct > 100.01) return;
-    // 🔒 locked: deadline within now + 24h — line is inert (no drag, no ✕)
-    const endDate = offsetDays ? localDatePlusDays(pageDate, 1) : pageDate;
-    const windowEndMs = new Date(`${endDate}T${windowEnd}:00`).getTime();
-    const locked = windowEndMs <= Date.now() + 24 * 60 * 60 * 1000;
-    // GREYING IS A VIEW PREFERENCE, so a locked gate can be greyed too. The
-    // `!locked` here was incidental: the ✕ was only ever rendered on unlocked
-    // pills, so the question never came up. Now that the verb lives in the
-    // read-out — which opens on every gate, locked included — leaving it in
-    // made the button dead on exactly the gates you look at most.
-    // CALLED OFF for this day: served by the server (day_windows carries the
-    // mark), never decided here — it is the same answer applies_on gives the
-    // judge, and a client that decided it separately would draw a day the
-    // judge does not believe in.
-    const dayEntry = (node.day_windows || {})[pageDate];
-    const skipped = !!(dayEntry && dayEntry.skipped);
-
-    const line = document.createElement('div');
-    // outcome colors the pill for judged (closed) windows: green/red
-    const outcome = state.qrOutcomes[cacheKey];
-    // ONE VOCABULARY FOR EVERY GATE: grey still to do, green met, red missed,
-    // amber the half-met day the 50/50 split created. Wake and sleep are not
-    // special-cased any more — they were briefly drawn as coloured bookend
-    // bands, which meant the two most important gates were the two that did
-    // NOT say how their day went.
+    const outcome = state.qrOutcomes[`${node.id}:${pageDate}`];
+    const st = wkGateState(g);
     const selected = !!state.gateSel && state.gateSel.nodeId === node.id
       && state.gateSel.date === pageDate;
-    line.className = 'tl-qr-line' + (locked ? ' tl-qr-locked' : '') + (skipped ? ' tl-qr-skipped' : '')
-      + (outcome ? ` tl-qr-${outcome}` : '') + (selected ? ' tl-qr-selected' : '');
+
+    const line = document.createElement('div');
+    line.className = `tl-qr-line wk-gate-${st}` + (selected ? ' tl-qr-selected' : '');
     line.style.top = `${pct}%`;
 
     const label = document.createElement('span');
-    label.className = 'tl-qr-label';
-    // ON THE LABEL, not on the line: the line is a zero-height rule across the
-    // timeline and the square is what a finger can actually hit, so a door
-    // hung on the line would be a door with no target.
+    label.className = 'tl-qr-label' + (wkRole(node.id) !== 'none' ? ' wk-gate-role' : '');
+    // ON THE LABEL, not on the line: the line is a zero-height rule and the
+    // mark is what a finger can hit.
     label.dataset.obj = `gate:${node.id}`;
-    const labelText = document.createElement('span');
-    labelText.textContent = QR_GLYPH;
-    label.title = qrPillTitle(node, windowEnd, offsetDays, locked, outcome);
-
-    label.appendChild(labelText);
+    label.innerHTML = wkGateMark(node.id);
+    label.title = qrPillTitle(node, g.window.end, g.window.offset_days, false, outcome)
+      + (st === 'paused' ? ' · paused, not judged' : st === 'off' ? ' · called off' : '');
     line.appendChild(label);
     layer.appendChild(line);
 
-    // pills center on their time; near the top/bottom edge that would clip
-    function setLabelEdge(p) {
-      if (p >= 98.5) label.style.top = '-18px';
-      else if (p <= 1.5) label.style.top = '0px';
-      else label.style.top = '';
-    }
-    setLabelEdge(pct);
+    // Marks centre on their time; near the top/bottom edge that would clip.
+    if (pct >= 98.5) label.style.top = '-14px';
+    else if (pct <= 1.5) label.style.top = '0px';
 
     line.addEventListener('contextmenu', e => e.preventDefault());
-
     // TAP TO READ IT: the first tap draws the window's lines, the second opens
-    // the read-out. The pill no longer moves — a gate's day is changed on
-    // /gates (openGatesDashboard), the one editor.
+    // the read-out. A gate's day is changed on /gates, the one editor.
     label.addEventListener('click', e => {
-      if (e.target.closest('.tl-qr-x')) return;
       e.stopPropagation();
       selectGate(node.id, pageDate, label);
     });
-
   });
 }
 
