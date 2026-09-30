@@ -1666,23 +1666,10 @@ body.calendar-minimized #review-modal {
 }
 .tl-ev-bar:hover { filter: brightness(1.35); }
 
-/* MOVED — this event is not where the calendar says it is (2026-08-24, asked
-   for). A darker, fuller edge in the event's OWN colour: against a 14% fill it
-   reads as a defined outline in both themes, where a mix toward the surface
-   would vanish into it on one of them. outline-offset:-1px keeps it inside the
-   box, so marking an event never nudges the ones beside it. */
-.tl-event-moved {
-  outline: 1px solid color-mix(in srgb, var(--ev-color, var(--accent)) 70%, #000);
-  outline-offset: -1px;
-}
-
-/* The same statement on the day's own list, where the row has no colour of its
-   own to deepen — so it borrows the ink the theme already trusts at this size
-   and stays a thin edge rather than a badge. */
-.eg-event-moved {
-  outline: 1px solid var(--text-secondary);
-  outline-offset: -1px;
-}
+/* MOVED draws NO EDGE (2026-09-30, Quentin's instruction: "no longer a
+   boundary around events that have been altered"). `.tl-event-moved` /
+   `.eg-event-moved` stay as markers — the bar's restore gesture reads the
+   class — and the tooltip still says where Google has it. */
 
 /* ── Shared event/block layout ───────────────────────────────── */
 

@@ -1662,9 +1662,9 @@ function renderGcalLayer(bodyH = 600) {
 // the top or bottom third (a 10px edge on a mouse) to change one end.
 //
 // What it writes is a LOCAL nudge. gcal stays a read-only mirror — the row the
-// feed published keeps Google's time — so a moved event draws with a darker
-// outline to say the two now disagree, which is the whole reason the mark
-// exists. Right-click or long-press the BAR puts it back; the same gestures on
+// feed published keeps Google's time. A moved event used to draw a darker
+// outline to say the two disagree; since 2026-09-30 it draws no edge (asked
+// for) and only its tooltip says so. Right-click or long-press the BAR puts it back; the same gestures on
 // the box still hide the event, which is why the bar exists at all.
 function initEventDrag(layer, dateOf, geo) {
   const g = geo || dayDragGeo();
