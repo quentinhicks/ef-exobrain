@@ -1327,8 +1327,8 @@ function renderBlocksLayer(bodyH = 600) {
     const inner = `<div class="tl-block-bar"></div>${tier === 'none' ? ''
       : `<div class="tl-text" data-tl-rank="0">${labelSpan}${subs}</div>`}`;
     return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}"
-                 data-block-id="${b.id}" data-obj="block:${b.id}" title="${escHtml(purpose)}"
-                 data-purpose="${escHtml(purpose)}"
+                 data-block-id="${b.id}" data-obj="block:${b.id}" data-purpose="${escHtml(purpose)}"
+                 ${blockCatAttrs(seg)}
                  data-start-min="${startMin}" data-end-min="${endMin}"
                  style="top:${top}%;height:${height}%;cursor:${cont ? 'default' : 'pointer'};
                         --block-color:${b.color}">${inner}</div>`;
@@ -1351,22 +1351,11 @@ function renderBlocksLayer(bodyH = 600) {
 
   layer.innerHTML = blocksHtml + zonesHtml;
 
-  layer.querySelectorAll('.tl-block:not(.tl-block-cont)').forEach(el => {
-    // A BARE CLICK NO LONGER CANCELS YOUR DAY. Primary click is select or
-    // activate; a destructive, state-changing command belongs behind a menu,
-    // and "click the block, lose the block" was the norm violation this whole
-    // refactor started from. A block has no read-out to open, so activating it
-    // means "show me what I can do to this" — the same menu the right-click
-    // and the long press open, which is also the only one of the three a
-    // finger reaches in a single motion. `data-obj-tap` is that opt-in, and
-    // initObjectDoors is the one handler behind it.
-    el.dataset.objTap = '1';
-  });
-
-  // The block's menu (a plain click) names its three verbs; the right-click
-  // and the long press run the first of them, cancelling it for the day
-  // (openObjectMenuOrRemove, 2026-09-30). Both are wired once, on the
-  // document, by initObjectDoors.
+  // A BARE CLICK NO LONGER CANCELS YOUR DAY, and since 2026-09-30 it does not
+  // open the menu either: it lights up the block's CATEGORY (initCalBlockPin),
+  // and the menu is on that bar's ⋯. The right-click and the long press still
+  // cancel it for the day (openObjectMenuOrRemove), wired once on the
+  // document by initObjectDoors.
   initBlockBarDrag(layer, dateStr);
 }
 
@@ -2100,6 +2089,7 @@ async function fetchOverridesForDate(date) {
   state.overrides = overrides;
   state.viewSegments = { date: dateStr, segments };
   setViewGates(dateStr, gates);
+  if (calPin.cat) paintCalPin();
   // The plan is VIEWED-DAY data and travels with the day, so it can never be
   // one date behind what is drawn. renderPlanLayer still checks the date it
   // came back keyed with rather than trusting it — the guard viewSegmentsFor
@@ -2146,6 +2136,8 @@ function segmentRow(s) {
     endMin: s.end,
     cancelled: !!s.cancelled,
     label: s.label + (cont ? ' (cont.)' : ''),
+    name: s.label,
+    cat: blockCatKey(s.label),
     description: s.description || '',
     cont,
   };
@@ -2166,6 +2158,169 @@ function blockPurpose(s) {
 // The same words as a menu's first line: read, never chosen.
 function purposeItem(blockEl) {
   return blockEl && blockEl.dataset.purpose ? [{ info: true, label: blockEl.dataset.purpose }] : [];
+}
+
+// ── A CATEGORY, LIT UP (2026-09-30, Quentin's "Calendar Block Hover" design,
+// 6b: "hover over and click … all COS330 regions light up") ────────────────
+//
+// Hovering a block puts a one-line label at its top — its category and what
+// this stretch is for. CLICKING it lights up every block of that category on
+// the calendar and fades the rest, and a bar over the grid says what it is,
+// how much of the week goes to it, and holds the two doors a click used to
+// be: `Edit` (the category's sheet) and `⋯` (this stretch's menu). Clicking
+// the same stretch again, ✕, Esc or closing the calendar puts it out.
+//
+// The label replaced the block's native tooltip, which only repeated it. A
+// finger has no hover, so on a phone the TAP is the read: the bar names the
+// stretch it was tapped on, and tapping another stretch of the same category
+// moves the reading there without putting the light out.
+//
+// The light is ONE generated rule, keyed on `data-cat`, so a repaint of
+// either view is lit the moment it lands without any renderer knowing a pin
+// exists. The stats are the SERVED segments summed — the same rows the
+// columns draw — never the weekly rule re-expanded.
+const calPin = { cat: null, name: '', color: '', blockId: null, date: null, what: '' };
+
+function blockCatAttrs(s) {
+  const when = `${hhmmToAmPm(clockHHMM(s.startMin))}–${hhmmToAmPm(clockHHMM(s.endMin))}`;
+  return `data-cat="${escHtml(s.cat)}" data-name="${escHtml(s.name)}"
+    data-what="${escHtml([s.description, when].filter(Boolean).join(' · '))}"`;
+}
+
+function calPinStats(cat) {
+  const days = calWeek.on ? weekDates() : [viewDay()];
+  let n = 0, mins = 0;
+  days.forEach(d => {
+    const segs = calWeek.on ? ((calWeek.days[d] || {}).segments || []) : viewSegmentsFor(d);
+    // Yesterday's overnight tail (a negative start) is the SAME stretch as the
+    // one the day before drew, so it is not counted twice.
+    segs.forEach(sg => {
+      if (sg.start < 0 || sg.cancelled || blockCatKey(sg.label) !== cat) return;
+      n++;
+      mins += sg.end - sg.start;
+    });
+  });
+  return `${n}× ${calWeek.on ? 'this week' : 'this day'} · ${humanMinutes(mins)}`;
+}
+
+function paintCalPin() {
+  let style = document.getElementById('cal-pin-style');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'cal-pin-style';
+    document.head.appendChild(style);
+  }
+  const bar = document.getElementById('cal-pin-bar');
+  if (!calPin.cat) {
+    style.textContent = '';
+    if (bar) { bar.classList.add('hidden'); bar.innerHTML = ''; }
+    return;
+  }
+  const k = CSS.escape(calPin.cat);
+  style.textContent = `#cal-overlay .tl-block[data-cat]:not([data-cat="${k}"]) { opacity: 0.3; }
+#cal-overlay .tl-block[data-cat="${k}"] { --wk-hatch: var(--wk-hatch-on);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--block-color) 60%, transparent); }`;
+  if (!bar) return;
+  bar.innerHTML = `<span class="cal-pin-sw" style="--block-color:${escHtml(calPin.color)}"></span>
+    <span class="cal-pin-name">${escHtml(calPin.name)}</span>
+    <span class="cal-pin-what">${escHtml(calPin.what)}</span>
+    <span class="cal-pin-stats">${escHtml(calPinStats(calPin.cat))}</span>
+    <button class="wk-btn" data-pin="menu" aria-label="This stretch's menu">⋯</button>
+    <button class="wk-btn" data-pin="edit">Edit</button>
+    <button class="wk-btn wk-icon" data-pin="clear" aria-label="Stop highlighting">✕</button>`;
+  bar.classList.remove('hidden');
+}
+
+function clearCalPin() {
+  if (!calPin.cat) return false;
+  calPin.cat = null;
+  paintCalPin();
+  return true;
+}
+
+function toggleCalPin(el) {
+  const same = calPin.cat === el.dataset.cat && calPin.blockId === el.dataset.blockId
+    && calPin.date === (el.dataset.date || null);
+  if (same) { clearCalPin(); return; }
+  Object.assign(calPin, {
+    cat: el.dataset.cat, name: el.dataset.name, what: el.dataset.what || '',
+    color: el.style.getPropertyValue('--block-color'),
+    blockId: el.dataset.blockId, date: el.dataset.date || null,
+  });
+  paintCalPin();
+}
+
+function hideBlockHover() {
+  const tip = document.getElementById('blk-hover');
+  if (tip) tip.classList.add('hidden');
+}
+
+function showBlockHover(el) {
+  let tip = document.getElementById('blk-hover');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'blk-hover';
+    document.body.appendChild(tip);
+  }
+  const r = el.getBoundingClientRect();
+  // A tall block (the night) starts above the scrolled view; its label sits
+  // at the top of what is visible of it instead.
+  const sc = el.closest('.wk-scroll, #right-panel');
+  const floor = sc ? sc.getBoundingClientRect().top : 0;
+  tip.innerHTML = `<span class="cal-pin-sw" style="--block-color:${
+    escHtml(el.style.getPropertyValue('--block-color'))}"></span><b>${escHtml(el.dataset.name || '')}</b><span>${
+    escHtml(el.dataset.what || '')}</span>`;
+  tip.style.left = `${r.left + 12}px`;
+  tip.style.top = `${Math.max(r.top, floor) + 3}px`;
+  // Wider than a narrow column when it has to be: it floats over the grid.
+  tip.style.maxWidth = `${Math.max(280, r.width - 16)}px`;
+  tip.classList.remove('hidden');
+}
+
+function initCalBlockPin() {
+  const cal = document.getElementById('cal-overlay');
+  cal.addEventListener('pointerover', e => {
+    if (e.pointerType !== 'mouse') return;
+    const el = e.target.closest('.tl-block[data-cat]');
+    if (el && !e.target.closest('.tl-gcal-event, .wk-gate')) showBlockHover(el);
+    else hideBlockHover();
+  });
+  cal.addEventListener('pointerleave', hideBlockHover);
+  cal.addEventListener('pointerdown', hideBlockHover);
+  document.addEventListener('scroll', hideBlockHover, true);
+
+  cal.addEventListener('click', e => {
+    const el = e.target.closest('.tl-block[data-cat]');
+    if (!el) return;
+    // A modified click is somebody else's gesture; a click trailing a drag or
+    // a long press is not a tap (the initObjectDoors rules).
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (justPointerDragged() || justLongPressed()) return;
+    e.stopPropagation();
+    toggleCalPin(el);
+  });
+
+  document.getElementById('cal-pin-bar').addEventListener('click', e => {
+    const btn = e.target.closest('[data-pin]');
+    if (!btn) return;
+    const act = btn.dataset.pin;
+    if (act === 'clear') { clearCalPin(); return; }
+    if (act === 'edit') {
+      const c = blockCategoryOf(calPin.name);
+      if (!c) { toast('That block is gone'); return; }
+      openSeSheet('blockcat', c);
+      return;
+    }
+    if (act === 'menu') {
+      const sel = `.tl-block[data-block-id="${CSS.escape(String(calPin.blockId))}"]`
+        + (calPin.date ? `[data-date="${calPin.date}"]` : '');
+      const el = cal.querySelector(sel);
+      if (!el) { toast('That stretch is no longer drawn'); return; }
+      const r = btn.getBoundingClientRect();
+      openObjectMenu(r.left, r.bottom + 4, 'block', calPin.blockId,
+                     verbsFor('block', calPin.blockId, el));
+    }
+  });
 }
 
 // ── THE WEEK (2026-09-29, Quentin's "Calendar Week" design) ──────────────
@@ -2258,6 +2413,8 @@ async function refreshCalWeek() {
     Promise.all(dates.map(d => apiGet(`/api/gates/day?date=${d}`, null)))
       .then(fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))),
   ]);
+  // A lit-up category's count is of these segments, so it is re-counted.
+  if (calPin.cat) paintCalPin();
 }
 
 // The gates drawn on a day: running, called off (a called-off day still draws
@@ -2374,8 +2531,7 @@ function renderCalWeek() {
 
   const heads = dates.map((d, i) => {
     const on = d === today;
-    return `<button class="wk-day${on ? ' wk-today' : ''}" data-wk="day" data-date="${d}"
-      title="Open ${escHtml(formatTodoDate(new Date(d + 'T12:00:00')))}">
+    return `<button class="wk-day${on ? ' wk-today' : ''}" data-wk="day" data-date="${d}">
       <span class="wk-dow">${DOW[i]}</span>
       <span class="wk-num">${new Date(d + 'T12:00:00').getDate()}</span></button>`;
   }).join('');
@@ -2388,7 +2544,7 @@ function renderCalWeek() {
   const hasAllday = alldayByDay.some(list => list.length);
   const alldayRow = alldayByDay.map(list => `<div class="wk-allday-cell">${list.map(e =>
     `<div class="wk-allday" data-wk="event" data-ev-key="${escHtml(eventKey(e))}"
-      style="--ev-color:${e.color || '#888888'}" title="${escHtml(e.summary || '')}">${
+      style="--ev-color:${e.color || '#888888'}">${
       escHtml(e.summary || '')}</div>`).join('')}</div>`);
 
   const cols = dates.map(d => {
@@ -2405,10 +2561,9 @@ function renderCalWeek() {
         if (b <= a) return '';
         if (!s.cancelled) legendBlocks.set(s.label.replace(/ \(cont\.\)$/, ''), s.b.color);
         return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}"
-          data-block-id="${s.b.id}" data-obj="block:${s.b.id}"${s.cont ? '' : ' data-obj-tap="1"'}
+          data-block-id="${s.b.id}" data-obj="block:${s.b.id}"
           data-date="${d}" data-start-min="${a}" data-end-min="${b}"
-          title="${escHtml(blockPurpose(s))}${s.cancelled ? ' · cancelled for this day' : ''}"
-          data-purpose="${escHtml(blockPurpose(s))}"
+          data-purpose="${escHtml(blockPurpose(s))}" ${blockCatAttrs(s)}
           style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
           <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
             escHtml(s.label)}</span></div></div>`;
@@ -2437,8 +2592,8 @@ function renderCalWeek() {
         data-ev-key="${escHtml(eventKey(e))}" data-ev-label="${escHtml(e.summary || 'Event')}"
         data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
         data-start-min="${x.s}" data-end-min="${x.e}"
-        title="${escHtml(e.moved ? `Moved here — the calendar still says ${isoToAmPm(e.orig_start)}. Right-click or long-press the bar to put it back.`
-          : `${e.summary || 'Event'} · ${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"
+        ${e.moved ? `title="${escHtml(`Moved here — the calendar still says ${isoToAmPm(e.orig_start)}. Right-click or long-press the bar to put it back.`)}"`
+          : h < 30 ? `title="${escHtml(`${e.summary || 'Event'} · ${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"` : ''}
         style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${e.color || '#888888'}">
         <div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${
           escHtml(e.summary || '')}</span>${h >= 30 ? `<span class="tl-event-time">${escHtml(time)}</span>` : ''}</div></div>`;
@@ -4177,12 +4332,14 @@ const seSheet = { kind: null, item: null, values: null, error: '', returnTo: nul
 // gate-tag sheet hard-codes its way home because it has exactly one door; a
 // routine has two (its gate, or Settings → Recurring), so the door it came
 // through is passed in rather than guessed.
-function openSeSheet(kind, item, returnTo) {
+// `seed` fills a NEW item's blank with what the door already knows — a time
+// added from a block category arrives with that category's name and colour.
+function openSeSheet(kind, item, returnTo, seed) {
   const spec = SETTINGS_SHEETS[kind];
   seSheet.kind = kind;
   seSheet.item = item || null;
   seSheet.returnTo = returnTo || null;
-  seSheet.values = item ? spec.load(item) : spec.blank();
+  seSheet.values = item ? spec.load(item) : { ...spec.blank(), ...(seed || {}) };
   seSheet.error = '';
   // Folded on open: the steps are for the one evening you program a tag, not
   // for every visit to the gate that uses it.
@@ -4740,10 +4897,77 @@ async function scheduleBlockGroup(g, v) {
 
 const SETTINGS_SHEETS = {
 
+  // A BLOCK CATEGORY (blockCategories): the name and colour every one of its
+  // times shares, and the times themselves, each opening its own sheet. It is
+  // only ever EDITED — a category comes into being with its first time, which
+  // the block sheet adds. No "Takes effect" row: a name and a colour draw
+  // nothing different on any one day, and a time's dated change lives on the
+  // time's own sheet.
+  blockcat: {
+    title: () => 'Block category',
+    save: () => 'Save category',
+    removeLabel: 'Delete category',
+    confirm: c => `Delete ${c.label} and all ${c.groups.length} of its time${c.groups.length === 1 ? '' : 's'}?`,
+    blank: () => ({ label: '', color: BLOCK_COLORS[0], active: true }),
+    load: c => ({ label: c.label, color: c.color, active: c.rows.some(r => r.active) }),
+    fields: (v, c) => [
+      { key: 'label', label: 'Name', kind: 'text', placeholder: 'e.g. COS330' },
+      { key: 'color', label: 'Colour', kind: 'swatches',
+        hint: 'Every time of this category is drawn in it.' },
+      ...(c ? c.groups : []).map((g, i) => ({
+        key: `time_${i}`, label: i === 0 ? 'Times' : '', kind: 'action',
+        text: blockTimeLabel(g), action: 'Edit', keepOpen: true,
+        run: () => openSeSheet('block', g, reopenBlockCategory(c.key)) })),
+      ...(c ? [{ key: 'add_time', label: c.groups.length ? '' : 'Times', kind: 'action',
+        text: 'Another stretch of the week', action: '+ Add a time', keepOpen: true,
+        run: () => {
+          const g = c.groups[0];
+          openSeSheet('block', null, reopenBlockCategory(c.key), {
+            label: v.label.trim() || c.label, color: v.color,
+            area: g ? filingKey(g) : '', location: g ? (g.location_id || '') : '' });
+        } }] : []),
+      ...(c ? [seStateRow('Paused: every time of this category leaves the timeline, and its '
+                          + 'hours are free. Nothing is deleted.')] : []),
+    ],
+    submit: async (v, c) => {
+      const label = v.label.trim();
+      if (!label || !v.color) return 'A name and a colour are required.';
+      // Only the rows that differ are written; each PATCH states the row's own
+      // times and filing, which the route requires and this does not change.
+      for (const r of c.rows.filter(r => r.label !== label || r.color !== v.color)) {
+        const res = await apiSend(`/api/blocks/${r.id}`, 'PATCH', {
+          label, color: v.color, day_of_week: r.day_of_week,
+          start_time: r.start_time, end_time: r.end_time,
+          ...filingBody(filingKey(r)), location_id: r.location_id || null,
+        });
+        if (!res || !res.ok) {
+          const msg = res ? await res.json().catch(() => ({})) : {};
+          await refreshBlockEditor();
+          return msg.error || 'Could not save the category.';
+        }
+      }
+      const want = v.active ? 1 : 0;
+      await Promise.all(c.rows.filter(r => (r.active ? 1 : 0) !== want)
+        .map(r => apiSend(`/api/blocks/${r.id}`, 'PATCH', { active: want })));
+      // Lit up on the calendar under its old name: follow the rename.
+      if (calPin.cat === c.key) {
+        Object.assign(calPin, { cat: blockCatKey(label), name: label, color: v.color });
+        paintCalPin();
+      }
+      await refreshBlockEditor();
+      return null;
+    },
+    remove: async c => {
+      await Promise.all(c.rows.map(r => apiSend(`/api/blocks/${r.id}`, 'DELETE')));
+      await refreshBlockEditor();
+    },
+  },
+
   // A block row is a GROUP of one-per-day rows (groupBlocks), so saving an
   // edit deletes the group and re-posts it — the API has no group identity.
+  // Within a CATEGORY it is one of that category's times.
   block: {
-    title: it => it ? 'Edit block' : 'Add block',
+    title: it => it ? 'Edit time' : 'Add block',
     save: () => 'Save block',
     removeLabel: 'Delete block',
     blank: () => ({ label: '', color: BLOCK_COLORS[0], days: [], start: '', end: '',
@@ -4769,8 +4993,9 @@ const SETTINGS_SHEETS = {
         options: () => seFilingOptions(v.area) },
       { key: 'location', label: 'Location', kind: 'select', half: true,
         options: () => seLocationOptions(null, v.location) },
-      { key: 'description', label: 'Description', kind: 'textarea',
-        placeholder: 'What these hours are for' },
+      { key: 'description', label: 'What for', kind: 'textarea',
+        placeholder: 'e.g. Assignment time',
+        hint: 'Shown when you hover or tap this stretch on the calendar.' },
       { key: 'priority', label: 'Priority', kind: 'select', options: () => BLOCK_PRIORITY_OPTIONS,
         hint: 'How firmly these hours hold against something else wanting them. '
           + 'Not drawn on the calendar.' },
@@ -5470,7 +5695,9 @@ function beAddRow(label) {
 }
 
 // Wires a list's rows and its one add affordance to the sheet.
-function wireBeList(el, kind, items) {
+// `addKind`: the kind the add row opens, where it is not the rows' own — a
+// block category is made by adding its first time.
+function wireBeList(el, kind, items, addKind) {
   el.querySelectorAll('[data-row]').forEach(btn => {
     btn.addEventListener('click', () => {
       const item = items.find(i => String(i.id != null ? i.id : i.key) === btn.dataset.row);
@@ -5478,7 +5705,7 @@ function wireBeList(el, kind, items) {
     });
   });
   const add = el.querySelector('[data-add]');
-  if (add) add.addEventListener('click', () => openSeSheet(kind, null));
+  if (add) add.addEventListener('click', () => openSeSheet(addKind || kind, null));
 }
 
 // ── Wiring, open, close ──────────────────────────────────────
@@ -5584,6 +5811,10 @@ async function refreshDayAfterSettings() {
   await fetchOverridesForDate(state.currentDate);
   await refreshActiveItems();
   renderTimeline();
+  // The week draws blocks too, and a category edited from its bar has to
+  // show there without paging away and back. Not awaited: seven days take a
+  // couple of seconds, and the sheet should not stand open that long.
+  if (calWeek.on) refreshCalWeek();
 }
 
 // The settings lists, from state. Also what a write INSIDE a sheet (an action
@@ -5733,28 +5964,77 @@ function formatDays(days) {
 function renderBeBlocks() {
   const list = document.getElementById('be-blocks-list');
   if (!list) return;
-  // A block row's identity is its GROUP, which has no server id — index it.
-  // beBlockGroups is that numbering, shared with the object door so the two
-  // cannot disagree about which group `g3` is.
-  const groups = beBlockGroups();
-  beCounts.blocks = groups.length;
-  list.innerHTML = groups.map(g => {
+  // ONE ROW PER CATEGORY (blockCategories), its times listed under the name —
+  // the category's sheet opens each time's own.
+  const cats = blockCategories();
+  beCounts.blocks = cats.length;
+  list.innerHTML = cats.map(c => {
+    const on = c.rows.filter(r => r.active);
+    const mins = on.reduce((n, r) => n + spanEndMin(r.start_time, r.end_time) - timeToMinutes(r.start_time), 0);
     // A change dated forward is part of what this block IS from that day, so
     // the row says so — the whole point is not having to remember it.
-    const changes = blockGroupChanges(g);
-    const from = changes.length
-      ? changes.map(c => c.effective_date).sort()[0] : null;
+    const from = c.groups.flatMap(blockGroupChanges).map(x => x.effective_date).sort()[0];
     return beRow({
-      id: g.id, color: g.color, name: g.label,
-      dim: !g.rows.some(r => r.active),
-      meta: `${g.priority ? `P${g.priority} · ` : ''}${formatDays(g.days)} · ${g.start_time}–${g.end_time}`,
-      sub: [g.project_name, g.location_name,
-            from ? `changes ${seWhenLabel(from)}` : null, g.description || null]
+      id: c.id, color: c.color, name: c.label,
+      dim: !on.length,
+      meta: `${c.rows.length}× a week · ${humanMinutes(mins)}`,
+      sub: [from ? `changes ${seWhenLabel(from)}` : null, ...c.groups.map(blockTimeLabel)]
         .filter(Boolean).join(' · '),
-      badge: g.rows.some(r => r.active) ? (from ? 'scheduled' : '') : 'paused',
+      subClass: 'be-row-sub-wrap',
+      badge: on.length ? (from ? 'scheduled' : '') : 'paused',
     });
   }).join('') + beAddRow('Add block');
-  wireBeList(list, 'block', groups);
+  wireBeList(list, 'blockcat', cats, 'block');
+}
+
+// A BLOCK CATEGORY IS ITS NAME (2026-09-30, Quentin's instruction: "blocks
+// unified by category … each block [has] multiple custom individual times" —
+// COS330, purple: Mon 08:45–10:40 assignment time, Tue 10:40–12:00 class).
+// Every block row already carried its own day, hours and description, and a
+// course's week was already several rows of one label, so the category is not
+// a new table: it is the rows that share a label, compared as a key
+// (blockCatKey), with ONE colour its sheet writes to all of them. Each time
+// inside it is a groupBlocks group — the same hours and purpose across its
+// days — and keeps its own sheet.
+function blockCatKey(label) {
+  return String(label || '').trim().toLowerCase();
+}
+
+function blockCategories() {
+  const cats = new Map();
+  for (const g of beBlockGroups()) {
+    const key = blockCatKey(g.label);
+    if (!cats.has(key)) cats.set(key, { key, label: g.label, color: g.color, groups: [], rows: [] });
+    const c = cats.get(key);
+    c.groups.push(g);
+    c.rows.push(...g.rows);
+  }
+  const byDay = g => Math.min(...g.days) * DAY_MIN + timeToMinutes(g.start_time);
+  return [...cats.values()]
+    .sort((x, y) => x.label.localeCompare(y.label))
+    .map((c, i) => ({ ...c, id: `c${i}`, groups: c.groups.sort((x, y) => byDay(x) - byDay(y)) }));
+}
+
+function blockCategoryOf(label) {
+  const key = blockCatKey(label);
+  return blockCategories().find(c => c.key === key) || null;
+}
+
+// One time of a category, the way the list and the sheet both say it.
+function blockTimeLabel(g) {
+  return [formatDays(g.days), `${g.start_time}–${g.end_time}`, g.description || null,
+          g.rows.some(r => r.active) ? null : '(paused)'].filter(Boolean).join(' ');
+}
+
+// Back to a category's sheet from one of its times — or, if that save moved
+// the time out of it (renamed) and nothing is left, to the list.
+function reopenBlockCategory(key) {
+  return async () => {
+    const c = blockCategories().find(x => x.key === key);
+    if (c) { openSeSheet('blockcat', c); return; }
+    closeSeSheet();
+    renderSettingsIndex();
+  };
 }
 
 function ordinalNth(n) {
@@ -6998,6 +7278,7 @@ function closeM(id) {
   flushOpenNotes();
   const el = document.getElementById(id);
   el.classList.add('hidden');
+  if (id === 'cal-overlay') { clearCalPin(); hideBlockHover(); }
   // A surface the RUNNER raised above itself returns to its own layer, and the
   // step it was opened from re-reads whatever it asked about (the layer's own
   // `back`). ONE layer for all of them: openM shows one .m-overlay at a time,
@@ -7052,6 +7333,8 @@ function initHub() {
     if (clearGateSel()) return;
     // The week's legend and range panel are transient over the calendar too.
     if (closeCalWeekPops()) return;
+    // So is a category lit up on it.
+    if (clearCalPin()) return;
     if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
     // (MAP's rows open the clarify sheet, and the bail above lets the sheet
     // peel first; its filter menu peels just above, before the overlay loop.
@@ -11878,6 +12161,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initLogsView();
   initHub();
   initObjectDoors();
+  initCalBlockPin();
   initSwipe();
   initUndo();
   initPrivacyHotkey();
