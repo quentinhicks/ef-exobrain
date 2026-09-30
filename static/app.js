@@ -3179,12 +3179,19 @@ function renderBar() {
     renderBarCounts(bar);
     return;
   }
+  // Two groups (Now Page Wide, 4b): on a wide window the capture field lines
+  // up under the to-do list and the buttons stand in the column to its right.
+  // On a phone both groups are `display: contents` — one row, as ever.
   bar.innerHTML = `
-    <span class="eg-cap-plus">+</span>
-    <input type="text" id="eg-capture" placeholder="Capture anything…" autocomplete="off">
-    <button id="eg-undo" class="${undoStack.length ? '' : 'hidden'}" title="Undo">↩︎</button>
-    <button id="eg-clarify" title="Process the inbox">${clarifyBarLabel()}</button>
-    <button id="eg-hub" title="Everything else">≡</button>
+    <div class="gbar-cap">
+      <span class="eg-cap-plus">+</span>
+      <input type="text" id="eg-capture" placeholder="Capture anything…" autocomplete="off">
+    </div>
+    <div class="gbar-acts">
+      <button id="eg-undo" class="${undoStack.length ? '' : 'hidden'}" title="Undo">↩︎</button>
+      <button id="eg-clarify" title="Process the inbox">${clarifyBarLabel()}</button>
+      <button id="eg-hub" title="Everything else">≡</button>
+    </div>
   `;
 
   const input = bar.querySelector('#eg-capture');
@@ -16144,15 +16151,21 @@ function renderEngage() {
 
   // NOW PAGE MINIMAL v2 (2026-09-29, Quentin's design): the day and its
   // arrows on the left, and in the design's empty right slot the privacy eye.
+  // NOW PAGE WIDE, 4b (2026-09-30): on a wide window the day (`.eg-head-day`)
+  // and the chip with its agenda (`.eg-side`) stand in a column left of the
+  // list, the eye in one to its right. Both wrappers are `display: contents`
+  // on a phone, so the narrow page is exactly what it was.
   header.innerHTML = `
-    <button class="eg-nav" id="eg-prev" title="Previous day">${WK_SVG.prev}</button>
-    <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
-      title="Open this day in calendar view">
-      <span class="eg-day-name">${viewDate.toLocaleDateString('en-US', { weekday: 'long' })}</span>
-      <span class="eg-day-date">${viewDate.getDate()} ${viewDate.toLocaleDateString('en-US', { month: 'short' })}</span>
-    </button>
-    <button class="eg-nav" id="eg-next" title="Next day">${WK_SVG.next}</button>
-    ${isToday ? '' : '<button id="eg-today" title="Back to today">today</button>'}
+    <div class="eg-head-day">
+      <button class="eg-nav" id="eg-prev" title="Previous day">${WK_SVG.prev}</button>
+      <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
+        title="Open this day in calendar view">
+        <span class="eg-day-name">${viewDate.toLocaleDateString('en-US', { weekday: 'long' })}</span>
+        <span class="eg-day-date">${viewDate.getDate()} ${viewDate.toLocaleDateString('en-US', { month: 'short' })}</span>
+      </button>
+      <button class="eg-nav" id="eg-next" title="Next day">${WK_SVG.next}</button>
+      ${isToday ? '' : '<button id="eg-today" title="Back to today">today</button>'}
+    </div>
     <span class="eg-spacer"></span>
     <button id="eg-panel-btn" class="${privacyOn() ? 'eg-priv-on' : ''}"
       title="${escHtml(privacyEyeTitle())}">${panelEyeSvg(privacyOn())}</button>
@@ -16225,8 +16238,11 @@ function renderEngage() {
     main = body.querySelector('#eg-main');
   }
   main.innerHTML = `
-    ${chipHtml}
-    <div class="eg-day${agendaOpen ? '' : ' eg-day-closed'}">${parts.join('')}</div>
+    <div class="eg-side">
+      ${chipHtml}
+      <div class="eg-day${agendaOpen ? '' : ' eg-day-closed'}">${parts.join('')}</div>
+    </div>
+    <div class="eg-list">
     ${deferHtml}
     <div class="eg-todo-head">To-do list</div>
     <div class="eg-pool">
@@ -16240,6 +16256,7 @@ function renderEngage() {
         </div>`).join('') || '<div class="eg-empty">Nothing available — done, parked, or handed off.</div>'}
     </div>
     ${popHtml}
+    </div>
   `;
   main.querySelector('#eg-agenda-btn').addEventListener('click', () => {
     setEgAgendaOpen(!egAgendaOpen());

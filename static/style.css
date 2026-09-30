@@ -4734,7 +4734,8 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 
 /* One rule, not two: the deferred block brings its own border-top, and when
    it sits directly under the day that would draw the same line twice. */
-.eg-day + .eg-pool-head { border-top: none; }
+.eg-day + .eg-pool-head,
+.eg-list > .eg-pool-head:first-child { border-top: none; }
 
 /* The first pool row should not sit on the line. */
 .eg-day + .eg-pool { padding-top: 10px; }
@@ -6551,6 +6552,107 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #engage-body .eg-check-started { border-color: var(--accent); }
 .eg-check-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 #engage-body .eg-tag { border: none; padding: 0; font-size: 11px; }
+
+/* ── NOW PAGE WIDE, 4b (2026-09-30, Quentin's design) ─────────────────
+   A wide window gets three columns: the day and the chip in a column LEFT of
+   the list, right-aligned against it; the list in a 640px measure; the eye in
+   the column to its right; and the capture bar docked under all three, its
+   field under the list. The wrappers that make the columns are nothing on a
+   phone (display: contents), so the narrow page is untouched. 1100px, not the
+   week's 800: at 800 a 640px list leaves 80px a side, and the day's name and
+   the agenda need room of their own. The side columns are FIXED — the list is
+   what scrolls — so the day and its agenda stay put beside it, and the agenda
+   opens downward in its column instead of pushing the list. */
+.eg-head-day, .eg-side, .eg-list, .gbar-cap, .gbar-acts { display: contents; }
+@media (min-width: 1100px) {
+  #engage-root { max-width: none; }
+  #engage-header { display: contents; }
+  #engage-header .eg-spacer { display: none; }
+  #engage-header .eg-head-day {
+    position: fixed;
+    top: 28px;
+    left: 0;
+    width: calc(50% - 320px);
+    padding: 0 32px;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: auto auto auto auto;
+    justify-content: end;
+    align-items: center;
+    column-gap: 2px;
+    row-gap: 2px;
+  }
+  /* The name over "‹ 30 Sep ›", the way the design stacks it. The button
+     still takes the click — its children are its own. Off today, the pill
+     back sits on the date's line, so the column never grows into the chip
+     under it. */
+  #engage-header .eg-day-btn { display: contents; }
+  #engage-header .eg-day-name { grid-row: 1; grid-column: 1 / -1; justify-self: end; cursor: pointer; }
+  #engage-header #eg-today { grid-row: 2; grid-column: 1; margin-right: 6px; }
+  #engage-header #eg-prev { grid-row: 2; grid-column: 2; }
+  #engage-header .eg-day-date { grid-row: 2; grid-column: 3; cursor: pointer; }
+  #engage-header #eg-next { grid-row: 2; grid-column: 4; }
+  #engage-header #eg-panel-btn {
+    position: fixed;
+    top: 24px;
+    left: calc(50% + 320px + 26px);
+  }
+
+  #engage-body {
+    align-self: center;
+    width: 640px;
+    padding: 34px 20px calc(var(--gbar-h) + 10px);
+    border-left: 1px solid var(--border-soft);
+    border-right: 1px solid var(--border-soft);
+  }
+  #engage-body .eg-side {
+    position: fixed;
+    top: 100px;
+    left: 0;
+    width: calc(50% - 320px);
+    max-height: calc(var(--vvh, 100dvh) - 100px - var(--gbar-h) - 16px);
+    overflow-y: auto;
+    padding: 0 24px 0 32px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+  #engage-body .eg-side .eg-now-chip { margin: 0 0 8px; }
+  #engage-body .eg-side .eg-day { width: 100%; max-width: 360px; }
+  #engage-body .eg-todo-head { border-top: none; padding: 0 8px 10px; }
+  /* The whole column under the list is the add row's door, not a 120px
+     strip of it — on a tall window that strip ended a third of the way down. */
+  #engage-body { display: flex; flex-direction: column; }
+  #engage-body #eg-main { flex: none; }
+  #eg-add-zone { flex: 1; display: flex; flex-direction: column; }
+  #eg-add-fill { flex: 1; }
+
+  #global-bar {
+    max-width: none;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 640px minmax(0, 1fr);
+    gap: 0;
+    padding: 0 0 env(safe-area-inset-bottom);
+  }
+  #global-bar .gbar-cap {
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 28px;
+    min-width: 0;
+  }
+  #global-bar .gbar-acts {
+    grid-column: 3;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 32px;
+  }
+  #global-bar .eg-cap-plus { font-size: 18px; color: var(--accent); }
+  #global-bar #eg-capture { font-size: 15px; }
+}
 
 /* The add row, and the space under the list that opens it. */
 #eg-add-zone { padding: 0 8px; }
