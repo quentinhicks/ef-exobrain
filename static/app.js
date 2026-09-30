@@ -411,6 +411,9 @@ function renderTimeline() {
   updateFetchStatus();
   startCurrentTimeTick();
   settleTimelineLabels();
+  // The week reads the same stores (events, dismissals, settings), so any
+  // repaint of the day repaints the week while it is the one on screen.
+  if (calWeek.on) renderCalWeek();
 }
 
 // ── WHAT A TIMELINE BOX HAS ROOM TO SAY (2026-09-15, Quentin's instruction) ──
@@ -1809,6 +1812,9 @@ function startReviewPass(step) {
   reviewPass.from = iso(from);
   reviewPass.to = iso(to);
   state.currentDate = new Date(from);
+  // A pass reads one day at a time and counts them, so it is the day view.
+  calWeek.on = false;
+  document.getElementById('cal-overlay').classList.remove('cal-wk');
   fetchOverridesForDate(state.currentDate).then(() => {
     openM('cal-overlay');
     // Over the runner when the pass was started FROM a review step, so the run
@@ -1960,6 +1966,7 @@ function initTimeline() {
     if (Date.now() - lastRefresh > SIX_HOURS) refreshExternal();
   });
   window.addEventListener('focus', focusRefresh);
+  initCalWeek();
 }
 
 // The VIEWED day's two halves, fetched together because they are two answers
@@ -2010,6 +2017,476 @@ function segmentRow(s) {
     label: s.label + (cont ? ' (cont.)' : ''),
     cont,
   };
+}
+
+// ── THE WEEK (2026-09-29, Quentin's "Calendar Week" design) ──────────────
+//
+// On a computer screen the Calendar can lay seven days side by side. It is a
+// READING of the week: each day's blocks and gates are the SERVER's answer for
+// that exact date — block_segments_for, and /api/gates/day, the dashboard's
+// own composition of the judge's resolution — fetched per date and cached
+// under it. Nothing here decides which blocks run on a Thursday or when a gate
+// closes, and nothing here moves one: the drags stay on the day view and a
+// gate's day stays on /gates. A day's header is the door into that day.
+//
+// WIDE SCREENS ONLY. The phone-shaped column cannot hold seven columns, so the
+// switch is not drawn below WEEK_MQ, and a window narrowed past it drops back
+// to the day rather than squeezing the week into it.
+const WEEK_MQ = window.matchMedia('(min-width: 1000px)');
+const WK_HOUR_PX = 46;
+// `days` is keyed by exact date; `pop` is the one popover open ('range' or
+// 'legend'); `focus` the gate the range panel was opened from; `objDate` the
+// date of the gate last pressed, so its menu's "Open in Gates…" lands on it.
+const calWeek = { on: false, start: null, days: {}, pop: null, focus: null,
+                  focusDate: null, objDate: null, scrollKey: null };
+
+function calWeekAvailable() { return WEEK_MQ.matches && !reviewPass.active; }
+
+function weekStartOf(ymd) {
+  return localDatePlusDays(ymd, -jsDateToDayOfWeek(new Date(ymd + 'T12:00:00')));
+}
+
+function weekDates() {
+  return [0, 1, 2, 3, 4, 5, 6].map(i => localDatePlusDays(calWeek.start, i));
+}
+
+async function setCalView(week) {
+  const on = !!week && calWeekAvailable();
+  const was = calWeek.on;
+  calWeek.on = on;
+  calWeek.pop = null;
+  document.getElementById('cal-overlay').classList.toggle('cal-wk', on);
+  if (on) {
+    // Both are DAY-view states, and neither has a meaning across seven days.
+    state.planMode = false;
+    state.gateSel = null;
+    await refreshCalWeek();
+  } else if (was) {
+    // The week may have paged the viewed date; the day view's own payloads are
+    // keyed by it, so they are re-read for wherever it landed.
+    await fetchOverridesForDate(state.currentDate);
+    renderTimeline();
+  }
+}
+
+async function refreshCalWeek() {
+  const start = weekStartOf(viewDay());
+  calWeek.start = start;
+  renderCalWeek();
+  const dates = weekDates();
+  // Two halves, each painted the moment it lands: the blocks come back fast,
+  // the gates' day (the judge's whole read-out, per gate) takes longer, and a
+  // week held blank until the slower half arrived read as an empty week. A
+  // failed read keeps what the day already had.
+  const fill = (field, pick) => results => {
+    if (calWeek.start !== start) return;   // paged on while these were out
+    dates.forEach((d, i) => {
+      const day = calWeek.days[d] || (calWeek.days[d] = { segments: [], gates: [] });
+      const v = pick(results[i], d);
+      if (v) day[field] = v;
+    });
+    renderCalWeek();
+  };
+  await Promise.all([
+    Promise.all(dates.map(d => apiGet(`/api/blocks/day?date=${d}`, null)))
+      .then(fill('segments', r => (Array.isArray(r) ? r : null))),
+    Promise.all(dates.map(d => apiGet(`/api/gates/day?date=${d}`, null)))
+      .then(fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))),
+  ]);
+}
+
+// The gates drawn on a day: running, or called off (a called-off day still
+// draws, as it does on the day view — the mark is the answer).
+function wkDayGates(d) {
+  return ((calWeek.days[d] || {}).gates || []).filter(g =>
+    g.active && (g.applies || g.skipped) && g.window && g.window.end_min != null);
+}
+
+// Met / missed / still to do / called off — the app's one gate vocabulary,
+// read off the served verdict. A closed day's verdict is the judge's (a frozen
+// row decides its own day); an open one has none yet.
+function wkGateState(g) {
+  if (g.skipped) return 'off';
+  if (!g.window.closed) return 'open';
+  return g.verdict && g.verdict.passed ? 'met' : 'missed';
+}
+
+function wkRole(nodeId) {
+  const id = String(nodeId);
+  if (String(state.settings.qr_wake_node_id || '') === id) return 'wake';
+  if (String(state.settings.qr_sleep_node_id || '') === id) return 'sleep';
+  return 'none';
+}
+
+// The hours shown: from the wake gate's earliest deadline this week to the
+// sleep gate's latest, the two gates the day view is clipped by. Either one
+// unset leaves that edge at the day's own.
+function calWeekRange(dates) {
+  const ends = role => dates.flatMap(d => wkDayGates(d)
+    .filter(g => g.applies && wkRole(g.node_id) === role).map(g => g.window.end_min));
+  const wakes = ends('wake'), sleeps = ends('sleep');
+  const start = wakes.length ? Math.floor(Math.min(...wakes) / 60) * 60 : 0;
+  let end = sleeps.length ? Math.ceil(Math.max(...sleeps) / 60) * 60 : DAY_MIN;
+  if (end <= start) end += DAY_MIN;
+  return { start, end };
+}
+
+function wkClock(min) {
+  return min === DAY_MIN ? '24:00' : clockHHMM(min) + (min > DAY_MIN ? ' +1d' : '');
+}
+
+// Events drawn side by side where they overlap, rather than on top of each
+// other: a cluster of overlapping events shares the column in lanes.
+function wkLanes(boxes) {
+  boxes.sort((a, b) => a.s - b.s || b.e - a.e);
+  let cluster = [], clusterEnd = -Infinity;
+  const flush = () => {
+    const n = Math.max(...cluster.map(b => b.lane)) + 1;
+    cluster.forEach(b => { b.lanes = n; });
+    cluster = [];
+    clusterEnd = -Infinity;
+  };
+  for (const b of boxes) {
+    if (cluster.length && b.s >= clusterEnd) flush();
+    const used = cluster.filter(c => c.e > b.s).map(c => c.lane);
+    let lane = 0;
+    while (used.includes(lane)) lane++;
+    b.lane = lane;
+    cluster.push(b);
+    clusterEnd = Math.max(clusterEnd, b.e);
+  }
+  if (cluster.length) flush();
+  return boxes;
+}
+
+const WK_SVG = {
+  prev: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>',
+  next: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+  sun: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>',
+  moon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
+  refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
+  info: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
+  close: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+};
+
+function renderCalWeek() {
+  const host = document.getElementById('cal-week');
+  if (!host || !calWeek.on || !calWeek.start) return;
+  const dates = weekDates();
+  const { start, end } = calWeekRange(dates);
+  const y = min => Math.round((min - start) / 60 * WK_HOUR_PX);
+  const H = y(end);
+  const today = wallDay();
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const hours = [];
+  for (let m = start; m <= end; m += 60) hours.push(m);
+  const clip = (s, e) => [Math.max(s, start), Math.min(e, end)];
+
+  const first = new Date(dates[0] + 'T12:00:00'), last = new Date(dates[6] + 'T12:00:00');
+  const title = first.getMonth() === last.getMonth()
+    ? `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()}–${last.getDate()}`
+    : `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()} – ${_MONTHS_SHORT[last.getMonth()]} ${last.getDate()}`;
+  const rangeLabel = `${wkClock(start)}–${wkClock(end)}`;
+  const DOW = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
+  const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
+  const legendBlocks = new Map();
+
+  const heads = dates.map((d, i) => {
+    const on = d === today;
+    return `<button class="wk-day${on ? ' wk-today' : ''}" data-wk="day" data-date="${d}"
+      title="Open ${escHtml(formatTodoDate(new Date(d + 'T12:00:00')))}">
+      <span class="wk-dow">${DOW[i]}</span>
+      <span class="wk-num">${new Date(d + 'T12:00:00').getDate()}</span></button>`;
+  }).join('');
+
+  const alldayByDay = dates.map(d => {
+    const dt = new Date(d + 'T12:00:00');
+    return state.gcalEvents.filter(e =>
+      e.allday && sameDay(dt, e.start) && !state.tlHidden.event[eventKey(e)]);
+  });
+  const hasAllday = alldayByDay.some(list => list.length);
+  const alldayRow = alldayByDay.map(list => `<div class="wk-allday-cell">${list.map(e =>
+    `<div class="wk-allday" data-wk="event" data-ev-key="${escHtml(eventKey(e))}"
+      style="--ev-color:${e.color || '#888888'}" title="${escHtml(e.summary || '')}">${
+      escHtml(e.summary || '')}</div>`).join('')}</div>`);
+
+  const cols = dates.map(d => {
+    const dt = new Date(d + 'T12:00:00');
+    const next = new Date(localDatePlusDays(d, 1) + 'T12:00:00');
+    const day = calWeek.days[d] || { segments: [], gates: [] };
+
+    const blocks = day.segments.map(segmentRow)
+      .filter(s => !s.cancelled && !state.tlHidden.block[`${s.b.id}:${d}`])
+      .map(s => {
+        const [a, b] = clip(s.startMin, s.endMin);
+        if (b <= a) return '';
+        legendBlocks.set(s.label.replace(/ \(cont\.\)$/, ''), s.b.color);
+        return `<div class="wk-block" data-obj="block:${s.b.id}" title="${escHtml(s.label)}"
+          style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}"></div>`;
+      }).join('');
+
+    // Next-day events count when the week runs past midnight — the day view's
+    // rule, for the same reason: the column IS that night.
+    const boxes = state.gcalEvents.filter(e => !e.allday && !state.tlHidden.event[eventKey(e)]
+        && (sameDay(dt, e.start) || (end > DAY_MIN && sameDay(next, e.start))))
+      .map(e => {
+        const base = sameDay(next, e.start) ? DAY_MIN : 0;
+        const s = base + isoMin(e.start);
+        let en = base + isoMin(e.end);
+        if (en <= s) en += DAY_MIN;
+        const [a, b] = clip(s, en);
+        return { ev: e, s: a, e: b };
+      }).filter(x => x.e > x.s);
+    const evs = wkLanes(boxes).map(x => {
+      const e = x.ev;
+      const top = y(x.s) + 1;
+      const h = Math.max(14, y(x.e) - y(x.s) - 2);
+      const w = 100 / x.lanes;
+      const time = isoToAmPm(e.start);
+      return `<div class="wk-ev${h < 30 ? ' wk-ev-short' : ''}${e.moved ? ' wk-ev-moved' : ''}" data-wk="event"
+        data-ev-key="${escHtml(eventKey(e))}" title="${escHtml(`${e.summary || 'Event'} · ${
+          isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"
+        style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${e.color || '#888888'}">
+        <div class="wk-ev-name">${escHtml(e.summary || '')}</div>
+        ${h >= 30 ? `<div class="wk-ev-time">${escHtml(time)}</div>` : ''}</div>`;
+    }).join('');
+
+    const gates = wkDayGates(d).filter(g => g.window.end_min >= start && g.window.end_min <= end)
+      .map(g => {
+        const st = wkGateState(g);
+        const role = wkRole(g.node_id);
+        const mark = role === 'wake' ? WK_SVG.sun : role === 'sleep' ? WK_SVG.moon
+          : '<span class="wk-gate-dot"></span>';
+        const say = { open: 'due', met: 'met', missed: 'missed', off: 'called off' }[st];
+        return `<button class="wk-gate wk-gate-${st}${role !== 'none' ? ' wk-gate-role' : ''}"
+          data-wk="gate" data-node="${g.node_id}" data-date="${d}" data-obj="gate:${g.node_id}"
+          data-obj-date="${d}" title="${escHtml(`${g.label} · ${say} ${hhmmToAmPm(clockHHMM(g.window.end_min))}`)}"
+          style="top:${y(g.window.end_min) - 7}px">${mark}</button>`;
+      }).join('');
+
+    const nowLine = d === today && nowMin >= start && nowMin <= end
+      ? `<div class="wk-now" style="top:${y(nowMin)}px"></div>` : '';
+
+    return `<div class="wk-col${d === today ? ' wk-col-today' : ''}" style="height:${H}px">
+      ${hours.map(m => `<div class="wk-line" style="top:${y(m)}px"></div>`).join('')}
+      ${blocks}<div class="wk-evs">${evs}</div>${gates}${nowLine}</div>`;
+  }).join('');
+
+  // ── the two popovers ──
+  const roleRows = () => {
+    const seen = new Map();
+    dates.forEach(d => wkDayGates(d).forEach(g => {
+      const r = seen.get(g.node_id) || { id: g.node_id, label: g.label, mins: [], n: 0 };
+      r.mins.push(g.window.end_min);
+      if (g.applies) r.n++;
+      seen.set(g.node_id, r);
+    }));
+    // A gate assigned a role but not running this week still has to be
+    // un-assignable from here, or the range would hang on something unseen.
+    ['qr_wake_node_id', 'qr_sleep_node_id'].forEach(k => {
+      const id = state.settings[k];
+      const n = (state.accountabilityNodes || []).find(x => String(x.id) === String(id));
+      if (n && !seen.has(n.id)) seen.set(n.id, { id: n.id, label: n.label, mins: [], n: 0 });
+    });
+    return [...seen.values()].map(r => {
+      const lo = Math.min(...r.mins), hi = Math.max(...r.mins);
+      const when = !r.mins.length ? 'not this week'
+        : lo === hi ? hhmmToAmPm(clockHHMM(lo))
+        : `${hhmmToAmPm(clockHHMM(lo))}–${hhmmToAmPm(clockHHMM(hi))}`;
+      const cur = wkRole(r.id);
+      const focused = String(calWeek.focus) === String(r.id);
+      return `<div class="wk-role-row${focused ? ' wk-role-focus' : ''}">
+        <div class="wk-role-name"><span>${escHtml(r.label)}</span>
+          <span class="wk-role-meta">${r.n}× this week · ${escHtml(when)}${focused && calWeek.focusDate
+            ? ` · <a href="#" data-wk="open-gate" data-node="${r.id}" data-date="${calWeek.focusDate}">Open in Gates ›</a>` : ''}</span></div>
+        <div class="wk-seg">${[['none', 'None'], ['wake', 'Wake'], ['sleep', 'Sleep']].map(([v, l]) =>
+          `<button class="${cur === v ? 'on' : ''}" data-wk="role" data-node="${r.id}" data-role="${v}">${l}</button>`).join('')}</div>
+      </div>`;
+    }).join('') || '<div class="wk-role-meta">No gates run this week.</div>';
+  };
+  const hasRoles = !!(state.settings.qr_wake_node_id || state.settings.qr_sleep_node_id);
+  const rangePop = calWeek.pop !== 'range' ? '' : `
+    <div class="wk-pop wk-range-pop">
+      <div class="wk-pop-head"><span>Wake &amp; sleep gates</span>
+        <button class="wk-icon" data-wk="range" title="Close">${WK_SVG.close}</button></div>
+      <div class="wk-pop-note">The calendar starts at your wake gate's earliest deadline and ends at
+        your sleep gate's latest. With neither set, it shows all 24 hours. The day view is clipped by
+        the same two gates.</div>
+      <div class="wk-roles">${roleRows()}</div>
+      <div class="wk-pop-foot"><span class="wk-mono">Showing ${rangeLabel}</span>
+        ${hasRoles ? '<button class="wk-link" data-wk="clear-roles">Back to 24 hours</button>' : ''}</div>
+    </div>`;
+  const calRows = (state.calendars || []).filter(c => c.active !== 0).map(c =>
+    `<span class="wk-leg"><span class="wk-leg-ev" style="--ev-color:${c.color || '#888888'}"></span>${escHtml(c.name || 'Calendar')}</span>`).join('');
+  const legendPop = calWeek.pop !== 'legend' ? '' : `
+    <div class="wk-pop wk-legend-pop">
+      <div class="wk-leg-sec"><span class="wk-leg-h">Blocks</span>${[...legendBlocks].map(([n, c]) =>
+        `<span class="wk-leg"><span class="wk-leg-block" style="--block-color:${c}"></span>${escHtml(n)}</span>`).join('')
+        || '<span class="wk-leg">None this week</span>'}</div>
+      <div class="wk-leg-sec"><span class="wk-leg-h">Events</span>${calRows || '<span class="wk-leg">No calendars</span>'}</div>
+      <div class="wk-leg-sec"><span class="wk-leg-h">Gates</span>
+        <span class="wk-leg"><span class="wk-leg-mark wk-gate-open"><span class="wk-gate-dot"></span></span>Due</span>
+        <span class="wk-leg"><span class="wk-leg-mark wk-gate-met"><span class="wk-gate-dot"></span></span>Met</span>
+        <span class="wk-leg"><span class="wk-leg-mark wk-gate-missed"><span class="wk-gate-dot"></span></span>Missed</span>
+        <span class="wk-leg"><span class="wk-leg-mark wk-gate-off"><span class="wk-gate-dot"></span></span>Called off</span>
+        <span class="wk-leg"><span class="wk-leg-mark wk-gate-open">${WK_SVG.sun}</span>Wake gate</span>
+        <span class="wk-leg"><span class="wk-leg-mark wk-gate-open">${WK_SVG.moon}</span>Sleep gate</span>
+        <span class="wk-leg-note">Click a gate to set its role.</span></div>
+    </div>`;
+
+  // The scroll survives a repaint; a new week or a new range starts fresh —
+  // at 07:00 when the whole day is shown, at the top when it is clipped.
+  const oldScroll = host.querySelector('.wk-scroll');
+  const keepTop = oldScroll ? oldScroll.scrollTop : 0;
+  const key = `${calWeek.start}|${start}|${end}`;
+
+  host.innerHTML = `
+    <div class="wk-head">
+      <div class="wk-nav">
+        <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
+        <span class="wk-title">${escHtml(title)}</span>
+        <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
+      </div>
+      <div class="wk-tools">
+        <button class="wk-btn wk-mono${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
+          title="Wake and sleep gates">${WK_SVG.sun}${rangeLabel}</button>
+        <button class="wk-btn" data-wk="today">Today</button>
+        <div class="wk-seg"><button data-cal-view="day">Day</button><button class="on" data-cal-view="week">Week</button></div>
+        <button class="wk-btn" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
+        <button class="wk-btn wk-icon" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh}</button>
+        ${fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
+      </div>
+    </div>
+    ${rangePop}
+    <div class="wk-grid wk-days">
+      <div class="wk-corner"><button class="wk-legend-btn${calWeek.pop === 'legend' ? ' on' : ''}"
+        data-wk="legend" title="Legend">${WK_SVG.info}</button></div>${heads}
+    </div>
+    ${hasAllday ? `<div class="wk-grid wk-allday-row"><div></div>${alldayRow.join('')}</div>` : ''}
+    ${legendPop}
+    <div class="wk-scroll">
+      <div class="wk-grid wk-body">
+        <div class="wk-gutter" style="height:${H}px">${hours.map(m =>
+          `<div class="wk-hour" style="top:${y(m) - 7}px">${wkClock(m).replace(' +1d', '')}</div>`).join('')}</div>
+        ${cols}
+      </div>
+    </div>`;
+
+  const sc = host.querySelector('.wk-scroll');
+  if (calWeek.scrollKey !== key) {
+    calWeek.scrollKey = key;
+    sc.scrollTop = start === 0 ? 7 * WK_HOUR_PX : 0;
+  } else {
+    sc.scrollTop = keepTop;
+  }
+}
+
+function closeCalWeekPops() {
+  if (!calWeek.on || !calWeek.pop) return false;
+  calWeek.pop = null;
+  calWeek.focus = null;
+  renderCalWeek();
+  return true;
+}
+
+// The wake and sleep gates are the SAME two settings Settings → Gates sets
+// (qr_wake_node_id / qr_sleep_node_id) — a view preference, not a gate write,
+// so it is set here and nothing about any gate's day moves.
+async function setWeekGateRole(nodeId, role) {
+  const id = nodeId == null ? null : String(nodeId);
+  const patch = {};
+  if (id == null) {
+    patch.qr_wake_node_id = null;
+    patch.qr_sleep_node_id = null;
+  } else {
+    if (role === 'wake') patch.qr_wake_node_id = id;
+    if (role === 'sleep') patch.qr_sleep_node_id = id;
+    if (role !== 'wake' && wkRole(id) === 'wake') patch.qr_wake_node_id = null;
+    if (role !== 'sleep' && wkRole(id) === 'sleep') patch.qr_sleep_node_id = null;
+  }
+  if (!Object.keys(patch).length) return;
+  const res = await apiSend('/api/settings', 'PATCH', patch).catch(() => null);
+  if (!res || !res.ok) { toast('Could not save that — nothing changed'); return; }
+  state.settings = await res.json();
+  renderTimeline();   // the day view is clipped by the same two gates
+}
+
+function initCalWeek() {
+  const host = document.getElementById('cal-week');
+  const overlay = document.getElementById('cal-overlay');
+  if (!host || !overlay) return;
+
+  // The Day | Week switch, in both headers. Delegated on the overlay, since
+  // the week's header is rebuilt on every paint.
+  overlay.addEventListener('click', e => {
+    const v = e.target.closest('[data-cal-view]');
+    if (!v) return;
+    setCalView(v.dataset.calView === 'week');
+  });
+
+  // Pressing a gate says which DAY its menu is about.
+  host.addEventListener('pointerdown', e => {
+    const g = e.target.closest('[data-obj-date]');
+    calWeek.objDate = g ? g.dataset.objDate : null;
+  }, true);
+
+  host.addEventListener('click', async e => {
+    const a = e.target.closest('[data-wk]');
+    const act = a ? a.dataset.wk : null;
+    // A click anywhere off an open popover puts it down, and does nothing else
+    // unless it landed on a control.
+    if (calWeek.pop && !e.target.closest('.wk-pop') && !['range', 'legend', 'gate'].includes(act)) {
+      calWeek.pop = null;
+      calWeek.focus = null;
+      renderCalWeek();
+      if (!a) return;
+    }
+    if (!a) return;
+    if (act === 'prev' || act === 'next') {
+      state.currentDate = new Date(localDatePlusDays(viewDay(), act === 'prev' ? -7 : 7) + 'T12:00:00');
+      await refreshCalWeek();
+    } else if (act === 'today') {
+      state.currentDate = new Date();
+      await refreshCalWeek();
+    } else if (act === 'range' || act === 'legend') {
+      calWeek.pop = calWeek.pop === act ? null : act;
+      calWeek.focus = null;
+      calWeek.focusDate = null;
+      renderCalWeek();
+    } else if (act === 'gate') {
+      calWeek.pop = 'range';
+      calWeek.focus = a.dataset.node;
+      calWeek.focusDate = a.dataset.date;
+      renderCalWeek();
+    } else if (act === 'role') {
+      await setWeekGateRole(a.dataset.node, a.dataset.role);
+    } else if (act === 'clear-roles') {
+      await setWeekGateRole(null);
+    } else if (act === 'open-gate') {
+      e.preventDefault();
+      openGatesDashboard(a.dataset.node, a.dataset.date);
+    } else if (act === 'day') {
+      state.currentDate = new Date(a.dataset.date + 'T12:00:00');
+      await setCalView(false);
+    } else if (act === 'plan') {
+      await setCalView(false);
+      state.planMode = true;
+      await refreshPlan(viewDay());
+      renderTimeline();
+    } else if (act === 'refresh') {
+      await refreshExternal();
+      await refreshCalWeek();
+    } else if (act === 'event') {
+      openEventPop(a.dataset.evKey, a);
+    }
+  });
+
+  // Narrowed past the week's width: back to the day, which fits.
+  WEEK_MQ.addEventListener('change', () => {
+    if (!WEEK_MQ.matches && calWeek.on) setCalView(false);
+  });
 }
 
 async function toggleBlockOverride(blockId) {
@@ -5892,7 +6369,8 @@ function renderGtdReview() {
 const OBJECT_KINDS = {
   // No settings sheet: `opens` is the gate's editor, on its own page.
   gate: { noun: 'gate', opensLabel: 'Open in Gates…',
-    opens: id => openGatesDashboard(id, viewDay()),
+    // From the week, the day of the gate that was pressed; else the viewed day.
+    opens: id => openGatesDashboard(id, (calWeek.on && calWeek.objDate) || viewDay()),
     find: id => (state.accountabilityNodes || []).find(n => String(n.id) === String(id)) },
   area: { noun: 'area',
     find: id => (state.areas || []).find(a => String(a.id) === String(id)) },
@@ -6317,6 +6795,8 @@ function initHub() {
     // A selected gate is transient state over the calendar — it peels after the
     // read-out it opens and before the overlay it is drawn on.
     if (clearGateSel()) return;
+    // The week's legend and range panel are transient over the calendar too.
+    if (closeCalWeekPops()) return;
     if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
     // (MAP's rows open the clarify sheet, and the bail above lets the sheet
     // peel first; its filter menu peels just above, before the overlay loop.
@@ -6420,7 +6900,13 @@ function initHub() {
 // the level inside it (a list, a routine's editor, a log, a settings section).
 async function openSurface(dest, sub) {
   sub = sub || {};
-  if (dest === 'calendar') { openM('cal-overlay'); renderTimeline(); }
+  if (dest === 'calendar') {
+    openM('cal-overlay');
+    // The week is remembered for the session; an address says which it is.
+    if (sub.view === 'week' || sub.view === 'day') await setCalView(sub.view === 'week');
+    else if (calWeek.on) await refreshCalWeek();
+    renderTimeline();
+  }
   else if (dest === 'lists') {
     refView.open = sub.list != null ? sub.list : null;
     refView.openFlow = sub.flow != null ? sub.flow : null;
@@ -6484,6 +6970,7 @@ function currentRoute() {
     if (refView.openFlow != null) return `lists/routine/${refView.openFlow}`;
     return refView.open != null ? `lists/${refView.open}` : 'lists';
   }
+  if (shown('cal-overlay') && calWeek.on) return 'calendar/week';
   for (const [id, name] of [['cal-overlay', 'calendar'], ['tab-tracking', 'tracking'],
                             ['tab-social', 'social']]) {
     if (shown(id)) return name;
@@ -6517,7 +7004,8 @@ async function openRoute(route) {
   }
   else if (top === 'logs') await openSurface('logs', { log: a ? decodeURIComponent(a) : null });
   else if (top === 'settings') await openSurface('settings', { section: a });
-  else if (['calendar', 'map', 'tracking', 'social'].includes(top)) await openSurface(top);
+  else if (top === 'calendar') await openSurface('calendar', { view: a === 'week' ? 'week' : 'day' });
+  else if (['map', 'tracking', 'social'].includes(top)) await openSurface(top);
 }
 
 async function initRoutes() {
