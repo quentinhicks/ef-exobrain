@@ -1559,11 +1559,17 @@ def _rebuild_source(source):
     storage.replace_source_events(source['id'], occurrences, datetime.now().isoformat())
 
 
+# A feed that fails KEEPS its last copy — and SAYS so (2026-09-30). Google
+# answers 429 to a feed fetched too often, and this used to swallow it: the
+# refresh returned 200, the deleted events stayed, and the button read as
+# broken. Returns the refusal, or None.
 def _rebuild_source_safe(source):
     try:
         _rebuild_source(source)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"calendar {source.get('name')!r} not refreshed: {e}")
+        return {'name': source.get('name') or 'a calendar', 'error': str(e)}
+    return None
 
 
 @app.route('/api/gcal')
@@ -1597,15 +1603,16 @@ def gcal_move():
 
 def _refresh_all_calendars():
     sources = storage.get_calendar_sources()
-    if sources:
-        with ThreadPoolExecutor(max_workers=len(sources)) as ex:
-            list(ex.map(_rebuild_source_safe, sources))
+    if not sources:
+        return []
+    with ThreadPoolExecutor(max_workers=len(sources)) as ex:
+        return [f for f in ex.map(_rebuild_source_safe, sources) if f]
 
 
 @app.route('/api/gcal/refresh', methods=['POST'])
 def refresh_gcal():
-    _refresh_all_calendars()
-    return jsonify(storage.get_gcal_events())
+    failed = _refresh_all_calendars()
+    return jsonify({'events': storage.get_gcal_events(), 'failed': failed})
 
 
 # Calendar WRITES (2026-08-11). Config-gated: gcal_write_calendar_id names the

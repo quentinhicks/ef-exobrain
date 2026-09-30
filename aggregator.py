@@ -51,9 +51,21 @@ def expand_rrule(rrule_str, dtstart, duration):
     # calendar. This feeds a calendar view, not an archive.
     end = rule.get('UNTIL') or (max(dtstart.date(), datetime.now().date()) + timedelta(days=365))
     days = recurrence.between(rule, dtstart.date(), dtstart.date(), end)
+    # UNTIL IS AN INSTANT, not a day (2026-09-30, Quentin's report: deleted
+    # events still there). recurrence.py answers the DAY question and keeps
+    # UNTIL's date inclusive, which is right for a date-only UNTIL. But
+    # Google's "delete this and following events" ends a series with a UTC
+    # instant just before the first deleted occurrence — 20260831T065959Z for
+    # a Monday 17:00 meeting — so the deleted Monday's DATE passed the bound and
+    # its occurrence came back on every refresh. The time half belongs here,
+    # beside the other time-of-day work.
+    m = re.search(r'(?:^|;)UNTIL=([^;]+)', rrule_str)
+    until = _parse_dt(m.group(1)) if m and 'T' in m.group(1) else None
     out = []
     for d in days:
         start = datetime.combine(d, dtstart.time())
+        if until and start > until:
+            continue
         out.append((_fmt(start), _fmt(start + duration)))
     return out
 

@@ -1840,8 +1840,16 @@ async function refreshExternal() {
     apiSend('/api/sheets/refresh', 'POST').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     fetch(`/api/accountability/outcomes?from=${localDatePlusDays(todayStr, -4)}&to=${todayStr}`).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
   ]);
-  if (gcalResult.status === 'fulfilled') state.gcalEvents = gcalResult.value;
-  else fetchFailed = true;
+  if (gcalResult.status === 'fulfilled') {
+    state.gcalEvents = gcalResult.value.events;
+    // A calendar Google refused keeps its last copy — say which, or a deleted
+    // event that stays reads as a refresh that does nothing.
+    const failed = gcalResult.value.failed || [];
+    if (failed.length) {
+      toast(`Not refreshed: ${failed.map(f => f.name).join(', ')}${
+        failed.some(f => /429/.test(f.error)) ? ' — Google is rate-limiting, try again in a few minutes' : ''}`);
+    }
+  } else fetchFailed = true;
   // The sheet refresh SEEDS and RETRACTS real pool items now rather than
   // returning a strip to paint, so there is nothing to read off the response —
   // refreshEngage() below re-reads /api/inbox/active, which is where seeded

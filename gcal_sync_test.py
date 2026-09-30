@@ -129,6 +129,35 @@ storage.insert_gcal_event(src['id'], 'deleted-later', 'x', at(recent, '09:00'), 
 storage.replace_source_events(src['id'], [row('future', today)], datetime.now().isoformat())
 eq('a future-only feed does not wipe the last month', {'kept-past', 'deleted-later'} <= uids(), True)
 
+# "Delete this and following" ends a series with a UTC INSTANT just before the
+# first deleted occurrence (2026-09-30). recurrence.py keeps UNTIL's DATE
+# inclusive, so the deleted day came back until the time half was checked.
+from datetime import timezone   # noqa: E402
+cut = today + timedelta(days=7)
+until = (datetime.combine(cut, datetime.min.time()).replace(hour=17).astimezone()
+         - timedelta(seconds=1)).astimezone(timezone.utc)
+starts = [s for s, _ in aggregator.expand_rrule(
+    f"FREQ=DAILY;UNTIL={until.strftime('%Y%m%dT%H%M%SZ')}",
+    datetime.combine(today, datetime.min.time()).replace(hour=17), timedelta(hours=1))]
+eq('a UTC UNTIL just before an occurrence drops that occurrence',
+   f'{cut.isoformat()}T17:00:00' in starts, False)
+eq('...and keeps the one before it', f'{(cut - timedelta(days=1)).isoformat()}T17:00:00' in starts, True)
+starts = [s for s, _ in aggregator.expand_rrule(
+    f'FREQ=DAILY;UNTIL={ical(cut)}',
+    datetime.combine(today, datetime.min.time()).replace(hour=17), timedelta(hours=1))]
+eq('a date-only UNTIL is still inclusive', f'{cut.isoformat()}T17:00:00' in starts, True)
+
+# A feed Google refuses keeps its last copy, and the refresh SAYS which.
+real_fetch = app.fetch_gcal
+def refuse(url):
+    raise OSError('HTTP Error 429: Too Many Requests')
+app.fetch_gcal = refuse
+failed = app._rebuild_source_safe({'id': src['id'], 'name': 'Personal', 'url': 'x'})
+app.fetch_gcal = real_fetch
+eq('a refused feed is reported by name', failed and failed['name'], 'Personal')
+eq('...with the reason Google gave', '429' in (failed or {}).get('error', ''), True)
+eq('...and its events are kept', 'future' in uids(), True)
+
 print()
 if fails:
     print(f'{len(fails)} failure(s)')
