@@ -194,6 +194,19 @@ const objectVerbProviders = new Map();
 // provider per repaint, each answering for a day that has since moved.
 function registerObjectVerbs(name, fn) { objectVerbProviders.set(name, fn); }
 
+// THE GATES DASHBOARD IS WHERE A GATE IS CHANGED (2026-09-29, Quentin's
+// instruction). Its configuration, its day-level moves and call-offs, its
+// tags and the money switches all live on /gates (templates/gates.html +
+// static/gates.js) and nowhere in this file: one editor, so two cannot drift.
+// This window still DRAWS gates and reads them out; every door that used to
+// write one now opens the dashboard at that gate and day.
+function openGatesDashboard(nodeId, date) {
+  const parts = [];
+  if (date && date !== wallDay()) parts.push(`date=${date}`);
+  if (nodeId != null) parts.push(`sel=${nodeId}`);
+  location.href = '/gates' + (parts.length ? '#' + parts.join('&') : '');
+}
+
 const state = {
   currentDate: new Date(),
   gcalEvents: [],
@@ -255,7 +268,7 @@ const state = {
   // Blocks and events only. A GATE used to be dismissible here too, which
   // made the pill vanish while the judge charged the day exactly as before:
   // this is a VIEW store, and a gate's day-level state is a fact the judge has
-  // to see. Calling a gate's day off is a real write now (setGateSkip).
+  // to see. Calling a gate's day off is a real write, made on /gates.
   tlHidden: { block: {}, event: {} },
 };
 
@@ -1346,31 +1359,6 @@ registerObjectVerbs('timeline-block', (kind, id, el) => {
         renderTimeline();
       } },
   ];
-});
-
-// THE TIMELINE'S OWN VERBS for a gate. Calling a day off is a MONEY decision,
-// so it says which day it means and whether the 24h lock has already shut it —
-// the state is read off day_windows, which the server serves, rather than
-// decided here.
-registerObjectVerbs('timeline-gate', (kind, id, el) => {
-  if (kind !== 'gate' || !el.closest('#tl-qr-layer, #tl-body')) return [];
-  const pageDate = viewDay();
-  const node = (state.accountabilityNodes || []).find(n => String(n.id) === String(id));
-  if (!node) return [];
-  const entry = (node.day_windows || {})[pageDate];
-  if (!entry) return [];
-  const skipped = !!entry.skipped;
-  return [{
-    label: skipped ? 'Put this day back on' : 'Call this day off',
-    danger: !skipped,
-    run: () => setGateSkip(node.id, pageDate, !skipped).then(done => {
-      if (!done) return;
-      toast(skipped ? `"${node.label}" is back on for this day`
-                    : `"${node.label}" is off for this day`);
-      undoableGateSkip(node.id, pageDate, skipped,
-                       skipped ? `put "${node.label}" back` : `called off "${node.label}"`);
-    }),
-  }];
 });
 
 // The color bar is the manipulation surface (mirrors gate pills): top/bottom
@@ -2550,94 +2538,6 @@ function patchInboxItem(id, body) {
 //
 // `undo_test.py` is the mechanical half: a drag that writes must reach one of
 // these, or say in the test why it does not.
-async function restoreGateWindow(nodeId, date, prev) {
-  const key = `${nodeId}:${date}`;
-  let res;
-  if (prev) {
-    res = await apiSend(`/api/accountability/nodes/${nodeId}/overrides`, 'POST', {
-      date, window_start: prev.window_start, window_end: prev.window_end,
-      window_end_offset_days: prev.window_end_offset_days || 0 });
-    if (res && res.ok) {
-      state.qrPageOverrides[key] = { date, window_start: prev.window_start,
-        window_end: prev.window_end,
-        window_end_offset_days: prev.window_end_offset_days || 0 };
-    }
-  } else {
-    res = await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${date}`, 'DELETE');
-    if (res && res.ok) delete state.qrPageOverrides[key];
-  }
-  // The 24h lock can refuse an undo, and silence would read as "done" while
-  // the window stayed where the drag left it.
-  if (!res || !res.ok) {
-    const msg = res ? await res.json().catch(() => ({})) : {};
-    toast(msg.error || 'Could not undo that window');
-    return;
-  }
-  if (isToday(state.currentDate)) {
-    state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
-  }
-  if (state.gateSel && state.gateSel.nodeId === nodeId && state.gateSel.date === date) {
-    await refreshGateSel();
-  } else {
-    renderTimeline();
-  }
-}
-
-function undoableGateWindow(nodeId, date, prev, label) {
-  pushUndo(label, () => restoreGateWindow(nodeId, date, prev));
-}
-
-// CALLING A GATE'S DAY OFF, and putting it back. One store behind two doors
-// (the pill's right-click / long-press and the read-out's button), because a
-// day-level statement about a gate belongs on the gate's day surface — the
-// timeline — and both gestures had better write the same thing.
-//
-// The server owns both halves of the judgment: which window is being called
-// off (it resolves and stamps it) and whether the 24h lock refuses the skip.
-// So a refusal is READ BACK and toasted rather than predicted here.
-async function setGateSkip(nodeId, date, want) {
-  const res = want
-    ? await apiSend(`/api/accountability/nodes/${nodeId}/overrides`, 'POST',
-                    { date, skipped: true })
-    : await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${date}`, 'DELETE');
-  if (!res || !res.ok) {
-    const msg = res ? await res.json().catch(() => ({})) : {};
-    toast(msg.error || (want ? 'Could not call that day off' : 'Could not put that day back'));
-    return false;
-  }
-  // day_windows carries the mark, so the pill cannot redraw correctly until
-  // the nodes are re-read. The judge's own answer, not a local guess.
-  state.accountabilityNodes = await apiGet('/api/accountability/nodes',
-                                           state.accountabilityNodes);
-  renderTimeline();
-  return true;
-}
-
-// A GESTURE IS A BUTTON, and this one moves money — calling a day off is the
-// difference between a charge and an 'n/a'. Its inverse is the state the day
-// was in, so undoing a skip re-commits the day and undoing an un-skip calls it
-// off again. Un-skipping is a tightening and the lock never refuses it, so the
-// undo of a skip always lands.
-function undoableGateSkip(nodeId, date, wasSkipped, label) {
-  pushUndo(label, async () => {
-    if (await setGateSkip(nodeId, date, wasSkipped)) {
-      if (state.gateSel) await refreshGateSel();
-    }
-  });
-}
-
-// The routine's deadline is its OFFSET from the gate, so its inverse is the
-// offset it had. Putting a smaller one back also cancels the 24h easing the
-// forward drag queued — tightening applies at once and clears the pending, so
-// undoing a queued easing needs nothing else.
-function undoableRoutineOffset(flowId, prevOffset, label) {
-  pushUndo(label, async () => {
-    const res = await apiSend(`/api/flows/${flowId}`, 'PATCH', { offset_min: prevOffset });
-    if (!res || !res.ok) { toast('Could not undo the routine deadline'); return; }
-    if (state.gateSel) await refreshGateSel(); else renderTimeline();
-  });
-}
-
 async function restoreBlockOverride(blockId, date, prev, createdId) {
   let res;
   if (prev) {
@@ -3542,256 +3442,6 @@ function closeSeSheet() {
   closeOver('se-sheet');
 }
 
-// ── A gate's NFC tags ─────────────────────────────────────────
-//
-// Rows on the gate's sheet, each opening the tag's own sheet — the same
-// arrangement a routine's steps have, and for the same reason: a flat field
-// list cannot hold a list of things that each need editing, pausing and
-// deleting. Which gate a new tag belongs to is remembered here, because
-// openSeSheet takes a kind and an item and a tag being CREATED has no item to
-// carry its parent.
-const tagSheetView = { gate: null, reveal: false };
-
-function tagState(t) {
-  if (!t.keys_set) return 'no keys yet';
-  if (t.pending_live_at) return `starts ${t.pending_live_at.slice(0, 16).replace('T', ' ')}`;
-  if (!t.active) return 'paused';
-  if (!t.last_tap_at) return 'live, never tapped';
-  return `last tap ${t.last_tap_at.slice(0, 16).replace('T', ' ')}`;
-}
-
-// HOW TO PROGRAM A TAG, in the one place the decision is made. Tag-only proof
-// is the only setting here that cannot be finished inside the app: half of it
-// happens in a third-party NFC writer, and getting the SDM options wrong makes
-// a tag that reads fine and never satisfies the gate. So the steps live behind
-// an ⓘ on the Proof row rather than in a document nobody has open at the time.
-// It is a disclosure, not a tooltip — a phone has no hover to find one with.
-const TAG_SETUP_INFO = [
-  { h: 'Before you open NFC.cool', start: 1, items: [
-    { t: 'Get the UID. Read the tag with NFC.cool — it shows the chip type and '
-       + 'the UID. You want the 7-byte, 14-hex-character value.' },
-    { t: 'Add the tag here NOW: + Tag → name, UID, then Generate. The app picks '
-       + 'the two AES-128 keys and SHOWS them, one Copy button each, so they '
-       + 'can go straight into the writer. Adding it before programming means a '
-       + 'half-failed write never leaves you holding a configured tag whose '
-       + 'keys are nowhere.', sub: [
-      'Copy both while the sheet is open, or keep it open while you program: '
-        + 'once saved they are never shown again, the same contract the '
-        + 'Beeminder token keeps.',
-      'Lost them anyway? Generate a fresh pair and rewrite the tag. There is '
-        + 'no lookup, by design.',
-      'Pasting a pair the writer generated works too — but as HEX. NFC.cool '
-        + 'will take a key as a passphrase, and a passphrase whose bytes you '
-        + 'cannot see is a key you cannot enter here.',
-    ] },
-    { t: 'Copy the tap URL — the row above the tags has its own Copy button. '
-       + 'The zeros are placeholders; the tag overwrites them on every tap.',
-      code: 'https://<host>:8443/t?e=000…000&c=0000000000000000' },
-  ] },
-  { h: 'In NFC.cool Tools', start: 4, items: [
-    { t: 'Write the NDEF URL — the full tap URL you copied, zeros included.' },
-    { t: 'Turn on SUN / SDM on the NDEF file (file 02):', sub: [
-      'Encrypted PICC data mirror positioned at the e= zeros, with UID '
-        + 'mirroring and read-counter mirroring both on. Not the plain '
-        + 'uid=…&ctr=… variant — that one is rejected deliberately.',
-      'SDMMAC mirror positioned at the c= zeros.',
-      'No encrypted file data, and MAC input offset = MAC offset (the MAC '
-        + 'covers nothing but itself). Some apps word this as “SDM MAC input '
-        + 'starts at the MAC” — same thing.',
-      'NDEF file read access: free, no key, so any phone can follow the URL.',
-      'SDM Meta Read key → the slot for the meta key; SDM File Read key → the '
-        + 'slot for the file key. Slot numbers are yours to choose — this app '
-        + 'stores key VALUES, not slot numbers.',
-    ] },
-    { t: 'Change the keys LAST, entering them as hex, not as a passphrase. '
-       + 'Doing it after the URL and the SDM config means every earlier step '
-       + 'ran on the easy factory auth, so a failure midway leaves a tag you '
-       + 'can still talk to. If you also change key 0 (the master), write it '
-       + 'down somewhere durable — lose it and the tag can never be '
-       + 'reconfigured.' },
-    { t: 'Leave it in AES mode. If you see an LRP option, do not.' },
-  ] },
-  { h: 'Then', start: 8, items: [
-    { t: 'Back here: set Proof to “NFC tag only”. It refuses until the tag and '
-       + 'its keys are in place — that refusal is the check working.' },
-    { t: 'Tap it. You should get “Logged — <tag name>, read N”. If you do not, '
-       + 'open this gate and read “Last taps” — every tap is recorded there, '
-       + 'refused ones with the reason, so a wrong meta key (picc_data will '
-       + 'not decrypt) reads differently from a wrong file key (cmac fails) '
-       + 'or a counter mirror that was never turned on.' },
-    { t: 'Nothing in Last taps at all means the tap never reached the VM — the '
-       + 'funnel or the URL, not the keys. To check the two mirrors by hand, '
-       + "copy e= and c= out of the phone's address bar:",
-      code: 'python ntag.py <e> <c> <meta-key> <file-key>' },
-  ] },
-];
-
-function gateRoutineName(flowId) {
-  const f = (state.gateRoutines || []).find(x => String(x.id) === String(flowId));
-  return f ? f.name : 'its routine';
-}
-
-
-// One line about the routine this gate demands: what it is, and the two facts
-// you would otherwise open it to see.
-function gateRoutineLine(flowId, noDeadline) {
-  const f = (state.gateRoutines || []).find(x => String(x.id) === String(flowId));
-  if (!f) return 'its routine';
-  // On a ROUTINE gate there is no deadline to name: the commitment is the wall
-  // day. Its own window still says when the runner shows it due, so that is
-  // kept where it exists and the derived "due when this gate closes" — which
-  // describes a rule this kind of gate does not have — is not.
-  const bits = [flowWindowLabel(f) || (noDeadline ? 'any time that day' : (f.offset_min
-    ? `due ${f.offset_min > 0 ? '+' : ''}${f.offset_min}m from this deadline`
-    : 'due when this gate closes'))];
-  if (f.as_task) bits.push('also a task');
-  return `${f.name} · ${bits.join(' · ')}`;
-}
-
-// Into the routine's own sheet, and back here when it is saved.
-function openRoutineFromGate(node, flowId) {
-  const f = (state.gateRoutines || []).find(x => String(x.id) === String(flowId));
-  if (!f) return;
-  openSeSheet('routine', f, async () => {
-    await renderQrManager();
-    const fresh = (state.accountabilityNodes || []).find(n => n.id === node.id);
-    if (fresh) { openSeSheet('gate', fresh); return; }
-    closeSeSheet();
-    renderSettingsIndex();
-  });
-}
-
-function gateTagRows(n) {
-  // THE TAP URL IS COPYABLE, like the scan link further down the sheet. It used
-  // to be printed inside the + Tag row's sentence, which made a 70-character
-  // string carrying two runs of placeholder zeros something you had to select
-  // by hand on a phone and retype into an NFC writer byte-perfect. That is a
-  // step that can only be done wrong.
-  const rows = n.tap_url ? [{
-    key: 'tap_url', label: 'Tap URL', kind: 'action', mono: true,
-    text: n.tap_url, action: 'Copy', keepOpen: true,
-    hint: 'Write this to the tag as its NDEF URL, zeros included — SDM overwrites'
-        + ' them with the encrypted PICC data and the MAC on every tap.',
-    run: () => copyAndSay(n.tap_url, 'Tap URL'),
-  }] : [];
-  const tags = (n.tags || []).map((t, i) => ({
-    key: `tag_${t.id}`, label: i === 0 ? 'Tags' : '', kind: 'action',
-    text: `${t.label} · ${t.uid} · ${tagState(t)}`,
-    action: 'Edit', keepOpen: true,
-    run: () => openGateTagSheet(n, t),
-  }));
-  tags.push({
-    key: 'tag_add', label: tags.length ? '' : 'Tags', kind: 'action',
-    text: n.tap_url
-      ? 'name it, paste its UID, then generate or paste its two keys'
-      : 'set a Scan URL in Connections first — a tag needs somewhere to point',
-    action: '+ Tag', keepOpen: true,
-    hint: tags.length
-      ? 'A tag belongs to this gate only. On a tag-only gate a NEW tag starts'
-        + ' counting in 24h — it is another way to clear the gate.'
-      : 'A tag proves you were AT the thing. Program the URL above into an NTAG'
-        + ' 424 DNA with SDM mirroring on, using the keys the tag sheet makes.',
-    run: () => openGateTagSheet(n, null),
-  });
-  return rows.concat(tags);
-}
-
-// TWO AES-128 KEYS, FROM THE CSPRNG AND NOWHERE ELSE. Math.random() is not one
-// — it is seeded and predictable in bulk — and these keys are the entire reason
-// a captured tap URL is worthless, on the path that moves real money. If a
-// browser somehow has no crypto.getRandomValues, REFUSE: a weaker key looks
-// exactly like a strong one, and nothing downstream could ever tell.
-function randomTagKey() {
-  const b = new Uint8Array(16);
-  crypto.getRandomValues(b);
-  return Array.from(b, x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
-}
-
-function generateTagKeys() {
-  if (!(window.crypto && crypto.getRandomValues)) {
-    seSheetRefuse('This browser has no cryptographic random source — paste keys'
-      + ' from your tag writer instead.');
-    return;
-  }
-  seSheet.values.meta = randomTagKey();
-  seSheet.values.mac = randomTagKey();
-  // SHOWN, not hidden. Everywhere else a key is write-only because reading one
-  // back has no honest use; here the tag is the other half of the pair and a
-  // key you cannot read is a key you cannot program. So the reveal is scoped to
-  // the sitting that generated it — the server still never hands one back, and
-  // reopening the sheet puts the password fields back.
-  tagSheetView.reveal = true;
-  renderSeSheet();
-}
-
-// DID THE TAP LAND. The one part of a hard gate that happens away from the
-// app — you hold a phone to a tag and walk off — so the app owes an answer
-// afterwards. Both halves: a verified tap with its read counter, and a REFUSED
-// one with the reason, which lives nowhere else (the scan server used to
-// print() it to the VM's stdout and that was that).
-//
-// A tap that does not decrypt belongs to no gate, so the server sends those
-// too, marked. They are the ones worth seeing: a tag programmed with the
-// factory key produces a perfectly well-formed tap that names nobody.
-function tapLine(t) {
-  const who = t.orphan ? 'unidentified tag' : (t.tag_label || 'tag');
-  return `${t.ok ? '✓' : '✗'} ${t.at || '??'} · ${who} · `
-    + (t.ok ? `read ${t.counter}` : (t.reason || 'refused'));
-}
-
-async function loadGateTaps(nodeId) {
-  const had = (state.gateTaps || {}).nodeId === nodeId ? state.gateTaps.rows : null;
-  state.gateTaps = { nodeId, rows: had };
-  let rows = had;
-  try {
-    const r = await fetch(`/api/accountability/nodes/${nodeId}/taps`);
-    // A dead endpoint falls back to what was already on screen, never to an
-    // empty list — "no taps" is a claim, and one this read-out must not make
-    // on the strength of a failed fetch.
-    if (r.ok) rows = await r.json();
-  } catch (e) { /* keep what we had */ }
-  if ((state.gateTaps || {}).nodeId !== nodeId) return;   // another gate opened
-  state.gateTaps = { nodeId, rows: rows || [] };
-  if (seSheet.kind === 'gate' && (seSheet.item || {}).id === nodeId) renderSeSheet();
-}
-
-function gateTapRows(n) {
-  const cache = state.gateTaps || {};
-  const rows = cache.nodeId === n.id ? cache.rows : null;
-  const head = {
-    key: 'taps', label: 'Last taps', kind: 'action',
-    text: rows === null ? 'reading…'
-      : rows.length ? '' : 'nothing yet — tap the tag, then Refresh',
-    action: 'Refresh', keepOpen: true,
-    hint: 'Every tap of this gate, verified or refused. A refusal says which'
-        + ' stage failed, so a wrong meta key reads differently from a counter'
-        + ' mirror that was never turned on.',
-    run: () => loadGateTaps(n.id),
-  };
-  return [head].concat((rows || []).map(t => ({
-    key: `tap_${t.id}`, label: '', kind: 'static', mono: true, text: tapLine(t),
-  })));
-}
-
-function openGateTagSheet(node, tag) {
-  tagSheetView.gate = node;
-  tagSheetView.reveal = false;
-  openSeSheet('gatetag', tag);
-}
-
-// Back to the gate it belongs to, with fresh numbers — the tag sheet replaced
-// the gate's sheet on the way in, so this is the way back.
-async function backToGateSheet() {
-  const gate = tagSheetView.gate;
-  await renderQrManager();
-  const fresh = (state.accountabilityNodes || []).find(n => n.id === (gate || {}).id);
-  if (fresh) { openSeSheet('gate', fresh); return; }
-  // Nothing to go back to (the gate was deleted from another surface): close,
-  // rather than leave a sheet open over a gate that no longer exists.
-  closeSeSheet();
-  renderSettingsIndex();
-}
-
 function seFieldHtml(f, v) {
   // A DISCLOSURE, not a tooltip: there is no hover on a phone, so the ⓘ is a
   // full-width button and the steps open in place, under the row they are
@@ -4584,17 +4234,15 @@ const SETTINGS_SHEETS = {
           seSheet.values.sourceLabel = '';
           renderSeSheet();
         } }] : []),
-      // A ROUTINE IS CONFIGURED WHERE IT IS USED (2026-08-24, Quentin's
-      // instruction). One that gates a gate is reached from that gate and says
-      // so here; the offset is its field, because it is the routine's column
-      // and belongs beside the deadline it shifts, not on two surfaces at once.
-      ...(it && it.qr_node_id ? [{ key: 'gateline', label: 'Gates', kind: 'static',
+      // A GATED ROUTINE'S DEADLINE belongs to its gate: the offset from the
+      // gate's close is set on /gates with the gate's other settings
+      // (2026-09-29), so this sheet names the gate and hands over to it.
+      ...(it && it.qr_node_id ? [{ key: 'gateline', label: 'Gates', kind: 'action',
         text: ((state.accountabilityNodes || []).find(n => n.id === it.qr_node_id)
-               || {}).label || 'a gate' }] : []),
-      ...(it && it.qr_node_id && !v.source ? [{ key: 'offset', label: 'Due', kind: 'number',
-        half: true, suffix: 'min', placeholder: '0',
-        hint: 'Minutes from that gate\u2019s deadline — negative is before it. '
-          + 'Later waits 24h, like every other easing.' }] : []),
+               || {}).label || 'a gate',
+        action: 'Open in Gates', keepOpen: true,
+        hint: 'Its deadline relative to the gate is set there, with the gate.',
+        run: () => openGatesDashboard(it.qr_node_id, null) }] : []),
       { key: 'as_task', label: 'Also a task', kind: 'check',
         on: 'in the pool', off: 'off', rerender: true,
         hint: 'Seeds an ordinary next action on the days it runs, so a routine '
@@ -4978,540 +4626,6 @@ const SETTINGS_SHEETS = {
     remove: async l => {
       await apiSend(`/api/locations/${l.id}`, 'DELETE');
       await renderQrManager();
-    },
-  },
-
-  // A gate loosened (wider window, larger radius) only takes effect in 24h —
-  // the server answers with what it deferred, and the sheet says so.
-  gate: {
-    // The tap read-out is FETCHED, so it starts here rather than from a render
-    // that would fire again on every keystroke.
-    onOpen: n => { if (n) loadGateTaps(n.id); },
-    title: it => it ? it.label : 'Add gate',
-    save: it => it ? 'Save gate' : 'Create gate',
-    removeLabel: n => (n && n.active ? 'Delete gate (in 24h)' : 'Delete gate'),
-    // Deleting a LIVE gate is offered, and takes the 24h road like every other
-    // easing (2026-08-15). Refusing it until the gate was deactivated was two
-    // waits for one decision, and the button read as broken. Turning the gate
-    // back on cancels a queued deletion, same as it cancels a queued disable.
-    canRemove: () => true,
-    confirm: n => (n && n.active
-      ? 'Delete this gate? Anything that lets you off waits 24h — it goes '
-        + 'tomorrow, and re-activating it before then calls the deletion off.'
-      : 'Delete this gate permanently? Its scan link stops working.'),
-    blank: () => ({
-      label: '', source: '', sourceLabel: '',
-      location: '', radius: '', stake: '', routine: '', effective: '',
-    }),
-    load: n => {
-      // A gate with a pending deactivation reads as Inactive here, so turning
-      // it back on is what cancels that — `active0` remembers which way the
-      // toggle started, since `n.active` is still 1 while the disable waits.
-      const off = (n.pending_changes || []).some(p => p.field === 'active' && String(p.new_value) === '0');
-      const active = !!n.active && !off;
-      return {
-        source: n.source_uid || '', source0: n.source_uid || '',
-        sourceLabel: n.schedule_label || '',
-        location: '', radius: n.geofence_radius_m || '',
-        active, active0: active,
-        proof: n.proof_mode || 'link', proof0: n.proof_mode || 'link',
-        // '1' / '0' as strings: a select's value is text, and comparing it to
-        // the loaded one is how the save knows whether it changed at all.
-        allDay: n.all_day ? '1' : '0', allDay0: n.all_day ? '1' : '0',
-        // Always blank on open: a date is a decision about the save you are
-        // making now, not a property of the gate. Re-showing the last one
-        // would silently re-date the next edit.
-        effective: '',
-        // Dollars in the field, cents in the column. Blank means "use the
-        // default", which is a different thing from zero.
-        stake: n.charge_cents == null ? '' : (n.charge_cents / 100).toFixed(2),
-        routine: n.routine_id == null ? '' : String(n.routine_id),
-        routine0: n.routine_id == null ? '' : String(n.routine_id),
-      };
-    },
-    fields: (v, it) => {
-      // `active` is left out of the list below because the State row above IS
-      // that change — but the row alone cannot say WHEN, and a pause dated to
-      // Wednesday reading as a flat "Paused" is the ambiguity this whole
-      // feature exists to remove. So the day goes in its hint.
-      const scanKind = v.proof !== 'routine' && v.proof !== 'hours';
-      const pending = it ? (it.pending_changes || []).filter(p => p.field !== 'active') : [];
-      const pausedFrom = it ? (it.pending_changes || [])
-        .find(p => p.field === 'active' && falsyFlag(p.new_value)) : null;
-      return [
-        ...(it ? [] : [{ key: 'label', label: 'Label', kind: 'text', placeholder: 'e.g. Desk' }]),
-        // WHEN this gate runs is a schedule source, edited in the picker — the
-        // same object a block or a task would hold. The four fields that used to
-        // live here (from, to, crosses-midnight, days) and the per-day windows
-        // are all expressible as one rule or one schedule, so the gate no longer
-        // carries a second grammar for time.
-        { key: 'source', label: 'Repeats', kind: 'openpicker',
-          text: v.sourceLabel || 'not set yet',
-          hint: it ? 'Anything that makes the schedule easier waits 24h.' : null,
-          open: draft => openPicker({
-            sourceUid: draft.source || null,
-            noFollows: true,
-            onSaved: async (uid, src) => {
-              draft.source = uid;
-              draft.sourceLabel = src.label || describeDraft();
-              renderSeSheet();
-            },
-          }) },
-        { key: 'location', label: 'Location', kind: 'select', half: true,
-          options: () => seLocationOptions(it ? '— keep current —' : '— none —') },
-        { key: 'radius', label: 'Radius', kind: 'number', half: true, suffix: 'm' },
-        // The routine this gate demands. It was settable only from the routine
-        // editor, which put the rule that decides ✓/✗ on a different surface
-        // from the gate it decides about — so a gate could be judged on a
-        // condition that appeared nowhere in its own settings.
-        ...(it ? [{ key: 'routine',
-          label: v.proof === 'routine' ? 'The routine' : 'Requires routine',
-          kind: 'select',
-          options: () => [{ value: '',
-            name: v.proof === 'routine' ? '— none, and the gate cannot run —'
-                                        : '— presence only —' }].concat(
-            (state.gateRoutines || []).map(f => ({ value: String(f.id), name: f.name }))),
-          hint: v.proof === 'routine'
-            ? 'This routine IS the gate: finishing it on the day clears it, and'
-              + ' nothing else does. Leaving it unset would make a gate that could'
-              + ' never be cleared, so that is refused.'
-            : 'A scan gate is judged on its scan alone (2026-09-02) — this routine'
-              + ' is a deadline reference and a place in the runner, nothing more.'
-              + ' To put money on the routine itself, give it its own gate with'
-              + ' Proof set to the routine.' }] : []),
-        // AND THE DOOR INTO IT (2026-08-24, Quentin's instruction). A routine
-        // that gates a gate is CONFIGURED on that gate — its window, its days,
-        // whether it is also a task, the offset from this deadline — because
-        // asking "where is this set up?" should have one answer per routine,
-        // and for this one the answer is "here, where it is used". Settings →
-        // Recurring keeps the routines that gate nothing.
-        //
-        // It opens the routine's OWN sheet, the one editor either door reaches
-        // (the #oc-sheet bargain), and hands back here on save — the gate tag
-        // rows' idiom exactly.
-        ...(it && v.routine && v.routine === v.routine0 ? [{
-          key: 'routine_cfg', label: '', kind: 'action',
-          text: gateRoutineLine(v.routine, v.proof === 'routine'),
-          action: 'Set up', keepOpen: true,
-          run: () => openRoutineFromGate(it, v.routine) }] : []),
-        ...(it && v.routine && v.routine !== v.routine0 ? [{
-          key: 'routine_cfg', label: '', kind: 'static',
-          text: 'Save the gate first, then its routine can be set up here.' }] : []),
-        ...(it ? [{ key: 'stake', label: 'Stake', kind: 'number', step: '0.25', min: 0,
-          half: true, placeholder: 'default',
-          hint: 'What failing this gate costs. Blank uses the default in Billing below.'
-            + ' Raising it applies now; lowering waits 24h, like any other easing.' }] : []),
-        // WHAT THIS GATE IS ACTUALLY JUDGED ON, in one line, on the gate it
-        // decides about. It used to read "you scan it inside the window, and
-        // ‹routine› is done first" for every gate that had a routine linked —
-        // the coupled rule, which stopped being true when the gates separated
-        // (2026-09-02). One proof per kind now, and a linked routine is named
-        // only where it IS the proof.
-        ...(it ? [{ key: 'judged', label: 'Passes when', kind: 'static',
-          text: v.proof === 'routine'
-            ? (v.routine
-                ? `“${gateRoutineName(v.routine)}” is finished, any time that day`
-                : 'nothing — no routine is linked, so this gate does not run')
-            : v.proof === 'hours'
-            ? 'the hours you report meet the day’s requirement'
-              + (v.allDay === '1' ? ', reported any time that day' : ', inside the window')
-            : [v.proof === 'tag' ? 'you tap one of its tags'
-                 : `you scan it ${v.allDay === '1' ? 'any time that day' : 'inside the window'}`,
-               v.proof === 'tag' && v.allDay === '1' ? 'any time that day' : null,
-               it.geofence_lat != null && v.proof !== 'tag'
-                 ? `within ${it.geofence_radius_m}m of the pinned place` : null,
-              ].filter(Boolean).join(', and ') }] : []),
-        ...(it && it.today_state && it.today_state.judged
-            && it.today_state.judged.failure_reason ? [{ key: 'todayres', label: 'Today',
-          kind: 'static',
-          text: `✗ ${gateReason(it.today_state.judged.failure_reason)} · `
-            + gateStatus(it.today_state.judged.charge_status) }]
-          : it && it.today_state && it.today_state.scan ? [{ key: 'todayres', label: 'Today',
-            kind: 'static', text: `✓ scanned ${it.today_state.scan.local_time}` }] : []),
-        // HOW THIS GATE MAY BE PROVED — ONE WAY, not a set of them. The soft
-        // answer is the link (plus the geofence where one is set), which proves
-        // a URL was opened and not that you were there; the hard answer is a tap
-        // of one of this gate's NFC tags, which holds keys it never gives up and
-        // re-signs every tap, so a captured link is worth nothing. A gate can
-        // also be proved by its ROUTINE or by the HOURS reported (2026-09-02) —
-        // and those are whole commitments in themselves, never a second half
-        // bolted onto a scan. Changing this is an easing unless it is link →
-        // tag, so it waits 24h.
-        ...(it ? [{ key: 'proof', label: 'Proof', kind: 'select', rerender: true,
-          options: () => [{ value: 'link', name: 'Link + geofence' },
-                          { value: 'tag', name: 'NFC tag only' },
-                          { value: 'routine', name: 'Its routine, finished' },
-                          { value: 'hours', name: 'Hours reported' }],
-          hint: v.proof === 'routine'
-            ? 'The routine below is the whole commitment, and there is no deadline'
-              + ' inside the day: finishing it at all earns the day, and the gate is'
-              + ' judged four hours after midnight. No scan is asked for.'
-            : v.proof === 'hours'
-            ? 'The number you report clears this gate — nothing else does. Its target'
-              + ' and its bucket live on the step that reports the hours.'
-            : v.proof === 'tag'
-            ? 'Only a tap of a tag below clears this gate — a link or a geofence no'
-              + ' longer counts. Going back to the link is an easing, so it waits 24h.'
-            : 'A tap still counts on a link gate — it is stronger than what is asked.'
-              + ' Switching to tag-only applies at once, and needs a live tag first.' }] : []),
-        // IS THERE A DEADLINE INSIDE THE DAY? (2026-09-03, Quentin's
-        // instruction.) A morning routine has a time it is MEANT to happen at
-        // and a commitment that is really "today"; study hours are a number the
-        // day owes and nothing to do with a clock. Both were judged against a
-        // window that existed to place the pill. This is the one question,
-        // asked once, on the gate it decides about — and on a ROUTINE gate it
-        // is not asked at all, because that kind has answered it since
-        // 2026-09-02 and two ways of asking would eventually disagree.
-        ...(it && v.proof === 'routine' ? [{ key: 'allday_r', label: 'Judged on',
-          kind: 'static',
-          text: 'the whole day — a routine gate never has a deadline inside it' }] : []),
-        ...(it && v.proof !== 'routine' ? [{ key: 'allDay', label: 'Judged on',
-          // The hint and the "Passes when" line above it are the whole control
-          // — a toggle whose explanation only updates after you save and
-          // reopen is a toggle you cannot read before committing to it.
-          kind: 'select', rerender: true,
-          options: () => [{ value: '0', name: 'Inside the window' },
-                          { value: '1', name: 'Any time that day' }],
-          hint: v.allDay === '1'
-            ? 'The times above only place the pill on the timeline. The day is met'
-              + ' if this gate is cleared at all before midnight, and it is judged'
-              + ' then. Putting the window back in charge applies at once.'
-            : 'The window IS the deadline: proof after it closes is not proof.'
-              + ' Making it all-day is the largest easing there is, so it waits 24h.' }] : []),
-        // THE TAG APPARATUS AND THE SCAN LINK BELONG TO A GATE A SCAN CAN CLEAR.
-        // On a routine or hours gate they are not merely unused, they are a
-        // claim: a printed QR sitting on a gate no scan can satisfy reads as a
-        // way to clear it. Hidden, not disabled — switching Proof back brings
-        // the same link (the token never changed) straight back.
-        // Sits under Proof, above the tags themselves — the order you do it in.
-        ...(it && scanKind ? [{ key: 'tagsetup', kind: 'info', label: '',
-          text: 'How to program a tag for hard mode', sections: TAG_SETUP_INFO }] : []),
-        ...(it && scanKind ? gateTagRows(it) : []),
-        ...(it && scanKind ? gateTapRows(it) : []),
-        ...(it && scanKind ? [{ key: 'link', label: 'Scan link', kind: 'action',
-          text: `${state.settings.gate_scan_url || ''}/scan/${it.token}`,
-          action: 'Copy',
-          hint: 'The QR code to print. Anyone with this URL can satisfy the gate.',
-          run: n => copyAndSay(
-            `${state.settings.gate_scan_url || ''}/scan/${n.token}`, 'Scan link'),
-          }] : []),
-
-        // A today-only window and a deferred loosening are states this sheet
-        // can report and clear but not edit — they were tooltips on the old
-        // table, which is unreachable on a phone.
-        ...(it && it.today_override ? [{ key: 'override', label: 'Today only', kind: 'action',
-          text: `${it.today_override.window_start}–${it.today_override.window_end}`
-            + `${it.today_override.window_end_offset_days ? ' +1d' : ''}`,
-          action: 'Remove',
-          run: n => removeOverride(n.id, n.today_override.date) }] : []),
-        // Last, like every other sheet's — the read-outs above it are facts
-        // about the gate, not fields, so the ladder still ends on the switch.
-        ...(it ? [seStateRow(pausedFrom
-          ? `Paused from ${seWhenLabel(pausedFrom.effective_date)} — it still runs`
-            + ' until then, and the timeline shows it stopping there. Set it back'
-            + ' to Active to call that off.'
-          : 'Pausing a gate is an easing, so it takes effect in 24h —'
-            + ' turning it back on before then calls it off. Give it a date below'
-            + ' to pause it from a day instead.')] : []),
-        ...(it ? [seWhenRow('Blank: now, with easings waiting their 24h as always. A date'
-          + ' moves the whole change to that day — the timeline shows it there'
-          + ' before it happens. An easing dated sooner than 24h still waits.')] : []),
-        // One row per DECISION, each with its own way out — a scheduled change
-        // you cannot call off is worse than none. Cancelling never applies
-        // anything: the row was never touched, so there is nothing to undo,
-        // and staying as you are is the tighter direction anyway.
-        //
-        // The DAY it starts, not the timestamp it lands: "from Wed 19 Aug" is
-        // what was decided, and a change landing at 16:24 does not govern that
-        // morning's window (storage.effective_date_for).
-        ...gatePendingGroups(pending).map((grp, i) => ({
-          key: `pending_${i}`, label: i === 0 ? 'Scheduled' : '', kind: 'action',
-          text: `${grp.label ? grp.label + ' → ' : ''}${grp.text}`
-            + ` from ${seWhenLabel(grp.effective_date)}`,
-          action: 'Call off',
-          hint: i === 0 ? 'Anything that makes a gate easier waits 24h, so it can\'t be '
-            + 'loosened in the moment you want to dodge it.' : null,
-          run: async n => {
-            // Every field of the decision, or none: half a moved fence is a
-            // place that does not exist.
-            for (const f of grp.fields) {
-              await apiSend(`/api/accountability/nodes/${n.id}/pending/${f}`, 'DELETE');
-            }
-            await renderQrManager();
-          },
-        })),
-      ];
-    },
-    submit: async (v, n) => {
-      if (!n) {
-        if (!v.label.trim()) return 'A gate needs a label.';
-        if (!v.source) return 'Set when this gate runs.';
-        const loc = (state.locations || []).find(l => String(l.id) === String(v.location));
-        const radius = parseInt(v.radius);
-        // No window fields: the server derives them from the source, so the
-        // legacy columns and the schedule cannot disagree from the start.
-        const resp = await apiSend('/api/accountability/nodes', 'POST', {
-            label: v.label.trim(), source_uid: v.source,
-            geofence_lat: loc ? loc.lat : null,
-            geofence_lng: loc ? loc.lng : null,
-            geofence_radius_m: loc ? (isNaN(radius) ? loc.radius_m : radius) : null,
-          });
-        if (!resp.ok) return `Create failed (${resp.status}).`;
-        const node = await resp.json();
-        const workerUrl = state.settings.gate_scan_url || '';
-        alert(`Gate created. Its scan URL:\n${workerUrl}/scan/${node.token}`);
-        await renderQrManager();
-        return null;
-      }
-      const body = {
-        geofence_radius_m: parseInt(v.radius) || n.geofence_radius_m,
-      };
-      if (v.proof !== v.proof0) body.proof_mode = v.proof;
-      // Sent as 0/1, and only when it moved: an unchanged field in the patch
-      // would be classified, queued and reported as a decision nobody made.
-      if (v.allDay !== v.allDay0) body.all_day = v.allDay === '1' ? 1 : 0;
-      // The schedule goes through the same 24h test as everything else, but the
-      // test is now over OCCURRENCES (schedule.demands_less) rather than fields.
-      if (v.source && v.source !== v.source0) body.source_uid = v.source;
-      const stake = String(v.stake).trim() === '' ? null : Math.round(parseFloat(v.stake) * 100);
-      if (stake !== (n.charge_cents == null ? null : n.charge_cents)) body.charge_cents = stake;
-      // The link lives on the FLOW (flow.qr_node_id), so moving it is two
-      // writes: release the routine that held this gate, then claim it. The
-      // flows route keeps the Worker's routine_required flag in step both ways.
-      if (v.routine !== v.routine0) {
-        if (v.routine0) {
-          await apiSend(`/api/flows/${v.routine0}`, 'PATCH', { qr_node_id: null });
-        }
-        if (v.routine) {
-          await apiSend(`/api/flows/${v.routine}`, 'PATCH', { qr_node_id: n.id });
-        }
-      }
-      if (v.location) {
-        const loc = state.locations.find(l => String(l.id) === String(v.location));
-        body.geofence_lat = loc.lat;
-        body.geofence_lng = loc.lng;
-      }
-      // The date rides the same patch, so one save is one decision: what
-      // changes, and from when. The server takes the later of it and the
-      // easing floor, and answers with the day each field really starts.
-      if (v.effective) body.effective_from = v.effective;
-      const res = await apiSend(`/api/accountability/nodes/${n.id}`, 'PATCH', body);
-      if (!res.ok) {
-        // The server refuses some changes in WORDS (a tag-only gate with no
-        // live tag could never be cleared). Saying the number instead of the
-        // sentence is how a refusal reads as a bug.
-        const why = (await res.json().catch(() => ({}))).error;
-        if (why) toast(why);
-        return why || `Edit failed (${res.status}).`;
-      }
-      const result = await res.json();
-      if (v.active !== v.active0) {
-        const route = v.active ? 'activate' : 'disable';
-        const r = await apiSend(`/api/accountability/nodes/${n.id}/${route}`, 'PATCH',
-                                v.active || !v.effective ? undefined
-                                  : { effective_from: v.effective });
-        if (!r.ok) return `${v.active ? 'Resume' : 'Pause'} failed (${r.status}).`;
-      }
-      // What the server actually decided, per field — the date asked for is
-      // not always the day it starts, and saying the day back is the only way
-      // that is honest. A loosening dated inside 24h lands later than asked.
-      if (result.pending && result.pending.length) {
-        const days = [...new Set(result.pending.map(f =>
-          seWhenLabel((result.scheduled[f] || {}).effective_date)))];
-        const asked = v.effective ? seWhenLabel(v.effective) : null;
-        toast(`${result.pending.map(f => GATE_FIELDS[f] || f).join(', ')} `
-          + `from ${days.join(' / ')}`
-          + (asked && !days.includes(asked) ? ` — not ${asked}: an easing waits 24h` : ''));
-      }
-      await renderQrManager();
-      return null;
-    },
-    remove: async n => {
-      // The Takes-effect date applies to a deletion too: "gone from Wednesday"
-      // is a thing you schedule, and the gate keeps running until then.
-      const when = (seSheet.values || {}).effective;
-      const res = await apiSend(`/api/accountability/nodes/${n.id}`
-        + (when ? `?effective_from=${encodeURIComponent(when)}` : ''), 'DELETE');
-      if (!res.ok) { toast(`Delete failed (${res.status}): ${await res.text()}`); return; }
-      const out = await res.json().catch(() => ({}));
-      // A live gate's deletion is QUEUED, so say when it lands — the gate is
-      // still on the list until then, and silence would read as a failure.
-      if (out.pending) toast(`Deleted from ${seWhenLabel(out.effective_date)}`);
-      await renderQrManager();
-    },
-  },
-
-  // ONE TAG. A settings item like any other — edited, paused and deleted in the
-  // same words and the same place — with two extras nothing else has: a UID
-  // that is the tag's identity (so it cannot be edited afterwards) and two AES
-  // keys that are WRITE-ONLY, kept in config.json rather than the db, which is
-  // dumped into backups/ and pushed.
-  gatetag: {
-    // It hands back to the gate's sheet rather than to the index: a tag is only
-    // ever reached from there, and landing on the section list would lose the
-    // gate you were setting up.
-    navigates: true,
-    title: it => it ? it.label : 'Add tag',
-    save: it => it ? 'Save tag' : 'Add tag',
-    removeLabel: () => 'Delete tag',
-    canRemove: () => true,
-    confirm: t => `Delete "${t.label}"? Taps of it stop clearing the gate. `
-      + 'The scans it already proved stay.',
-    blank: () => ({ label: '', uid: '', meta: '', mac: '', active: true, active0: true }),
-    load: t => ({ label: t.label, uid: t.uid, meta: '', mac: '',
-                  active: !!t.active, active0: !!t.active }),
-    fields: (v, it) => [
-      { key: 'label', label: 'Name', kind: 'text', placeholder: 'e.g. Gym door' },
-      ...(it
-        ? [{ key: 'uid', label: 'UID', kind: 'static', text: it.uid }]
-        : [{ key: 'uid', label: 'UID', kind: 'text', placeholder: '7 bytes, 14 hex chars',
-             hint: 'The tag\'s own serial — the app reads it out of the first tap it '
-                 + 'verifies, so paste what the programming app shows.' }]),
-      // TWO STATES, one pair of keys. Pasted (what a tag writer generated): the
-      // fields are password inputs, because there is nothing to read back.
-      // Generated here: the same two values are SHOWN with a Copy each, because
-      // they have to reach the tag and this sitting is the only chance — the
-      // app will not show a stored key again, by the same rule that keeps the
-      // Beeminder token unreadable.
-      ...(tagSheetView.reveal ? [
-        { key: 'meta_show', label: 'Meta key', kind: 'action', mono: true,
-          text: v.meta, action: 'Copy', keepOpen: true,
-          hint: 'The key the tag encrypts its UID and read counter with (SDM meta read key).',
-          run: () => copyAndSay(v.meta, 'Meta key') },
-        { key: 'mac_show', label: 'File key', kind: 'action', mono: true,
-          text: v.mac, action: 'Copy', keepOpen: true,
-          hint: 'The key it signs each tap with (SDM file read key). Copy BOTH into your '
-              + 'tag writer before you save — once stored they are never shown again. '
-              + 'The way back is a new pair and a rewritten tag, not a lookup.',
-          run: () => copyAndSay(v.mac, 'File key') },
-      ] : [
-        { key: 'meta', label: 'Meta key', kind: 'password',
-          placeholder: it && it.keys_set ? '•••• set — blank leaves it' : '32 hex chars',
-          hint: 'The key the tag encrypts its UID and read counter with (SDM meta read key).' },
-        { key: 'mac', label: 'File key', kind: 'password',
-          placeholder: it && it.keys_set ? '•••• set — blank leaves it' : '32 hex chars',
-          hint: 'The key it signs each tap with (SDM file read key). Write-only: the app '
-              + 'says whether a key is set, never what it is.' },
-      ]),
-      { key: 'keygen', label: '', kind: 'action',
-        text: tagSheetView.reveal
-          ? 'a fresh pair means rewriting the tag with it'
-          : 'or let the app pick both keys',
-        action: tagSheetView.reveal ? 'Regenerate' : 'Generate', keepOpen: true,
-        hint: tagSheetView.reveal ? ''
-          : 'Two random AES-128 keys from this device’s cryptographic generator. '
-            + 'They are shown so you can copy them into the tag writer, and go into '
-            + 'config.json — never the db, which is dumped into backups and pushed.',
-        run: () => generateTagKeys() },
-      ...(tagSheetView.reveal ? [{ key: 'keydrop', label: '', kind: 'action',
-        text: 'or paste the pair your tag writer made',
-        action: 'Type them', keepOpen: true,
-        run: () => {
-          seSheet.values.meta = '';
-          seSheet.values.mac = '';
-          tagSheetView.reveal = false;
-          renderSeSheet();
-        } }] : []),
-      ...(it ? [{ key: 'state', label: 'State', kind: 'static', text: tagState(it) }] : []),
-      ...(it ? [seStateRow('Paused: taps are refused and cannot clear the gate. On a'
-        + ' tag-only gate waking it up again waits 24h, like every other easing.')] : []),
-    ],
-    submit: async (v, t) => {
-      const gate = tagSheetView.gate || {};
-      const label = (v.label || '').trim();
-      const keys = async id => {
-        if (!v.meta && !v.mac) return null;
-        const r = await apiSend(`/api/accountability/tags/${id}/keys`, 'PUT',
-                                { meta: v.meta, mac: v.mac });
-        if (!r.ok) return (await r.json().catch(() => ({}))).error || 'Those keys were refused.';
-        return null;
-      };
-      if (!t) {
-        if (!label) return 'A tag needs a name.';
-        const res = await apiSend(`/api/accountability/nodes/${gate.id}/tags`, 'POST',
-                                  { label, uid: v.uid });
-        if (!res.ok) return (await res.json().catch(() => ({}))).error
-          || `Could not add it (${res.status}).`;
-        const made = await res.json();
-        const kerr = await keys(made.id);
-        if (kerr) return kerr;
-        if (made.pending_live_at) {
-          toast(`added — it starts counting ${made.pending_live_at.slice(0, 16).replace('T', ' ')}`);
-        }
-        await backToGateSheet();
-        return null;
-      }
-      if (label && label !== t.label) {
-        const r = await apiSend(`/api/accountability/tags/${t.id}`, 'PATCH', { label });
-        if (!r.ok) return (await r.json().catch(() => ({}))).error || 'Rename failed.';
-      }
-      const kerr = await keys(t.id);
-      if (kerr) return kerr;
-      if (v.active !== v.active0) {
-        const r = await apiSend(`/api/accountability/tags/${t.id}`, 'PATCH',
-                                { active: v.active ? 1 : 0 });
-        const out = await r.json().catch(() => ({}));
-        if (!r.ok) return out.error || 'That change was refused.';
-        // Waking a tag on a tag-only gate is an easing: the server queues it and
-        // says when, and the sheet has to pass that on or it reads as a no-op.
-        if (out.pending) {
-          toast(`it starts counting ${String(out.apply_at).slice(0, 16).replace('T', ' ')}`);
-        }
-      }
-      await backToGateSheet();
-      return null;
-    },
-    remove: async t => {
-      const res = await apiSend(`/api/accountability/tags/${t.id}`, 'DELETE');
-      if (!res.ok) {
-        toast((await res.json().catch(() => ({}))).error || `Delete failed (${res.status}).`);
-        return;
-      }
-      await backToGateSheet();
-    },
-  },
-
-  // The money settings, reached from the System tab's rows. A sheet rather than
-  // inline fields for the usual reason — these are decisions — and because the
-  // token needs a password field, which has no business sitting open on a panel
-  // you scroll past every time you check a gate.
-  billing: {
-    title: () => 'Billing',
-    save: () => 'Save and check',
-    blank: () => ({ token: '', user: '', stake: '', cap: '', fee: '' }),
-    load: b => ({
-      token: '', user: b.user || '',
-      stake: (b.default_cents / 100).toFixed(2), cap: (b.cap_cents / 100).toFixed(2),
-      fee: (b.fee_cents / 100).toFixed(2),
-    }),
-    fields: (v, b) => [
-      { key: 'token', label: 'Beeminder token', kind: 'password',
-        placeholder: b && b.has_token ? 'set — type to replace' : 'paste your token',
-        hint: 'Stored on the server in config.json, never in the database, and never readable'
-          + ' back — leave it blank to keep the one already there.' },
-      { key: 'user', label: 'Bills', kind: 'text', placeholder: 'beeminder username' },
-      { key: 'stake', label: 'Default stake', kind: 'number', step: '0.25', min: 0, half: true },
-      { key: 'cap', label: 'Weekly cap', kind: 'number', step: '1', min: 0, half: true,
-        hint: 'A charge that would breach the cap is skipped whole, not trimmed.' },
-      { key: 'fee', label: 'Card fee per charge', kind: 'number', step: '0.05', min: 0, half: true,
-        hint: 'What the card provider takes on each transaction (Privacy: $0.50). The stake'
-          + ' stays the total cost of failing — Beeminder is billed the stake minus this.'
-          + ' Beeminder’s own $1 minimum applies to the remainder, so keep every stake'
-          + ' at least the fee plus $1.' },
-    ],
-    submit: async v => {
-      const body = {
-        gate_charge_cents: Math.round(parseFloat(v.stake) * 100) || 0,
-        gate_weekly_cap_cents: Math.round(parseFloat(v.cap) * 100) || 0,
-        gate_card_fee_cents: Math.round(parseFloat(v.fee) * 100) || 0,
-      };
-      // Empty means "leave it alone", so saving the cap can't wipe the token.
-      if (String(v.token).trim()) body.beeminder_auth_token = String(v.token).trim();
-      if (String(v.user).trim()) body.beeminder_user = String(v.user).trim();
-      const res = await apiSend('/api/gates/billing', 'PATCH', body);
-      if (!res.ok) return `Save failed (${res.status}).`;
-      await renderGatesBilling(true);
-      return null;
     },
   },
 
@@ -6715,7 +5829,9 @@ function renderGtdReview() {
 // metric), and a door that only worked when some other surface had happened to
 // populate state would be a door that works most of the time.
 const OBJECT_KINDS = {
-  gate: { noun: 'gate',
+  // No settings sheet: `opens` is the gate's editor, on its own page.
+  gate: { noun: 'gate', opensLabel: 'Open in Gates…',
+    opens: id => openGatesDashboard(id, viewDay()),
     find: id => (state.accountabilityNodes || []).find(n => String(n.id) === String(id)) },
   area: { noun: 'area',
     find: id => (state.areas || []).find(a => String(a.id) === String(id)) },
@@ -6756,6 +5872,7 @@ function beBlockGroups() {
 // has gone, and hand over to the sheet that already owns its three verbs.
 async function openObjectSheet(kind, id, returnTo) {
   const spec = OBJECT_KINDS[kind];
+  if (spec && spec.opens) { spec.opens(id); return true; }
   if (!spec || !SETTINGS_SHEETS[kind]) { toast('Nothing edits that yet'); return false; }
   let item = null;
   try { item = await spec.find(id); } catch (e) { item = null; }
@@ -6804,7 +5921,9 @@ function objTapCancel() {
 function objectMenuItems(kind, extra) {
   const spec = OBJECT_KINDS[kind];
   const items = (extra || []).slice();
-  if (spec && SETTINGS_SHEETS[kind]) {
+  if (spec && spec.opens) {
+    items.push({ label: spec.opensLabel, edit: true });
+  } else if (spec && SETTINGS_SHEETS[kind]) {
     items.push({ label: `Edit ${spec.noun}…`, edit: true });
   }
   return items;
@@ -12015,7 +11134,6 @@ const gatePop = { nodeId: null, date: null };
 // When a deadline drag last finished. A drag's trailing click must not open the
 // read-out, and the flag cannot live on the pill: saving a drag re-renders the
 // layer, so the marked element is gone before the click arrives.
-let qrDragEndedAt = 0;
 
 async function openGatePop(nodeId, date, anchorEl) {
   gatePop.nodeId = nodeId;
@@ -12042,52 +11160,10 @@ async function openGatePop(nodeId, date, anchorEl) {
   el.innerHTML = gatePopHtml(d);
   placeGatePop(el, anchorEl);
   el.querySelector('.gp-close').addEventListener('click', closeGatePop);
-  // THE ONE THING IN HERE THAT WRITES, and it writes a fact rather than a
-  // view preference: calling this gate's day off is a statement the judge
-  // reads (qr_override.skipped -> applies_on -> 'n/a'). Everything else on
-  // this popup is still read-only, and the day it describes is re-read
-  // afterwards rather than patched locally.
-  // THE SAME EDITOR, A SECOND DOOR (the #oc-sheet precedent). Not a copy of
-  // the gate's fields rendered into the popup: one thing with two editors is
-  // how they start disagreeing, and SETTINGS_SHEETS.gate already owns the
-  // three verbs, the state row and the 24h wording. `returnTo` brings the
-  // read-out back, re-read, so the detour costs nothing.
-  const edit = el.querySelector('#gp-edit');
-  if (edit) edit.addEventListener('click', () => {
-    const node = (state.accountabilityNodes || []).find(n => n.id === nodeId);
-    if (!node) { toast('That gate is gone'); return; }
-    // THE READ-OUT STAYS STANDING UNDERNEATH (190 against the sheet's 200).
-    // Closing it here made the detour free only if you SAVED: `returnTo` runs
-    // on save, so cancelling with Esc dropped you on a bare calendar having
-    // silently shut the surface you came from. Leaving it up means Esc peels
-    // the sheet and puts you back exactly where you were, which is what the
-    // ladder does everywhere else.
-    //
-    // The anchor is measured NOW, as a rect: saving re-renders the timeline,
-    // and a detached element measures as zero, which would reopen the popup
-    // in the top-left corner instead of beside its pill.
-    const rect = anchorEl && anchorEl.getBoundingClientRect
-      ? anchorEl.getBoundingClientRect() : anchorEl;
-    openSeSheet('gate', node, async () => {
-      closeSeSheet();
-      // The sheet may have moved the window, paused the gate or queued a 24h
-      // easing, so the day is re-read rather than redrawn from what the popup
-      // was holding before.
-      state.accountabilityNodes = await apiGet('/api/accountability/nodes',
-                                               state.accountabilityNodes);
-      renderTimeline();
-      openGatePop(nodeId, date, rect);
-    });
-  });
-
-  const skip = el.querySelector('#gp-skip');
-  if (skip) skip.addEventListener('click', async () => {
-    const was = !!d.skipped;
-    if (!await setGateSkip(nodeId, date, !was)) return;
-    undoableGateSkip(nodeId, date, was,
-                     was ? `put "${d.label}" back` : `called off "${d.label}"`);
-    openGatePop(nodeId, date, anchorEl);   // re-read: the day it describes moved
-  });
+  // The read-out is READ-ONLY; changing this gate or this day is the
+  // dashboard's job, and this is the door to it.
+  const open = el.querySelector('#gp-open');
+  if (open) open.addEventListener('click', () => openGatesDashboard(nodeId, date));
 }
 
 // Beside the pill, and inside the screen. A popup that opens under the thumb or
@@ -12460,19 +11536,8 @@ function gatePopHtml(d) {
       + '<div class="gp-note">Nothing judged yet — this gate has no record to show.</div>';
   }
 
-  // TWO VERBS, AND THEY SAY WHICH SURFACE THEY ARE. "Two surfaces, never
-  // mixed" is about a control being AMBIGUOUS between this day and every day,
-  // not about which screen you reach the permanent one from — so the day-level
-  // verb keeps saying "this day" and the permanent one opens the gate's own
-  // settings sheet, where seWhenRow already asks from which date a change
-  // governs. One editor, reached from where the gate is drawn instead of
-  // through Settings -> Gates -> the row.
-  const foot = `<div class="gp-foot"><button id="gp-skip" class="se-inline-act"${
-    d.skipped || !d.skip_locked ? '' : ' disabled'}>${
-    d.skipped ? 'Put this day back on'
-      : d.skip_locked ? 'Too late to call this day off (within 24h)'
-        : 'Call this day off'}</button>`
-    + `<button id="gp-edit" class="se-inline-act">Edit gate ›</button></div>`;
+  const foot = `<div class="gp-foot"><button id="gp-open" class="se-inline-act">${
+    d.skipped ? 'Called off — change it in Gates ›' : 'Open in Gates ›'}</button></div>`;
   return `<div class="gp-head">
       <span class="gp-title">${escHtml(d.label)}</span>
       <button class="gp-close" title="Close">✕</button>
@@ -12533,7 +11598,6 @@ function clearGateSel() {
 function renderGateSelLines(layer) {
   const lines = gateSelLines();
   if (!lines.length) return;
-  const sel = state.gateSel;
   // TWO TAGS MAY NOT SHARE A LINE, the same rule the event boxes follow — and
   // here the collision is the COMMON case, not the unlucky one: a routine with
   // no offset is due exactly when the gate closes, so its tag would print
@@ -12566,152 +11630,8 @@ function renderGateSelLines(layer) {
     // A line stops its own click: tapping one is aiming AT it, not tapping the
     // day off the selection.
     el.addEventListener('click', e => e.stopPropagation());
-    initGateLineDrag(el, l, say, sel);
     layer.appendChild(el);
   });
-}
-
-// EACH LINE IS A HANDLE (2026-08-24, Quentin's instruction). The window you can
-// see is the window you can change: drag a line and that boundary moves, with
-// the OTHER lines standing still — which is exactly what makes a window get
-// longer or shorter rather than slide.
-//
-// Every one of these writes through the door that already owns that fact: the
-// scan pair through the day override the square has always posted, the
-// routine's deadline through the routine's own offset — where pushing it LATER
-// is an easing and waits 24h, as it does everywhere else. Nothing here invents
-// a second way to change a window, and nothing here bypasses a lock.
-function initGateLineDrag(el, line, say, sel) {
-  const body = document.getElementById('tl-body');
-  const day = sel.day;
-  const w = day.window || {};
-  const r = day.routine || null;
-  const reason = gateLineRefusal(line, day);
-  el.title = reason || 'Drag to move this boundary';
-  if (reason) {
-    el.classList.add('tl-gate-line-fixed');
-    // A refusal has to be VISIBLE, and a dead line that says nothing is the
-    // worst version of one — so the press answers out loud.
-    el.addEventListener('click', () => toast(reason));
-    return;
-  }
-
-  // ≥ 0 LENGTH, which is his rule and the server's: a window that closes
-  // before it opens judges absent every day. Each line is bounded by its
-  // partner rather than by a fixed span.
-  const bounds = {
-    'scan-open': [0, w.end_min],
-    'scan-close': [w.start_min, 2875],
-    'routine-due': [r && r.open_min != null ? r.open_min : 0, 2875],
-  }[line.kind] || [0, 2875];
-
-  let curMin = line.min;
-  onPointerDrag(el, { start(e) {
-    if (e.pointerType === 'mouse' && e.button !== 0) return null;
-    e.stopPropagation();
-    el.classList.add('tl-gate-line-dragging');
-    document.body.style.cursor = 'ns-resize';
-    if (e.pointerType !== 'mouse') el.dataset.lpDragged = '1';
-    const startY = e.clientY;
-    const startMin = line.min;
-
-    function calc(clientY) {
-      const rect = body.getBoundingClientRect();
-      const span = state.view.end - state.view.start;
-      const raw = startMin + ((clientY - startY) / rect.height) * span;
-      return Math.round(Math.min(bounds[1], Math.max(bounds[0], raw)) / 5) * 5;
-    }
-
-    return {
-      move(clientY) {
-        curMin = calc(clientY);
-        el.style.top = `${Math.min(100, Math.max(0, minutesToViewPercent(curMin)))}%`;
-        el.querySelector('.tl-gate-line-tag').textContent = say(curMin);
-      },
-      async end(clientY) {
-        el.classList.remove('tl-gate-line-dragging');
-        document.body.style.cursor = '';
-        curMin = calc(clientY);
-        if (curMin === startMin) { renderQrLayer(); return; }
-        await writeGateLine(line.kind, curMin, sel);
-      },
-    };
-  } });
-}
-
-// What cannot be dragged, and WHY — the sentence the line itself says when you
-// press it.
-function gateLineRefusal(line, day) {
-  const w = day.window || {};
-  const closeMs = new Date(`${w.close_date}T${w.end}:00`).getTime();
-  if (closeMs <= Date.now() + 24 * 60 * 60 * 1000) {
-    return 'Locked: this gate closes within 24h. Changes to a window that near'
-      + ' are what the 24h rule exists to refuse.';
-  }
-  if (line.kind === 'routine-open') {
-    return 'The routine starts when its own schedule says. Change that on the'
-      + ' routine, not here.';
-  }
-  if (line.kind === 'routine-due' && day.routine && day.routine.own_window) {
-    return 'This routine has its own window, so its deadline comes from that'
-      + ' schedule rather than from the gate.';
-  }
-  return null;
-}
-
-async function writeGateLine(kind, min, sel) {
-  const w = sel.day.window || {};
-  if (kind === 'routine-due') {
-    // The routine's deadline is the gate's close plus its offset, so the thing
-    // that actually moves is the OFFSET. Later is an easing and waits 24h —
-    // the server decides that, and the re-read below is what tells us.
-    const offset = min - w.end_min;
-    const wasOffset = sel.day.routine.due_min - w.end_min;
-    const res = await apiSend(`/api/flows/${sel.day.routine.id}`, 'PATCH', { offset_min: offset });
-    if (!res || !res.ok) { toast('Could not move the routine deadline'); renderQrLayer(); return; }
-    undoableRoutineOffset(sel.day.routine.id, wasOffset,
-                          `moved "${sel.day.routine.name}" deadline`);
-    const before = sel.day.routine.due_min;
-    await refreshGateSel();
-    const after = state.gateSel && state.gateSel.day.routine
-      ? state.gateSel.day.routine.due_min : null;
-    if (after === before && before !== min) {
-      toast('A later deadline eases the gate — it takes effect in 24h');
-    }
-    return;
-  }
-  const endMin = kind === 'scan-close' ? min : w.end_min;
-  const startMin = kind === 'scan-open' ? min : w.start_min;
-  // What was in force before this drop, for the inverse: the cached day
-  // override if there is one, else the gate had none and undoing DELETES.
-  const prevOv = state.qrPageOverrides[`${sel.nodeId}:${sel.date}`]
-    || (isToday(state.currentDate)
-        ? (state.accountabilityNodes.find(n => n.id === sel.nodeId) || {}).today_override
-        : null) || null;
-  const res = await apiSend(`/api/accountability/nodes/${sel.nodeId}/overrides`, 'POST', {
-    date: sel.date,
-    window_start: clockHHMM(startMin),
-    window_end: clockHHMM(endMin),
-    window_end_offset_days: endMin >= DAY_MIN ? 1 : 0,
-  });
-  if (!res.ok) {
-    const msg = await res.json().catch(() => ({}));
-    toast(msg.error || `Could not move it (${res.status})`);
-    renderQrLayer();
-    return;
-  }
-  undoableGateWindow(sel.nodeId, sel.date, prevOv,
-    `moved the ${kind === 'scan-open' ? 'opening' : 'deadline'} of "${sel.day.label}"`);
-  // The same cache the square's drag keeps, so a non-today page redraws in the
-  // right place without waiting for a round trip.
-  state.qrPageOverrides[`${sel.nodeId}:${sel.date}`] = {
-    date: sel.date, window_start: clockHHMM(startMin), window_end: clockHHMM(endMin),
-    window_end_offset_days: endMin >= DAY_MIN ? 1 : 0,
-  };
-  if (isToday(state.currentDate)) {
-    state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
-  }
-  await refreshGateSel();
 }
 
 // Re-read the selected gate's day: the lines are the SERVER's answer, so after
@@ -12750,19 +11670,7 @@ function renderQrLayer() {
     const windowEnd = ov ? ov.window_end : def.window_end;
     const offsetDays = ov ? ov.window_end_offset_days : def.window_end_offset_days;
 
-    // ±12h drag bounds in semantic minutes: a +1d deadline counts as end + 1440,
-    // so dragging preserves the offset and can cross midnight in either direction
     const originalMinutes = windowEndMin(windowEnd, offsetDays);
-    const startMinutes = timeToMinutes(windowStart);
-    // DRAGGING THE SQUARE MOVES THE WHOLE GATE (2026-08-24, Quentin's
-    // instruction). It used to move the deadline alone, which silently made
-    // the window longer every time you pushed a gate later — the length is a
-    // decision, and it should only change when you take hold of one END of it
-    // (which is what the dotted lines are for). So the window TRANSLATES, and
-    // the only floor is its opening reaching midnight.
-    const minMinutes = Math.max(originalMinutes - 720, originalMinutes - startMinutes);
-    const maxMinutes = Math.min(originalMinutes + 720, 2875);
-
     const pct = minutesToViewPercent(originalMinutes);
     if (pct < -0.01 || pct > 100.01) return;
     // 🔒 locked: deadline within now + 24h — line is inert (no drag, no ✕)
@@ -12805,15 +11713,6 @@ function renderQrLayer() {
     labelText.textContent = QR_GLYPH;
     label.title = qrPillTitle(node, windowEnd, offsetDays, locked, outcome);
 
-    // THE TIME, ONLY WHILE YOU ARE MOVING IT (2026-08-22, Quentin's
-    // instruction). The square says nothing about when — that is what its
-    // position against the hour gutter is for — but a deadline being DRAGGED
-    // is the one moment the exact minute matters and the gutter is too coarse
-    // to read it off. So a small readout appears to the left of the square for
-    // the duration of the drag and is not in the document's way otherwise.
-    const timeTag = document.createElement('span');
-    timeTag.className = 'tl-qr-time';
-    line.appendChild(timeTag);
     label.appendChild(labelText);
     line.appendChild(label);
     layer.appendChild(line);
@@ -12828,165 +11727,15 @@ function renderQrLayer() {
 
     line.addEventListener('contextmenu', e => e.preventDefault());
 
-    // TAP TO READ IT — the FINGER's path, and a locked pill's only one. A tap
-    // never enters onPointerDrag (that needs a 550ms hold), so no re-render
-    // eats the click. An unlocked pill under a MOUSE is served from the drag's
-    // own no-movement branch instead; see the note there. Wired ABOVE the
-    // locked bail on purpose: a
-    // locked gate cannot be dragged, and it is the one you most want to ask
-    // about. The click that TRAILS a drag is turned away by qrDragEndedAt —
-    // see the note where that is set.
+    // TAP TO READ IT: the first tap draws the window's lines, the second opens
+    // the read-out. The pill no longer moves — a gate's day is changed on
+    // /gates (openGatesDashboard), the one editor.
     label.addEventListener('click', e => {
       if (e.target.closest('.tl-qr-x')) return;
-      if (Date.now() - qrDragEndedAt < 500) return;   // the tail of a drag
       e.stopPropagation();
       selectGate(node.id, pageDate, label);
     });
 
-    if (locked) return;
-
-    // NO ✕ ON THE SQUARE. It does not fit an 18px target, and a second control
-    // inside the one you are trying to tap is how a mis-tap happens. Greying a
-    // gate for the day moves to the read-out, which is where every other verb
-    // about one gate already lives — reachable by tap, unlike the right-click
-    // that was the mouse's way in.
-
-    let dragging = false;
-    let dragStartY = 0;
-
-    // Either mouse button drags the deadline; a finger does it after a 550ms
-    // hold. Hiding for the day is the pill's ✕ on touch, which is why only the
-    // drag needed a touch path.
-    onPointerDrag(label, { start(e) {
-      if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 2) return null;
-      dragging = true;
-      dragStartY = e.clientY;
-      line.classList.add('tl-qr-dragging');
-      document.body.style.cursor = 'ns-resize';
-      if (e.pointerType !== 'mouse') label.dataset.lpDragged = '1';
-      return { move: onMove, end: onUp };
-    } });
-
-    function calcMinutes(clientY) {
-      const bodyRect = body.getBoundingClientRect();
-      const { start, end } = state.view;
-      const rawMinutes = start + ((clientY - bodyRect.top) / bodyRect.height) * (end - start);
-      const clamped = Math.min(maxMinutes, Math.max(minMinutes, rawMinutes));
-      return Math.round(clamped / 5) * 5;
-    }
-
-    function onMove(clientY) {
-      if (!dragging) return;
-      // A DAY THAT IS OFF HAS NO DEADLINE TO MOVE — but declining the press
-      // outright (returning null from start) also throws away the TAP, which
-      // rides out of onUp, and the read-out that tap opens is the only door
-      // back to putting the day on. So the press is claimed and the movement
-      // is what is refused.
-      if (skipped) return;
-      const mins = calcMinutes(clientY);
-      const displayPct = Math.min(100, Math.max(0, minutesToViewPercent(mins)));
-      line.style.top = `${displayPct}%`;
-      setLabelEdge(displayPct);
-      // The gate's own lines travel WITH it while it is being dragged: the
-      // whole window is moving, and lines left behind would show a window this
-      // gate does not have at any point during the gesture.
-      if (selected) {
-        const shift = mins - originalMinutes;
-        layer.querySelectorAll('.tl-gate-line').forEach(ln => {
-          const at = parseInt(ln.dataset.lineMin) + shift;
-          ln.style.top = `${Math.min(100, Math.max(0, minutesToViewPercent(at)))}%`;
-        });
-      }
-      // Was written into the square's own label, which stopped existing when
-      // the square became a glyph — qrPillText went with it, so this line was
-      // a ReferenceError waiting for the next drag.
-      timeTag.textContent = `${clockHHMM(mins)}${mins >= DAY_MIN ? ' +1d' : ''}`;
-    }
-
-    async function onUp(clientY, e) {
-      if (!dragging) return;
-      dragging = false;
-      line.classList.remove('tl-qr-dragging');
-      document.body.style.cursor = '';
-      // Right-button release fires a contextmenu event — swallow it
-      document.addEventListener('contextmenu', ev => ev.preventDefault(), { once: true, capture: true });
-
-      // A click without real movement is not a drag — never post from it
-      // (a +1d line is pinned at the bottom edge, so its position doesn't
-      // round-trip through calcMinutes and would otherwise save a change).
-      // A right-click without movement hides the pill for the day instead.
-      // A FINGER has no such no-op press to guard against: it already committed
-      // by holding still for 550ms, so any movement it makes is deliberate.
-      const touch = e && e.pointerType !== 'mouse';
-      const moved = Math.abs(clientY - dragStartY) >= (touch ? 1 : 5);
-      // A drag ends in a click on the label, and that click would open the
-      // read-out on top of the deadline you just moved. onPointerDrag's own
-      // suppressor cannot carry this one: it marks the ELEMENT, and saving a
-      // drag re-renders the whole layer, so by the time the click lands the
-      // marked pill has been replaced by a fresh one. The guard therefore
-      // lives outside the DOM. A finger is already covered — its tap never
-      // arms a drag at all — but a mouse has no such separation.
-      if (moved && !skipped) qrDragEndedAt = Date.now();
-      if (!moved || skipped) {
-        // The right button used to call the day off from here, unlabelled. On
-        // the real-money path that was the weakest place for it to live: it is
-        // a named item on the gate's menu now, which initObjectDoors opens, so
-        // this branch simply stands aside and lets the contextmenu event
-        // through.
-        if (e && e.button === 2 && !touch) return;
-        // A press that never moved is a TAP: read the gate out. The rect is
-        // taken BEFORE the re-render — a detached element measures as zero, and
-        // the popup would open in the top-left corner instead of beside its
-        // pill.
-        const rect = label.getBoundingClientRect();
-        renderQrLayer();
-        selectGate(node.id, pageDate, rect);
-        return;
-      }
-
-      const mins = calcMinutes(clientY);
-      const newOffsetDays = mins >= DAY_MIN ? 1 : 0;
-      const newEnd = clockHHMM(mins);
-      // The translation: the opening moves by exactly what the deadline moved,
-      // so the window keeps its length. calcMinutes' floor is what stops the
-      // opening being dragged through midnight.
-      const newStart = clockHHMM(startMinutes + (mins - originalMinutes));
-
-      if (newEnd === windowEnd && newOffsetDays === offsetDays) return;
-
-      const ovBody = {
-        date: pageDate,
-        window_start: newStart,
-        window_end: newEnd,
-        window_end_offset_days: newOffsetDays,
-      };
-      const res = await apiSend(`/api/accountability/nodes/${node.id}/overrides`, 'POST', ovBody);
-      if (res.ok) {
-        // `ov` is what was in force before this drop — null when the day had
-        // no override at all, which is what makes the inverse a DELETE.
-        undoableGateWindow(node.id, pageDate, ov, `moved "${node.label}"`);
-        // Cache the override so non-today pages stay in the right position on re-render
-        state.qrPageOverrides[cacheKey] = ovBody;
-        if (viewingToday) {
-          state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
-        }
-      } else {
-        // A refused move must SAY so. The pill has already been dragged to the
-        // new position on screen, so silence reads as "saved" — and the next
-        // re-render silently snaps it back. 403 is the 24h lock, which is the
-        // only refusal a hand can produce.
-        const msg = await res.json().catch(() => ({}));
-        toast(msg.error || `Could not move it (${res.status})`);
-      }
-      // Moving the wake/sleep deadline moves the view window itself
-      const isWindowNode = String(node.id) === String(state.settings.qr_wake_node_id)
-        || String(node.id) === String(state.settings.qr_sleep_node_id);
-      // A selected gate's lines are the server's answer, so they are re-asked
-      // rather than shifted locally — refreshGateSel repaints the timeline.
-      if (selected) { await refreshGateSel(); return; }
-      if (isWindowNode) renderTimeline();
-      else renderQrLayer();
-    }
   });
 }
 
@@ -13146,10 +11895,9 @@ async function renderQrManager() {
   let nodes = null;
   let locations = null;
   try {
-    [nodes, locations, state.gateRoutines] = await Promise.all([
+    [nodes, locations] = await Promise.all([
       fetch('/api/accountability/nodes').then(r => r.json()),
       fetch('/api/locations').then(r => r.json()),
-      apiGet('/api/flows', []),
     ]);
   } catch (e) {
     nodes = null;
@@ -13168,46 +11916,25 @@ async function renderQrManager() {
   beCounts.qr = nodes.filter(n => n.active).length;
   beCounts.locations = state.locations.filter(l => l.active !== 0).length;
 
-  const nodeOptions = selectedId => '<option value="">— none —</option>'
-    + nodes.filter(n => n.active).map(n =>
-      `<option value="${n.id}"${String(n.id) === String(selectedId) ? ' selected' : ''}>${escHtml(n.label)}</option>`
-    ).join('');
-
-  panel.innerHTML = gatesTabBar(state.gatesBilling) + (gatesView.tab === 'gates' ? `
-    <div class="be-list" id="be-gate-list">
-      ${nodes.map(n => beRow(gateRowOpts(n))).join('')}${beAddRow('Add gate')}
-    </div>
-    ${gatesBoundary(nodes)}`
-    : '<div id="be-gates-billing"></div>');
-
-  panel.querySelectorAll('[data-gtab]').forEach(btn => btn.addEventListener('click', () => {
-    gatesView.tab = btn.dataset.gtab;
-    renderQrManager();
-  }));
-
-  if (gatesView.tab === 'system') {
-    renderGatesBilling(false);
-  } else {
-    wireBeList(document.getElementById('be-gate-list'), 'gate', nodes);
-    const edit = document.getElementById('gb-boundary-edit');
-    if (edit) edit.addEventListener('click', () => { gatesView.boundary = true; renderQrManager(); });
-    [['ac-wake-node', 'qr_wake_node_id'], ['ac-sleep-node', 'qr_sleep_node_id']].forEach(([selId, key]) => {
-      const sel = document.getElementById(selId);
-      if (!sel) return;
-      sel.addEventListener('change', async e => {
-        const value = e.target.value || null;
-        state.settings = await apiSend('/api/settings', 'PATCH', { [key]: value }).then(r => r.json());
-        renderTimeline();
-      });
+  // Everything about a gate is on the dashboard. What stays is the day's
+  // BOUNDARY — which gates clip this window's calendar — a view setting of
+  // this app, not a commitment.
+  panel.innerHTML = `<div class="gb-boundary"><span>Gates are set up, moved and armed on
+      their own page: every setting, the day, the money and the record.</span>
+      <button id="gb-open-gates">Open Gates ›</button></div>
+    ${gatesBoundary(nodes)}`;
+  document.getElementById('gb-open-gates').addEventListener('click', () => openGatesDashboard(null, null));
+  const edit = document.getElementById('gb-boundary-edit');
+  if (edit) edit.addEventListener('click', () => { gatesView.boundary = true; renderQrManager(); });
+  [['ac-wake-node', 'qr_wake_node_id'], ['ac-sleep-node', 'qr_sleep_node_id']].forEach(([selId, key]) => {
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    sel.addEventListener('change', async e => {
+      const value = e.target.value || null;
+      state.settings = await apiSend('/api/settings', 'PATCH', { [key]: value }).then(r => r.json());
+      renderTimeline();
     });
-    // The System tab's dot is a claim about the whole panel, so it is fetched
-    // even when that tab is closed — a red dot you only see after opening the
-    // thing it warns about is not a warning.
-    if (!state.gatesBilling) {
-      fetch('/api/gates/billing').then(r => r.json())
-        .then(b => { state.gatesBilling = b; paintGatesTabs(); }).catch(() => {});
-    }
-  }
+  });
 
   locPanel.innerHTML = `
     <div class="be-list" id="be-location-list">
@@ -13220,57 +11947,7 @@ async function renderQrManager() {
   wireBeList(document.getElementById('be-location-list'), 'location', state.locations);
 }
 
-// The judge's vocabulary, said in words. `absent`/`would_fire` are what the
-// database stores and what the Worker logged before it; a settings panel is
-// not the place to learn them.
-const GATE_FIELDS = {
-  charge_cents: 'stake', window_start: 'from', window_end: 'to',
-  window_end_offset_days: 'crosses midnight', days_of_week: 'days',
-  geofence_lat: 'place', geofence_lng: 'place',
-  geofence_radius_m: 'radius', weekly_windows: 'per-day times', active: 'state',
-  source_uid: 'schedule', __delete__: 'delete gate', all_day: 'all day',
-};
-
-// THE FENCE IS ONE DECISION IN THREE COLUMNS. Queued per field like everything
-// else — which is right, since a field is the unit a tightening cancels — but
-// calling off ONE of them would leave the gate at a latitude from the new
-// place and a longitude from the old: a fence in the sea, satisfied by
-// nothing. So the sheet shows the three as one row and cancels them together.
-const GATE_FENCE = ['geofence_lat', 'geofence_lng', 'geofence_radius_m'];
-
-// Queued changes as DECISIONS rather than columns: the fence's three fields
-// collapse into one when they start on the same day, everything else is
-// itself. Each carries the fields it would cancel.
-function gatePendingGroups(pending) {
-  const out = [];
-  const fence = pending.filter(p => GATE_FENCE.includes(p.field));
-  const days = [...new Set(fence.map(p => p.effective_date))];
-  if (fence.length && days.length === 1) {
-    const loc = (state.locations || []).find(l =>
-      String(l.lat) === String((fence.find(p => p.field === 'geofence_lat') || {}).new_value));
-    out.push({ label: 'place', text: loc ? loc.name : 'a new place',
-               effective_date: days[0], fields: fence.map(p => p.field) });
-  } else {
-    fence.forEach(p => out.push({ label: GATE_FIELDS[p.field] || p.field,
-                                  text: String(p.new_value),
-                                  effective_date: p.effective_date, fields: [p.field] }));
-  }
-  pending.filter(p => !GATE_FENCE.includes(p.field)).forEach(p => out.push({
-    label: p.field === '__delete__' ? '' : (GATE_FIELDS[p.field] || p.field),
-    text: p.field === '__delete__' ? 'gate is deleted'
-      : p.field === 'charge_cents' ? '$' + ((p.new_value || 0) / 100).toFixed(2)
-      : p.field === 'active' ? (falsyFlag(p.new_value) ? 'paused' : 'active')
-      : p.new_label || String(p.new_value),
-    effective_date: p.effective_date, fields: [p.field],
-  }));
-  return out;
-}
-
-// '0' is a true string here too — the same trap storage.falsy exists for.
-function falsyFlag(v) {
-  return v === 0 || v === false || v === '0' || v === 'false' || v == null || v === '';
-}
-
+// The judge's vocabulary, said in words — the read-out and the rows use it.
 const GATE_REASONS = {
   absent: 'no scan',
   no_scan: 'no scan',
@@ -13306,42 +11983,7 @@ const gateStatus = st => GATE_STATUSES[st] || (st || '').replace(/_/g, ' ');
 // Gates tab   = the gates, plus one sentence for the day's boundary.
 // System tab  = every check that can fail, IN THE ORDER IT FAILS IN, then the
 //               failure log as the evidence.
-const gatesView = { tab: 'gates', boundary: false, allFailures: false };
-
-// Green only when the whole chain is sound. A money system that shows a green
-// light while it is misconfigured is worse than one that shows nothing.
-function gatesHealth(b) {
-  if (!b) return { cls: '', ok: false };
-  if (judgeStale(b.judge_last_run)) return { cls: 'gb-bad', ok: false };
-  if (b.live && (!b.has_token || !b.has_user)) return { cls: 'gb-bad', ok: false };
-  return { cls: 'gb-good', ok: true };
-}
-
-// The judge runs on a timer, so "recently" is the whole test. 30 minutes is
-// well over the 5-minute cadence and well under a window's worth of drift.
-const JUDGE_STALE_MIN = 30;
-function judgeStale(iso) {
-  if (!iso) return true;
-  return (Date.now() - new Date(iso).getTime()) / 60000 > JUDGE_STALE_MIN;
-}
-
-function agoLabel(iso) {
-  if (!iso) return 'never';
-  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60);
-  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
-}
-
-function gatesTabBar(b) {
-  const h = gatesHealth(b);
-  return `<div class="gb-tabs">
-    <button class="gb-tab${gatesView.tab === 'gates' ? ' gb-tab-on' : ''}" data-gtab="gates">Gates</button>
-    <button class="gb-tab${gatesView.tab === 'system' ? ' gb-tab-on' : ''}" data-gtab="system">System
-      <span class="gb-dot ${h.cls}"></span></button>
-  </div>`;
-}
+const gatesView = { boundary: false };
 
 // The day's boundary is ONE SENTENCE, not two dropdowns: it is a fact about the
 // day you read, and only rarely a decision you take. The selects appear when
@@ -13372,242 +12014,6 @@ function gatesBoundary(nodes) {
       : 'The calendar shows all 24 hours. Pick a gate for each end to clip it to your waking day.'}</span>
     <button id="gb-boundary-edit">Change</button>
   </div>`;
-}
-
-// The System tab. Rows are the charge pipeline in failure order, so reading
-// top-down is the diagnosis: nothing below a ✗ can work.
-async function renderGatesBilling(verify) {
-  const el = document.getElementById('be-gates-billing');
-  if (!el) return;
-  if (!el.innerHTML) el.innerHTML = '<div class="be-empty">Loading…</div>';
-  const b = await fetch('/api/gates/billing' + (verify ? '?verify=1' : ''))
-    .then(r => r.json()).catch(() => null);
-  if (!b) { el.innerHTML = '<div class="be-empty se-error">Billing unavailable.</div>'; return; }
-  state.gatesBilling = b;
-  paintGatesTabs();
-  const money = c => '$' + (Number(c || 0) / 100).toFixed(2);
-  const pct = b.cap_cents ? Math.min(100, Math.round(b.spent_cents / b.cap_cents * 100)) : 0;
-  const mark = ok => `<span class="gb-mark ${ok ? 'gb-good' : 'gb-bad'}">${ok ? '✓' : '✗'}</span>`;
-  const idle = '<span class="gb-mark gb-idle">○</span>';
-
-  // The verdict, in one sentence, and never ambiguous about money. Order
-  // matters: a dead judge outranks every money question, because nothing is
-  // being decided at all.
-  let verdict, sub, cls;
-  if (judgeStale(b.judge_last_run)) {
-    cls = 'gb-bad';
-    verdict = 'Judgment isn\'t running.';
-    sub = `Nothing has been judged since ${agoLabel(b.judge_last_run)} — gates are not being decided.`;
-  } else if (b.charging_disabled) {
-    // Outranks the settings-level "off": this one cannot be clicked back on.
-    cls = 'gb-good';
-    verdict = 'Charging is disabled. No money can move.';
-    sub = 'Failures are judged, logged and priced as before, but the pipeline is '
-        + 'switched off in the code (qr_judge.CHARGING_DISABLED) and nothing here can arm it.';
-  } else if (!b.live) {
-    cls = 'gb-good';
-    verdict = 'Scanning works. No money moves.';
-    sub = 'Failures are judged and logged, but charging is off.';
-  } else if (!b.has_token || !b.has_user) {
-    cls = 'gb-bad';
-    verdict = 'Charging is armed but cannot work.';
-    sub = `Missing ${!b.has_token ? 'the token' : 'the username'}, so every charge fails instead of billing you.`;
-  } else if (b.dryrun) {
-    cls = 'gb-good';
-    verdict = 'Live, in dry run. No money moves.';
-    sub = 'Every failure calls Beeminder with dryrun set — the whole pipeline, minus the money.';
-  } else {
-    cls = 'gb-live';
-    verdict = 'LIVE. Money moves.';
-    sub = `A failed gate bills ${escHtml(b.user || '')} up to ${money(b.cap_cents)} a week.`;
-  }
-
-  // Failures grouped BY DAY: three gates missed on one day is one fact about
-  // that day, not three rows. The dominant reason carries the count.
-  const byDate = {};
-  (b.recent || []).forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
-  const dates = Object.keys(byDate).sort().reverse();
-  const shown = gatesView.allFailures ? dates : dates.slice(0, 3);
-  const label = id => (state.accountabilityNodes.find(n => n.id === id) || {}).label || `#${id}`;
-  const charged = (b.recent || []).reduce((t, r) =>
-    t + (['succeeded', 'unknown'].includes(r.charge_status) ? (r.amount_cents || 0) : 0), 0);
-
-  el.innerHTML = `
-    <div class="gb-verdict">
-      <div class="gb-vline"><span class="gb-dot ${cls}"></span><span class="gb-vtext">${escHtml(verdict)}</span></div>
-      <div class="gb-vsub">${sub}</div>
-    </div>
-
-    <div class="be-sub-head">Charge pipeline</div>
-    <div class="be-list">
-      <div class="be-set-row">
-        ${mark(!judgeStale(b.judge_last_run))}
-        <span class="be-set-name">Gates judged on the server</span>
-        <span class="gb-val">${escHtml(agoLabel(b.judge_last_run))}</span>
-      </div>
-      <button class="be-set-row gb-rowbtn" data-gbsheet="1">
-        ${mark(b.token ? b.token.valid : b.has_token)}
-        <span class="be-set-name">Beeminder token</span>
-        <span class="gb-val">${b.token
-          ? (b.token.valid ? 'valid' : escHtml(b.token.reason || 'invalid'))
-          : (b.has_token ? 'set — not checked' : 'not set')}</span>
-        <span class="be-chev">›</span>
-      </button>
-      <div class="be-set-row">
-        ${mark(b.has_user)}
-        <span class="be-set-name">Bills</span>
-        <span class="gb-val">${b.has_user ? escHtml(b.user) : 'unset'}</span>
-        <button id="gb-verify" class="be-set-ctl">Check</button>
-      </div>
-      <div class="be-set-row">
-        ${b.live ? mark(true) : idle}
-        <span class="be-set-name">Charging</span>
-        ${b.charging_disabled
-          ? '<span class="gb-val">disabled in code</span>'
-          : `<div class="gb-seg" id="gb-seg">
-          <button data-gmode="off" class="${!b.live ? 'gb-seg-on' : ''}">off</button>
-          <button data-gmode="dry" class="${b.live && b.dryrun ? 'gb-seg-on' : ''}">dry run</button>
-          <button data-gmode="live" class="${b.live && !b.dryrun ? 'gb-seg-on gb-seg-live' : ''}">live</button>
-        </div>`}
-      </div>
-      <button class="be-set-row gb-rowbtn" data-gbsheet="1">
-        <span class="gb-mark"></span>
-        <span class="be-set-name">Stake / weekly cap</span>
-        <span class="gb-val">${(b.default_cents / 100).toFixed(2)} / ${(b.cap_cents / 100).toFixed(2)}${
-          b.fee_cents ? ` <span class="gb-fee" title="Each stake bills Beeminder the stake minus this card fee">(${
-            ((b.default_cents - b.fee_cents) / 100).toFixed(2)} + ${(b.fee_cents / 100).toFixed(2)} fee)</span>` : ''}</span>
-        <span class="be-chev">›</span>
-      </button>
-      <div class="be-set-row">
-        <span class="gb-mark"></span>
-        <span class="be-set-name">This week</span>
-        <span class="gb-val">${money(b.spent_cents)}</span>
-        <span class="gb-bar"><i style="width:${pct}%"></i></span>
-      </div>
-    </div>
-    <div class="be-hint">The token lives in config.json on the server, never in the database —
-      a credential that can move money has no business in a backup set. Nothing reads it back
-      out, this panel included.</div>
-
-    <div class="gb-log-head">
-      <span>Judged failures · 7 days</span>
-      <span class="gb-val">${(b.recent || []).length} · ${money(charged)} charged</span>
-    </div>
-    ${dates.length ? `<div class="be-list">${shown.map(d => {
-      const rows = byDate[d];
-      const reasons = {};
-      rows.forEach(r => { reasons[gateReason(r.failure_reason)] = (reasons[gateReason(r.failure_reason)] || 0) + 1; });
-      const top = Object.entries(reasons).sort((x, y) => y[1] - x[1])[0];
-      const paid = rows.reduce((t, r) => t + (['succeeded', 'unknown'].includes(r.charge_status) ? (r.amount_cents || 0) : 0), 0);
-      return `<div class="be-set-row">
-        <span class="gb-date">${escHtml(d.slice(5))}</span>
-        <span class="be-set-name">${escHtml(rows.map(r => label(r.node_id)).join(' · '))}</span>
-        <span class="gb-val">${escHtml(top[0])}${top[1] > 1 ? ` ×${top[1]}` : ''}</span>
-        <span class="gb-amt">${paid ? money(paid) : ''}</span>
-      </div>`;
-    }).join('')}</div>`
-      : '<div class="be-hint">No failures judged this week.</div>'}
-    ${dates.length > 3 ? `<button class="gb-more" id="gb-more">${gatesView.allFailures
-      ? 'Show fewer' : `Show all ${dates.length} days`}</button>` : ''}`;
-
-  el.querySelector('#gb-verify').addEventListener('click', () => renderGatesBilling(true));
-  const more = el.querySelector('#gb-more');
-  if (more) more.addEventListener('click', () => {
-    gatesView.allFailures = !gatesView.allFailures;
-    renderGatesBilling(false);
-  });
-  el.querySelectorAll('[data-gbsheet]').forEach(btn =>
-    btn.addEventListener('click', () => openSeSheet('billing', b)));
-
-  // One control for the money state, three states, mutually exclusive — the
-  // two independent toggles let you sit in "off but not dry", which reads as
-  // safe and is one switch away from real charges.
-  el.querySelectorAll('#gb-seg button').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const mode = btn.dataset.gmode;
-      if (mode === 'live' && !confirm('Charge for real? A failed gate will bill '
-        + `${b.user || 'your Beeminder account'} immediately, up to `
-        + `$${(b.cap_cents / 100).toFixed(2)} a week.`)) return;
-      await apiSend('/api/gates/billing', 'PATCH', {
-          gate_charging_live: mode !== 'off',
-          gate_charge_dryrun: mode !== 'live',
-        });
-      await renderGatesBilling(false);
-    });
-  });
-}
-
-// The tab strip's dot has to follow the health it reports, and the billing
-// fetch is what learns it — so the strip is repainted from there, not rebuilt.
-function paintGatesTabs() {
-  const bar = document.querySelector('#be-qr-section .gb-tabs');
-  if (!bar) return;
-  const dot = bar.querySelector('[data-gtab="system"] .gb-dot');
-  if (dot) dot.className = `gb-dot ${gatesHealth(state.gatesBilling).cls}`;
-}
-
-// A gate's row: the window and days it runs, the place it is pinned to, and a
-// badge only for a state that isn't the default one.
-function gateRowOpts(n) {
-  const nodeDays = (n.days_of_week || '0123456').split('').map(Number);
-  const win = `${n.window_start}–${n.window_end}${n.window_end_offset_days ? ' +1d' : ''}`;
-  const loc = (state.locations || []).find(l => l.lat === n.geofence_lat && l.lng === n.geofence_lng);
-  const geo = n.geofence_lat != null
-    ? `${loc ? loc.name : `${n.geofence_lat.toFixed(4)}, ${n.geofence_lng.toFixed(4)}`} (${n.geofence_radius_m}m)`
-    : 'no geofence';
-
-  let weekly = {};
-  if (n.weekly_windows) { try { weekly = JSON.parse(n.weekly_windows) || {}; } catch (e) { /* stored blank */ } }
-  const pendingDisable = (n.pending_changes || []).find(p => p.field === 'active' && String(p.new_value) === '0');
-  const otherPending = (n.pending_changes || []).filter(p => p.field !== 'active');
-
-  const pendingDelete = (n.pending_changes || []).find(p => p.field === '__delete__');
-
-  let badge = '';
-  if (pendingDelete) badge = 'deleting';
-  else if (!n.active) badge = 'paused';
-  else if (pendingDisable) badge = 'pausing';
-  else if (n.today_override) badge = 'today';
-  else if (otherPending.length) badge = 'pending';
-  else if (!n.schedule_label && Object.keys(weekly).length) badge = 'per-day';
-
-  // Today's ANSWER where there is one — scanned, or judged and why. A row that
-  // only restates its own settings can't tell you the gate is broken.
-  // A judgment row no longer means FAILED (2026-08-17): the judge freezes the
-  // day it closes, success included, so it is failure_reason that decides.
-  const st = n.today_state || {};
-  let today = '';
-  if (st.judged && st.judged.failure_reason) {
-    today = `✗ ${gateReason(st.judged.failure_reason)} · ${gateStatus(st.judged.charge_status)}`;
-  } else if (st.scan) {
-    today = `✓ scanned ${st.scan.local_time}`
-      + (st.scan.geofence_pass === 0 ? ' — outside the geofence' : '');
-  }
-
-  // Only a NON-default stake is stated: a default is not information, but a
-  // gate that costs four times its neighbours is.
-  const stake = n.charge_cents != null ? ` · $${(n.charge_cents / 100).toFixed(2)}` : '';
-
-  // The ROUTINE gets its own line, always, and first on it. It is half of what
-  // decides ✓/✗ — it cannot be the part that falls off the end of a meta
-  // string, and a gate demanding a routine you'd forgotten is the whole reason
-  // to look at this list.
-  const sub = [n.routine ? `needs ${n.routine}` : null, today]
-    .filter(Boolean).join(' · ');
-
-  return {
-    id: n.id, name: n.label, dim: !n.active,
-    meta: `${n.schedule_label || win + ' · ' + formatDays(nodeDays)} · ${geo}${stake}`,
-    sub: sub || null,
-    badge,
-    subClass: n.routine ? 'be-row-req' : '',
-  };
-}
-
-async function removeOverride(nodeId, date) {
-  const res = await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${date}`, 'DELETE');
-  if (!res.ok) toast(`Remove override failed (${res.status}): ${await res.text()}`);
-  await renderQrManager();
 }
 
 // -- TRACKING: what you monitor about yourself, and what it has said ------
@@ -16956,24 +15362,6 @@ function renderEngage() {
       return [{ label: cancelled ? 'Restore for today' : 'Cancel for today',
                 danger: !cancelled,
                 run: () => egToggleBlockCancel(parseInt(id)) }];
-    }
-    if (kind === 'gate') {
-      const node = (state.accountabilityNodes || []).find(n => String(n.id) === String(id));
-      const entry = node && (node.day_windows || {})[dateStr];
-      if (!entry) return [];
-      const skipped = !!entry.skipped;
-      return [{
-        label: skipped ? 'Put this day back on' : 'Call this day off',
-        danger: !skipped,
-        run: () => setGateSkip(node.id, dateStr, !skipped).then(async done => {
-          if (!done) return;
-          toast(skipped ? `"${node.label}" is back on for this day`
-                        : `"${node.label}" is off for this day`);
-          undoableGateSkip(node.id, dateStr, skipped,
-                           skipped ? `put "${node.label}" back` : `called off "${node.label}"`);
-          await refreshEngage();
-        }),
-      }];
     }
     return [];
   });

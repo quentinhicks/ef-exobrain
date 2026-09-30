@@ -154,6 +154,18 @@ def declared_kinds(body):
 
 def object_door_fails(body):
     out = []
+    # A kind whose OBJECT_KINDS entry carries its own `opens:` needs no sheet:
+    # its editor is another page, and `opens` is where the door leads
+    # (2026-09-29: a gate is edited on /gates, the one editor, so it has no
+    # SETTINGS_SHEETS entry on purpose — a second one is how they drift).
+    # Declaring `opens` is still a door, so the kind still owes OBJECT_KINDS.
+    ok = re.search(r'const OBJECT_KINDS = \{(.*?)\n\};', body, re.S)
+    opens = set()
+    if ok:
+        for chunk in re.split(r'\n(?=  [a-z]+: \{)', ok.group(1)):
+            head = re.match(r'\s*([a-z]+): \{', chunk)
+            if head and re.search(r'\bopens:', chunk):
+                opens.add(head.group(1))
     for registry in ('OBJECT_KINDS', 'SETTINGS_SHEETS'):
         m = re.search(r'const %s = \{(.*?)\n\};' % registry, body, re.S)
         if not m:
@@ -161,6 +173,8 @@ def object_door_fails(body):
                         'the registry the object door reads has gone'))
             continue
         known = set(re.findall(r'^  ([a-z]+): \{', m.group(1), re.M))
+        if registry == 'SETTINGS_SHEETS':
+            known |= opens
         for kind in sorted(declared_kinds(body) - known):
             out.append((0, 'data-obj="%s:..."' % kind,
                         'add a `%s` entry to %s, or that door leads nowhere'
