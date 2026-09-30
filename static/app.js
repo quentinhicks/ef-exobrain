@@ -3766,14 +3766,15 @@ const SETTINGS_SECTIONS = [
     summary: () => `${document.documentElement.classList.contains('theme-light') ? 'Light' : 'Dark'}`
       + ` · ${currentTimezone().split('/').pop().replace(/_/g, ' ')}` },
   { key: 'assistant', name: 'AI changes', group: 'Appendix',
-    desc: 'Every gate deadline an assistant changed, with the reason it gave — refusals too.',
+    desc: 'Every gate deadline and block an assistant changed, with the reason it gave — refusals too.',
     summary: () => (assistantView.rows ? plural(assistantView.rows.length, 'change') : '') },
 ];
 
 // ── Appendix: what an assistant changed ─────────────────────
 //
-// The Claude Code gate tool (mcp/gates_mcp.py) may change DEADLINES and marks
-// every write; the server refuses anything else and logs each attempt. This is
+// The Claude Code tools (mcp/gates_mcp.py, mcp/blocks_mcp.py) may change
+// gate DEADLINES and the BLOCK SCHEDULE and mark every write; the server
+// refuses anything else and logs each attempt. This is
 // that log, read-only, in words — the record of what was done on Quentin's
 // behalf, so nothing an assistant did is invisible.
 const assistantView = { rows: null };
@@ -3803,10 +3804,48 @@ function assistantChangeText(r) {
     return `pointed ${gate} at a new schedule`
       + (body.effective_from ? ` from ${body.effective_from}` : '');
   }
+  const bt = assistantBlockText(r, body);
+  if (bt) return bt;
   // Anything else is what the guard refuses: say what was ATTEMPTED.
   if (m) return `tried to change ${fields.join(', ') || 'nothing'} on ${gate}`;
   if (r.path === '/api/gates/billing') return `tried to change billing (${fields.join(', ')})`;
   return `tried ${r.method} ${r.path}`;
+}
+
+// The block tool's writes, in the same words (2026-09-30). A block deleted
+// since is named by its id, the one thing the log still knows about it.
+const AI_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+function assistantBlockText(r, body) {
+  const bm = /^\/api\/blocks(?:\/(\d+)(?:\/scheduled\/(\w+))?)?$/.exec(r.path);
+  const ov = /^\/api\/overrides(?:\/(\d+))?$/.exec(r.path);
+  if (!bm && !ov) return null;
+  const idOf = bm ? bm[1] : body.block_id;
+  const b = (state.blocks || []).find(x => String(x.id) === String(idOf));
+  const name = `"${b ? b.label : `block ${idOf}`}"`;
+  const when = body.effective_from ? ` from ${body.effective_from}` : '';
+  if (ov) {
+    if (ov[1]) return "put a block's day back to its week";
+    return body.cancelled ? `cancelled ${name} on ${body.date}`
+      : `set ${name} to ${body.start_time}–${body.end_time} on ${body.date}`;
+  }
+  if (!bm[1]) {
+    return `added "${body.label}" on ${(body.days || []).map(d => AI_DAYS[d]).join(', ')} `
+      + `${body.start_time}–${body.end_time}`;
+  }
+  if (bm[2]) return `called off the scheduled ${bm[2]} change on ${name}`;
+  if (r.method === 'DELETE') return `deleted ${name}`;
+  const fields = Object.keys(body).filter(k => k !== 'effective_from');
+  if (fields.length === 1 && fields[0] === 'active') {
+    return `${body.active ? 'resumed' : 'paused'} ${name}${when}`;
+  }
+  // A change made NOW sends the whole row, so it reads as where the block
+  // went; a DATED one sends only what moves, so it names each field.
+  if (!body.effective_from && body.start_time && body.end_time) {
+    return `changed ${name} to ${AI_DAYS[body.day_of_week] || ''} ${body.start_time}–${body.end_time}`;
+  }
+  const what = fields.map(k => k === 'day_of_week' ? `day ${AI_DAYS[body[k]]}`
+    : `${k.replace(/_time$/, '').replace(/_id$/, '')} ${body[k] == null ? 'none' : body[k]}`);
+  return `changed ${name}${what.length ? ` (${what.join(', ')})` : ''}${when}`;
 }
 
 function renderAssistantChanges() {
@@ -3816,7 +3855,7 @@ function renderAssistantChanges() {
   if (rows == null) { el.innerHTML = '<div class="be-empty">Loading…</div>'; return; }
   if (!rows.length) {
     el.innerHTML = '<div class="be-empty">Nothing yet. When an assistant changes a gate deadline'
-      + ' through the Claude Code tool, it is listed here with its reason.</div>';
+      + ' or a block through the Claude Code tools, it is listed here with its reason.</div>';
     return;
   }
   el.innerHTML = rows.map(r => `<div class="be-set-row be-ai-row">

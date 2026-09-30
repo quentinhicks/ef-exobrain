@@ -218,28 +218,31 @@ TOOLS = {
 }
 
 
-def tool_list():
+# The JSON-RPC half is shared: mcp/blocks_mcp.py imports handle() and main()
+# and hands them its own tool table and name, so the two servers cannot drift
+# on the protocol while each keeps its own scope.
+def tool_list(tools=TOOLS):
     return [{'name': name, 'description': desc,
              'inputSchema': {'type': 'object', 'properties': props, 'required': req}}
-            for name, (_, desc, props, req) in TOOLS.items()]
+            for name, (_, desc, props, req) in tools.items()]
 
 
-def handle(msg):
+def handle(msg, tools=TOOLS, server='qpa-gates'):
     method, mid, params = msg.get('method'), msg.get('id'), msg.get('params') or {}
     if method == 'initialize':
         return {'protocolVersion': params.get('protocolVersion') or '2025-06-18',
                 'capabilities': {'tools': {}},
-                'serverInfo': {'name': 'qpa-gates', 'version': '1.0'}}
+                'serverInfo': {'name': server, 'version': '1.0'}}
     if method == 'ping':
         return {}
     if method == 'tools/list':
-        return {'tools': tool_list()}
+        return {'tools': tool_list(tools)}
     if method == 'tools/call':
         name = params.get('name')
-        if name not in TOOLS:
+        if name not in tools:
             return {'content': [{'type': 'text', 'text': f'no tool named {name}'}], 'isError': True}
         try:
-            out = TOOLS[name][0](params.get('arguments') or {})
+            out = tools[name][0](params.get('arguments') or {})
             return {'content': [{'type': 'text', 'text': json.dumps(out, indent=1)}]}
         except (ToolError, KeyError, ValueError) as e:
             return {'content': [{'type': 'text', 'text': str(e)}], 'isError': True}
@@ -248,7 +251,7 @@ def handle(msg):
     raise LookupError(method)
 
 
-def main():
+def main(tools=TOOLS, server='qpa-gates'):
     for line in sys.stdin:
         if not line.strip():
             continue
@@ -258,7 +261,7 @@ def main():
             continue
         mid = msg.get('id')
         try:
-            result = handle(msg)
+            result = handle(msg, tools, server)
             if mid is None:
                 continue
             reply = {'jsonrpc': '2.0', 'id': mid, 'result': result}

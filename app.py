@@ -331,11 +331,13 @@ def _gzip(resp):
     return resp
 
 
-# AN ASSISTANT MAY CHANGE DEADLINES, AND ONLY DEADLINES (2026-09-29, Quentin's
-# instruction). The Claude Code gate tool (mcp/gates_mcp.py) marks every
-# request `X-QPA-Actor: assistant` and says why in `X-QPA-Reason`. A marked
-# write must be one of the four below — a day's window, calling a day off or
-# putting it back, a weekly rule, pointing a gate at a schedule — or it is
+# AN ASSISTANT MAY CHANGE DEADLINES AND BLOCKS, AND NOTHING ELSE (2026-09-29
+# for deadlines, 2026-09-30 for the block schedule — Quentin's instructions).
+# The Claude Code tools (mcp/gates_mcp.py, mcp/blocks_mcp.py) mark every
+# request `X-QPA-Actor: assistant` and say why in `X-QPA-Reason`. A marked
+# write must be one of the routes below — for a gate: a day's window, calling
+# a day off or putting it back, a weekly rule, pointing a gate at a schedule;
+# for a block: the Block Editor's and the calendar's own writes — or it is
 # refused here. Every marked write is logged, refusals included.
 #
 # The mark is for the RECORD, not a lock: the app has no login, and anything
@@ -349,6 +351,21 @@ ASSISTANT_WRITES = (
     ('POST', re.compile(r'^/api/schedules$'),
      {'kind', 'title', 'start', 'duration', 'recurrenceRules'}),
     ('PATCH', re.compile(r'^/api/accountability/nodes/\d+$'), {'source_uid', 'effective_from'}),
+    # THE WEEKLY BLOCK SCHEDULE (2026-09-30, Quentin's instruction), for
+    # mcp/blocks_mcp.py: add, edit, pause, delete or date a change to a block,
+    # and a day's own hours or cancellation. Blocks are off the money path —
+    # qr_judge reads none of them — so these are the same doors the Block
+    # Editor and the calendar use, logged like every marked write.
+    ('POST', re.compile(r'^/api/blocks$'),
+     {'label', 'color', 'days', 'start_time', 'end_time', 'area_id', 'domain_id',
+      'location_id', 'description', 'priority'}),
+    ('PATCH', re.compile(r'^/api/blocks/\d+$'),
+     set(storage.BLOCK_SCHEDULED_FIELDS) | {'effective_from'}),
+    ('DELETE', re.compile(r'^/api/blocks/\d+$'), set()),
+    ('DELETE', re.compile(r'^/api/blocks/\d+/scheduled/\w+$'), set()),
+    ('POST', re.compile(r'^/api/overrides$'),
+     {'block_id', 'date', 'cancelled', 'start_time', 'end_time'}),
+    ('DELETE', re.compile(r'^/api/overrides/\d+$'), set()),
 )
 
 
@@ -370,8 +387,9 @@ def _assistant_scope():
             if request.path == '/api/schedules' and body.get('kind') != 'rule':
                 break
             return None
-    return jsonify({'error': 'the assistant may only change gate deadlines: a day\'s '
-                             'window, calling a day off, or the weekly schedule'}), 403
+    return jsonify({'error': 'the assistant may only change gate deadlines (a day\'s '
+                             'window, calling a day off, the weekly schedule) and the '
+                             'weekly block schedule'}), 403
 
 
 @app.after_request
