@@ -41,6 +41,7 @@ def fresh(live=True, dryrun=False, cap=2500, default=200, token='t', user='u'):
     # the kill switch would pass while testing nothing.
     qr_judge.CHARGING_DISABLED = not live
     storage.set_setting('gate_charging_live', '1' if live else '0')
+    storage.set_setting('gate_charging_armed_at', '2026-09-29T12:00:00' if live else '')
     storage.set_setting('gate_charge_dryrun', '1' if dryrun else '0')
     storage.set_setting('gate_weekly_cap_cents', str(cap))
     storage.set_setting('gate_charge_cents', str(default))
@@ -114,6 +115,21 @@ for label, kw in (('gate_charging_live=0', dict(live=False)),
     row = status_of(node['id'], '2026-08-06')
     check(f'{label} moves no money', len(calls) == 0, f'{len(calls)} calls')
     check(f'{label} still records the judgment', row is not None, row)
+
+# ── the fifth lock: a '1' with no arming stamp (2026-09-29) ──
+# What a db from before the hard disable looks like once the code lock is
+# lifted: the setting still says '1', the token and user are still there, and
+# nobody has pressed arm on the dashboard. It must move nothing.
+node = fresh()
+storage.set_setting('gate_charging_armed_at', '')
+calls = []
+qr_judge.charge_for_failure(node, '2026-08-06', 'absent', sender(calls))
+check("a stale live='1' with no armed_at moves no money", len(calls) == 0, f'{len(calls)} calls')
+check('and is not reported live', qr_judge.charge_settings()['live'] is False,
+      qr_judge.charge_settings())
+check('and the day still lands would_fire',
+      status_of(node['id'], '2026-08-06')['charge_status'] == 'would_fire',
+      status_of(node['id'], '2026-08-06'))
 
 node = fresh(dryrun=True)
 calls = []
@@ -259,6 +275,24 @@ calls = []
 qr_judge.charge_for_failure(node, '2026-08-22', 'absent', sender(calls))
 check('a stake under fee + $1 clamps the remainder to Beeminder\'s $1 floor',
       calls and calls[0]['amount'] == '1.00', calls)
+
+# ── the arm route is the stamp's only writer ─────────────────
+# LAST: importing app holds tracker.db open, so no fresh() may follow it.
+# Arming writes the stamp, re-arming keeps the original, disarming clears it.
+fresh()
+storage.set_setting('gate_charging_armed_at', '')
+import app as _app                                         # noqa: E402
+cl = _app.app.test_client()
+cl.patch('/api/gates/billing', json={'gate_charging_live': True})
+first = (storage.get_settings() or {}).get('gate_charging_armed_at')
+check('arming from the route writes the stamp', bool(first), first)
+check('and makes it live', qr_judge.charge_settings()['live'] is True, qr_judge.charge_settings())
+cl.patch('/api/gates/billing', json={'gate_charging_live': True})
+check('re-arming keeps the original stamp',
+      (storage.get_settings() or {}).get('gate_charging_armed_at') == first)
+cl.patch('/api/gates/billing', json={'gate_charging_live': False})
+check('disarming clears it', not (storage.get_settings() or {}).get('gate_charging_armed_at'))
+check('and is not live', qr_judge.charge_settings()['live'] is False)
 
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

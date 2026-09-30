@@ -1178,6 +1178,8 @@ def apply_node_patch(node, fields, now=None):
 #   2. gate_charge_dryrun setting is '1'
 #   3. beeminder_auth_token absent from config.json
 #   4. beeminder_user absent from config.json
+#   5. gate_charging_armed_at unset — written only by the dashboard's arm
+#      action, so a '1' in lock 1 is not armed on its own (2026-09-29)
 #
 # The token lives in CONFIG.JSON, never in the database: it is the local
 # equivalent of a Worker secret — a file on the box, gitignored, invisible to
@@ -1201,10 +1203,17 @@ def apply_node_patch(node, fields, now=None):
 #     both statements about a charge that might exist.
 #
 # The pipeline is intact, not deleted: the stakes, the cap, the fee and every
-# read-out still say what a day would cost. Flipping this to False is the whole
-# of turning charging back on, and the two money suites do exactly that so the
+# read-out still say what a day would cost. The money suites flip this so the
 # rails stay proven rather than merely present.
-CHARGING_DISABLED = True
+#
+# LIFTED 2026-09-29 (Quentin's instruction: bring the gates back, armed from
+# one dashboard). Lifting it did NOT restore whatever the settings held on
+# 2026-09-07: `live` now also needs `gate_charging_armed_at`, a stamp only the
+# dashboard's arm action writes (PATCH /api/gates/billing). A '1' left in a db
+# from before is therefore NOT armed, whichever process — the app or this
+# script — runs first after the deploy. A migration clearing the old value
+# would have been a race; a condition the old rows cannot meet is not.
+CHARGING_DISABLED = False
 
 BEEMINDER_CHARGES_URL = 'https://www.beeminder.com/api/v1/charges.json'
 BEEMINDER_ME_URL = 'https://www.beeminder.com/api/v1/users/me.json'
@@ -1228,8 +1237,10 @@ def charge_settings():
         # applied: /api/gates/billing ships `charging_disabled` so the panel
         # can say WHY its live button is dead, instead of a toggle that reads
         # as saved and is not in force -- the config.json failure, one layer up.
-        'live': (not CHARGING_DISABLED) and st.get('gate_charging_live') == '1',
+        'live': ((not CHARGING_DISABLED) and st.get('gate_charging_live') == '1'
+                 and bool(st.get('gate_charging_armed_at'))),
         'disabled': CHARGING_DISABLED,
+        'armed_at': st.get('gate_charging_armed_at') or None,
         'dryrun': st.get('gate_charge_dryrun', '1') != '0',
         'cap_cents': int(st.get('gate_weekly_cap_cents') or 2500),
         'default_cents': int(st.get('gate_charge_cents') or 200),

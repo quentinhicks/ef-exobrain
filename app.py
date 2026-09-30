@@ -2056,6 +2056,10 @@ def get_gates_billing():
         # The hard switch, so the panel can say why its live button is dead
         # rather than offering one that bounces back to off.
         'charging_disabled': s.get('disabled', False),
+        # The '1' alone is not armed (a pre-2026-09-07 value survives in old
+        # dbs); the panel shows both halves so "on but not armed" is visible.
+        'live_setting': (storage.get_settings() or {}).get('gate_charging_live') == '1',
+        'armed_at': s.get('armed_at'),
         'dryrun': s['dryrun'],
         'cap_cents': s['cap_cents'],
         'default_cents': s['default_cents'],
@@ -2096,6 +2100,18 @@ def patch_gates_billing():
     for key, clean in allowed.items():
         if key in data:
             storage.set_setting(key, clean(data[key]))
+    # THE ARMING STAMP (2026-09-29). `live` needs it as well as the '1', and
+    # this is the only writer, so a '1' surviving from before the hard
+    # disable arms nothing (see qr_judge.CHARGING_DISABLED). Re-sending
+    # live=1 keeps the original stamp: it says WHEN it was armed, not when
+    # the switch was last pressed. Disarming clears it.
+    if 'gate_charging_live' in data:
+        if data['gate_charging_live']:
+            if not (storage.get_settings() or {}).get('gate_charging_armed_at'):
+                storage.set_setting('gate_charging_armed_at',
+                                    datetime.now().isoformat(timespec='seconds'))
+        else:
+            storage.set_setting('gate_charging_armed_at', '')
     # The Beeminder credential goes to config.json, NOT the setting table: the
     # db is dumped to backups/ and pushed to object storage, and a bearer token
     # that can move money does not belong in a backup set. An empty string
