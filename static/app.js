@@ -568,26 +568,83 @@ function onLongPress(el, fn) {
 // `spec.start(e)` returns null to decline the gesture, else the handlers for it:
 // {move(clientY), end(clientY, e)}. That shape is what lets one drag body serve
 // both input paths instead of a mouse copy and a touch copy drifting apart.
-function onPointerDrag(el, spec) {
-  let t = null, live = null, sy = 0, pid = null, prevTouch = '', moved = false;
+// THE DOCUMENT HALF IS INSTALLED ONCE (2026-09-30, Quentin's report: moving a
+// gate lagged). It used to be installed per CALL — three document listeners
+// for every element wired, never removed — and the calendar re-wires every
+// block, event and gate on each repaint, four repaints a refresh. After ten
+// refreshes of a week one pointermove ran ~1000 handlers, each holding a
+// detached copy of the grid alive. Only one drag is ever live, so its state is
+// one object and one set of listeners serves every element.
+const pointerDrag = { live: null, el: null, pid: null, prevTouch: null, moved: false };
 
-  const release = () => {
-    clearTimeout(t); t = null;
-    if (prevTouch !== null) el.style.touchAction = prevTouch;
-    if (pid != null && el.hasPointerCapture && el.hasPointerCapture(pid)) {
-      el.releasePointerCapture(pid);
+function pointerDragRelease() {
+  const d = pointerDrag;
+  if (d.el) {
+    if (d.prevTouch !== null) d.el.style.touchAction = d.prevTouch;
+    if (d.pid != null && d.el.hasPointerCapture && d.el.hasPointerCapture(d.pid)) {
+      d.el.releasePointerCapture(d.pid);
     }
-    pid = null;
-  };
+  }
+  d.el = null; d.pid = null; d.prevTouch = null;
+}
+
+let pointerDragWired = false;
+function wirePointerDragDocument() {
+  if (pointerDragWired) return;
+  pointerDragWired = true;
+  // A TOUCH'S SCROLLING IS DECIDED AT touchstart, so the `touch-action: none`
+  // set when the hold ARMS (550ms later) is too late to hold the page still:
+  // the browser has already ruled this touch may pan, and the first move after
+  // the arm arrives as a pointercancel. The drag then died one step in — the
+  // plan draw wrote a 35-minute stub of the span being drawn and every other
+  // finger drag stopped where it started. preventDefault on POINTERMOVE does
+  // not stop a pan (only touchmove's does, and the first touchmove after a
+  // still hold is still cancelable), which is why the handler below never
+  // helped. So the page is held HERE, and only while a drag is live — a
+  // surface that declines the press, or one still counting to 550ms, scrolls
+  // exactly as it did.
+  document.addEventListener('touchmove', e => {
+    if (pointerDrag.live) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('pointermove', e => {
+    if (!pointerDrag.live) return;
+    e.preventDefault();
+    pointerDrag.moved = true;
+    pointerDrag.live.move(e.clientY);
+  }, { passive: false });
+
+  ['pointerup', 'pointercancel'].forEach(ev =>
+    document.addEventListener(ev, e => {
+      const done = pointerDrag.live;
+      if (!done) return;
+      pointerDrag.live = null;
+      // Stamped from the DROP, not from the last move: what it turns away is
+      // the click this release is about to send. Only if the drag actually
+      // moved — a press that never moved IS a tap, and on a `data-obj-tap`
+      // artifact that tap is how the menu opens.
+      if (pointerDrag.moved) lastPointerDragAt = Date.now();
+      pointerDrag.moved = false;
+      pointerDragRelease();
+      done.end(e.clientY, e);
+    }));
+}
+
+function onPointerDrag(el, spec) {
+  wirePointerDragDocument();
+  let t = null;
 
   const arm = e => {
-    live = spec.start(e);
-    if (!live) { release(); return; }
-    sy = e.clientY;
-    pid = e.pointerId;
-    prevTouch = el.style.touchAction;
+    const live = spec.start(e);
+    if (!live) return;
+    pointerDragRelease();
+    pointerDrag.live = live;
+    pointerDrag.moved = false;
+    pointerDrag.el = el;
+    pointerDrag.pid = e.pointerId;
+    pointerDrag.prevTouch = el.style.touchAction;
     el.style.touchAction = 'none';
-    try { el.setPointerCapture(pid); } catch (err) { /* capture is a nicety */ }
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety */ }
   };
 
   el.addEventListener('pointerdown', e => {
@@ -608,18 +665,18 @@ function onPointerDrag(el, spec) {
       // moves is still a TAP, and on an event box that tap opens its occasion.
       // `keepClick` is how such a surface says so; the drag's own suppressor
       // (lpDragged) still turns away the click that TRAILS a real drag.
-      if (live && !spec.keepClick) e.preventDefault();
+      if (pointerDrag.live && pointerDrag.el === el && !spec.keepClick) e.preventDefault();
       return;
     }
     // Touch: hold still for 550ms to grab it.
-    sy = e.clientY;
-    const sx = e.clientX;
+    const sy = e.clientY, sx = e.clientX;
     // The watchers live on DOCUMENT, not on el, and the timer checks that the
     // finger is still down. Both because a finger that slides off the row — or
     // lifts off it — fires neither move nor up on el, so the timer used to arm
     // a drag for a touch that was already over: `touch-action: none` and a
     // preventDefaulting pointermove handler left behind, which is a page that
-    // has stopped scrolling for no reason the user can see.
+    // has stopped scrolling for no reason the user can see. They are removed
+    // together when the finger lifts, so a press leaves nothing behind.
     let down = true;
     const cancelOnMove = ev => {
       if (t && (Math.abs(ev.clientY - sy) > 10 || Math.abs(ev.clientX - sx) > 10)) {
@@ -630,49 +687,14 @@ function onPointerDrag(el, spec) {
       down = false;
       clearTimeout(t); t = null;
       document.removeEventListener('pointermove', cancelOnMove);
+      document.removeEventListener('pointerup', stop);
+      document.removeEventListener('pointercancel', stop);
     };
     t = setTimeout(() => { t = null; if (down) arm(e); }, 550);
     document.addEventListener('pointermove', cancelOnMove);
-    ['pointerup', 'pointercancel'].forEach(ev =>
-      document.addEventListener(ev, stop, { once: true }));
+    document.addEventListener('pointerup', stop);
+    document.addEventListener('pointercancel', stop);
   });
-
-  // A TOUCH'S SCROLLING IS DECIDED AT touchstart, so the `touch-action: none`
-  // set when the hold ARMS (550ms later) is too late to hold the page still:
-  // the browser has already ruled this touch may pan, and the first move after
-  // the arm arrives as a pointercancel. The drag then died one step in — the
-  // plan draw wrote a 35-minute stub of the span being drawn and every other
-  // finger drag stopped where it started. preventDefault on POINTERMOVE does
-  // not stop a pan (only touchmove's does, and the first touchmove after a
-  // still hold is still cancelable), which is why the handler below never
-  // helped. So the page is held HERE, and only while a drag is live — a
-  // surface that declines the press, or one still counting to 550ms, scrolls
-  // exactly as it did.
-  document.addEventListener('touchmove', e => {
-    if (live) e.preventDefault();
-  }, { passive: false });
-
-  document.addEventListener('pointermove', e => {
-    if (!live) return;
-    e.preventDefault();
-    moved = true;
-    live.move(e.clientY);
-  }, { passive: false });
-
-  ['pointerup', 'pointercancel'].forEach(ev =>
-    document.addEventListener(ev, e => {
-      if (!live) return;
-      const done = live;
-      live = null;
-      // Stamped from the DROP, not from the last move: what it turns away is
-      // the click this release is about to send. Only if the drag actually
-      // moved — a press that never moved IS a tap, and on a `data-obj-tap`
-      // artifact that tap is how the menu opens.
-      if (moved) lastPointerDragAt = Date.now();
-      moved = false;
-      release();
-      done.end(e.clientY, e);
-    }));
 
   // A long press that became a drag must not also fire the element's click.
   el.addEventListener('click', e => {
@@ -12516,10 +12538,32 @@ function calGateOn(el, nodeId) {
 
 // Re-read whichever calendar is up. The marks are the server's answer, so a
 // write is followed by asking again rather than by patching them in place.
-async function reloadCalGates() {
-  state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
-  if (calWeek.on) { await refreshCalWeek(); return; }
-  await fetchOverridesForDate(state.currentDate);
+//
+// ONLY THE DAY THAT WAS WRITTEN, and in parallel (2026-09-30, Quentin's report
+// that moving a gate lagged). This used to re-read the gate list and THEN the
+// whole week — blocks, overrides and seven days of gates — and the week's
+// refresh repaints at once from what it already holds, so a dropped mark
+// jumped back to its old time for a second and only then to where it was put.
+// A gate write changes one gate's one day; that day's served answer is all
+// that has to come back, and nothing repaints until it has.
+async function reloadCalGates(dateStr) {
+  const nodes = apiGet('/api/accountability/nodes', state.accountabilityNodes);
+  if (calWeek.on && dateStr && calWeek.days[dateStr]) {
+    const [n, day] = await Promise.all([nodes, apiGet(`/api/gates/day?date=${dateStr}`, null)]);
+    state.accountabilityNodes = n;
+    if (day && day.date === dateStr && Array.isArray(day.gates) && calWeek.days[dateStr]) {
+      calWeek.days[dateStr].gates = day.gates;
+    }
+    renderCalWeek();
+    return;
+  }
+  if (calWeek.on) {
+    state.accountabilityNodes = await nodes;
+    await refreshCalWeek();
+    return;
+  }
+  const [n] = await Promise.all([nodes, fetchOverridesForDate(state.currentDate)]);
+  state.accountabilityNodes = n;
   if (state.gateSel) await refreshGateSel(); else renderTimeline();
 }
 
@@ -12532,7 +12576,7 @@ async function calGateSkip(nodeId, dateStr, want) {
     toast(msg.error || (want ? 'Could not call that day off' : 'Could not put that day back'));
     return false;
   }
-  await reloadCalGates();
+  await reloadCalGates(dateStr);
   return true;
 }
 
@@ -12574,7 +12618,7 @@ async function restoreCalGateWindow(nodeId, dateStr, prev) {
     toast(msg.error || 'Could not undo that window');
     return;
   }
-  await reloadCalGates();
+  await reloadCalGates(dateStr);
 }
 
 function undoableGateWindow(nodeId, dateStr, prev, label) {
@@ -12636,7 +12680,7 @@ function initGateDrag(handle, g, dateStr, geo, place) {
           const msg = res ? await res.json().catch(() => ({})) : {};
           toast(msg.error || 'Could not move it');
         }
-        await reloadCalGates();
+        await reloadCalGates(dateStr);
       },
     };
   } });
