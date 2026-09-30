@@ -5869,13 +5869,9 @@ async function checkActiveBlock() {
   } else if (domainChanged) {
     state.activeDomainItems = await fetch(`/api/inbox/active?domain_id=${newDomainId}`).then(r => r.json());
   }
-  // The engage pool follows the block calendar's domain unless the chip was
-  // deliberately pointed elsewhere.
-  // Leaving every domain (a block filed under none, or no block) follows too.
-  if (domainChanged && engageView.domainId !== newDomainId) {
-    engageView.domainId = newDomainId;
-    await refreshEngage();
-  }
+  // Engage no longer narrows by domain (2026-09-30), but its chip names the
+  // block in force, so a block change still repaints it.
+  if (domainChanged) await refreshEngage();
   // The inbox processing view suggests the current block's area; follow the
   // block change unless the user is mid-edit inside the inbox.
   const inboxSection = document.getElementById('inbox-section');
@@ -15047,20 +15043,7 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      // "already scheduled" exclusion (date >= viewed).
                      futurePlaced: [],
                      routineItems: [], flows: [], deferred: [],
-                     domainId: null, dragId: null,
-                     // Context filter (the top-right picker). Keys are
-                     // namespaced: 'domain:3' / 'tag:light'. Two tiers:
-                     // include = OR (widen), require = AND (narrow).
-                     // Empty include set = the block calendar's domain, i.e.
-                     // the resting behaviour is exactly what it always was.
-                     // Context filter (2026-08-07 model): the DOMAIN axis is
-                     // single-select and mutually exclusive — picking one IS
-                     // excluding the others, and the UI says so with ¬. Tags
-                     // are all conjunctive: every selected tag is required.
-                     // Formula: domain ∧ ¬other ∧ ¬other ∧ tag ∧ tag.
-                     ctxDomain: null, ctxTags: new Set(), ctxOpen: false,
-                     // Is the domain chip expanded into the full list?
-                     ctxDomainPick: false,
+                     dragId: null,
                      // Which routine's details card is open (area id). Session
                      // state; survives the re-render a checkoff triggers.
                      routinePop: null };
@@ -15119,7 +15102,6 @@ function initEngage() {
 }
 
 async function openEngage() {
-  if (!engageView.domainId) engageView.domainId = state.activeDomainId || null;
   await refreshEngage();
   // No header clock (2026-08-08) and so no tick to drive it. The day is
   // already positioned against now by .eg-past dimming; the device shows the
@@ -15474,30 +15456,14 @@ function renderEngage() {
   const { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds } =
     engageDayRows(now, dateStr, viewDate, isToday, isoMin);
 
-  // Context filter. There are TWO AXES and they do not compose the same way:
-  // a domain is WHERE the work belongs (single-valued — area.domain_id), a tag
-  // is WHAT KIND of work it is (many per item). So:
-  //   · within an axis, include is OR
-  //   · across the two axes, AND
-  //   · require (AND) exists for tags only — see the chip cycle below
-  //   · an empty domain axis falls back to the block calendar's domain, so
-  //     picking a tag NARROWS the resting context instead of escaping it
-  // A flat OR over both axes made "School + deep" mean "School OR deep", which
-  // dragged in deep work from every other domain, and a tag-only selection
-  // dropped the domain scope entirely rather than filtering inside it.
-  // The server ships each row's domain resolved (area's, else its own).
-  const domainOf = i => filingDomainId(i);
-  // AT MOST one domain is in force — the explicit selection, or the block
-  // calendar's — and none at all when the block in force has none. Being in it
-  // is being NOT in every other. A row filed in NO domain is in every one:
-  // hiding it until you happened to pick "no domain" would lose it.
-  const ctxDomainId = engageView.ctxDomain != null ? engageView.ctxDomain : engageView.domainId;
-  const inContext = i => (ctxDomainId == null || domainOf(i) == null
-                          || String(domainOf(i)) === String(ctxDomainId))
-    && [...engageView.ctxTags].every(t => itemTags(i).includes(t));
-
-  const { locOk, deviceOk, timeOk, dayOk, device,
-          tagLoc, tagDev, tagTime, gateOn } = engagePoolGates(nowMin, isToday);
+  // NO DOMAIN FILTER (2026-09-30, Quentin's instruction: "remove the domain
+  // button selection"). The to-do list used to narrow to the domain in force —
+  // the block calendar's, or one picked from the header's context menu, plus
+  // any tags required there. The button and its menu are gone, and so is the
+  // narrowing: a filter with no control on screen would hide work silently.
+  // Every domain's to-dos show. The location / device / time / day gates below
+  // still apply, fail-open as ever.
+  const { locOk, deviceOk, timeOk, dayOk } = engagePoolGates(nowMin, isToday);
 
   // Scheduled on/after the viewed day = it HAS a day, so it isn't "Not
   // scheduled" on this one. A placement whose day has passed is not in this
@@ -15507,7 +15473,7 @@ function renderEngage() {
   const poolBase = engageView.pool
     .filter(i => (i.kind || 'item') === 'item' && !placedIds.has(i.id)
                  && !scheduledIds.has(i.id)
-                 && !routineAreaIds.has(i.area_id) && inContext(i));
+                 && !routineAreaIds.has(i.area_id));
   // The four HIDDEN-BY-CONTEXT tallies used to be counted here and printed
   // above the list ("4 out of window", "6 not today"). Removed 2026-08-17 at
   // Quentin's request: it was a band of chrome over the one list read dozens
@@ -15657,67 +15623,8 @@ function renderEngage() {
     });
   }
 
-  // Only the domain IN FORCE is shown (2026-08-08). The menu used to render
-  // every other domain as a dimmed ¬Name to spell the exclusion out; with
-  // more than a couple of domains that was most of the menu saying what
-  // mutual exclusivity already guarantees. The domain still comes from the
-  // block calendar, and tapping the chip returns to that resting scope.
-  // Tags are two-state: off, or required (∧).
-  const domainChip = d => {
-    const inForce = String(d.id) === String(ctxDomainId);
-    const isBase = inForce && engageView.ctxDomain == null;
-    const title = isBase ? "the block calendar's domain — tap to choose another"
-      : 'the domain in force — tap to choose another';
-    return `<button class="ctx-chip ${isBase ? 'ctx-base' : 'ctx-req'}"
-      data-ctx="domain:${d.id}" title="${title}"
-      >${escHtml(d.name)}${engageView.ctxDomainPick ? '' : ' ▾'}</button>`;
-  };
-  // Expanded: every domain, plus the way back to letting the calendar decide.
-  // A paused domain is not offered — unless it is the one in force, which the
-  // block calendar can still derive and the chip must be able to name.
-  const domainPicker = () => `${state.domains.filter(d =>
-      d.active !== 0 || String(d.id) === String(ctxDomainId)).map(d => {
-      const inForce = String(d.id) === String(ctxDomainId);
-      return `<button class="ctx-chip ${inForce ? 'ctx-req' : 'ctx-off'}"
-        data-pickdomain="${d.id}">${escHtml(d.name)}</button>`;
-    }).join('')}${engageView.ctxDomain != null
-      ? '<button class="ctx-chip" data-pickdomain="base" title="Follow the block calendar again">⟳ follow the day</button>'
-      : ''}`;
-  const tagChip = t => {
-    const on = engageView.ctxTags.has(t);
-    // Markers STACK — a tag can be gated on all three axes at once, and the
-    // chip has to say so or the pool hides things for invisible reasons.
-    const marks = [];
-    const why = [];
-    const d = tagDev[t];
-    if (d) { marks.push('▭'); why.push(`only on the ${d}`); }
-    if (tagLoc[t]) { marks.push('⌖'); why.push(`only at ${tagLoc[t].name}`); }
-    if (tagTime[t]) { marks.push('◷'); why.push(`only ${tagTime[t].label || 'in its window'}`); }
-    return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-ctx="tag:${t}"
-      title="${on ? 'required — click to clear' : 'click to require'}${
-        why.length ? ' · ' + escHtml(why.join(' · ')) : ''} · right-click / long-press to configure"
-      >${on ? '∧' : ''}${escHtml(t)}${marks.join('')}</button>`;
-  };
-  const poolTags = [...new Set(engageView.pool.flatMap(itemTags))].sort();
-  const ctxCount = (engageView.ctxDomain != null ? 1 : 0) + engageView.ctxTags.size;
-  const domainName = id =>
-    (state.domains.find(d => String(d.id) === String(id)) || {}).name || 'every domain';
-  // The button names the domain in force and the required tags. The ¬ terms
-  // for every other domain went with the chips (2026-08-08): with more than
-  // two domains the label was mostly exclusions, and it grew with each domain
-  // added — on a header that has to fit a phone.
-  // EVERY term is named (2026-08-12). The label was capped at two tags plus
-  // "+3", which is the one thing this button must not do: it is the receipt for
-  // the items the pool is hiding, and "+3" does not say which three. It wraps
-  // onto as many lines as it needs and the header grows — see .eg-domain.
-  const tagTerms = [...engageView.ctxTags];
-  const ctxLabel = [domainName(ctxDomainId), ...tagTerms].join(' ∧ ');
-
-  // 9c header: NOW-panel button top-left, the day as the title, domain chip.
   // NOW PAGE MINIMAL v2 (2026-09-29, Quentin's design): the day and its
-  // arrows on the left, nothing else on the line but the two controls the
-  // design's empty right slot holds — the context formula (the receipt for
-  // everything the pool is hiding, which may never go silent) and the eye.
+  // arrows on the left, and in the design's empty right slot the privacy eye.
   header.innerHTML = `
     <button class="eg-nav" id="eg-prev" title="Previous day">${WK_SVG.prev}</button>
     <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
@@ -15728,32 +15635,8 @@ function renderEngage() {
     <button class="eg-nav" id="eg-next" title="Next day">${WK_SVG.next}</button>
     ${isToday ? '' : '<button id="eg-today" title="Back to today">today</button>'}
     <span class="eg-spacer"></span>
-    <button class="eg-domain" id="eg-ctx-btn" title="Contexts — the domain in force, and every selected tag required">${escHtml(ctxLabel)} ▾</button>
     <button id="eg-panel-btn" class="${privacyOn() ? 'eg-priv-on' : ''}"
       title="${escHtml(privacyEyeTitle())}">${panelEyeSvg(privacyOn())}</button>
-    ${engageView.ctxOpen ? `<div id="eg-ctx-menu">
-      <div class="ctx-group">Domain${engageView.ctxDomainPick ? ' — pick one' : ' — in force'}</div>
-      <div class="ctx-chips">${engageView.ctxDomainPick ? domainPicker()
-        : ctxDomainId == null
-          ? `<button class="ctx-chip ctx-base" data-ctx="domain:" title="no domain in force — tap to choose one">every domain ▾</button>`
-          : state.domains.filter(d => String(d.id) === String(ctxDomainId))
-            .map(domainChip).join('')}</div>
-      ${poolTags.length ? `<div class="ctx-group">Tags — every selected one required</div>
-      <div class="ctx-chips">${poolTags.map(tagChip).join('')}</div>` : ''}
-      <div class="ctx-foot">
-        <span class="ctx-legend"><b>∧</b> required</span>
-        <span class="ctx-legend">${state.geo.ok ? '⌖ located'
-          : '⌖ no fix'}</span>
-        <button id="eg-dev-swap" title="This device — ${detectDevice()} detected. #pc / #phone items only show on their own device; click to correct it.">▭ ${device}${device === detectDevice() ? '' : ' ✎'}</button>
-        <button id="eg-time-gate" class="${gateOn ? '' : 'ctx-gate-off'}"
-          title="${gateOn
-            ? 'Time-bound contexts are hidden outside their window — click to show them anyway'
-            : 'OFF — time-bound contexts are showing whatever the clock says'}">◷ ${
-          gateOn ? 'on' : 'off'}</button>
-        ${state.geo.ok ? '' : '<button id="eg-geo-enable" title="Request location — location-bound tags need a fix">enable</button>'}
-        ${ctxCount ? '<button id="eg-ctx-clear">clear</button>' : ''}
-      </div>
-    </div>` : ''}
   `;
 
   // The routine details card: the area's blocks as read-only steps (their
@@ -15905,82 +15788,6 @@ function renderEngage() {
     nowDoor();
   });
   onLongPress(eye, nowDoor);
-  header.querySelector('#eg-ctx-btn').addEventListener('click', () => {
-    engageView.ctxOpen = !engageView.ctxOpen;
-    engageView.ctxDomainPick = false;
-    renderEngage();
-  });
-  // Right-click / long-press a TAG chip binds it to a location preset — the
-  // popover renders inside the menu; a plain click still toggles required.
-  // Device tags are skipped: they are already a gate, and the hardware is the
-  // context, so a geofence on top of one would be two answers to one question.
-  header.querySelectorAll('.ctx-chip[data-ctx^="tag:"]').forEach(b => {
-    const openBind = () => {
-      // Every tag gets the sheet now, device tags included — `pc` can still be
-      // given a location or a time window like any other context.
-      openCtxSheet(b.dataset.ctx.slice(4));
-    };
-    b.addEventListener('contextmenu', e => { e.preventDefault(); openBind(); });
-    onLongPress(b, openBind);
-  });
-  // Domains single-select (mutually exclusive — picking one IS excluding the
-  // rest; clicking the one in force returns to the resting scope). Tags
-  // toggle required ↔ off; there is no OR tier.
-  header.querySelectorAll('.ctx-chip').forEach(b => {
-    b.addEventListener('click', () => {
-      const k = b.dataset.ctx;
-      if (!k) return;   // the binding popover's chips carry data-bindloc instead
-      if (k.startsWith('domain:')) {
-        engageView.ctxDomainPick = true;
-      } else {
-        const t = k.slice(4);
-        if (engageView.ctxTags.has(t)) engageView.ctxTags.delete(t);
-        else engageView.ctxTags.add(t);
-      }
-      renderEngage();
-    });
-  });
-  header.querySelectorAll('[data-pickdomain]').forEach(b => b.addEventListener('click', () => {
-    const v = b.dataset.pickdomain;
-    engageView.ctxDomain = v === 'base' ? null : v;
-    engageView.ctxDomainPick = false;
-    renderEngage();
-  }));
-
-  const ctxClear = header.querySelector('#eg-ctx-clear');
-  if (ctxClear) ctxClear.addEventListener('click', () => {
-    engageView.ctxDomain = null;
-    engageView.ctxTags.clear();
-    renderEngage();
-  });
-  // The device override. Detection has no fail-open state to fall back on, so
-  // this is the escape hatch: a wrong guess would hide real work silently, and
-  // silent is the one thing the pool may never be.
-  const gateBtn = header.querySelector('#eg-time-gate');
-  if (gateBtn) gateBtn.addEventListener('click', () => {
-    if (timeGateOn()) localStorage.setItem('timeGate', 'off');
-    else localStorage.removeItem('timeGate');   // absent = on, so ON is the default state
-    renderEngage();
-  });
-
-  const devBtn = header.querySelector('#eg-dev-swap');
-  if (devBtn) devBtn.addEventListener('click', () => {
-    const next = currentDevice() === 'pc' ? 'phone' : 'pc';
-    // Clearing rather than storing when the flip lands back on the detected
-    // value keeps ✎ meaning "I disagreed", not "I clicked twice".
-    if (next === detectDevice()) localStorage.removeItem('device');
-    else localStorage.setItem('device', next);
-    renderEngage();
-  });
-
-  // Gesture-initiated location request — the path that actually makes iOS
-  // show the permission prompt when the load-time watch silently failed.
-  const geoBtn = header.querySelector('#eg-geo-enable');
-  if (geoBtn) geoBtn.addEventListener('click', () => {
-    initGeo();
-    toast('Requesting location…');
-  });
-
   const after = async () => { await refreshEngage(); };
 
   // [data-id] scopes this to inventory checkboxes — routine checks carry

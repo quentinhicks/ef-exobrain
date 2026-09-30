@@ -4466,26 +4466,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 .due-chip-inherited { border-style: dashed; opacity: 0.8; }
 .eg-spacer { flex: 1; }
 
-/* The context formula GROWS (2026-08-12). It is a sentence — `General ∧ ¬SF ∧
-   deep` — so with a few tags selected it outgrew one line and was clipped by the
-   header's row, which meant the thing telling you what the pool is filtered by
-   could not be read. It wraps instead, and the header grows with it: the formula
-   is the receipt for every hidden item, so it is the last thing that should be
-   truncated to save a few pixels. Right-aligned, because it is the row's tail. */
-.eg-domain {
-  font: 11px var(--font-mono);
-  background: var(--surface-2);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 4px 8px;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: right;
-  line-height: 1.45;
-  max-width: 62%;
-}
-
 /* The bar is fixed, so the day's scroller pads under it. */
 #engage-body { flex: 1; overflow-y: auto; padding: 4px 0 calc(var(--gbar-h) + 10px); }
 
@@ -4907,35 +4887,7 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 }
 #eg-undo:hover { color: var(--accent); }
 
-/* ── Context picker (top-right of Engage) ──────────────────── */
-/* Two tiers, and the COLOUR is the state: accent = include (or), gold =
-   require (and). One click cycles off → include → require → off. */
-#eg-ctx-menu {
-  position: absolute;
-  top: 46px;
-  right: 10px;
-  z-index: 30;
-  width: 288px;
-  max-height: 62%;
-  overflow-y: auto;
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 12px;
-  padding: 12px 14px 10px;
-  box-shadow: 0 10px 32px var(--overlay);
-}
-
-.ctx-group {
-  font: 600 10px var(--font-ui);
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  margin: 10px 0 6px;
-}
-.ctx-group:first-child { margin-top: 0; }
-
-.ctx-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-
+/* The context chips — still drawn by the clarify sheet and the tag sheet. */
 .ctx-chip {
   font: 12px var(--font-ui);
   padding: 5px 11px;
@@ -4947,42 +4899,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 }
 .ctx-chip:hover { border-color: var(--accent); color: var(--text-primary); }
 .ctx-req { background: var(--gold); border-color: var(--gold); color: var(--on-accent); font-weight: 500; }
-/* An excluded domain (every domain not in force): visibly negated, still
-   clickable to become the one in force. */
-.ctx-not { opacity: 0.55; }
-/* The resting base: the block calendar's domain, required by where you ARE
-   rather than by a selection — outlined in gold, not filled. */
-.ctx-base { color: var(--gold); border-color: var(--gold); border-style: dashed; }
-
-.ctx-legend { font: 11px var(--font-ui); color: var(--text-secondary); }
-.ctx-legend b { color: var(--text-primary); font-weight: 600; }
-
-.ctx-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-#eg-ctx-clear {
-  margin-left: auto;
-  font: 10px var(--font-mono);
-  color: var(--accent);
-  padding: 2px 4px;
-}
-/* The device readout sits with the legends, not as a call to action — it is
-   a statement about which machine you are on, tappable only to correct it. */
-#eg-dev-swap {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  padding: 2px 4px;
-  cursor: pointer;
-}
-
-/* The picker button is a button now, not a <select>. */
-button.eg-domain { cursor: pointer; }
-
 /* Every gap opens while a drag is in flight. Tap-to-arm-then-tap-a-gap went
    2026-08-11: a two-step gesture whose second target was invisible until the
    first step, on a surface where Show-on date+time already places an action. */
@@ -6430,15 +6346,15 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .cal-refreshing [data-wk="refresh"] svg { animation: wk-spin 0.8s linear infinite; }
 
 /* ── NOW PAGE MINIMAL v2 (2026-09-29, Quentin's design) ───────────────
-   (--eg-ev-swatch: how much of a calendar's colour its swatch carries — a
-   pastel on the dark surface needs more of itself to show at 14px.) */
-:root { --eg-ev-swatch: 55%; }
    The home screen, turned down: the day and its arrows, one chip naming what
    is running now that folds the whole agenda out, a plain to-do list, and a
    click below it to add one. Every behaviour is the one Engage already had;
    this block is its look. The design's greys are the surface ladder here, and
    everything is scoped to #engage-header / #engage-body because .eg-check is
-   also the routine runner's box. */
+   also the routine runner's box.
+   --eg-ev-swatch: how much of a calendar's colour its swatch carries — a
+   pastel on the dark surface needs more of itself to show at 14px. */
+:root { --eg-ev-swatch: 55%; }
 #engage-header {
   align-items: center;
   padding: 18px 12px 10px 8px;
@@ -6455,17 +6371,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #engage-header .eg-day-btn { align-items: baseline; gap: 6px; }
 #engage-header .eg-day-name { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
 #engage-header .eg-day-date { font: 14px var(--font-mono); color: var(--text-secondary); }
-/* The context formula keeps its place (it is the receipt for what the pool
-   hides) but drops the chip: a quiet line of text in the design's empty slot. */
-#engage-header .eg-domain {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  padding: 4px 6px;
-  border-radius: 6px;
-  max-width: 45%;
-}
-#engage-header .eg-domain:hover { background: var(--surface-2); color: var(--text-primary); }
 #engage-header #eg-panel-btn { padding: 6px; border-radius: 6px; }
 #engage-header #eg-panel-btn:hover { background: var(--surface-2); }
 
@@ -6838,15 +6743,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .ctx-sheet-tag { font: 12px var(--font-mono); color: var(--accent); }
 .ctx-live { color: var(--success); }
 .ctx-dead { color: var(--text-secondary); }
-#eg-time-gate {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  padding: 2px 4px;
-  cursor: pointer;
-}
-/* Off is a state you should notice — time-bound work is showing regardless
-   of the clock, which is exactly the thing you asked to be hidden. */
-#eg-time-gate.ctx-gate-off { color: var(--danger); }
 #map-sort {
   flex: none;
   font: 10px var(--font-mono);
