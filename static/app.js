@@ -914,33 +914,12 @@ function renderPlanBar() {
         ? ` · that covers the ${humanMinutes(owed)} it owes`
         : ` · ${humanMinutes(owed - planned)} short of the ${humanMinutes(owed)} it owes`;
   }
-  // WHAT THE HOURS ARE FOR, picked before they are drawn (2026-09-08,
-  // Quentin's instruction). The thing you think in while planning a day is
-  // the DOMAIN, so that is what the banner asks for, and a span drawn with one
-  // picked is filed under that domain itself (2026-09-15: no general area in
-  // between). One filing per span — an area or a domain — like every row.
-  //
-  // The pick is a DEFAULT for what you draw next, never a filter: spans
-  // already drawn stay exactly as they are and keep showing their own area.
-  const domains = (state.domains || []).filter(d => d.active !== 0
-    || String(d.id) === String(state.planDomainId));
+  // (The "drawing for" domain chips went with domains, 2026-10-01: a span is
+  // drawn unfiled, and its own menu files it under an area.)
   bar.innerHTML = `<span class="tl-plan-sum">${planned
     ? humanMinutes(planned) + ' planned' : 'nothing planned yet'}${escHtml(against)}</span>`
-    + `<div class="tl-plan-domains"><span class="tl-plan-dlabel">drawing for</span>
-        <button class="ctx-chip ${state.planDomainId == null ? 'ctx-req' : 'ctx-off'}"
-          data-plandomain="">nothing in particular</button>
-        ${domains.map(d => `<button class="ctx-chip ${
-          String(d.id) === String(state.planDomainId) ? 'ctx-req' : 'ctx-off'}"
-          data-plandomain="${d.id}">${d.color
-            ? `<span class="tl-plan-dot" style="background:${escHtml(d.color)}"></span>` : ''
-          }${escHtml(d.name)}</button>`).join('')}
-      </div>`
     + '<span class="tl-plan-hint">drag an empty stretch to draw · drag a span to move it'
       + ' · tap it for its menu, double-click to type where</span>';
-  bar.querySelectorAll('[data-plandomain]').forEach(b => b.addEventListener('click', () => {
-    state.planDomainId = b.dataset.plandomain === '' ? null : parseInt(b.dataset.plandomain);
-    renderPlanBar();
-  }));
 }
 
 
@@ -1560,7 +1539,8 @@ function initBlockBarDrag(layer, dateStr, geo) {
 function renderAlldayStrip() {
   const strip = document.getElementById('tl-allday-strip');
   if (!strip) return;
-  const dayEvents = state.gcalEvents.filter(e => e.allday && sameDay(state.currentDate, e.start));
+  const dayEvents = state.gcalEvents.filter(e => e.allday && sameDay(state.currentDate, e.start)
+    && calShowsEvent(e));
   strip.innerHTML = dayEvents.map(e => {
     const col = e.color || '#888888';
     // The calendar's hue is handed to CSS as a variable; what is DONE with it
@@ -1579,8 +1559,7 @@ function renderGcalLayer(bodyH = 600) {
   const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
   const nextDate = new Date(state.currentDate.getTime() + 86400000);
   // Next-day events count when the view runs past midnight (sleep +1d)
-  const dayEvents = state.gcalEvents.filter(e => !e.allday &&
-    !state.tlHidden.event[eventKey(e)] &&
+  const dayEvents = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e) &&
     (sameDay(state.currentDate, e.start) || (state.view.end > DAY_MIN && sameDay(nextDate, e.start))));
   const boxes = [];
   for (const e of dayEvents) {
@@ -2547,7 +2526,7 @@ function renderCalWeek() {
   const alldayByDay = dates.map(d => {
     const dt = new Date(d + 'T12:00:00');
     return state.gcalEvents.filter(e =>
-      e.allday && sameDay(dt, e.start) && !state.tlHidden.event[eventKey(e)]);
+      e.allday && sameDay(dt, e.start) && calShowsEvent(e));
   });
   const hasAllday = alldayByDay.some(list => list.length);
   const alldayRow = alldayByDay.map(list => `<div class="wk-allday-cell">${list.map(e =>
@@ -2579,7 +2558,7 @@ function renderCalWeek() {
 
     // Next-day events count when the week runs past midnight — the day view's
     // rule, for the same reason: the column IS that night.
-    const boxes = state.gcalEvents.filter(e => !e.allday && !state.tlHidden.event[eventKey(e)]
+    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e)
         && (sameDay(dt, e.start) || (end > DAY_MIN && sameDay(next, e.start))))
       .map(e => {
         const base = sameDay(next, e.start) ? DAY_MIN : 0;
@@ -2841,6 +2820,88 @@ async function setWeekGateRole(nodeId, role) {
   renderTimeline();   // the day view is clipped by the same two gates
 }
 
+// THE CALENDAR'S SELECTOR (2026-10-01, Quentin's instruction): what the
+// calendar DRAWS — blocks, gates, events, and each calendar on its own. A view
+// preference of this device (localStorage, the remembered-filter kind): it
+// hides nothing anywhere else, and nothing it hides stops being judged.
+let calShow = {};
+try { calShow = JSON.parse(localStorage.getItem('calShow') || '{}') || {}; } catch (e) { calShow = {}; }
+
+function saveCalShow() {
+  try { localStorage.setItem('calShow', JSON.stringify(calShow)); } catch (e) { /* in-memory still works */ }
+}
+
+// The ONE question every calendar drawing asks of an event: dismissed for
+// that day, or switched off here.
+function calShowsEvent(e) {
+  return !state.tlHidden.event[eventKey(e)] && calShow.events !== false
+    && !((calShow.cals || {})[e.source_id] === false);
+}
+
+function paintCalShowClasses() {
+  const ov = document.getElementById('cal-overlay');
+  if (!ov) return;
+  ov.classList.toggle('cal-hide-blocks', calShow.blocks === false);
+  ov.classList.toggle('cal-hide-gates', calShow.gates === false);
+}
+
+const calFilterView = { open: false };
+
+function closeCalFilter() {
+  if (!calFilterView.open) return false;
+  calFilterView.open = false;
+  renderCalFilter();
+  return true;
+}
+
+function renderCalFilter() {
+  const pill = document.getElementById('cal-filter');
+  const menu = document.getElementById('cal-filter-menu');
+  if (!pill || !menu) return;
+  const cals = (state.calendars || []).filter(c => c.active !== 0);
+  const off = ['blocks', 'gates', 'events'].filter(k => calShow[k] === false).length
+    + cals.filter(c => (calShow.cals || {})[c.id] === false).length;
+  pill.textContent = `${off ? `Showing · ${off} off` : 'Showing all'} ▾`;
+  pill.classList.toggle('map-filter-on', !!off);
+  pill.title = 'What the calendar draws';
+  paintCalShowClasses();
+  menu.classList.toggle('hidden', !calFilterView.open);
+  if (!calFilterView.open) { menu.innerHTML = ''; return; }
+  const chip = (on, attr, label) => `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" ${attr}>${escHtml(label)}</button>`;
+  menu.innerHTML = `
+    <div class="map-filter-sec">Draw</div>
+    <div class="map-filter-chips">
+      ${chip(calShow.blocks !== false, 'data-calshow="blocks"', 'Blocks')}
+      ${chip(calShow.gates !== false, 'data-calshow="gates"', 'Gates')}
+      ${chip(calShow.events !== false, 'data-calshow="events"', 'Events')}
+    </div>
+    ${cals.length ? `<div class="map-filter-sec">Calendars</div>
+    <div class="map-filter-chips">${cals.map(c =>
+      chip((calShow.cals || {})[c.id] !== false, `data-calsrc="${c.id}"`, c.name || 'Calendar')).join('')}</div>` : ''}
+    ${off ? '<div class="map-filter-foot"><button class="ctx-chip" id="cal-filter-clear">⟳ show everything</button></div>' : ''}`;
+  const redraw = () => {
+    saveCalShow();
+    renderCalFilter();
+    renderTimeline();
+    if (calWeek.on) renderCalWeek();
+  };
+  menu.querySelectorAll('[data-calshow]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const k = b.dataset.calshow;
+    calShow[k] = calShow[k] === false ? true : false;
+    redraw();
+  }));
+  menu.querySelectorAll('[data-calsrc]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    calShow.cals = calShow.cals || {};
+    const id = b.dataset.calsrc;
+    calShow.cals[id] = calShow.cals[id] === false ? true : false;
+    redraw();
+  }));
+  const clear = menu.querySelector('#cal-filter-clear');
+  if (clear) clear.addEventListener('click', e => { e.stopPropagation(); calShow = {}; redraw(); });
+}
+
 // The strip's slot carries the week's tools only while the week is what is on
 // screen; any other page, or the day view, leaves it empty and hidden.
 function paintCalStrip() {
@@ -2868,6 +2929,15 @@ function initCalWeek() {
   };
   overlay.addEventListener('click', viewSwitch);
   strip.addEventListener('click', viewSwitch);
+  document.getElementById('cal-filter').addEventListener('click', e => {
+    e.stopPropagation();
+    calFilterView.open = !calFilterView.open;
+    renderCalFilter();
+  });
+  document.addEventListener('click', e => {
+    if (calFilterView.open && !e.target.closest('#cal-filter-menu, #cal-filter')) closeCalFilter();
+  });
+  paintCalShowClasses();
 
   // Pressing a gate says which DAY its menu is about.
   host.addEventListener('pointerdown', e => {
@@ -3972,7 +4042,7 @@ const SETTINGS_SECTIONS = [
     desc: 'Actions that arrive with a kind of calendar event.',
     summary: () => plural(beCounts.occasions, 'occasion') },
   { key: 'areas', name: 'Areas', group: 'Where and what',
-    desc: 'The areas of your life, and the domains that group them.',
+    desc: 'The areas of your life.',
     summary: () => String(beCounts.areas || 0) },
   { key: 'locations', name: 'Locations', group: 'Where and what',
     desc: 'Places a gate or a context tag can be pinned to.',
@@ -4786,20 +4856,16 @@ function seLocationOptions(firstName, current) {
       .map(l => ({ value: l.id, name: l.name + (l.active === 0 ? ' (paused)' : '') })));
 }
 
-// ONE select for where a thing is filed: nothing, a domain, or an area. Areas
-// name their domain beside them, since that is where they send the thing too.
+// ONE select for where a thing is filed: nothing, or an area. DOMAINS ARE GONE
+// from every picker (2026-10-01, Quentin's instruction); a row still filed
+// under one keeps it as its current value, named, until it is filed anew —
+// the paused-option rule, so opening a sheet never refiles anything by itself.
 function seFilingOptions(current) {
-  const dom = (state.domains || []).filter(d => d.active !== 0 || `d:${d.id}` === String(current))
-    .map(d => ({ value: `d:${d.id}`, name: `${d.name} (domain)` }));
+  const dom = (state.domains || []).filter(d => `d:${d.id}` === String(current))
+    .map(d => ({ value: `d:${d.id}`, name: `${d.name} (old domain)` }));
   const areas = (state.areas || []).filter(a => a.active || `a:${a.id}` === String(current))
-    .map(a => ({ value: `a:${a.id}`, name: a.name
-      + (a.domain_id ? ` · ${domainName(a.domain_id)}` : '') + (a.active ? '' : ' (paused)') }));
+    .map(a => ({ value: `a:${a.id}`, name: a.name + (a.active ? '' : ' (paused)') }));
   return [{ value: '', name: '— nothing —' }].concat(dom, areas);
-}
-
-// An area's own domain, which it need not have.
-function areaDomainOptions(current) {
-  return [{ value: '', name: '— no domain —' }].concat(seDomainOptions(current));
 }
 
 function seDomainOptions(current) {
@@ -5387,16 +5453,10 @@ const SETTINGS_SHEETS = {
       if (!it) return [
         { key: 'name', label: 'Name', kind: 'text', placeholder: 'Area name' },
         { key: 'type', label: 'Type', kind: 'select', half: true, options: () => types },
-        { key: 'domain', label: 'Domain', kind: 'select', half: true,
-          options: () => areaDomainOptions(v.domain) },
       ];
       return [
         { key: 'name', label: 'Name', kind: 'static', text: it.name },
         { key: 'type', label: 'Type', kind: 'select', half: true, rerender: true, options: () => types },
-        { key: 'domain', label: 'Domain', kind: 'select', half: true,
-          options: () => areaDomainOptions(v.domain),
-          hint: 'Optional. An area in a domain counts as that domain wherever '
-                + 'domains filter.' },
         // A routine area can hang off a gate: the routine then nests under
         // that gate's hairline on Engage even with no block on the calendar.
         ...(v.type === 'routine' ? [{ key: 'qr', label: 'Gate anchor', kind: 'select',
@@ -5812,7 +5872,6 @@ async function openBlockEditor() {
   document.getElementById('modal-overlay').classList.remove('hidden');
   await reloadSettingsState();
   renderBeAreas();
-  renderBeDomains();
   renderBeBlocks();
   await renderQrManager();
   // Routines are the third recurring kind now, and they have their own fetch —
@@ -5902,7 +5961,6 @@ async function refreshDayAfterSettings() {
 async function refreshBlockEditor() {
   await reloadSettingsState();
   renderBeAreas();
-  renderBeDomains();
   renderBeBlocks();
   renderBeCalendars();
   renderInbox();
@@ -5997,21 +6055,6 @@ function renderBeAreas() {
 
 // Domains are permanent structure, so they live here with the areas rather than
 // on the timeline.
-function renderBeDomains() {
-  const list = document.getElementById('be-domains-list');
-  if (!list) return;
-  const counts = {};
-  state.areas.forEach(a => {
-    if (a.domain_id) counts[a.domain_id] = (counts[a.domain_id] || 0) + 1;
-  });
-  list.innerHTML = state.domains.map(d => beRow({
-    id: d.id, name: d.name, dim: d.active === 0, color: d.color,
-    meta: plural(counts[d.id], 'area'),
-    badge: d.active === 0 ? 'paused' : '',
-  })).join('') + beAddRow('Add domain');
-  wireBeList(list, 'domain', state.domains);
-}
-
 function groupBlocks(blocks) {
   const groups = new Map();
   for (const b of blocks) {
@@ -7423,6 +7466,7 @@ function initHub() {
     // that overlay's own filter menu, the way every raised layer does.
     if (logsView.photo != null) { closeLogPhoto(); return; }
     if (closeLogsFilter()) return;
+    if (closeCalFilter()) return;
     // The occasion sheet peels before whatever it was opened from — and that is
     // Settings as often as it is the day, so it has to sit ABOVE the overlay
     // loop below or Esc would close Settings out from under an open sheet.
@@ -7558,6 +7602,10 @@ function paintTopNav() {
     btn.classList.toggle('on', btn.dataset.nav === lit);
   });
   paintCalStrip();
+  // Each page's selector and search, shown only while it is that page.
+  document.querySelectorAll('#top-nav .tn-tools').forEach(g =>
+    g.classList.toggle('hidden', g.dataset.page !== lit));
+  if (lit === 'calendar') renderCalFilter();
 }
 
 // Put down every surface over the day — the top-level rungs of the Esc
@@ -7568,6 +7616,9 @@ async function closeSurfaces() {
     return !!el && !el.classList.contains('hidden');
   };
   flushOpenNotes();
+  closeMapFilter();
+  closeLogsFilter();
+  closeCalFilter();
   if (seSheet.kind) closeSeSheet();
   if (occasionView.open) closeOccasionSheet();
   if (flowRunView.open) closeFlowRun();
@@ -7884,8 +7935,25 @@ function initLogsView() {
     logsView.menuOpen = !logsView.menuOpen;
     renderLogsFilter();
   });
-  document.getElementById('logs-modal').addEventListener('click', e => {
-    if (!e.target.closest('#logs-filter-menu, #logs-filter')) closeLogsFilter();
+  document.addEventListener('click', e => {
+    if (logsView.menuOpen && !e.target.closest('#logs-filter-menu, #logs-filter')) closeLogsFilter();
+  });
+  // The search lives in the strip now, so it is wired ONCE and survives every
+  // repaint of the list under it.
+  const q = document.getElementById('logs-q');
+  q.addEventListener('input', e => {
+    logsView.q = e.target.value;
+    clearTimeout(logsView.qTimer);
+    // Debounced: each keystroke would otherwise read every file on the box.
+    logsView.qTimer = setTimeout(runLogSearch, 180);
+  });
+  q.addEventListener('keydown', e => {
+    if (e.key !== 'Escape' || !logsView.q) return;
+    e.stopPropagation();                     // peel the query, not the page
+    logsView.q = '';
+    q.value = '';
+    logsView.hits = null;
+    renderLogs();
   });
   // A rotation or window resize changes the textarea's content width, which
   // would desync the highlight until the next keystroke. Registered once —
@@ -7916,7 +7984,83 @@ async function closeLogsView() {
 const refView = { lists: [], open: null,
                   // Interactive routines (flows) share this surface: a
                   // ROUTINES section on the index, openFlow = the step editor.
-                  flows: [], openFlow: null };
+                  flows: [], openFlow: null,
+                  // The row whose contents stand in the right column (wide
+                  // only): { kind: 'flow' | 'list', id } or null.
+                  peek: null };
+
+// THE LISTS PAGE'S EXPANSION (2026-10-01, Quentin's design): on a wide window
+// a tap on a routine or a list shows what is in it in the right column, level
+// with the row, and a second tap puts it away; Edit opens the full editor. A
+// phone has no right column, so a tap opens the editor as it always did.
+// READ-ONLY: a routine's steps are not ticked here — ticks are the run's,
+// which a gate reads, and a run belongs to the runner.
+function refPeekToggle(kind, id) {
+  const on = refView.peek && refView.peek.kind === kind && refView.peek.id === id;
+  refView.peek = on ? null : { kind, id };
+  renderRef();
+}
+
+function refPeekHtml() {
+  const pk = refView.peek;
+  if (!pk || !SETTINGS_WIDE.matches) return '';
+  if (pk.kind === 'flow') {
+    const f = refView.flows.find(x => x.id === pk.id);
+    if (!f) return '';
+    const steps = f.steps.filter(st => st.kind !== 'header' || st.content);
+    return `<div id="ref-peek" class="ref-peek">
+      <div class="ref-peek-head"><span class="ref-peek-name">${escHtml(f.name)}</span>
+        <span class="ref-peek-n">${f.steps.length}</span>
+        <button class="fr-play" data-peek-run="${f.id}" title="Run this routine">${playMark()}</button>
+        <button class="ref-peek-open" data-peek-flow="${f.id}">Edit ›</button></div>
+      ${steps.map(st => st.kind === 'header'
+        ? `<div class="ref-peek-h">${escHtml(st.content)}</div>`
+        : `<div class="ref-peek-row"><span class="ref-peek-dot"></span><span>${escHtml(st.content || st.kind)}</span></div>`).join('')
+        || '<div class="ref-peek-empty">No steps yet.</div>'}
+    </div>`;
+  }
+  const l = refView.lists.find(x => x.id === pk.id);
+  if (!l) return '';
+  const subs = refView.lists.filter(x => x.parent_id === l.id);
+  return `<div id="ref-peek" class="ref-peek">
+    <div class="ref-peek-head"><span class="ref-peek-name">${escHtml(l.name)}</span>
+      <span class="ref-peek-n">${l.items.filter(i => !i.done).length}</span>
+      <button class="ref-peek-open" data-peek-list="${l.id}">Edit ›</button></div>
+    ${subs.map(x => `<div class="ref-peek-row ref-peek-sub"><span>▸ ${escHtml(x.name)}</span></div>`).join('')}
+    ${l.items.map(i => `<div class="ref-peek-row${i.done ? ' ref-peek-done' : ''}"><span class="ref-peek-dot"></span><span>${
+      escHtml(i.content)}</span></div>`).join('')
+      || (subs.length ? '' : '<div class="ref-peek-empty">Nothing in it yet.</div>')}
+  </div>`;
+}
+
+// Level with its row, kept inside the page: it scrolls with the list.
+function wireRefPeek(body) {
+  const peek = body.querySelector('#ref-peek');
+  const pk = refView.peek;
+  body.querySelectorAll('.ref-row').forEach(r => r.classList.toggle('ref-on', !!pk
+    && ((pk.kind === 'flow' && r.dataset.flow === String(pk.id))
+      || (pk.kind === 'list' && r.dataset.id === String(pk.id)))));
+  if (!peek) return;
+  const row = body.querySelector(pk.kind === 'flow'
+    ? `.ref-row[data-flow="${pk.id}"]` : `.ref-row[data-id="${pk.id}"]`);
+  if (row) {
+    const top = row.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop;
+    const max = Math.max(8, body.scrollHeight - peek.offsetHeight - 8);
+    peek.style.top = `${Math.max(8, Math.min(top - 6, max))}px`;
+  }
+  peek.querySelectorAll('[data-peek-flow]').forEach(b => b.addEventListener('click', () => {
+    refView.openFlow = parseInt(b.dataset.peekFlow);
+    refView.peek = null;
+    renderRef();
+  }));
+  peek.querySelectorAll('[data-peek-list]').forEach(b => b.addEventListener('click', () => {
+    refView.open = parseInt(b.dataset.peekList);
+    refView.peek = null;
+    renderRef();
+  }));
+  peek.querySelectorAll('[data-peek-run]').forEach(b => b.addEventListener('click', () =>
+    openFlowRun(parseInt(b.dataset.peekRun))));
+}
 
 // 0=Mon..6=Sun, matching storage.step_due_on and every other days_of_week in
 // the app. Empty = every day.
@@ -8035,7 +8179,9 @@ function renderRef() {
       <button id="fr-new" class="map-add-btn">+ routine</button></div>`)
       + mpSection('Reference', '', `<div class="ref-list">${rootLists.map(l => refListRow(l)).join('')
       || '<div class="gtd-empty">No lists yet.</div>'}
-      <button id="ref-new" class="map-add-btn">+ list</button></div>`);
+      <button id="ref-new" class="map-add-btn">+ list</button></div>`)
+      + refPeekHtml();
+    requestAnimationFrame(() => wireRefPeek(body));
 
     // Routine rows: tap = step editor, double-click = rename, ▶ = runner,
     // × = delete (undo replays). The single click waits out the double-click
@@ -8046,6 +8192,7 @@ function renderRef() {
       span.addEventListener('click', () => {
         clearTimeout(t);
         t = setTimeout(() => {
+          if (SETTINGS_WIDE.matches) { refPeekToggle('flow', id); return; }
           refView.openFlow = id;
           renderRef();
         }, 220);
@@ -8124,7 +8271,9 @@ function renderRef() {
       span.addEventListener('click', () => {
         clearTimeout(t);
         t = setTimeout(() => {
-          refView.open = parseInt(span.closest('.ref-row').dataset.id);
+          const lid = parseInt(span.closest('.ref-row').dataset.id);
+          if (SETTINGS_WIDE.matches) { refPeekToggle('list', lid); return; }
+          refView.open = lid;
           renderRef();
         }, 220);
       });
@@ -11804,7 +11953,6 @@ async function runLogSearch() {
 // left, the open log in the middle, its counts and Dangerous writing on the
 // right. A phone keeps the two-step reading: the list, then one log with a
 // way back. One render for both; the CSS decides which parts a phone shows.
-const LOG_SEARCH_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
 const LOG_BOLT_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>';
 
 function logMonthLabel(ymd) {
@@ -11837,9 +11985,6 @@ function renderLogs() {
   const body = document.getElementById('logs-body');
   if (!body) return;
   syncRoute();
-  // A search being typed into survives the repaint of the list under it.
-  const qWas = document.getElementById('logs-q');
-  const qFocused = !!qWas && document.activeElement === qWas;
 
   // The DATE is a column, not part of the name. It still lives in the
   // filename (it is what keeps two logs on one topic from being one file),
@@ -11860,22 +12005,12 @@ function renderLogs() {
   const hidden = logsView.logs.length - logs.length;
   const openMeta = logsView.logs.find(l => l.name === logsView.open);
 
-  // The filter pill lives in the header markup and is only BORROWED by the
-  // list's tool row — park it back before the body is rewritten, or the
-  // repaint would destroy it with its listener.
-  const parked = document.getElementById('logs-filter');
-  if (parked) document.querySelector('#logs-modal > .modal-header').appendChild(parked);
-
   body.innerHTML = `
     <div class="lg-page${logsView.open ? ' lg-has-open' : ''}">
       <aside class="lg-side">
-        <div class="lg-tools">
-          <label class="lg-search">${LOG_SEARCH_SVG}
-            <input type="text" id="logs-q" placeholder="Search what you wrote"
-              autocomplete="off" value="${escHtml(logsView.q)}"></label>
-          <div class="lg-tools-row"><span id="logs-filter-slot"></span>
-            <button id="log-new" class="lg-new">+ New</button></div>
-        </div>
+        <div class="lg-tools"><div class="lg-tools-row">
+          <span class="lg-count">${logs.length} ${logs.length === 1 ? 'log' : 'logs'}</span>
+          <button id="log-new" class="lg-new">+ New</button></div></div>
         <div class="log-list">${rows || `<div class="log-empty">${
           logsView.q ? `Nothing in the logs says “${escHtml(logsView.q)}”`
           : logsView.logs.length ? 'No log carries every tag you asked for'
@@ -11903,10 +12038,6 @@ function renderLogs() {
       </div>
     </div>`;
 
-  // The filter pill is static markup wired once (initLogsView); it MOVES into
-  // the list's tool row rather than being drawn a second time.
-  const pill = document.getElementById('logs-filter');
-  if (pill) document.getElementById('logs-filter-slot').replaceWith(pill);
   renderLogsFilter();
 
   body.querySelectorAll('.log-row').forEach(row => {
@@ -11917,23 +12048,6 @@ function renderLogs() {
       openLog(row.dataset.name);
     });
   });
-  const q = document.getElementById('logs-q');
-  q.addEventListener('input', e => {
-    logsView.q = e.target.value;
-    clearTimeout(logsView.qTimer);
-    // Debounced: each keystroke would otherwise read every file on the box.
-    logsView.qTimer = setTimeout(runLogSearch, 180);
-  });
-  q.addEventListener('keydown', e => {
-    if (e.key !== 'Escape' || !logsView.q) return;
-    e.stopPropagation();                     // peel the query, not the overlay
-    logsView.q = '';
-    logsView.hits = null;
-    renderLogs();
-  });
-  if (qFocused || (logsView.q && !logsView.open)) {
-    q.focus(); q.setSelectionRange(q.value.length, q.value.length);
-  }
   document.getElementById('log-dangerous')
     .addEventListener('click', openDangerousWriting);
   // Name and tags, and NO date to type — the server stamps today. Typing
@@ -11995,7 +12109,7 @@ function renderLogs() {
     logsView.logs = await apiGet('/api/logs', logsView.logs);
     renderLogs();
   });
-  if (!qFocused) ta.focus();
+  if (document.activeElement !== document.getElementById('logs-q')) ta.focus();
 }
 
 // ── Social exposure v1 (dryrun) ──────────────────────────────
@@ -13760,9 +13874,6 @@ let mapWired = false;
 // (`after_id`) actions too, because seeing the chain is the point of a map.
 const MAP_LENSES = [
   { key: 'all', name: 'All', keep: () => true },
-  { key: 'next', name: 'Next actions',
-    keep: (i, today) => i.kind !== 'project' && i.status === 'active'
-      && !(i.defer_until && i.defer_until > today) },
   { key: 'waiting', name: 'Waiting & deferred',
     keep: (i, today) => i.status === 'waiting'
       || (i.status === 'active' && i.defer_until && i.defer_until > today) },
@@ -13773,8 +13884,8 @@ const MAP_LENSES = [
 // `sel` is the keyboard's row (by id) and `tMode` the armed `t` — see MAP BY
 // KEYBOARD below.
 // `delArm` is a project waiting for its second ⌫.
-const mapView = { q: '', lens: 'all', domainId: null, tags: new Set(), menuOpen: false,
-                  sel: null, tMode: false, delArm: null };
+const mapView = { q: '', lens: 'all', tags: new Set(), menuOpen: false,
+                  sel: null, tMode: false, delArm: null, todo: new Set() };
 
 function mapLens() {
   return MAP_LENSES.find(l => l.key === mapView.lens) || MAP_LENSES[0];
@@ -13782,17 +13893,21 @@ function mapLens() {
 
 // How many terms are narrowing the list beyond the lens — what the pill counts.
 function mapFilterExtras() {
-  return (mapView.domainId != null ? 1 : 0) + mapView.tags.size;
+  return mapView.tags.size;
 }
 
 // THE ONE PLACE the inventory is narrowed. Search runs over the result of this,
 // not beside it: a search inside "Waiting & deferred" must not turn up an
 // action you are not asking about.
+//
+// What is on the TO-DO LIST is not here at all (2026-10-01): the list is
+// what you will do, Projects what you might — asked of the same served set
+// the list reads, through the list's own rule (onTodoList).
 function mapVisibleItems(items, today) {
   const lens = mapLens();
   return items.filter(i =>
-    lens.keep(i, today)
-    && (mapView.domainId == null || String(i.domain_id) === String(mapView.domainId))
+    !(mapView.todo.has(i.id) && onTodoList(i))
+    && lens.keep(i, today)
     && [...mapView.tags].every(t => itemTags(i).includes(t)));
 }
 
@@ -13800,7 +13915,7 @@ function mapVisibleItems(items, today) {
 // decided yet. It belongs to the whole inventory and to no lens, so any lens
 // at all puts it away rather than showing it under a heading it contradicts.
 function mapInboxItems() {
-  return (mapView.lens === 'all' && mapView.domainId == null && !mapView.tags.size)
+  return (mapView.lens === 'all' && !mapView.tags.size)
     ? (state.inbox || []) : [];
 }
 
@@ -13830,13 +13945,6 @@ async function openMap() {
     document.getElementById('map-close').addEventListener('click', shut);
     // Wired once, outside renderMap: re-rendering the body on every keystroke
     // must not take the field you are typing in with it.
-    const sortBtn = document.getElementById('map-sort');
-    sortBtn.addEventListener('click', () => {
-      if (mapSortOn()) localStorage.setItem('mapSort', 'off');
-      else localStorage.removeItem('mapSort');   // absent = on, one default
-      renderMap();
-    });
-    document.getElementById('map-export').addEventListener('click', exportMap);
     // A tap or click on a row selects it too, so the keys act where you are.
     document.getElementById('map-body').addEventListener('pointerdown', e => {
       const row = e.target.closest('.map-row[data-id]');
@@ -13849,10 +13957,17 @@ async function openMap() {
       mapView.menuOpen = !mapView.menuOpen;
       renderMapFilter();
     });
-    // Tapping anywhere else in the overlay puts the menu away — it is transient
-    // chrome, which is the whole point of 23a over a permanent rail.
-    document.getElementById('map-modal').addEventListener('click', e => {
-      if (!e.target.closest('#map-filter-menu, #map-filter')) closeMapFilter();
+    // Tapping anywhere else puts the menu away — it is transient chrome, which
+    // is the whole point of 23a over a permanent rail.
+    document.addEventListener('click', e => {
+      if (mapView.menuOpen && !e.target.closest('#map-filter-menu, #map-filter')) closeMapFilter();
+    });
+    // The index follows the scroll, the way Settings' does.
+    const mapBody = document.getElementById('map-body');
+    let spy = 0;
+    mapBody.addEventListener('scroll', () => {
+      cancelAnimationFrame(spy);
+      spy = requestAnimationFrame(() => mapIndexSpy(mapBody));
     });
     const q = document.getElementById('map-q');
     q.addEventListener('input', e => { mapView.q = e.target.value; renderMap(); });
@@ -13889,7 +14004,7 @@ function renderMapFilter() {
   const extras = mapFilterExtras();
   pill.textContent = `${mapLens().name}${extras ? ` · ${extras}` : ''} ▾`;
   pill.classList.toggle('map-filter-on', mapView.lens !== 'all' || !!extras);
-  pill.title = 'What the list is showing — lens, domain and tags';
+  pill.title = 'What the list is showing — lens and tags';
 
   menu.classList.toggle('hidden', !mapView.menuOpen);
   if (!mapView.menuOpen) { menu.innerHTML = ''; return; }
@@ -13899,23 +14014,12 @@ function renderMapFilter() {
   const vocab = [...new Set([
     ...(state.mapItems || []).flatMap(itemTags), ...mapView.tags,
   ])].sort();
-  const domains = (state.domains || []).filter(d =>
-    d.active !== 0 || String(d.id) === String(mapView.domainId));
-
   menu.innerHTML = `
     <div class="map-filter-sec">List — showing</div>
     <div class="map-filter-chips">
       ${MAP_LENSES.map(l => `<button class="ctx-chip ${
         l.key === mapView.lens ? 'ctx-req' : 'ctx-off'}" data-lens="${l.key}"
         >${escHtml(l.name)}</button>`).join('')}
-    </div>
-    <div class="map-filter-sec">Domain — in force</div>
-    <div class="map-filter-chips">
-      <button class="ctx-chip ${mapView.domainId == null ? 'ctx-req' : 'ctx-off'}"
-        data-mapdomain="">All domains</button>
-      ${domains.map(d => `<button class="ctx-chip ${
-        String(d.id) === String(mapView.domainId) ? 'ctx-req' : 'ctx-off'}"
-        data-mapdomain="${d.id}">${escHtml(d.name)}</button>`).join('')}
     </div>
     <div class="map-filter-sec">Tags — every selected one required</div>
     <div class="map-filter-chips">
@@ -13926,10 +14030,17 @@ function renderMapFilter() {
           >${on ? '∧' : ''}${escHtml(t)}</button>`;
       }).join('') : '<span class="cl-hint">no tags in the inventory yet</span>'}
     </div>
-    ${mapView.lens !== 'all' || mapFilterExtras() ? `
+    <div class="map-filter-sec">Order</div>
+    <div class="map-filter-chips">
+      <button class="ctx-chip ${mapSortOn() ? 'ctx-req' : 'ctx-off'}" data-mapsort="on"
+        title="Due dates first, then deferred by how soon they return">due first</button>
+      <button class="ctx-chip ${mapSortOn() ? 'ctx-off' : 'ctx-req'}" data-mapsort="off">tree order</button>
+    </div>
     <div class="map-filter-foot">
-      <button class="ctx-chip" id="map-filter-clear">⟳ show everything</button>
-    </div>` : ''}`;
+      ${mapView.lens !== 'all' || mapFilterExtras()
+        ? '<button class="ctx-chip" id="map-filter-clear">⟳ show everything</button>' : ''}
+      <button class="ctx-chip" id="map-export" title="Downloads it and copies it">⤓ Download Markdown</button>
+    </div>`;
 
   // stopPropagation on every one of these: the handler RE-RENDERS the menu, so
   // by the time the click bubbles to the modal's tap-off handler its target has
@@ -13943,39 +14054,26 @@ function renderMapFilter() {
   });
   menu.querySelectorAll('[data-lens]').forEach(b =>
     stay(b, () => { mapView.lens = b.dataset.lens; }));
-  menu.querySelectorAll('[data-mapdomain]').forEach(b => stay(b, () => {
-    mapView.domainId = b.dataset.mapdomain === '' ? null : parseInt(b.dataset.mapdomain);
-  }));
   menu.querySelectorAll('[data-maptag]').forEach(b => stay(b, () => {
     const t = b.dataset.maptag;
     if (mapView.tags.has(t)) mapView.tags.delete(t);
     else mapView.tags.add(t);
   }));
+  menu.querySelectorAll('[data-mapsort]').forEach(b => stay(b, () => {
+    if (b.dataset.mapsort === 'off') localStorage.setItem('mapSort', 'off');
+    else localStorage.removeItem('mapSort');   // absent = on, one default
+  }));
   const clear = menu.querySelector('#map-filter-clear');
   if (clear) stay(clear, () => {
     mapView.lens = 'all';
-    mapView.domainId = null;
     mapView.tags.clear();
+  });
+  menu.querySelector('#map-export').addEventListener('click', e => {
+    e.stopPropagation();
+    exportMap();
   });
 }
 
-// ── THE AREAS OF FOCUS, at the foot of MAP (2026-09-08, Quentin's
-// instruction) ──────────────────────────────────────────────────────────────
-//
-// The tree above groups domain → area, but it can only show the ones that
-// HAVE something in them: an area you set up and then never filed into is
-// invisible on the surface built for reading the whole map, and the only
-// place it existed was Settings. Horizon 2 is a list you are supposed to
-// REVIEW, so it belongs on the reading surface.
-//
-// It is the STANDING structure, so it is not narrowed by the lens — a filter
-// is a question about the inventory, and an area does not stop existing
-// because you are looking at "Waiting & deferred". The counts are of the whole
-// inventory for the same reason.
-//
-// No editor of its own: each row is the object it names (`data-obj`), so its
-// menu and its `›` open the SAME `SETTINGS_SHEETS.area` / `.domain` sheet that
-// Settings opens. One thing, one editor — reached from the thing.
 // MAP PAGE, 9a (2026-10-01, Quentin's design): the Now page's shell — the
 // area's name in the left column where the date sits on Now, pinned while its
 // projects scroll past in the middle one, the right column empty. One section
@@ -13990,83 +14088,51 @@ function mpSection(label, sub, rows) {
   </section>`;
 }
 
-function mapAreasHtml() {
-  const items = state.mapItems || [];
-  const nByArea = {}, nOnDomain = {};
-  items.forEach(i => {
-    if (i.area_id) nByArea[i.area_id] = (nByArea[i.area_id] || 0) + 1;
-    else if (i.domain_id) nOnDomain[i.domain_id] = (nOnDomain[i.domain_id] || 0) + 1;
-  });
-  const areas = (state.areas || []).filter(a => a.type === 'standard');
-  const domains = (state.domains || []).slice().sort((a, b) => a.name.localeCompare(b.name));
-
-  const areaRow = a => {
-    const n = nByArea[a.id] || 0;
-    return `<div class="map-af-row" data-obj="area:${a.id}" data-area-id="${a.id}">
-      <span class="map-af-name">${escHtml(a.name)}</span>
-      ${a.active ? '' : '<span class="map-badge">paused</span>'}
-      <span class="map-count">${n}</span>
-      <span class="map-acts"><button class="map-af-open" data-kind="area" data-id="${a.id}"
-        title="Edit this area — its domain, its state">›</button></span>
-    </div>`;
-  };
-
-  const groups = domains.map(d => {
-    const mine = areas.filter(a => String(a.domain_id) === String(d.id))
-      .sort((x, y) => x.name.localeCompare(y.name));
-    return `<div class="map-af-domain">
-      <div class="map-af-dhead" data-obj="domain:${d.id}">
-        <span class="map-af-dname">${escHtml(d.name)}</span>
-        ${d.active === 0 ? '<span class="map-badge">paused</span>' : ''}
-        <span class="map-count">${mine.reduce((n, a) => n + (nByArea[a.id] || 0), nOnDomain[d.id] || 0)}</span>
-        <span class="map-acts"><button class="map-af-open" data-kind="domain" data-id="${d.id}"
-          title="Edit this domain">›</button></span>
-      </div>
-      ${mine.map(areaRow).join('')}
-    </div>`;
-  }).join('');
-  // Areas in no domain are a group of their own, not a domain called "none".
-  const loose = areas.filter(a => !a.domain_id || !domains.some(d => String(d.id) === String(a.domain_id)))
+// THE PROJECTS PAGE'S SECTIONS (2026-10-01, Quentin's instruction): one per
+// AREA — every standard area while nothing narrows the list, so an empty one
+// can still be found and filled; only the ones with rows under a filter —
+// then what is filed under none, then the inbox. The page and its Markdown
+// both read this, so the file you save is the page you were looking at.
+function mapSections(items, inboxItems) {
+  const narrowed = mapLens().key !== 'all' || !!mapFilterExtras();
+  const byArea = {};
+  items.forEach(i => { (byArea[i.area_id || 0] = byArea[i.area_id || 0] || []).push(i); });
+  const areas = (state.areas || []).filter(a => a.type === 'standard'
+      && (byArea[a.id] || (!narrowed && a.active)))
     .sort((x, y) => x.name.localeCompare(y.name));
-  const looseHtml = loose.length ? `<div class="map-af-domain">
-      <div class="map-af-dhead"><span class="map-af-dname">In no domain</span></div>
-      ${loose.map(areaRow).join('')}
-    </div>` : '';
-
-  return `<div class="map-af">
-    <div class="map-af-head">Areas of focus
-      <span class="map-count">${areas.length}</span>
-      <span class="map-acts">
-        <button class="map-af-add" data-kind="area">+ area</button>
-        <button class="map-af-add" data-kind="domain">+ domain</button>
-      </span>
-    </div>
-    <div class="map-af-hint">Horizon 2 — the standing responsibilities. Projects
-      and actions file under an area or a domain, and an area can sit in a
-      domain if you give it one.</div>
-    ${groups}${looseHtml}
-  </div>`;
+  const secs = areas.map(a => ({ key: `a${a.id}`, name: a.name, obj: `area:${a.id}`,
+                                 paused: !a.active, items: byArea[a.id] || [] }));
+  const known = new Set(areas.map(a => a.id));
+  const loose = items.filter(i => !known.has(i.area_id));
+  if (loose.length) secs.push({ key: 'none', name: 'No area', items: loose });
+  if (inboxItems.length) secs.push({ key: 'in', name: 'In', sub: 'not yet clarified',
+                                    inbox: true, items: inboxItems });
+  return secs;
 }
 
-// The roster's own control. `returnTo` is what makes the sheet's Save land
-// back on MAP: openSeSheet's default close leaves the settings index behind
-// it, which is not where this was opened from.
-function wireMapAreas(body) {
-  const back = async () => {
-    closeSeSheet();
-    // The sheet's own submit/remove already re-read /api/areas and /api/domains
-    // (refreshBlockEditor), so this repaints MAP against fresh state rather
-    // than fetching them a second time.
-    await refreshMap();
-  };
-  body.querySelectorAll('.map-af-open').forEach(btn => btn.addEventListener('click', e => {
-    e.stopPropagation();
-    openObjectSheet(btn.dataset.kind, btn.dataset.id, back);
+// The index lights the section the scroll is in — the last whose title has
+// reached the top.
+function mapIndexSpy(body) {
+  const top = body.getBoundingClientRect().top;
+  let cur = null;
+  body.querySelectorAll('.mp-sec[data-sec]').forEach(sec => {
+    if (sec.getBoundingClientRect().top - top - 40 <= 0) cur = sec.dataset.sec;
+  });
+  if (!cur) { const first = body.querySelector('.mp-sec[data-sec]'); cur = first && first.dataset.sec; }
+  body.querySelectorAll('.mp-idx[data-go]').forEach(b => b.classList.toggle('on', b.dataset.go === cur));
+}
+
+function wireMapIndex(body) {
+  body.querySelectorAll('.mp-idx[data-go]').forEach(btn => btn.addEventListener('click', () => {
+    const sec = body.querySelector(`.mp-sec[data-sec="${btn.dataset.go}"]`);
+    if (sec) body.scrollTop += sec.getBoundingClientRect().top - body.getBoundingClientRect().top - 8;
   }));
-  body.querySelectorAll('.map-af-add').forEach(btn => btn.addEventListener('click', e => {
-    e.stopPropagation();
-    openSeSheet(btn.dataset.kind, null, back);
+  // An area is made where the areas are listed — the same sheet Settings
+  // opens, so it is one thing with one editor.
+  body.querySelectorAll('.mp-add-area').forEach(btn => btn.addEventListener('click', () => {
+    openSeSheet('area', null, async () => { closeSeSheet(); await refreshMap(); });
   }));
+  mapIndexSpy(body);
 }
 
 function closeMapFilter() {
@@ -14082,18 +14148,19 @@ async function refreshMap() {
   // to load state.areas last is how an area added here fails to appear until
   // something unrelated refreshes. Every fetch falls back to CURRENT state, not
   // [] — Promise.all rejects as a unit, and one dead endpoint used to blank it.
-  const [items, projects, inbox, areas, domains] = await Promise.all([
+  const [items, projects, inbox, areas, todo] = await Promise.all([
     apiGet('/api/map', state.mapItems || []),
     apiGet('/api/projects', state.projects || []),
     apiGet('/api/inbox', state.inbox || []),
     apiGet('/api/areas', state.areas || []),
-    apiGet('/api/domains', state.domains || []),
+    // The to-do list's own read, so Projects leaves out exactly what it shows.
+    apiGet('/api/inbox/active', null),
   ]);
   state.mapItems = items;
   state.projects = projects;
   state.inbox = inbox;
   state.areas = areas;
-  state.domains = domains;
+  if (Array.isArray(todo)) mapView.todo = new Set(todo.map(i => i.id));
   renderMap();
 }
 
@@ -14151,23 +14218,6 @@ function mapSortSiblings(list, todayStr) {
       || a[0][1].localeCompare(b[0][1])
       || a[1] - b[1])
     .map(x => x[2]);
-}
-
-// domain → area → items, each level by name. Area cascades down a subtree in
-// storage, so a parent is always in the same area group as its children. ONE
-// grouping, read by the tree and by the export, so the file you save is the
-// list you were looking at.
-function mapGroups(items) {
-  const domains = {};
-  items.forEach(i => {
-    const dk = i.domain_id || 0;
-    const ak = i.area_id || 0;
-    const d = domains[dk] = domains[dk] || { name: i.domain_name || '—', areas: {} };
-    const a = d.areas[ak] = d.areas[ak] || { name: i.area_name || '(no area)', items: [] };
-    a.items.push(i);
-  });
-  const byName = o => Object.values(o).sort((x, y) => x.name.localeCompare(y.name));
-  return byName(domains).map(d => ({ name: d.name, areas: byName(d.areas) }));
 }
 
 // SOMEDAY IS SPLIT OUT (2026-08-10). It used to be interleaved with live
@@ -14328,8 +14378,7 @@ function renderMap() {
   }
 
   // A row is its TEXT, which is the control: a tap opens the clarify sheet,
-  // a double-click renames, a drag files it. A stalled project says so on a
-  // line under it — the GTD check the review leans on hardest.
+  // a double-click renames, a drag files it.
   const rowHtml = item => {
     const isProject = item.kind === 'project';
     const isStalled = isProject && stalled.has(item.id);
@@ -14339,7 +14388,7 @@ function renderMap() {
       ${chainN[item.id] ? `<span class="cl-chain-n" title="Position in this project's dependency chain">[${chainN[item.id]}]</span>` : ''}
       <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
       ${meta ? `<span class="mp-meta">${meta}</span>` : ''}
-    </div>${isStalled ? '<div class="mp-stalled">No actions yet</div>' : ''}`;
+    </div>`;
   };
 
   // No add affordance here any more: MAP is a reading surface, and "give
@@ -14355,17 +14404,15 @@ function renderMap() {
     return forest.roots.map(subtree).join('');
   };
 
-  const groups = mapGroups(items);
 
   // "In" is not part of the inventory — it is what hasn't been decided yet, so
   // get_map_items excludes it. But MAP is the read-EVERYTHING surface, and an
   // undecided pile you can only reach through the day's Clarify count is a
   // pile you forget you have. It sits at the bottom, below the tree, because
   // the tree is what you came to read.
-  const inboxHtml = inboxItems.length ? mpSection('In', 'not yet clarified',
-    inboxItems.map(i => `<div class="map-row map-row-in" data-id="${i.id}">
+  const inboxRows = list => list.map(i => `<div class="map-row map-row-in" data-id="${i.id}">
         <span class="map-text" title="Tap to clarify · double-click to reword">${escHtml(i.content)}</span>
-      </div>`).join('')) : '';
+      </div>`).join('');
 
   // ── Search ────────────────────────────────────────────────
   //
@@ -14382,14 +14429,6 @@ function renderMap() {
   // list, and filing stays a tree gesture.
   const q = mapView.q.trim();
   const qLower = q.toLowerCase();
-  const sortEl = document.getElementById('map-sort');
-  if (sortEl) {
-    sortEl.textContent = mapSortOn() ? '⇅ due' : '⇅ tree';
-    sortEl.classList.toggle('map-sort-on', mapSortOn());
-    sortEl.title = mapSortOn()
-      ? 'Due dates first (soonest first), then deferred by how soon they return — click for plain tree order'
-      : 'Plain tree order — click to sort by due, then defer';
-  }
   const countEl = document.getElementById('map-q-count');
   if (q) {
     const parentOf = {};
@@ -14414,7 +14453,8 @@ function renderMap() {
         || (a.i.content || '').localeCompare(b.i.content || ''));
 
     if (countEl) countEl.textContent = `${hits.length} of ${items.length + inboxItems.length}`;
-    body.innerHTML = mpSection('Search', `${hits.length} found`, hits.length ? hits.map(({ i }) => {
+    body.innerHTML = `<div class="mp-page mp-searching"><div class="mp-main"><section class="mp-sec">
+      <h2 class="mp-sec-title">Search<span class="mp-sub">${hits.length} found</span></h2>${hits.length ? hits.map(({ i }) => {
       const isIn = !i.status || i.status === 'in';
       const isProject = i.kind === 'project';
       return `<div class="map-row map-row-hit${isProject ? ' map-row-project' : ''}${
@@ -14424,35 +14464,53 @@ function renderMap() {
         <span class="mp-meta">${[badge(i), `<span class="map-crumb">${escHtml(crumb(i)) || 'in'}</span>`]
           .filter(Boolean).join(' · ')}</span>
       </div>`;
-    }).join('') : `<div class="pm-empty">Nothing matches "${escHtml(q)}".</div>`);
+    }).join('') : `<div class="pm-empty">Nothing matches "${escHtml(q)}".</div>`}</section></div></div>`;
     wireMapRows(body, byId);
     mapSelSync();
     return;
   }
   if (countEl) countEl.textContent = '';
 
-  // The domain rides under the area's name: areas are what you read by, and
-  // a domain heading of its own was a second band of chrome over the first.
-  body.innerHTML = (groups.length ? groups.map(d => d.areas.map(a => {
-    const live = areaTreeHtml(a.items, false);
-    const later = areaTreeHtml(a.items, true);
-    const nLater = a.items.filter(i => i.status === 'on_hold').length;
-    return mpSection(a.name, d.name === '—' ? '' : d.name, live
-      + (later ? `<div class="map-someday-head">Someday / maybe<span class="map-count">${nLater}</span></div>${later}` : ''));
-  }).join('')).join('') : mpSection('', '', `<div class="pm-empty">${
+  // THE PROJECTS PAGE (2026-10-01): the areas are an INDEX in the left column
+  // — the way Settings' sections are — lit for the one the scroll is in, with
+  // + Add area at its foot; each area is a titled section down the middle.
+  const secs = mapSections(items, inboxItems);
+  const secHtml = sec => {
+    let rows;
+    if (sec.inbox) rows = inboxRows(sec.items);
+    else {
+      const live = areaTreeHtml(sec.items, false);
+      const later = areaTreeHtml(sec.items, true);
+      const nLater = sec.items.filter(i => i.status === 'on_hold').length;
+      rows = live + (later ? `<div class="map-someday-head">Someday / maybe<span class="map-count">${nLater}</span></div>${later}` : '');
+    }
+    return `<section class="mp-sec" data-sec="${sec.key}">
+      <h2 class="mp-sec-title"${sec.obj ? ` data-obj="${sec.obj}"` : ''}>${escHtml(sec.name)}${
+        sec.paused ? '<span class="mp-sub">paused</span>' : ''}${
+        sec.sub ? `<span class="mp-sub">${escHtml(sec.sub)}</span>` : ''}</h2>
+      ${rows || '<div class="mp-empty">Nothing filed here.</div>'}
+    </section>`;
+  };
+  const empty = `<div class="pm-empty mp-none">${
     mapLens().key !== 'all' || mapFilterExtras()
       // An empty list under a filter is a fact about the QUESTION, not about
       // the inventory — say which, or it reads as "you have nothing".
-      ? `Nothing in the inventory answers “${escHtml(mapLens().name)}”${
-          mapFilterExtras() ? ' with those filters' : ''}.`
-      : 'Nothing in the inventory yet — capture into the inbox first.'
-  }</div>`)) + inboxHtml + mpSection('', '', mapAreasHtml());
+      ? `Nothing answers “${escHtml(mapLens().name)}”${mapFilterExtras() ? ' with those filters' : ''}.`
+      : 'Nothing here yet — the to-do list holds what you will do; this holds the rest.'
+  }</div>`;
+  body.innerHTML = `<div class="mp-page">
+    <nav class="mp-index">${secs.map(sec => `<button class="mp-idx" data-go="${sec.key}"${
+      sec.obj ? ` data-obj="${sec.obj}"` : ''}>${escHtml(sec.name)}</button>`).join('')}
+      <button class="mp-add-area mp-idx-add">+ Add area</button></nav>
+    <div class="mp-main">${secs.map(secHtml).join('') || empty}
+      <button class="mp-add-area mp-add-foot">+ Add area</button></div>
+  </div>`;
 
   const patchItem = (id, patch) => apiSend(`/api/inbox/${id}`, 'PATCH', patch);
   const after = async () => { await refreshMap(); await refreshActiveItems(); };
 
   wireMapRows(body, byId);
-  wireMapAreas(body);
+  wireMapIndex(body);
 
   // Drag one row onto another to file it there — the same act as the filing
   // target, so the destination becomes a project by the usual invariant. The
@@ -14759,7 +14817,7 @@ document.addEventListener('keydown', e => {
 //
 // What MAP is showing under its lens and filters (search is a ranked view,
 // not a list, so it is not what gets saved), in the tree's own grouping and
-// order via mapGroups / mapAreaForest. Saved through saveDownload (the
+// order via mapSections / mapAreaForest. Saved through saveDownload (the
 // Downloads folder) and copied too, since pasting it is often the point.
 function mapMarkdown() {
   const todayStr = wallDay();
@@ -14788,17 +14846,14 @@ function mapMarkdown() {
   const out = [`# MAP — ${fmtDay(todayStr)}`, '',
     `_${mapLens().name}${extras ? ` · ${plural(extras, 'filter')}` : ''} · ${
       plural(items.length + inbox.length, 'item')}_`, ''];
-  mapGroups(items).forEach(d => {
-    out.push(`## ${d.name}`, '');
-    d.areas.forEach(a => {
-      out.push(`### ${a.name}`, '');
-      const live = forestLines(a.items, false);
-      const later = forestLines(a.items, true);
-      if (live.length) out.push(...live, '');
-      if (later.length) out.push('#### Someday / maybe', '', ...later, '');
-    });
+  mapSections(items, inbox).forEach(sec => {
+    out.push(`## ${sec.name}${sec.sub ? ` — ${sec.sub}` : ''}`, '');
+    if (sec.inbox) { out.push(...sec.items.map(i => line(i, 0)), ''); return; }
+    const live = forestLines(sec.items, false);
+    const later = forestLines(sec.items, true);
+    if (live.length) out.push(...live, '');
+    if (later.length) out.push('### Someday / maybe', '', ...later, '');
   });
-  if (inbox.length) out.push('## In — not yet clarified', '', ...inbox.map(i => line(i, 0)), '');
   return out.join('\n');
 }
 
@@ -15945,6 +16000,15 @@ async function refreshEngage() {
   renderEngage();
 }
 
+// WHAT THE TO-DO LIST HOLDS: an available row (the server's /api/inbox/active,
+// _AVAILABLE) that is an action, not a project. ONE rule, asked by the pool
+// and by Projects — which shows what is NOT on the list (2026-10-01, Quentin:
+// "these are entirely separate"). Placements, the routine areas and the
+// context gates only decide where on the day a listed row is drawn.
+function onTodoList(i) {
+  return (i.kind || 'item') === 'item';
+}
+
 // THE FOUR POOL GATES, in one place.
 //
 // Location, device, time and day: each decides whether an available item is
@@ -16260,7 +16324,7 @@ function renderEngage() {
   // returns to the pool instead of being scheduled-in-the-past forever.
   const scheduledIds = new Set(engageView.futurePlaced.map(p => p.item_id));
   const poolBase = engageView.pool
-    .filter(i => (i.kind || 'item') === 'item' && !placedIds.has(i.id)
+    .filter(i => onTodoList(i) && !placedIds.has(i.id)
                  && !scheduledIds.has(i.id)
                  && !routineAreaIds.has(i.area_id));
   // The four HIDDEN-BY-CONTEXT tallies used to be counted here and printed
@@ -17228,7 +17292,6 @@ async function saveClarifyRecurring() {
 const STICKY_IDLE_MS = 24 * 60 * 60 * 1000;
 
 const STICKY_FIELDS = {
-  filedDomain: 'day',    // the domain the last filing actually landed in
   showDate: 'idle',      // the show-on date the last defer was given
 };
 
@@ -17259,15 +17322,6 @@ function stickyRemember(field, value) {
   if (value == null || value === '') return;
   localStorage.setItem('sticky.' + field,
     JSON.stringify({ value, day: wallDay(), at: Date.now() }));
-}
-
-function lastFiledDomain() {
-  return stickyUse('filedDomain');
-}
-
-function rememberFiledDomain(filing) {
-  const did = filingDomainId(filing);
-  if (did) stickyRemember('filedDomain', did);
 }
 
 // What the clarify sheet files the item under, as the two columns a write
@@ -17364,13 +17418,13 @@ function clarifyResetItem() {
   // force's. Offered ON the chips, so nothing is filed that the sheet did not
   // show you.
   clarifyView.areaId = item && item.area_id ? item.area_id : null;
+  // A row still filed under an old domain keeps it until an area is picked
+  // (domains left every picker 2026-10-01; nothing refiles by itself).
   clarifyView.domainId = item && !item.area_id && item.status != null
     ? (item.domain_id || null) : null;
-  if (!clarifyView.areaId && !clarifyView.domainId && !(item && item.status != null)) {
-    const did = lastFiledDomain();
-    if (did != null) clarifyView.domainId = did;
-    else if (state.activeAreaId) clarifyView.areaId = state.activeAreaId;
-    else clarifyView.domainId = state.activeDomainId || null;
+  if (!clarifyView.areaId && !clarifyView.domainId && !(item && item.status != null)
+      && state.activeAreaId) {
+    clarifyView.areaId = state.activeAreaId;
   }
   clarifyView.projSearch = null;
   clarifyView.projNotesOpen = false;
@@ -17567,7 +17621,6 @@ async function fileClarify(bucket, refListId) {
     // later. Filing is what teaches the memory — the filing actually written,
     // not the one that happened to be showing.
     const filing = clarifyFiling();
-    rememberFiledDomain(filing);
 
     // (The 'breakdown' bucket — the capture BECOMING the project — was
     // replaced 2026-08-07 by clarifyCreateProject's composer: naming the
@@ -17732,7 +17785,6 @@ async function fileClarifyExternal(bucket, refListId) {
       });
     } else if (bucket !== 'trash' && bucket !== 'do') {
       const filing = clarifyFiling();
-      rememberFiledDomain(filing);   // the external step teaches it too
       const created = await apiSend('/api/inbox', 'POST', { content }).then(r => r.json());
       const patch = body => apiSend(`/api/inbox/${created.id}`, 'PATCH', body);
       if (bucket === 'someday') {
@@ -17948,23 +18000,14 @@ function renderClarify() {
     middle = '';
   }
 
-  // Where it lands (2026-09-15): a DOMAIN, an AREA, or nothing — two rows of
-  // chips, tap again to let go. Picking a domain narrows the area row to that
-  // domain's areas; an area picked on its own shows the domain it carries.
-  // Filing under nothing is a real answer: the action is in every pool.
+  // Where it lands: an AREA or nothing — one row of chips, tap again to let
+  // go (domains went 2026-10-01). Filing under nothing is a real answer.
   if ((verb !== 'do' || doProgress) && verb !== 'trash') {
-    const areas = state.areas.filter(a => a.active && a.type === 'standard'
+    const shown = state.areas.filter(a => a.active && a.type === 'standard'
                                           || a.id === clarifyView.areaId);
-    const curDomain = filingDomainId(clarifyFiling());
-    const shown = curDomain ? areas.filter(a => String(a.domain_id) === String(curDomain)) : areas;
-    const doms = state.domains.filter(d => d.active !== 0 || d.id === curDomain);
     middle += `
       <div class="cl-sec"><span class="cl-label">Filing to</span>
-        <span class="cl-hint">${curDomain || clarifyView.areaId ? 'tap again to clear' : 'nothing in particular'}</span></div>
-      ${doms.length ? `<div class="cl-chips">
-        ${doms.map(d => `<button class="cl-chip${d.id === curDomain ? ' cl-chip-on' : ''}"
-           data-domain="${d.id}">${escHtml(d.name)}</button>`).join('')}
-      </div>` : ''}
+        <span class="cl-hint">${clarifyView.areaId ? 'tap again to clear' : 'nothing in particular'}</span></div>
       ${shown.length ? `<div class="cl-chips">
         ${shown.map(a => `<button class="cl-chip${a.id === clarifyView.areaId ? ' cl-chip-on' : ''}"
            data-area="${a.id}">${escHtml(a.name)}</button>`).join('')}
@@ -18133,23 +18176,12 @@ function renderClarify() {
     clarifyView.who = clarifyView.who === b.dataset.who ? '' : b.dataset.who;
     renderClarify();
   }));
-  sheet.querySelectorAll('.cl-chip[data-domain]').forEach(b => {
-    b.addEventListener('click', () => {
-      // The domain itself; the area row refines it. The one in force, tapped
-      // again, files under nothing.
-      const did = parseInt(b.dataset.domain);
-      const on = filingDomainId(clarifyFiling()) === did;
-      clarifyView.areaId = null;
-      clarifyView.domainId = on ? null : did;
-      renderClarify();
-    });
-  });
   sheet.querySelectorAll('.cl-chip[data-area]').forEach(b => {
     b.addEventListener('click', () => {
-      // Letting go of an area keeps you in the domain it carried.
+      // Letting go of an area files under nothing (domains are gone).
       const aid = parseInt(b.dataset.area);
       if (clarifyView.areaId === aid) {
-        clarifyView.domainId = domainIdForArea(aid);
+        clarifyView.domainId = null;
         clarifyView.areaId = null;
       } else {
         clarifyView.areaId = aid;

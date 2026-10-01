@@ -7472,11 +7472,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
 }
 
-/* ── THE PROJECTS PAGE (Map Page 9a, 2026-10-01) ─────────────────────────
-   The Now page's three columns: the area's name in the left one, pinned while
-   its projects scroll past in the middle, the right one empty (it holds the
-   page's tools on a wide window). One column on a phone. */
-#map-body { padding: 0; display: block; }
+/* ── THE NOW SHELL SECTION (.mp-area) — the Lists index wears it ─────────
+   A section's name in the left column, pinned while its rows scroll past in
+   the middle one, the right column empty. One column on a phone. */
 .mp-area { display: block; border-bottom: 1px solid var(--border-soft); }
 .mp-label { padding: 18px 16px 4px; }
 .mp-label-in { display: flex; align-items: baseline; gap: 8px; }
@@ -7487,9 +7485,44 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   text-transform: uppercase;
   color: var(--text-secondary);
 }
-.mp-sub { font: 11px var(--font-mono); color: var(--text-secondary); }
+.mp-sub { font: 11px var(--font-mono); color: var(--text-secondary); margin-left: 8px; font-weight: 400; }
 .mp-col { padding: 4px 16px 14px; }
 .mp-right { display: none; }
+@media (min-width: 900px) {
+  .mp-area {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
+    border-bottom: none;
+  }
+  .mp-label { padding: 30px 32px 0; text-align: right; }
+  .mp-label-in { position: sticky; top: 30px; flex-direction: column; align-items: flex-end; gap: 2px; }
+  .mp-col { padding: 22px 28px 14px; border-bottom: 1px solid var(--border-soft); }
+  .mp-right { display: block; }
+}
+
+/* ── THE PROJECTS PAGE (2026-10-01, Quentin's instruction) ───────────────
+   The areas are an INDEX in the left column — Settings' left column: names,
+   the one the scroll is in lit, + Add area at its foot — and each area is a
+   titled section down the middle (the Now column). A phone has no index: the
+   titles carry it, and + Add area sits under the last section. */
+#map-body { padding: 0; display: block; }
+.mp-page { min-height: 100%; }
+.mp-index { display: none; }
+.mp-main { padding: 0 16px 24px; }
+.mp-sec { padding-bottom: 6px; }
+.mp-sec-title {
+  margin: 0 0 6px;
+  padding: 22px 0 8px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.mp-empty { padding: 8px 0; font-size: 13.5px; color: var(--text-secondary); }
+.mp-none { padding: 24px 0; }
+.mp-add-area { color: var(--accent); font-size: 14px; padding: 6px 8px; margin: 0 -8px; border-radius: 6px; }
+.mp-add-area:hover { background: var(--surface-2); }
+.mp-add-foot { margin-top: 14px; }
 #map-body .pm-empty { padding: 12px 0; }
 #map-body .map-row {
   align-items: flex-start;
@@ -7503,7 +7536,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #map-body .map-row-project { padding: 6px 8px 4px; }
 #map-body .map-row-project .map-text { font-size: 15.5px; font-weight: 600; color: var(--text-primary); }
 #map-body .map-row-stalled .map-text { color: var(--text-primary); }
-.mp-stalled { padding: 2px 8px 8px 25px; font-size: 13.5px; color: var(--gold); }
 #map-body .map-kids { border-left: none; margin-left: 0; padding-left: 0; }
 #map-body .map-kids .map-kids { padding-left: 17px; }
 #map-body .map-kids .map-row-project { padding-left: 25px; }
@@ -7521,47 +7553,128 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .mp-meta .due-chip-hot, .mp-wait { color: var(--danger); }
 .mp-meta .due-chip-inherited { text-decoration: underline dotted; }
 #map-body .map-someday-head { padding: 14px 0 4px; }
-#map-body .map-af { margin-top: 0; padding-top: 0; border-top: none; }
-#map-tools .modal-header { border-bottom: none; padding: 10px 16px 0; justify-content: flex-end; gap: 8px; }
-#map-tools .map-filter-pill { margin: 0; }
-#map-search-wrap { padding: 8px 16px 10px; }
 @media (min-width: 900px) {
-  .mp-area {
+  .mp-page {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
-    border-bottom: none;
+    align-items: start;
   }
-  .mp-label { padding: 30px 32px 0; text-align: right; }
-  .mp-label-in {
+  .mp-index {
     position: sticky;
-    top: 30px;
+    top: 0;
+    display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 2px;
+    padding: 28px 28px 0;
   }
-  .mp-col {
-    padding: 22px 28px 14px;
-    border-bottom: 1px solid var(--border-soft);
+  .mp-idx {
+    padding: 4px 8px;
+    margin-right: -8px;
+    border-radius: 6px;
+    font-size: 14px;
+    color: var(--text-secondary);
+    text-align: right;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .mp-right { display: block; }
-  /* The column runs to the dock even under the last area. */
-  #map-body {
-    background: linear-gradient(var(--border-soft), var(--border-soft))
-        calc(50% - var(--eg-measure) / 2) 0 / 1px 100% no-repeat,
-      linear-gradient(var(--border-soft), var(--border-soft))
-        calc(50% + var(--eg-measure) / 2) 0 / 1px 100% no-repeat;
+  .mp-idx:hover { background: var(--surface-2); color: var(--text-primary); }
+  .mp-idx.on { color: var(--text-primary); font-weight: 600; }
+  .mp-idx-add { margin: 10px -8px 0 0; font-size: 13.5px; }
+  .mp-main {
+    grid-column: 2;
+    min-height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h));
+    padding: 8px 28px 60vh;
+    border-left: 1px solid var(--border-soft);
+    border-right: 1px solid var(--border-soft);
   }
-  #map-tools {
-    position: absolute;
-    top: 18px;
-    right: var(--eg-gutter);
-    width: min(280px, calc(var(--eg-side-w) - 2 * var(--eg-gutter)));
-    z-index: 2;
-  }
-  #map-tools .modal-header { padding: 0; justify-content: flex-start; }
-  #map-search-wrap { padding: 8px 0 0; flex-wrap: wrap; }
-  #map-filter-menu { top: 100px; right: var(--eg-gutter); }
+  .mp-searching .mp-main { padding-bottom: 40px; }
+  .mp-sec-title { padding: 30px 0 10px; font-size: 20px; }
+  .mp-add-foot { display: none; }
 }
+
+/* ── EACH PAGE'S SELECTOR AND SEARCH, in the strip (2026-10-01) ───────────
+   Right of the page tools, before undo: a quiet pill that names what the
+   page shows, and a search field that opens out from its icon on a phone.
+   Their menus hang under the strip at the right, over the page (z 175). */
+.tn-tools { flex: none; display: flex; align-items: center; gap: 6px; margin-left: auto; }
+#top-nav .tn-tools:not(.hidden) ~ #eg-undo { margin-left: 8px; }
+.tn-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.tn-pill:hover { background: var(--surface-2); color: var(--text-primary); }
+.tn-pill.map-filter-on { color: var(--gold); font-weight: 600; }
+.tn-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  cursor: text;
+}
+.tn-search input {
+  width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  font: 14px var(--font-ui);
+  color: var(--text-primary);
+  transition: width 0.15s;
+}
+.tn-search:focus-within { border-color: var(--accent); }
+/* The page's own field styles (#map-q, #logs-q) stop at the strip. */
+#top-nav .tn-search input { border: none; border-radius: 0; background: transparent; padding: 0; height: auto; }
+@media (max-width: 899px) {
+  .tn-pill { font-size: 12px; padding: 4px 4px; }
+  .tn-count { display: none; }
+  .tn-tools { gap: 2px; }
+}
+.tn-search:focus-within input, .tn-search input:not(:placeholder-shown) { width: 150px; }
+.tn-count { font: 11px var(--font-mono); color: var(--text-secondary); white-space: nowrap; }
+.tn-count:empty { display: none; }
+@media (min-width: 900px) {
+  .tn-search { border-color: var(--text-secondary); }
+  .tn-search input { width: 180px; }
+}
+.tn-menu {
+  position: fixed;
+  top: calc(var(--tnav-h) + 6px);
+  right: 16px;
+  z-index: 175;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h) - 20px);
+  overflow-y: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.tn-menu.hidden { display: none; }
+.lg-count { font: 12px var(--font-mono); color: var(--text-secondary); }
+
+/* The calendar's selector switching a layer off (renderCalFilter). */
+#cal-overlay.cal-hide-blocks .tl-block,
+#cal-overlay.cal-hide-blocks #tl-blocks-layer { display: none; }
+#cal-overlay.cal-hide-gates .wk-gate,
+#cal-overlay.cal-hide-gates #tl-qr-layer { display: none; }
+
 /* ── THE LISTS PAGE (2026-10-01, Quentin's design) ───────────────────────
    The index in the Projects page's shell (.mp-area): Routines and Reference
    named in the left column, the rows in the middle — a name, a quiet mono
@@ -7631,16 +7744,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .lg-search:focus-within { border-color: var(--accent); }
 .lg-tools-row { display: flex; align-items: center; justify-content: space-between; }
-.lg-tools-row #logs-filter {
-  margin: 0 0 0 -6px;
-  padding: 3px 6px;
-  background: none;
-  border: none;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.lg-tools-row #logs-filter.map-filter-on { color: var(--gold); background: none; font-weight: 600; }
-.lg-tools-row #logs-filter:hover, .lg-new:hover { background: var(--surface-2); color: var(--text-primary); }
+.lg-new:hover { background: var(--surface-2); color: var(--text-primary); }
 .lg-new { font-size: 13px; color: var(--text-secondary); padding: 3px 6px; margin-right: -6px; border-radius: 6px; }
 #logs-modal .log-list { padding: 0 16px 16px; gap: 0; }
 .lg-month {
@@ -7696,25 +7800,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .lg-counts.lg-sel { color: var(--accent); }
 .lg-sel-note { font-size: 11.5px; }
-#logs-filter-menu {
-  position: absolute;
-  top: 96px;
-  left: 16px;
-  z-index: 3;
-  width: 300px;
-  max-width: calc(100% - 32px);
-  max-height: 70%;
-  overflow-y: auto;
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-#logs-filter-menu.hidden { display: none; }
 @media (min-width: 900px) {
   .lg-page {
     display: grid;
@@ -7738,7 +7823,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     align-items: flex-end;
     text-align: right;
   }
-  #logs-filter-menu { top: 100px; left: 24px; }
 }
 
 /* ── THE SETTINGS PAGE (2026-10-01, Quentin's design) ────────────────────
@@ -7821,3 +7905,34 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #top-nav #eg-undo { margin-left: auto; }
 /* The popover the range button opens, under the strip now. */
 .wk-range-pop { top: 8px; right: auto; }
+
+/* ── The Lists page's expansion (2026-10-01, Quentin's design) ───────────
+   What a routine or list holds, in the right column level with its row. */
+.ref-peek { display: none; }
+@media (min-width: 900px) {
+  #tab-lists.ref-index #ref-body { position: relative; }
+  #tab-lists.ref-index .ref-row { cursor: pointer; }
+  #tab-lists.ref-index .ref-row.ref-on { background: var(--surface-2); }
+  .ref-peek {
+    display: block;
+    position: absolute;
+    left: calc(50% + var(--eg-measure) / 2 + 24px);
+    right: 24px;
+    padding-bottom: 12px;
+  }
+  .ref-peek-head { display: flex; align-items: center; gap: 8px; padding: 6px 0 8px; }
+  .ref-peek-name { flex: 1; min-width: 0; font-size: 16px; font-weight: 600; color: var(--text-primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ref-peek-n { font: 12px var(--font-mono); color: var(--text-secondary); }
+  .ref-peek-open { font-size: 12.5px; color: var(--text-secondary); padding: 3px 6px; border-radius: 6px; }
+  .ref-peek-open:hover { background: var(--surface-2); color: var(--text-primary); }
+  .ref-peek .fr-play { width: 26px; height: 26px; }
+  .ref-peek-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px;
+    line-height: 1.4; color: var(--text-primary); }
+  .ref-peek-dot { width: 4px; height: 4px; margin: 8px 6px 0; flex: none; border-radius: 50%; background: var(--text-secondary); }
+  .ref-peek-done { color: var(--text-secondary); text-decoration: line-through; }
+  .ref-peek-sub { color: var(--text-secondary); }
+  .ref-peek-h { padding: 10px 0 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-secondary); }
+  .ref-peek-empty { padding: 6px 0; font-size: 13.5px; color: var(--text-secondary); }
+}

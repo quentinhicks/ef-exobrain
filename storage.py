@@ -3607,7 +3607,7 @@ def get_gcal_events():
                   COALESCE(m.new_end, e.end)     AS end,
                   e.start AS orig_start,
                   CASE WHEN m.uid IS NULL THEN 0 ELSE 1 END AS moved,
-                  e.allday, c.color, e.location, e.description
+                  e.allday, c.color, e.location, e.description, e.source_id
            FROM gcal_event e
            JOIN calendar_source c ON e.source_id = c.id
            LEFT JOIN gcal_move m ON m.uid = e.uid AND m.start = e.start

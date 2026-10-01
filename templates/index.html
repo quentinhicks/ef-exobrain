@@ -41,6 +41,25 @@
          Hover 6b): the week's range, its arrows, the hours and refresh.
          Filled by the page that owns them, empty and hidden elsewhere. -->
     <div id="tn-page" class="tn-page hidden"></div>
+    <!-- EACH PAGE'S OWN SELECTOR AND SEARCH (2026-10-01, Quentin's
+         instruction): one group per page that has them, shown only while that
+         page is open (paintTopNav). Same place on every page, a different
+         question on each — what Projects shows, which logs, what the calendar
+         draws. Their menus hang under the strip (.tn-menu). -->
+    <div class="tn-tools hidden" data-page="map">
+      <button id="map-filter" class="tn-pill"></button>
+      <label class="tn-search" title="Search the projects"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="text" id="map-q" placeholder="Search" autocomplete="off"></label>
+      <span id="map-q-count" class="tn-count"></span>
+    </div>
+    <div class="tn-tools hidden" data-page="logs">
+      <button id="logs-filter" class="tn-pill"></button>
+      <label class="tn-search" title="Search what you wrote"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="text" id="logs-q" placeholder="Search what you wrote" autocomplete="off"></label>
+    </div>
+    <div class="tn-tools hidden" data-page="calendar">
+      <button id="cal-filter" class="tn-pill"></button>
+    </div>
     <!-- Undo stands with the other page tools (10c): greyed, never hidden,
          when there is nothing to undo, so the strip does not shift. -->
     <button id="eg-undo" class="tn-icon" title="Undo · Ctrl+Z" disabled>
@@ -66,6 +85,7 @@
   </div>
 
   <!-- Calendar overlay: the old Today-tab timeline, whole -->
+  <div id="cal-filter-menu" class="tn-menu hidden"></div>
   <div id="cal-overlay" class="m-overlay hidden">
     <div class="m-head">
       <span class="m-title">Calendar</span>
@@ -212,10 +232,9 @@
            peels before the overlay. -->
       <div class="modal-header">
         <span class="modal-title" id="logs-title">Logs</span>
-        <button id="logs-filter" class="map-filter-pill"></button>
         <button id="logs-close" class="modal-close-btn">✕</button>
       </div>
-      <div id="logs-filter-menu" class="hidden"></div>
+      <div id="logs-filter-menu" class="tn-menu hidden"></div>
       <div id="logs-body"></div>
     </div>
   </div>
@@ -224,27 +243,11 @@
   <!-- Projects manager (GTD Horizon 1) -->
   <div id="map-overlay" class="hidden">
     <div id="map-modal">
-      <!-- ONE filter menu in the header (23a): the LENS joins domain and tags
-           in a single menu, so there is one place that narrows the list and no
-           permanent band of chrome. The pill always names what you are looking
-           at; the menu is transient and peels before the overlay. -->
-      <!-- The page's tools (9a has none drawn): on a wide window they stand in
-           the empty right column, on a phone they are one row over the list. -->
-      <div id="map-tools">
-        <div class="modal-header">
-          <button id="map-filter" class="map-filter-pill"></button>
-          <button id="map-export" class="map-filter-pill" title="Export this list as Markdown — downloads it and copies it">⤓</button>
-          <button id="map-close" class="modal-close-btn">✕</button>
-        </div>
-        <!-- Search over everything MAP shows, the clarify project search's
-             matcher (relScore) on the whole inventory instead of projects. -->
-        <div id="map-search-wrap">
-          <input type="text" id="map-q" placeholder="⌕ search" autocomplete="off">
-          <button id="map-sort" title="Sort order"></button>
-          <span id="map-q-count" class="cl-hint"></span>
-        </div>
-      </div>
-      <div id="map-filter-menu" class="hidden"></div>
+      <!-- Its selector and search are in the top strip (.tn-tools). The close
+           button is kept, hidden: the Esc ladder and the runner close MAP
+           through it, so nothing is skipped on the way down. -->
+      <button id="map-close" class="modal-close-btn hidden">✕</button>
+      <div id="map-filter-menu" class="tn-menu hidden"></div>
       <div id="map-body"></div>
     </div>
   </div>
@@ -308,8 +311,6 @@
 
         <section class="be-section" data-betab-panel="areas">
           <div id="be-areas-list" class="be-list"></div>
-          <div class="be-sub-head">Domains</div>
-          <div id="be-domains-list" class="be-list"></div>
         </section>
 
         <section class="be-section" data-betab-panel="locations">
