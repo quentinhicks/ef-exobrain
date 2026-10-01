@@ -2368,6 +2368,7 @@ async function setCalView(week) {
   calWeek.on = on;
   calWeek.pop = null;
   document.getElementById('cal-overlay').classList.toggle('cal-wk', on);
+  paintCalStrip();
   if (on) {
     // Both are DAY-view states, and neither has a meaning across seven days.
     state.planMode = false;
@@ -2696,23 +2697,27 @@ function renderCalWeek() {
   const keepTop = oldScroll ? oldScroll.scrollTop : 0;
   const key = `${calWeek.start}|${start}|${end}`;
 
+  // THE WEEK'S TOOLS STAND IN THE TOP STRIP (Calendar Block Hover 6b,
+  // 2026-10-01): the range, its arrows, the hours and refresh beside the
+  // tabs, so the calendar starts at its day headers. Today appears only off
+  // this week (a default earns no control); Day | Week and Plan follow.
+  const thisWeek = calWeek.start === weekStartOf(wallDay());
+  const strip = document.getElementById('tn-page');
+  strip.innerHTML = `
+    <span class="tn-div"></span>
+    <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
+    <span class="wk-title">${escHtml(title)}</span>
+    <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
+    <button class="wk-btn wk-mono tn-range${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
+      title="Wake and sleep gates">${WK_SVG.sun}${rangeLabel}</button>
+    <button class="wk-icon" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh}</button>
+    ${fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
+    ${thisWeek ? '' : '<button class="wk-btn tn-quiet" data-wk="today">Today</button>'}
+    <div class="wk-seg tn-quiet"><button data-cal-view="day">Day</button><button class="on" data-cal-view="week">Week</button></div>
+    <button class="wk-btn tn-quiet" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>`;
+  paintCalStrip();
+
   host.innerHTML = `
-    <div class="wk-head">
-      <div class="wk-nav">
-        <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
-        <span class="wk-title">${escHtml(title)}</span>
-        <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
-      </div>
-      <div class="wk-tools">
-        <button class="wk-btn wk-mono${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
-          title="Wake and sleep gates">${WK_SVG.sun}${rangeLabel}</button>
-        <button class="wk-btn" data-wk="today">Today</button>
-        <div class="wk-seg"><button data-cal-view="day">Day</button><button class="on" data-cal-view="week">Week</button></div>
-        <button class="wk-btn" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
-        <button class="wk-btn wk-icon" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh}</button>
-        ${fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
-      </div>
-    </div>
     ${rangePop}
     <div class="wk-grid wk-days">
       <div class="wk-corner"><button class="wk-legend-btn${calWeek.pop === 'legend' ? ' on' : ''}"
@@ -2752,6 +2757,14 @@ function renderCalWeek() {
       onLongPress(el, hide);
     });
   });
+
+  // The range popover hangs under its button, which is in the strip now.
+  const pop = host.querySelector('.wk-range-pop');
+  const rb = strip.querySelector('.tn-range');
+  if (pop && rb) {
+    const left = rb.getBoundingClientRect().left - host.getBoundingClientRect().left;
+    pop.style.left = `${Math.max(8, Math.min(left, host.clientWidth - pop.offsetWidth - 8))}px`;
+  }
 
   const sc = host.querySelector('.wk-scroll');
   if (calWeek.scrollKey !== key) {
@@ -2828,19 +2841,33 @@ async function setWeekGateRole(nodeId, role) {
   renderTimeline();   // the day view is clipped by the same two gates
 }
 
+// The strip's slot carries the week's tools only while the week is what is on
+// screen; any other page, or the day view, leaves it empty and hidden.
+function paintCalStrip() {
+  const strip = document.getElementById('tn-page');
+  if (!strip) return;
+  const cal = document.getElementById('cal-overlay');
+  const on = calWeek.on && !!cal && !cal.classList.contains('hidden')
+    && !(routeView.moving && routeView.target !== 'calendar');
+  strip.classList.toggle('hidden', !on);
+}
+
 function initCalWeek() {
   const host = document.getElementById('cal-week');
   const overlay = document.getElementById('cal-overlay');
+  const strip = document.getElementById('tn-page');
   if (!host || !overlay) return;
 
-  // The Day | Week switch, in both headers. Delegated on the overlay, since
-  // the week's header is rebuilt on every paint.
-  overlay.addEventListener('click', e => {
+  // The Day | Week switch, in both headers. Delegated on the overlay (and the
+  // strip, where the week's copy stands), since both are rebuilt on paint.
+  const viewSwitch = e => {
     const v = e.target.closest('[data-cal-view]');
     if (!v) return;
     calWeek.pref = v.dataset.calView === 'week' ? 'week' : 'day';
     setCalView(calWeek.pref === 'week');
-  });
+  };
+  overlay.addEventListener('click', viewSwitch);
+  strip.addEventListener('click', viewSwitch);
 
   // Pressing a gate says which DAY its menu is about.
   host.addEventListener('pointerdown', e => {
@@ -2848,7 +2875,7 @@ function initCalWeek() {
     calWeek.objDate = g ? g.dataset.objDate : null;
   }, true);
 
-  host.addEventListener('click', async e => {
+  const weekClick = async e => {
     const a = e.target.closest('[data-wk]');
     const act = a ? a.dataset.wk : null;
     // A click anywhere off an open popover puts it down, and does nothing else
@@ -2897,7 +2924,11 @@ function initCalWeek() {
     } else if (act === 'event') {
       openEventPop(a.dataset.evKey, a);
     }
-  });
+  };
+  // ONE handler for the week's controls wherever they stand — the grid, and
+  // the tools that moved up into the strip.
+  host.addEventListener('click', weekClick);
+  strip.addEventListener('click', weekClick);
 
   // Narrowed past the week's width: back to the day, which fits.
   // The window was resized across the week's width: follow it, both ways.
@@ -7526,6 +7557,7 @@ function paintTopNav() {
   document.querySelectorAll('#top-nav [data-nav]').forEach(btn => {
     btn.classList.toggle('on', btn.dataset.nav === lit);
   });
+  paintCalStrip();
 }
 
 // Put down every surface over the day — the top-level rungs of the Esc
