@@ -2347,7 +2347,7 @@ async function setCalView(week) {
   calWeek.on = on;
   calWeek.pop = null;
   document.getElementById('cal-overlay').classList.toggle('cal-wk', on);
-  paintCalStrip();
+  renderCalFilter();
   if (on) {
     // Both are DAY-view states, and neither has a meaning across seven days.
     state.planMode = false;
@@ -2676,25 +2676,13 @@ function renderCalWeek() {
   const keepTop = oldScroll ? oldScroll.scrollTop : 0;
   const key = `${calWeek.start}|${start}|${end}`;
 
-  // THE WEEK'S TOOLS STAND IN THE TOP STRIP (Calendar Block Hover 6b,
-  // 2026-10-01): the range, its arrows, the hours and refresh beside the
-  // tabs, so the calendar starts at its day headers. Today appears only off
-  // this week (a default earns no control); Day | Week and Plan follow.
-  const thisWeek = calWeek.start === weekStartOf(wallDay());
-  const strip = document.getElementById('tn-page');
-  strip.innerHTML = `
-    <span class="tn-div"></span>
-    <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
-    <span class="wk-title">${escHtml(title)}</span>
-    <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
-    <button class="wk-btn wk-mono tn-range${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
-      title="Wake and sleep gates">${WK_SVG.sun}${rangeLabel}</button>
-    <button class="wk-icon" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh}</button>
-    ${fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
-    ${thisWeek ? '' : '<button class="wk-btn tn-quiet" data-wk="today">Today</button>'}
-    <div class="wk-seg tn-quiet"><button data-cal-view="day">Day</button><button class="on" data-cal-view="week">Week</button></div>
-    <button class="wk-btn tn-quiet" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>`;
-  paintCalStrip();
+  // THE WEEK'S TOOLS LIVE IN THE CALENDAR'S SELECTOR (2026-10-01, Quentin's
+  // instruction): its pill names the week, and its menu holds the arrows,
+  // Today (only off this week), Day | Week, the hours, Plan and refresh,
+  // above what the calendar draws. renderCalFilter reads this.
+  calWeek.tools = { title, rangeLabel, fetchFailed,
+                    thisWeek: calWeek.start === weekStartOf(wallDay()) };
+  renderCalFilter();
 
   host.innerHTML = `
     ${rangePop}
@@ -2736,14 +2724,6 @@ function renderCalWeek() {
       onLongPress(el, hide);
     });
   });
-
-  // The range popover hangs under its button, which is in the strip now.
-  const pop = host.querySelector('.wk-range-pop');
-  const rb = strip.querySelector('.tn-range');
-  if (pop && rb) {
-    const left = rb.getBoundingClientRect().left - host.getBoundingClientRect().left;
-    pop.style.left = `${Math.max(8, Math.min(left, host.clientWidth - pop.offsetWidth - 8))}px`;
-  }
 
   const sc = host.querySelector('.wk-scroll');
   if (calWeek.scrollKey !== key) {
@@ -2861,14 +2841,35 @@ function renderCalFilter() {
   const cals = (state.calendars || []).filter(c => c.active !== 0);
   const off = ['blocks', 'gates', 'events'].filter(k => calShow[k] === false).length
     + cals.filter(c => (calShow.cals || {})[c.id] === false).length;
-  pill.textContent = `${off ? `Showing · ${off} off` : 'Showing all'} ▾`;
+  const t = calWeek.on && calWeek.tools;
+  const day = state.currentDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  pill.textContent = `${t ? t.title : day}${off ? ` · ${off} off` : ''} ▾`;
   pill.classList.toggle('map-filter-on', !!off);
-  pill.title = 'What the calendar draws';
+  pill.title = 'The week, its hours, and what the calendar draws';
   paintCalShowClasses();
   menu.classList.toggle('hidden', !calFilterView.open);
   if (!calFilterView.open) { menu.innerHTML = ''; return; }
   const chip = (on, attr, label) => `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" ${attr}>${escHtml(label)}</button>`;
   menu.innerHTML = `
+    ${t ? `<div class="map-filter-sec">Week</div>
+    <div class="cf-week">
+      <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
+      <span class="wk-title">${escHtml(t.title)}</span>
+      <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
+      ${t.thisWeek ? '' : '<button class="ctx-chip" data-wk="today">Today</button>'}
+    </div>
+    <div class="map-filter-chips cf-tools">
+      <button class="ctx-chip wk-mono${calWeek.pop === 'range' ? ' ctx-req' : ''}" data-wk="range"
+        title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
+      <button class="ctx-chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
+      <button class="ctx-chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
+      ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
+    </div>` : ''}
+    <div class="map-filter-sec">View</div>
+    <div class="map-filter-chips">
+      <button class="ctx-chip ${calWeek.on ? 'ctx-off' : 'ctx-req'}" data-cal-view="day">Day</button>
+      <button class="ctx-chip ${calWeek.on ? 'ctx-req' : 'ctx-off'}" data-cal-view="week">Week</button>
+    </div>
     <div class="map-filter-sec">Draw</div>
     <div class="map-filter-chips">
       ${chip(calShow.blocks !== false, 'data-calshow="blocks"', 'Blocks')}
@@ -2902,25 +2903,14 @@ function renderCalFilter() {
   if (clear) clear.addEventListener('click', e => { e.stopPropagation(); calShow = {}; redraw(); });
 }
 
-// The strip's slot carries the week's tools only while the week is what is on
-// screen; any other page, or the day view, leaves it empty and hidden.
-function paintCalStrip() {
-  const strip = document.getElementById('tn-page');
-  if (!strip) return;
-  const cal = document.getElementById('cal-overlay');
-  const on = calWeek.on && !!cal && !cal.classList.contains('hidden')
-    && !(routeView.moving && routeView.target !== 'calendar');
-  strip.classList.toggle('hidden', !on);
-}
-
 function initCalWeek() {
   const host = document.getElementById('cal-week');
   const overlay = document.getElementById('cal-overlay');
-  const strip = document.getElementById('tn-page');
+  const strip = document.getElementById('cal-filter-menu');
   if (!host || !overlay) return;
 
   // The Day | Week switch, in both headers. Delegated on the overlay (and the
-  // strip, where the week's copy stands), since both are rebuilt on paint.
+  // selector's menu, where the week's copy stands), since both are rebuilt.
   const viewSwitch = e => {
     const v = e.target.closest('[data-cal-view]');
     if (!v) return;
@@ -2934,8 +2924,12 @@ function initCalWeek() {
     calFilterView.open = !calFilterView.open;
     renderCalFilter();
   });
+  // composedPath, not closest: a control in the menu repaints the menu, so by
+  // the time the click reaches the document its target is detached.
   document.addEventListener('click', e => {
-    if (calFilterView.open && !e.target.closest('#cal-filter-menu, #cal-filter')) closeCalFilter();
+    if (!calFilterView.open) return;
+    const inside = e.composedPath().some(n => n.id === 'cal-filter-menu' || n.id === 'cal-filter');
+    if (!inside) closeCalFilter();
   });
   paintCalShowClasses();
 
@@ -2996,7 +2990,7 @@ function initCalWeek() {
     }
   };
   // ONE handler for the week's controls wherever they stand — the grid, and
-  // the tools that moved up into the strip.
+  // the selector's menu.
   host.addEventListener('click', weekClick);
   strip.addEventListener('click', weekClick);
 
@@ -7601,7 +7595,7 @@ function paintTopNav() {
   document.querySelectorAll('#top-nav [data-nav]').forEach(btn => {
     btn.classList.toggle('on', btn.dataset.nav === lit);
   });
-  paintCalStrip();
+  renderCalFilter();
   // Each page's selector and search, shown only while it is that page.
   document.querySelectorAll('#top-nav .tn-tools').forEach(g =>
     g.classList.toggle('hidden', g.dataset.page !== lit));
@@ -7962,6 +7956,7 @@ function initLogsView() {
 }
 
 async function closeLogsView() {
+  await logDraftCommit();
   await flushLogSave();
   document.getElementById('logs-overlay').classList.add('hidden');
   // A no-op unless the runner raised this — the released log of a sweep step.
@@ -11967,6 +11962,77 @@ function logShortDate(l) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+// The blank log on the Log page (renderLogs). Its words are kept in view
+// state, not the DOM, so a repaint of the list beside it loses nothing; the
+// first time it holds any text it is created as a FRESH file (never reopening
+// a same-named one) and from then on it is simply the open log.
+function wireLogDraft() {
+  const ta = document.getElementById('log-editor');
+  const title = document.getElementById('log-draft-title');
+  if (!ta || !title) return;
+  ta.value = logsView.draftText || '';
+  updateLogHighlight();
+  paintLogCounts();
+  title.addEventListener('input', () => {
+    logsView.draftTitle = title.value;
+    const row = document.querySelector('.lg-draft-row .log-row-name');
+    if (row) row.textContent = title.value.trim() || 'Untitled';
+  });
+  title.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); ta.focus(); }
+  });
+  ta.addEventListener('input', () => {
+    logsView.draftText = ta.value;
+    updateLogHighlight();
+    paintLogCounts();
+    clearTimeout(logsView.saveTimer);
+    logsView.saveTimer = setTimeout(logDraftCommit, 1000);
+  });
+  ['select', 'keyup', 'pointerup'].forEach(ev => ta.addEventListener(ev, paintLogCounts));
+  ta.addEventListener('scroll', () => {
+    const hl = document.getElementById('log-highlight');
+    hl.scrollTop = ta.scrollTop;
+    hl.scrollLeft = ta.scrollLeft;
+  });
+  ta.addEventListener('keydown', logKeydown);
+  ta.addEventListener('blur', logDraftCommit);
+  if (SETTINGS_WIDE.matches && document.activeElement !== document.getElementById('logs-q')) title.focus();
+}
+
+async function logDraftCommit() {
+  clearTimeout(logsView.saveTimer);
+  if (logsView.open || logsView.committing) return;
+  const text = logsView.draftText || '';
+  if (!text.trim()) return;
+  logsView.committing = true;
+  try {
+    const log = await apiSend('/api/logs', 'POST',
+      { name: (logsView.draftTitle || '').trim() || 'Untitled', tags: [], fresh: true }).then(r => r.json());
+    // Whatever was typed while the file was being made goes with it.
+    const now = document.getElementById('log-editor');
+    const body = now && !logsView.open ? now.value : text;
+    await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT', { content: body });
+    logsView.open = log.name;
+    // Typing does not stop for the network: what landed after the PUT is
+    // carried into the open log and saved by its own road.
+    const latest = now ? now.value : body;
+    logsView.content = latest;
+    logsView.dirty = latest !== body;
+    logsView.draftText = '';
+    logsView.draftTitle = '';
+    logsView.logs = await apiGet('/api/logs', logsView.logs);
+    // The editor under the cursor stays the same element; only the list and
+    // the page's state learn that it is a real log now.
+    const keep = document.activeElement === now ? [now.selectionStart, now.selectionEnd] : null;
+    renderLogs();
+    const ta = document.getElementById('log-editor');
+    if (ta && keep) { ta.focus(); ta.setSelectionRange(keep[0], keep[1]); }
+    if (logsView.dirty) logsView.saveTimer = setTimeout(flushLogSave, 1000);
+  } finally {
+    logsView.committing = false;
+  }
+}
+
 // Words and characters of the log — of the SELECTION while there is one.
 function paintLogCounts() {
   const ta = document.getElementById('log-editor');
@@ -12004,6 +12070,15 @@ function renderLogs() {
   }).join('');
   const hidden = logsView.logs.length - logs.length;
   const openMeta = logsView.logs.find(l => l.name === logsView.open);
+  // THE BLANK LOG (2026-10-01, Quentin's design): with nothing open the page
+  // IS a new log — a Title and "Start writing…", the list naming it Untitled
+  // at the top. It becomes a file only once something is written in it
+  // (logDraftCommit), so opening the page leaves nothing behind.
+  const drafting = !logsView.open;
+  const today = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const draftRow = drafting ? `<button class="log-row on lg-draft-row">
+      <span class="log-row-name">${escHtml(logsView.draftTitle || 'Untitled')}</span>
+      <span class="log-row-date">${today}</span></button>` : '';
 
   body.innerHTML = `
     <div class="lg-page${logsView.open ? ' lg-has-open' : ''}">
@@ -12011,7 +12086,7 @@ function renderLogs() {
         <div class="lg-tools"><div class="lg-tools-row">
           <span class="lg-count">${logs.length} ${logs.length === 1 ? 'log' : 'logs'}</span>
           <button id="log-new" class="lg-new">+ New</button></div></div>
-        <div class="log-list">${rows || `<div class="log-empty">${
+        <div class="log-list">${draftRow}${rows || `<div class="log-empty">${
           logsView.q ? `Nothing in the logs says “${escHtml(logsView.q)}”`
           : logsView.logs.length ? 'No log carries every tag you asked for'
           : 'No logs yet'}</div>`}
@@ -12030,11 +12105,17 @@ function renderLogs() {
         <div class="log-editor-wrap">
           <div id="log-highlight" class="log-highlight" aria-hidden="true"></div>
           <textarea id="log-editor" class="log-editor" spellcheck="false" placeholder="Start writing…"></textarea>
-        </div>` : '<div class="lg-none">Pick a log, or + New.</div>'}
+        </div>` : `
+        <input id="log-draft-title" class="lg-title-in" placeholder="Title" autocomplete="off"
+          value="${escHtml(logsView.draftTitle || '')}">
+        <div class="log-editor-wrap">
+          <div id="log-highlight" class="log-highlight" aria-hidden="true"></div>
+          <textarea id="log-editor" class="log-editor" spellcheck="false" placeholder="Start writing…"></textarea>
+        </div>`}
       </main>
       <div class="lg-right">
         <button id="log-dangerous" class="dw-entry" title="Stop typing and the draft is destroyed">${LOG_BOLT_SVG} Dangerous writing</button>
-        ${logsView.open ? '<div id="log-counts" class="lg-counts"></div>' : ''}
+        <div id="log-counts" class="lg-counts"></div>
       </div>
     </div>`;
 
@@ -12043,7 +12124,9 @@ function renderLogs() {
   body.querySelectorAll('.log-row').forEach(row => {
     row.addEventListener('click', async () => {
       // A log is open BESIDE the list now, so picking another is the moment
-      // the open one is put down — its pending save goes first.
+      // the open one is put down — its pending save (or the blank log's
+      // first write) goes first.
+      await logDraftCommit();
       await flushLogSave();
       openLog(row.dataset.name);
     });
@@ -12053,7 +12136,16 @@ function renderLogs() {
   // Name and tags, and NO date to type — the server stamps today. Typing
   // '26-8-17' in front of every log was a filing convention the app can keep
   // for you, and getting it subtly wrong is what made the list unsortable.
-  document.getElementById('log-new').addEventListener('click', () => openEntrySheet({
+  document.getElementById('log-new').addEventListener('click', async () => {
+    // On a wide window the blank log IS the new log: put the open one down.
+    if (SETTINGS_WIDE.matches) {
+      await logDraftCommit();
+      await flushLogSave();
+      logsView.open = null;
+      renderLogs();
+      return;
+    }
+    openEntrySheet({
     title: 'New log',
     placeholder: 'what is this log about…',
     hint: 'Dated today. Tags are optional, and live in the file itself.',
@@ -12068,8 +12160,9 @@ function renderLogs() {
       logsView.dirty = false;
       renderLogs();
     },
-  }));
-  if (!logsView.open) return;
+    });
+  });
+  if (!logsView.open) { wireLogDraft(); return; }
 
   const ta = document.getElementById('log-editor');
   ta.value = logsView.content;

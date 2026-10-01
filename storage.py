@@ -4270,7 +4270,7 @@ def write_log(name, content):
     return name
 
 
-def create_log(name, tags=None, created=None):
+def create_log(name, tags=None, created=None, fresh=False):
     # The DATE is stamped here, not typed. It used to be part of what you had
     # to write in the name; the name is just the topic now.
     name = _log_name(name)
@@ -4280,6 +4280,14 @@ def create_log(name, tags=None, created=None):
         except ValueError:
             d = date_cls.today()
         name = ('%s %s' % (d.strftime('%y-%m-%d'), name)).strip()
+    # `fresh` is a NEW log whatever the name (the Log page's blank draft, which
+    # is "Untitled" more often than not): an existing file of that name gets a
+    # numbered sibling instead of being reopened — and then overwritten.
+    if fresh:
+        base, n = name, 2
+        while os.path.exists(os.path.join(LOGS_DIR, name + '.md')):
+            name = '%s %d' % (base, n)
+            n += 1
     path = os.path.join(LOGS_DIR, name + '.md')
     if not os.path.exists(path):
         clean = sorted({re.sub(r'[^a-z0-9_-]', '', str(t).lower().lstrip('#'))

@@ -7889,22 +7889,15 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   #modal-overlay.be-scroll .be-sub-head { padding: 18px 0 6px; }
   #modal-overlay.be-scroll .be-add-row { color: var(--accent); font-size: 14.5px; }
 }
-/* -- A page's tools in the strip (Calendar Block Hover 6b, 2026-10-01) ----
-   After the tabs, past a hairline: the week's arrows round its range, the
-   hours, refresh — then the quieter Today / Day-Week / Plan. Never shrinks;
-   the tabs scroll first. */
-.tn-page { flex: none; display: flex; align-items: center; gap: 4px; margin-left: 4px; }
-.tn-page .tn-div { width: 1px; height: 18px; background: var(--border-soft); margin-right: 10px; }
-.tn-page .wk-icon { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; }
-.tn-page .wk-title { font-size: 14.5px; font-weight: 600; color: var(--text-primary); white-space: nowrap; }
-.tn-page .tn-range { margin-left: 8px; display: flex; align-items: center; gap: 6px; padding: 4px 8px; white-space: nowrap; }
-.tn-page .tn-quiet { margin-left: 6px; }
-.tn-page .wk-seg.tn-quiet button { font-size: 12px; padding: 3px 8px; }
-.tn-page .wk-btn.tn-quiet { font-size: 12.5px; padding: 4px 8px; }
+/* The calendar selector's week row (renderCalFilter). */
+.cf-week { display: flex; align-items: center; gap: 6px; }
+.cf-week .wk-icon { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; }
+.cf-week .wk-title { flex: 1; text-align: center; font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
+.cf-tools .ctx-chip { display: inline-flex; align-items: center; gap: 5px; }
 @media (min-width: 900px) { .tn-tabs { flex: 0 1 auto; } }
 #top-nav #eg-undo { margin-left: auto; }
-/* The popover the range button opens, under the strip now. */
-.wk-range-pop { top: 8px; right: auto; }
+/* The range button is in the selector's menu; its panel opens at the right. */
+.wk-range-pop { top: 8px; }
 
 /* ── The Lists page's expansion (2026-10-01, Quentin's design) ───────────
    What a routine or list holds, in the right column level with its row. */
@@ -7936,3 +7929,14 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     text-transform: uppercase; color: var(--text-secondary); }
   .ref-peek-empty { padding: 6px 0; font-size: 13.5px; color: var(--text-secondary); }
 }
+
+/* The Log page's blank log: its Title is the field the heading becomes. */
+.lg-title-in {
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  font: 600 20px var(--font-ui);
+  color: var(--text-primary);
+}
+@media (min-width: 900px) { .lg-title-in { font-size: 24px; } }
