@@ -2440,11 +2440,18 @@ function wkGateMark(nodeId) {
 // Met / missed / still to do / called off — the app's one gate vocabulary,
 // read off the served verdict. A closed day's verdict is the judge's (a frozen
 // row decides its own day); an open one has none yet.
+// MET THE MOMENT IT IS MET (2026-09-30, Quentin's instruction: "when I
+// satisfy a gate my calendar gate color changes immediately"). The served
+// verdict is the judge's own predicate asked of what has happened so far, so
+// a scan inside the window — or the routine finished — is a pass before the
+// window closes, and the mark says so then. Only MISSED waits for the close:
+// until it, an unmet gate is still due.
 function wkGateState(g) {
   if (!g.active) return 'paused';
   if (g.skipped) return 'off';
+  if (g.verdict && g.verdict.passed) return 'met';
   if (!g.window.closed) return 'open';
-  return g.verdict && g.verdict.passed ? 'met' : 'missed';
+  return 'missed';
 }
 
 function wkRole(nodeId) {
@@ -2919,9 +2926,19 @@ function focusRefresh() {
   if (document.hidden || Date.now() - lastFocusRefresh < 30000) return;
   lastFocusRefresh = Date.now();
   refreshTodoNow();
-  // Back at the window with the week up: another device may have changed it.
+  // Back at the window with the calendar up: another device may have changed
+  // it — a scan from the phone is the usual one, and its gate should turn.
   const cal = document.getElementById('cal-overlay');
-  if (calWeek.on && cal && !cal.classList.contains('hidden')) refreshCalWeek();
+  if (cal && !cal.classList.contains('hidden')) {
+    if (calWeek.on) refreshCalWeek(); else reloadCalGates();
+  }
+}
+
+// A step credited in the runner can satisfy a gate (a routine gate's last
+// step, an hours entry), so a calendar on screen re-reads that day's gates.
+function refreshShownCalGates(dateStr) {
+  const cal = document.getElementById('cal-overlay');
+  if (cal && !cal.classList.contains('hidden')) reloadCalGates(dateStr);
 }
 
 // ── Section 2: Active project items ──────────────────────────
@@ -9714,6 +9731,7 @@ async function creditFlowStep(step, how) {
   flowRunView.steps[step.id] = how;
   const complete = flowRunView.flow.steps.every(s => flowRunView.steps[s.id]);
   await apiSend(`/api/flows/${flowRunView.flow.id}/run`, 'PUT', { date: today, steps: flowRunView.steps, completed: complete });
+  refreshShownCalGates(today);
   if (complete) {
     toast(`${flowRunView.flow.name} complete ✓`);
     closeFlowRun();
