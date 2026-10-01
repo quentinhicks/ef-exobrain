@@ -2899,6 +2899,8 @@ def patch_accountability_node(id):
                                      'with no live tag could never be cleared'}), 400
     immediate, pending = qr_judge.schedule_node_patch(node, data, effective_from)
     if immediate:
+        if 'active' in immediate and not storage.falsy(immediate['active']) and not node['active']:
+            qr_judge.freeze_paused_days(node)
         storage.qr_update_node(id, immediate)
         # Newest intent wins in BOTH directions: a field tightened now must drop
         # any deferred loosening still queued for it, or that older change would
@@ -2974,6 +2976,7 @@ def activate_accountability_node(id):
     if not node['active']:
         immediate, _ = qr_judge.schedule_node_patch(node, {'active': 1})
         if immediate:
+            qr_judge.freeze_paused_days(node)
             storage.qr_update_node(id, immediate)
     return jsonify({'ok': True})
 

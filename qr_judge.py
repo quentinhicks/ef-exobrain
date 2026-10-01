@@ -644,7 +644,16 @@ def judge(now=None, verbose=False):
     for a in applied:
         lines.append('applied pending %s on node %s' % (a['field'], a['node_id']))
 
-    for node in storage.qr_get_nodes(active_only=True):
+    for node in storage.qr_get_nodes():
+        if not node['active']:
+            # A PAUSED gate's settled days are frozen 'n/a' as they pass. It
+            # used to be skipped outright, so its paused days had no row, and
+            # resuming it made the next tick judge them as commitments: on
+            # 2026-09-30 a gate resumed at 11:20 charged for the morning it
+            # had refused the tap ("this tag is paused") AND for the day
+            # before. The non-run-weekday hole, one switch along.
+            freeze_paused_days(node, now)
+            continue
         # Yesterday as well as today: a window with offset_days=1 closes on the
         # day AFTER its date, so it can only be judged on the following tick-day.
         # This also backfills one missed day if the timer was down at close time.
@@ -721,7 +730,9 @@ def judge(now=None, verbose=False):
                 continue
 
             status = charge_for_failure(node, ymd, reason, window=(start, end, offset),
-                                        hours=stamp)
+                                        hours=stamp,
+                                        settled_at=settle_after(node, ymd, flow,
+                                                                (start, end, offset)))
             if status is None:
                 continue          # another tick reserved it first
             lines.append('X   %s%s: %s -> %s' % (node['label'], tag, reason, status))
@@ -730,6 +741,25 @@ def judge(now=None, verbose=False):
         for line in lines:
             print(line)
     return lines
+
+
+def freeze_paused_days(node, now=None):
+    # Every settled, unjudged day of a gate that is not running lands 'n/a' —
+    # judged, frozen, never charged. Asked by the judge for every paused gate
+    # on every tick, and by the two doors that RESUME one, just before they
+    # do: the tick is five minutes apart, and a gate resumed inside that gap
+    # would otherwise be judged on a window that closed while it was paused.
+    # Today counts once its window has closed; a window still open when the
+    # gate comes back is a commitment again, which is what resuming means.
+    now = now or datetime.now()
+    today = now.date().isoformat()
+    for ymd in _days_to_judge(node, today):
+        if storage.qr_judgment_exists(node['id'], ymd):
+            continue
+        window = resolve_window(node, ymd)
+        if now < settle_after(node, ymd, None, window):
+            continue
+        storage.qr_reserve_judgment(node['id'], ymd, None, 'n/a', None, window=window)
 
 
 def outcomes(from_date, to_date, now=None):
@@ -1334,7 +1364,8 @@ def _http_get(url):
         return 200 <= r.status < 300, json.loads(r.read() or b'{}')
 
 
-def charge_for_failure(node, ymd, reason, sender=None, window=None, hours=None):
+def charge_for_failure(node, ymd, reason, sender=None, window=None, hours=None,
+                       settled_at=None):
     """The whole money path for one judged failure. Returns the status stored.
 
     Reserve BEFORE charging, and only the tick that won the reservation may
@@ -1348,6 +1379,13 @@ def charge_for_failure(node, ymd, reason, sender=None, window=None, hours=None):
     """
     storage.qr_ensure_charge_columns()
     s = charge_settings()
+    # ARMING REACHES FORWARD ONLY. A day that settled before charging was armed
+    # was never a live commitment, so it takes the not-live road and lands
+    # 'would_fire'. Arming at 23:28 on 2026-09-29 charged for that day's 08:15
+    # and 23:15 windows, both closed before the switch was pressed.
+    if (s['live'] and settled_at is not None
+            and settled_at < datetime.fromisoformat(s['armed_at'])):
+        s['live'] = False
     amount = node_charge_cents(node, s)
     spent = storage.qr_weekly_spent_cents(ymd)
     capped = s['live'] and (spent + amount) > s['cap_cents']

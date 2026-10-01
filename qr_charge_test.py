@@ -294,5 +294,77 @@ cl.patch('/api/gates/billing', json={'gate_charging_live': False})
 check('disarming clears it', not (storage.get_settings() or {}).get('gate_charging_armed_at'))
 check('and is not live', qr_judge.charge_settings()['live'] is False)
 
+# ── days that were never live (2026-10-01, Quentin: "still getting charged") ──
+# The incident, replayed. Charging was armed at 23:28 on 09-29; both gates had
+# been PAUSED, refused the taps ("this tag is paused"), and were resumed at
+# 11:20 on 09-30 -- whose first tick charged 09-29 and 09-30 for both. The
+# judge skipped a paused gate outright, so its paused days had no row and
+# resuming judged them as commitments; and arming reached back to windows that
+# had closed before it.
+from datetime import datetime as _dt, date as _date, timedelta as _td   # noqa: E402
+judge_calls = []
+qr_judge._http_post = lambda url, body: (judge_calls.append(body) or (True, {'id': 'ch_j'}))
+
+
+def judged(node_id, date):
+    # The whole ledger: status_of reads failure rows only, and 'n/a' is not one.
+    r = [r for r in storage.qr_ledger_between(date, date) if r['node_id'] == node_id]
+    return r[0]['charge_status'] if r else None
+
+
+os.chdir(tempfile.mkdtemp())   # the app import above holds tracker.db open
+node = fresh(default=500)
+storage.set_setting('gate_charging_armed_at', '2026-09-29T23:28:44')
+storage.qr_update_node(node['id'], {'window_start': '07:15', 'window_end': '08:15'})
+storage.qr_update_node(node['id'], {'active': 0})
+for tick in ('2026-09-29T09:00:00', '2026-09-30T09:00:00'):
+    qr_judge.judge(now=_dt.fromisoformat(tick))
+check('a paused gate freezes its settled days n/a as they pass',
+      judged(node['id'], '2026-09-29') == 'n/a' and judged(node['id'], '2026-09-30') == 'n/a',
+      (judged(node['id'], '2026-09-29'), judged(node['id'], '2026-09-30')))
+storage.qr_update_node(node['id'], {'active': 1})
+judge_calls.clear()
+qr_judge.judge(now=_dt.fromisoformat('2026-09-30T11:20:00'))
+check('resuming it charges NOTHING for the days it was paused', len(judge_calls) == 0,
+      f'{len(judge_calls)} calls')
+
+# The five minutes between ticks: paused, never ticked, resumed through a
+# door. The door freezes what settled while it was paused before turning it on.
+import app as _app2                                        # noqa: E402
+yday = (_date.today() - _td(days=1)).isoformat()
+for door in ('activate', 'patch'):
+    os.chdir(tempfile.mkdtemp())   # the app import above holds tracker.db open
+    node = fresh(default=500)
+    storage.set_setting('last_backup_date', _date.today().isoformat())
+    storage.qr_update_node(node['id'], {'window_start': '00:00', 'window_end': '00:01',
+                                        'active': 0})
+    cl2 = _app2.app.test_client()
+    if door == 'activate':
+        cl2.patch(f'/api/accountability/nodes/{node["id"]}/activate')
+    else:
+        cl2.patch(f'/api/accountability/nodes/{node["id"]}', json={'active': 1})
+    back_on = [n for n in storage.qr_get_nodes() if n['id'] == node['id']][0]['active'] == 1
+    check(f'the {door} door freezes the paused days before turning the gate on',
+          back_on and judged(node['id'], yday) == 'n/a', (back_on, judged(node['id'], yday)))
+    judge_calls.clear()
+    qr_judge.judge()
+    check(f'so the next tick after the {door} door charges nothing for them',
+          len(judge_calls) == 0, f'{len(judge_calls)} calls')
+
+# Arming reaches FORWARD only.
+os.chdir(tempfile.mkdtemp())   # the app import above holds tracker.db open
+node = fresh(default=500)
+storage.set_setting('gate_charging_armed_at', '2026-09-29T23:28:44')
+storage.qr_update_node(node['id'], {'window_start': '22:15', 'window_end': '23:15'})
+judge_calls.clear()
+qr_judge.judge(now=_dt.fromisoformat('2026-09-30T11:20:00'))
+check('a day that closed before charging was armed moves no money',
+      len(judge_calls) == 0 and judged(node['id'], '2026-09-29') == 'would_fire',
+      (len(judge_calls), judged(node['id'], '2026-09-29')))
+qr_judge.judge(now=_dt.fromisoformat('2026-10-01T00:00:00'))
+check('and the first day that closed after it is charged as before',
+      len(judge_calls) == 1 and judged(node['id'], '2026-09-30') == 'succeeded',
+      (len(judge_calls), judged(node['id'], '2026-09-30')))
+
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)
