@@ -4835,21 +4835,26 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   scrollbar-width: none;
 }
 .tn-tabs::-webkit-scrollbar { display: none; }
+/* The underline sits just under the WORD (Lists/Log designs, 2026-10-01),
+   not on the strip's bottom edge. */
 .tn-tab {
   flex: none;
+  align-self: center;
   display: flex;
   align-items: center;
-  padding: 0;
+  padding: 0 0 3px;
+  margin-top: 5px;
+  line-height: 1.2;
   font-size: 14px;
   color: var(--text-secondary);
-  border-bottom: 2px solid transparent;
+  border-bottom: 1.5px solid transparent;
   border-radius: 0;
 }
 .tn-tab:hover { color: var(--text-primary); }
 .tn-tab.on { color: var(--text-primary); font-weight: 600; border-bottom-color: var(--text-primary); }
 .tn-icon {
   flex: none;
-  width: 34px; height: 34px;
+  width: 30px; height: 30px;
   display: flex; align-items: center; justify-content: center;
   border-radius: 6px;
   color: var(--text-secondary);
@@ -4865,7 +4870,7 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 }
 #top-nav .tn-gear.on { color: var(--text-primary); background: var(--surface-2); }
 @media (min-width: 900px) {
-  #top-nav { padding: env(safe-area-inset-top) 32px 0; gap: 10px; }
+  #top-nav { padding: env(safe-area-inset-top) 24px 0 32px; gap: 8px; }
   .tn-tabs { gap: 26px; }
 }
 
@@ -7435,14 +7440,14 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .m-close, #logs-close, #map-close, #modal-close { display: none; }
 #cal-overlay > .m-head { display: none; }
-#tab-lists > *, #tab-tracking > *, #tab-social > *, #now-full > * {
+#tab-lists:not(.ref-index) > *, #tab-tracking > *, #tab-social > *, #now-full > * {
   width: 100%;
   max-width: var(--page-w);
   margin-left: auto;
   margin-right: auto;
   box-sizing: border-box;
 }
-#logs-modal, #block-editor-modal {
+#block-editor-modal {
   width: 100%;
   max-width: var(--page-w);
   margin: 0 auto;
@@ -7457,8 +7462,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   animation: none;
 }
 @media (min-width: 900px) {
-  #tab-lists > *, #tab-tracking > *, #tab-social > *, #now-full > *,
-  #logs-modal, #block-editor-modal {
+  #tab-lists:not(.ref-index) > *, #tab-tracking > *, #tab-social > *, #now-full > *,
+  #block-editor-modal {
     border-left: 1px solid var(--border-soft);
     border-right: 1px solid var(--border-soft);
   }
@@ -7556,4 +7561,182 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   #map-tools .modal-header { padding: 0; justify-content: flex-start; }
   #map-search-wrap { padding: 8px 0 0; flex-wrap: wrap; }
   #map-filter-menu { top: 100px; right: var(--eg-gutter); }
+}
+/* ── THE LISTS PAGE (2026-10-01, Quentin's design) ───────────────────────
+   The index in the Projects page's shell (.mp-area): Routines and Reference
+   named in the left column, the rows in the middle — a name, a quiet mono
+   count, and the × only under the pointer (always there on a touch screen,
+   which has no hover to find it with). */
+#tab-lists.ref-index > .m-head { display: none; }
+#tab-lists.ref-index #ref-body { padding: 0; }
+#tab-lists.ref-index .ref-row {
+  gap: 12px;
+  padding: 7px 8px;
+  margin: 0 -8px;
+  border-bottom: none;
+  border-radius: 6px;
+}
+#tab-lists.ref-index .ref-row:hover { background: var(--surface-2); }
+#tab-lists.ref-index .ref-name { font-size: 15.5px; }
+#tab-lists.ref-index .map-count { font: 12px var(--font-mono); color: var(--text-secondary); }
+#tab-lists.ref-index .ref-del { width: 18px; padding: 0; font-size: 15px; opacity: 0; }
+#tab-lists.ref-index .ref-row:hover .ref-del, #tab-lists.ref-index .ref-del:focus-visible { opacity: 1; }
+@media (hover: none) { #tab-lists.ref-index .ref-del { opacity: 0.55; } }
+#tab-lists.ref-index .map-add-btn { margin-top: 8px; }
+@media (min-width: 900px) {
+  #tab-lists.ref-index #ref-body {
+    background: linear-gradient(var(--border-soft), var(--border-soft))
+        calc(50% - var(--eg-measure) / 2) 0 / 1px 100% no-repeat,
+      linear-gradient(var(--border-soft), var(--border-soft))
+        calc(50% + var(--eg-measure) / 2) 0 / 1px 100% no-repeat;
+  }
+}
+
+/* ── THE LOG PAGE (2026-10-01, Quentin's design) ─────────────────────────
+   Wide: the list in the left column, the open log in the middle one (the
+   Now column), its counts and Dangerous writing in the right. A phone shows
+   the list, or one log with its way back — never both. */
+#logs-modal {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  border: none;
+  background: var(--surface-mid);
+  animation: none;
+  box-shadow: none;
+}
+#logs-modal > .modal-header { display: none; }
+#logs-body { padding: 0; gap: 0; }
+.lg-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.lg-side { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.lg-tools { padding: 14px 16px 8px; display: flex; flex-direction: column; gap: 8px; }
+.lg-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+.lg-search #logs-q {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  font: 14px var(--font-ui);
+}
+.lg-search:focus-within { border-color: var(--accent); }
+.lg-tools-row { display: flex; align-items: center; justify-content: space-between; }
+.lg-tools-row #logs-filter {
+  margin: 0 0 0 -6px;
+  padding: 3px 6px;
+  background: none;
+  border: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.lg-tools-row #logs-filter.map-filter-on { color: var(--gold); background: none; font-weight: 600; }
+.lg-tools-row #logs-filter:hover, .lg-new:hover { background: var(--surface-2); color: var(--text-primary); }
+.lg-new { font-size: 13px; color: var(--text-secondary); padding: 3px 6px; margin-right: -6px; border-radius: 6px; }
+#logs-modal .log-list { padding: 0 16px 16px; gap: 0; }
+.lg-month {
+  padding: 16px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+#logs-modal .log-row {
+  flex-wrap: wrap;
+  gap: 0 8px;
+  padding: 6px 8px;
+  margin: 0 -8px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13.5px;
+}
+#logs-modal .log-row:hover { background: var(--surface-2); }
+#logs-modal .log-row.on { background: var(--surface-2); font-weight: 600; }
+.log-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#logs-modal .log-row-date { font: 11.5px var(--font-mono); white-space: nowrap; }
+.lg-main { display: none; flex-direction: column; gap: 10px; min-height: 0; padding: 14px 16px 12px; }
+.lg-has-open .lg-main { display: flex; flex: 1; }
+.lg-has-open .lg-side { display: none; }
+.lg-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#logs-modal .log-editor-bar { gap: 10px; justify-content: flex-start; }
+#logs-modal .log-editor-wrap { border: none; background: transparent; }
+#logs-modal .log-highlight, #logs-modal .log-editor { padding: 0; font-size: 14px; line-height: 1.65; }
+.lg-none { color: var(--text-secondary); font-size: 14px; }
+.lg-right { padding: 4px 16px 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.lg-has-open .lg-right { display: none; }
+.lg-right .dw-entry { display: inline-flex; align-items: center; gap: 6px; }
+.lg-counts {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font: 13px var(--font-mono);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.lg-counts.lg-sel { color: var(--accent); }
+.lg-sel-note { font-size: 11.5px; }
+#logs-filter-menu {
+  position: absolute;
+  top: 96px;
+  left: 16px;
+  z-index: 3;
+  width: 300px;
+  max-width: calc(100% - 32px);
+  max-height: 70%;
+  overflow-y: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+#logs-filter-menu.hidden { display: none; }
+@media (min-width: 900px) {
+  .lg-page {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
+  }
+  .lg-side, .lg-has-open .lg-side { display: flex; }
+  .lg-tools { padding: 18px 16px 8px 24px; }
+  #logs-modal .log-list { padding: 0 16px 16px 24px; }
+  .lg-main, .lg-has-open .lg-main {
+    display: flex;
+    padding: 30px 40px;
+    border-left: 1px solid var(--border-soft);
+    border-right: 1px solid var(--border-soft);
+  }
+  .lg-title { font-size: 24px; }
+  #logs-modal .log-back-btn { display: none; }
+  #logs-modal .log-highlight, #logs-modal .log-editor { font-size: 15px; }
+  .lg-right, .lg-has-open .lg-right {
+    display: flex;
+    padding: 22px 24px 0;
+    align-items: flex-end;
+    text-align: right;
+  }
+  #logs-filter-menu { top: 100px; left: 24px; }
 }

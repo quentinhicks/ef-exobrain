@@ -7728,7 +7728,6 @@ function renderLogsFilter() {
   const menu = document.getElementById('logs-filter-menu');
   if (!pill || !menu) return;
   const on = logsView.tags.size;
-  pill.classList.toggle('hidden', !!logsView.open);
   pill.textContent = `${on ? `${on} tag${on === 1 ? '' : 's'}` : 'All logs'} ▾`;
   pill.classList.toggle('map-filter-on', !!on);
   pill.title = 'What the list is showing';
@@ -7893,9 +7892,14 @@ function renderRef() {
   syncRoute();
 
   const openFlow = refView.flows.find(f => f.id === refView.openFlow);
+  const open = refView.lists.find(l => l.id === refView.open);
+  // LISTS PAGE (2026-10-01, Quentin's design): the index wears the Now shell
+  // — each section's name in the left column, its rows in the middle — and
+  // needs no header of its own; one list, or a routine's editor, keeps its
+  // head (it carries the name and the way back).
+  document.getElementById('tab-lists').classList.toggle('ref-index', !openFlow && !open);
   if (openFlow) { renderFlowEditor(body, title, openFlow); return; }
 
-  const open = refView.lists.find(l => l.id === refView.open);
   if (!open) {
     title.textContent = 'Lists';
     const flowRow = f => {
@@ -7921,15 +7925,12 @@ function renderRef() {
     // The index shows lists at the ROOT; nested lists live inside their
     // parent (2026-08-11), the same split-at-the-root MAP's someday pile uses.
     const rootLists = refView.lists.filter(l => !l.parent_id);
-    body.innerHTML = `
-      <div class="gtd-section-head">Routines</div>
-      <div class="ref-list">${refView.flows.map(flowRow).join('')
+    body.innerHTML = mpSection('Routines', '', `<div class="ref-list">${refView.flows.map(flowRow).join('')
         || '<div class="gtd-empty">No routines yet.</div>'}
-      <button id="fr-new" class="map-add-btn">+ routine</button></div>
-      <div class="gtd-section-head">Reference</div>
-      <div class="ref-list">${rootLists.map(l => refListRow(l)).join('')
+      <button id="fr-new" class="map-add-btn">+ routine</button></div>`)
+      + mpSection('Reference', '', `<div class="ref-list">${rootLists.map(l => refListRow(l)).join('')
       || '<div class="gtd-empty">No lists yet.</div>'}
-      <button id="ref-new" class="map-add-btn">+ list</button></div>`;
+      <button id="ref-new" class="map-add-btn">+ list</button></div>`);
 
     // Routine rows: tap = step editor, double-click = rename, ▶ = runner,
     // × = delete (undo replays). The single click waits out the double-click
@@ -11693,113 +11694,179 @@ async function runLogSearch() {
   renderLogs();
 }
 
+// THE LOG PAGE (2026-10-01, Quentin's design): three columns on a wide
+// window — the list (search, the filter, + New, the logs by month) on the
+// left, the open log in the middle, its counts and Dangerous writing on the
+// right. A phone keeps the two-step reading: the list, then one log with a
+// way back. One render for both; the CSS decides which parts a phone shows.
+const LOG_SEARCH_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+const LOG_BOLT_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>';
+
+function logMonthLabel(ymd) {
+  const d = new Date(String(ymd || '').slice(0, 10) + 'T12:00:00');
+  if (isNaN(d)) return 'Undated';
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString('en-US', sameYear ? { month: 'long' } : { month: 'long', year: 'numeric' });
+}
+
+function logShortDate(l) {
+  const d = new Date(l.created ? l.created + 'T12:00:00' : l.updated_at);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+// Words and characters of the log — of the SELECTION while there is one.
+function paintLogCounts() {
+  const ta = document.getElementById('log-editor');
+  const out = document.getElementById('log-counts');
+  if (!ta || !out) return;
+  const sel = ta.selectionEnd > ta.selectionStart;
+  const txt = sel ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : ta.value;
+  const wc = (txt.match(/\S+/g) || []).length, cc = txt.length;
+  out.classList.toggle('lg-sel', sel);
+  out.innerHTML = `<span>${wc} ${wc === 1 ? 'word' : 'words'}</span>
+    <span>${cc} ${cc === 1 ? 'character' : 'characters'}</span>
+    ${sel ? '<span class="lg-sel-note">selected</span>' : ''}`;
+}
+
 function renderLogs() {
   const body = document.getElementById('logs-body');
-  const title = document.getElementById('logs-title');
   if (!body) return;
   syncRoute();
-  renderLogsFilter();
-  if (!logsView.open) {
-    title.textContent = 'Logs';
-    // The DATE is a column, not part of the name. It still lives in the
-    // filename (it is what keeps two logs on one topic from being one file),
-    // but nothing here shows it inside the title any more.
-    const rows = sortedLogs().map(l => `
-      <button class="log-row" data-name="${escHtml(l.name)}">
-        <span class="log-row-name">${escHtml(l.title)}${(l.tags || []).map(t =>
-          `<span class="log-tag">#${escHtml(t)}</span>`).join('')}</span>
-        <span class="log-row-date">${l.created
-          ? new Date(l.created + 'T12:00:00').toLocaleDateString(undefined,
-              { month: 'short', day: 'numeric' })
-          : new Date(l.updated_at).toLocaleDateString(undefined,
-              { month: 'short', day: 'numeric' })}</span>
+  // A search being typed into survives the repaint of the list under it.
+  const qWas = document.getElementById('logs-q');
+  const qFocused = !!qWas && document.activeElement === qWas;
+
+  // The DATE is a column, not part of the name. It still lives in the
+  // filename (it is what keeps two logs on one topic from being one file),
+  // but nothing here shows it inside the title any more.
+  const logs = sortedLogs();
+  let month = null;
+  const rows = logs.map(l => {
+    const m = logMonthLabel(logDate(l));
+    const head = m !== month ? `<div class="lg-month">${escHtml(m)}</div>` : '';
+    month = m;
+    return `${head}<button class="log-row${l.name === logsView.open ? ' on' : ''}" data-name="${escHtml(l.name)}">
+        <span class="log-row-name">${escHtml(l.title)}</span>
+        <span class="log-row-date">${logShortDate(l)}</span>
         ${(l.hits || []).filter(Boolean).map(h =>
           `<span class="log-hit">${hlLogHit(h, logsView.q)}</span>`).join('')}
-      </button>`).join('');
-    const shown = sortedLogs().length;
-    const hidden = logsView.logs.length - shown;
-    body.innerHTML = `
-      <div id="logs-search-wrap">
-        <input type="text" id="logs-q" placeholder="⌕ search what you wrote"
-          autocomplete="off" value="${escHtml(logsView.q)}">
-      </div>
-      <div class="log-list">${rows || `<div class="log-empty">${
-        logsView.q ? `Nothing in the logs says “${escHtml(logsView.q)}”`
-        : logsView.logs.length ? 'No log carries every tag you asked for'
-        : 'No logs yet'}</div>`}</div>
-      ${hidden > 0 ? `<div class="log-hidden-note">${hidden} more ${
-        logsView.q ? 'not matching' : 'behind the filter'}</div>` : ''}
-      <button id="log-new" class="map-add-btn">+ log</button>
-      <button id="log-dangerous" class="dw-entry" title="Stop typing and the draft is destroyed">⚡ Dangerous writing</button>`;
-    body.querySelectorAll('.log-row').forEach(row => {
-      row.addEventListener('click', () => openLog(row.dataset.name));
-    });
-    const q = document.getElementById('logs-q');
-    q.addEventListener('input', e => {
-      logsView.q = e.target.value;
-      clearTimeout(logsView.qTimer);
-      // Debounced: each keystroke would otherwise read every file on the box.
-      logsView.qTimer = setTimeout(runLogSearch, 180);
-    });
-    q.addEventListener('keydown', e => {
-      if (e.key !== 'Escape' || !logsView.q) return;
-      e.stopPropagation();                     // peel the query, not the overlay
-      logsView.q = '';
-      logsView.hits = null;
-      renderLogs();
-    });
-    if (logsView.q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
-    document.getElementById('log-dangerous')
-      .addEventListener('click', openDangerousWriting);
-    // Name and tags, and NO date to type — the server stamps today. Typing
-    // '26-8-17' in front of every log was a filing convention the app can keep
-    // for you, and getting it subtly wrong is what made the list unsortable.
-    document.getElementById('log-new').addEventListener('click', () => openEntrySheet({
-      title: 'New log',
-      placeholder: 'what is this log about…',
-      hint: 'Dated today. Tags are optional, and live in the file itself.',
-      button: 'Create', closeOnAdd: true, tags: true, tagVocab: logTagVocab(),
-      add: async (raw, tags) => {
-        const log = await apiSend('/api/logs', 'POST',
-          { name: raw, tags }).then(r => r.json());
-        logsView.logs = await apiGet('/api/logs', logsView.logs);
-        logsView.open = log.name;
-        logsView.content = log.content;
-        logsView.dirty = false;
-        renderLogs();
-      },
-    }));
-    return;
-  }
-
-  // The header names the log, not the file: the date prefix is identity on
-  // disk and noise on screen.
+      </button>`;
+  }).join('');
+  const hidden = logsView.logs.length - logs.length;
   const openMeta = logsView.logs.find(l => l.name === logsView.open);
-  title.textContent = (openMeta && openMeta.title) || logsView.open;
+
+  // The filter pill lives in the header markup and is only BORROWED by the
+  // list's tool row — park it back before the body is rewritten, or the
+  // repaint would destroy it with its listener.
+  const parked = document.getElementById('logs-filter');
+  if (parked) document.querySelector('#logs-modal > .modal-header').appendChild(parked);
+
   body.innerHTML = `
-    <div class="log-editor-bar">
-      <button id="log-back" class="log-back-btn">‹ All logs</button>
-      <button id="log-photo" class="log-photo-btn">+ photo</button>
-      <input type="file" id="log-photo-input" accept="image/*" hidden>
-      <span id="log-save-status" class="log-save-status"></span>
-    </div>
-    <div id="log-photos" class="log-photos hidden"></div>
-    <div class="log-editor-wrap">
-      <div id="log-highlight" class="log-highlight" aria-hidden="true"></div>
-      <textarea id="log-editor" class="log-editor" spellcheck="false"></textarea>
+    <div class="lg-page${logsView.open ? ' lg-has-open' : ''}">
+      <aside class="lg-side">
+        <div class="lg-tools">
+          <label class="lg-search">${LOG_SEARCH_SVG}
+            <input type="text" id="logs-q" placeholder="Search what you wrote"
+              autocomplete="off" value="${escHtml(logsView.q)}"></label>
+          <div class="lg-tools-row"><span id="logs-filter-slot"></span>
+            <button id="log-new" class="lg-new">+ New</button></div>
+        </div>
+        <div class="log-list">${rows || `<div class="log-empty">${
+          logsView.q ? `Nothing in the logs says “${escHtml(logsView.q)}”`
+          : logsView.logs.length ? 'No log carries every tag you asked for'
+          : 'No logs yet'}</div>`}
+          ${hidden > 0 ? `<div class="log-hidden-note">${hidden} more ${
+            logsView.q ? 'not matching' : 'behind the filter'}</div>` : ''}</div>
+      </aside>
+      <main class="lg-main">${logsView.open ? `
+        <div class="log-editor-bar">
+          <button id="log-back" class="log-back-btn">‹ All logs</button>
+          <h1 class="lg-title">${escHtml((openMeta && openMeta.title) || logsView.open)}</h1>
+          <span id="log-save-status" class="log-save-status"></span>
+          <button id="log-photo" class="log-photo-btn">+ photo</button>
+          <input type="file" id="log-photo-input" accept="image/*" hidden>
+        </div>
+        <div id="log-photos" class="log-photos hidden"></div>
+        <div class="log-editor-wrap">
+          <div id="log-highlight" class="log-highlight" aria-hidden="true"></div>
+          <textarea id="log-editor" class="log-editor" spellcheck="false" placeholder="Start writing…"></textarea>
+        </div>` : '<div class="lg-none">Pick a log, or + New.</div>'}
+      </main>
+      <div class="lg-right">
+        <button id="log-dangerous" class="dw-entry" title="Stop typing and the draft is destroyed">${LOG_BOLT_SVG} Dangerous writing</button>
+        ${logsView.open ? '<div id="log-counts" class="lg-counts"></div>' : ''}
+      </div>
     </div>`;
+
+  // The filter pill is static markup wired once (initLogsView); it MOVES into
+  // the list's tool row rather than being drawn a second time.
+  const pill = document.getElementById('logs-filter');
+  if (pill) document.getElementById('logs-filter-slot').replaceWith(pill);
+  renderLogsFilter();
+
+  body.querySelectorAll('.log-row').forEach(row => {
+    row.addEventListener('click', async () => {
+      // A log is open BESIDE the list now, so picking another is the moment
+      // the open one is put down — its pending save goes first.
+      await flushLogSave();
+      openLog(row.dataset.name);
+    });
+  });
+  const q = document.getElementById('logs-q');
+  q.addEventListener('input', e => {
+    logsView.q = e.target.value;
+    clearTimeout(logsView.qTimer);
+    // Debounced: each keystroke would otherwise read every file on the box.
+    logsView.qTimer = setTimeout(runLogSearch, 180);
+  });
+  q.addEventListener('keydown', e => {
+    if (e.key !== 'Escape' || !logsView.q) return;
+    e.stopPropagation();                     // peel the query, not the overlay
+    logsView.q = '';
+    logsView.hits = null;
+    renderLogs();
+  });
+  if (qFocused || (logsView.q && !logsView.open)) {
+    q.focus(); q.setSelectionRange(q.value.length, q.value.length);
+  }
+  document.getElementById('log-dangerous')
+    .addEventListener('click', openDangerousWriting);
+  // Name and tags, and NO date to type — the server stamps today. Typing
+  // '26-8-17' in front of every log was a filing convention the app can keep
+  // for you, and getting it subtly wrong is what made the list unsortable.
+  document.getElementById('log-new').addEventListener('click', () => openEntrySheet({
+    title: 'New log',
+    placeholder: 'what is this log about…',
+    hint: 'Dated today. Tags are optional, and live in the file itself.',
+    button: 'Create', closeOnAdd: true, tags: true, tagVocab: logTagVocab(),
+    add: async (raw, tags) => {
+      await flushLogSave();
+      const log = await apiSend('/api/logs', 'POST',
+        { name: raw, tags }).then(r => r.json());
+      logsView.logs = await apiGet('/api/logs', logsView.logs);
+      logsView.open = log.name;
+      logsView.content = log.content;
+      logsView.dirty = false;
+      renderLogs();
+    },
+  }));
+  if (!logsView.open) return;
+
   const ta = document.getElementById('log-editor');
   ta.value = logsView.content;
   updateLogHighlight();
   renderLogPhotos();
+  paintLogCounts();
   ta.addEventListener('input', () => {
     updateLogHighlight();
     renderLogPhotos();      // a pasted or uploaded link joins the strip at once
+    paintLogCounts();
     logsView.dirty = true;
     document.getElementById('log-save-status').textContent = '·';
     clearTimeout(logsView.saveTimer);
     logsView.saveTimer = setTimeout(flushLogSave, 1000);
   });
+  ['select', 'keyup', 'pointerup'].forEach(ev => ta.addEventListener(ev, paintLogCounts));
   ta.addEventListener('scroll', () => {
     const hl = document.getElementById('log-highlight');
     hl.scrollTop = ta.scrollTop;
@@ -11820,10 +11887,10 @@ function renderLogs() {
   document.getElementById('log-back').addEventListener('click', async () => {
     await flushLogSave();
     logsView.open = null;
-    logsView.logs = await fetch('/api/logs').then(r => r.json());
+    logsView.logs = await apiGet('/api/logs', logsView.logs);
     renderLogs();
   });
-  ta.focus();
+  if (!qFocused) ta.focus();
 }
 
 // ── Social exposure v1 (dryrun) ──────────────────────────────
