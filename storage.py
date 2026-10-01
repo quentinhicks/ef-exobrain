@@ -6246,10 +6246,9 @@ def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node
     if period is not _UNSET:
         conn.execute('UPDATE flow SET period = ? WHERE id = ?', (period or 'day', id))
     if qr_node_id is not _UNSET:
-        # UNLINKING a gated routine is the largest easing there is — the gate
-        # stops judging on it entirely — so it waits 24h. Linking (or moving
+        # UNLINKING waits 24h only where it EASES something. Linking (or moving
         # the link) tightens and applies now, clearing any pending easing.
-        if cur and cur['qr_node_id'] and not qr_node_id:
+        if cur and cur['qr_node_id'] and not qr_node_id and _unlink_eases(conn, id, cur['qr_node_id']):
             _pend(conn, 'flow', id, 'qr_node_id', None)
         else:
             conn.execute('UPDATE flow SET qr_node_id = ? WHERE id = ?', (qr_node_id, id))
@@ -6275,6 +6274,26 @@ def update_flow(id, name=None, qr_node_id=_UNSET, offset_min=_UNSET, before_node
     row = conn.execute('SELECT * FROM flow WHERE id = ?', (id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# DOES TAKING THIS ROUTINE OFF ITS GATE EASE ANYTHING? (2026-09-30, Quentin:
+# "make sure I can remove routines from my gates — it's not allowing me".) The
+# unlink always waited 24h, from when a routine was half of a gate's verdict.
+# Since 2026-09-02 a routine linked to a SCAN or HOURS gate is a deadline
+# reference and a place in the runner — day_verdict never reads it — so the
+# wait protected nothing and the dashboard read it as a refusal. Two things it
+# can still ease, and only these wait: the routine IS the gate's proof (the
+# gate stops running), or steps are pawned into it for today or later
+# (pawned_minutes_for_node shortens the gate's window through this link).
+# Allowlist-shaped: anything not proven neutral waits.
+def _unlink_eases(conn, flow_id, node_id):
+    node = conn.execute('SELECT proof_mode FROM qr_node WHERE id = ?', (node_id,)).fetchone()
+    if not node or (node['proof_mode'] or 'link') not in ('link', 'tag', 'hours'):
+        return True
+    pawned = conn.execute(
+        'SELECT 1 FROM flow_step WHERE pawn_to_flow_id = ? AND pawned_date >= ? LIMIT 1',
+        (flow_id, date_cls.today().isoformat())).fetchone()
+    return pawned is not None
 
 
 def _delete_flow_rows(conn, id):

@@ -1367,11 +1367,22 @@ async function saveGate(n) {
     if (src.error) return fail(src.error);
     body.source_uid = src.uid;
   }
+  const messages = [];
   // The routine link lives on the FLOW, so moving it is two writes.
   if (v.routine !== v.routine0) {
     if (v.routine0) {
       const r = await send(`/api/flows/${v.routine0}`, 'PATCH', { qr_node_id: null });
       if (!r.ok) return fail(refusal(r, 'Could not unlink the old routine'));
+      // SAY WHEN IT LANDS. Off a scan gate it is gone now; where it still
+      // eases something (it is this gate's proof, or minutes are pawned into
+      // it) the server queues it 24h and answers with the link still on —
+      // which used to read here as "Nothing changed".
+      if (r.data && String(r.data.qr_node_id) === String(n.id) && !v.routine) {
+        messages.push('routine: comes off in 24h (an easing — '
+          + (v.proof0 === 'routine' ? 'it is this gate’s proof)' : 'minutes are pawned into it)'));
+      } else if (!v.routine) {
+        messages.push('routine: unlinked');
+      }
     }
     if (v.routine) {
       const r = await send(`/api/flows/${v.routine}`, 'PATCH', { qr_node_id: n.id });
@@ -1381,7 +1392,6 @@ async function saveGate(n) {
     const r = await send(`/api/flows/${v.routine}`, 'PATCH', { offset_min: parseInt(v.offset) });
     if (!r.ok) return fail(refusal(r, 'Could not move the routine deadline'));
   }
-  const messages = [];
   if (Object.keys(body).length) {
     if (v.effective) body.effective_from = v.effective;
     const res = await send(`/api/accountability/nodes/${n.id}`, 'PATCH', body);

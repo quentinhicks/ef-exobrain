@@ -380,16 +380,69 @@ imm, pend = qr_judge.apply_node_patch(node, {'label': 'Renamed'})
 check('a rename is not a commitment change', imm == {'label': 'Renamed'}, (imm, pend))
 
 # ── PENDINGS ARE PER FIELD ───────────────────────────────────────────────
+# On a ROUTINE gate, where an unlink still eases (a scan gate's applies at
+# once — see "UNLINKING FROM A SCAN GATE" below).
 fresh()
-nid = storage.qr_create_node('Sleep', 'tok-ease-2', '21:00', '23:00')
-flow = storage.create_flow('Night routine')
-storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-60)
+nid, flow = routine_gate('Sleep', 'tok-ease-2', 'Night routine')
+storage.update_flow(flow['id'], offset_min=-60)
 storage.update_flow(flow['id'], qr_node_id=None)          # easing 1: unlink
 storage.update_flow(flow['id'], offset_min=30)            # easing 2: later offset
 f = [x for x in storage.get_flows(TODAY) if x['id'] == flow['id']][0]
 fields = sorted(p['field'] for p in (f['pending'] or []))
 check('queueing a second easing does not delete the first',
       fields == ['offset_min', 'qr_node_id'], fields)
+
+# ── UNLINKING FROM A SCAN GATE APPLIES AT ONCE (2026-09-30) ─────────────
+#
+# A routine linked to a scan gate is a deadline reference, never half the
+# verdict, so taking it off eases nothing — and the 24h it used to wait read on
+# the dashboard as the unlink being refused. It still waits where it DOES ease:
+# the routine is the gate's proof, or minutes are pawned into it.
+def linked(fid):
+    return [x for x in storage.get_flows(TODAY) if x['id'] == fid][0]['qr_node_id']
+
+fresh()
+nid = storage.qr_create_node('Wake', 'tok-unlink-1', '07:00', '08:00')
+flow = storage.create_flow('Morning routine')
+storage.update_flow(flow['id'], qr_node_id=nid)
+storage.update_flow(flow['id'], qr_node_id=None)
+check('unlinking a routine from a SCAN gate applies at once', linked(flow['id']) is None,
+      linked(flow['id']))
+f = [x for x in storage.get_flows(TODAY) if x['id'] == flow['id']][0]
+check('...and queues nothing', not (f['pending'] or []), f['pending'])
+
+fresh()
+nid = storage.qr_create_node('Hours', 'tok-unlink-2', '07:00', '08:00')
+storage.qr_update_node(nid, {'proof_mode': 'hours'})
+flow = storage.create_flow('Study log')
+storage.update_flow(flow['id'], qr_node_id=nid)
+storage.update_flow(flow['id'], qr_node_id=None)
+check('...and from an HOURS gate', linked(flow['id']) is None, linked(flow['id']))
+
+fresh()
+nid, flow = routine_gate('Morning', 'tok-unlink-3')
+storage.update_flow(flow['id'], qr_node_id=None)
+check("unlinking a ROUTINE gate's own routine still waits 24h", linked(flow['id']) == nid,
+      linked(flow['id']))
+
+fresh()
+nid = storage.qr_create_node('Sleep', 'tok-unlink-4', '21:00', '23:00')
+night = storage.create_flow('Night routine')
+storage.update_flow(night['id'], qr_node_id=nid)
+morning = storage.create_flow('Morning routine')
+step = storage.create_flow_step(morning['id'], 'Read', 'text', 'hard', None, None)
+conn = storage.get_conn()
+conn.execute('UPDATE flow_step SET pawn_to_flow_id = ?, pawn_minutes = 30, pawned_date = ? WHERE id = ?',
+             (night['id'], TODAY, step['id']))
+conn.commit(); conn.close()
+check('(the pawn shortens the scan gate tonight)', storage.pawned_minutes_for_node(nid, TODAY) == 30,
+      storage.pawned_minutes_for_node(nid, TODAY))
+storage.update_flow(night['id'], qr_node_id=None)
+check("...so with minutes pawned in, unlinking a scan gate's routine waits 24h",
+      linked(night['id']) == nid, linked(night['id']))
+check('...and the window stays shortened tonight', storage.pawned_minutes_for_node(nid, TODAY) == 30,
+      storage.pawned_minutes_for_node(nid, TODAY))
+
 
 # ── THE DEADLINE IS SERVED (2026-08-17) ──────────────────────────────────
 #
