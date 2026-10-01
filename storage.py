@@ -1299,6 +1299,29 @@ def init_db():
             created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
             UNIQUE(node_id, date)
         )''')
+    # THE COMMITMENT (2026-10-01, Quentin's instruction: simplify the money
+    # route). What a gate's day was held to, written BEFORE the window opens
+    # and sealed the moment it does — the only thing the judge charges
+    # against. No sealed row, no charge, whatever the settings say later:
+    # every earlier money bug was a past day re-read under current state.
+    # Unsealed rows are the judge's provisional copy, refreshed every tick
+    # until the window opens (checked_at); `terms` is the JSON of the node
+    # fields the verdict reads; staked_cents NULL means the record only.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_commitment (
+            id            INTEGER PRIMARY KEY,
+            node_id       INTEGER NOT NULL REFERENCES qr_node(id),
+            date          TEXT NOT NULL,
+            window_start  TEXT,
+            window_end    TEXT,
+            offset_days   INTEGER,
+            terms         TEXT,
+            staked_cents  INTEGER,
+            checked_at    TEXT,
+            sealed_at     TEXT,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(node_id, date)
+        )''')
     # THE SCHEDULE STORE (2026-08-11) — one occurrence source, three
     # constructors; see schedule.py and CLAUDE.md's "Schedule model". Columns
     # are JSCalendar (RFC 8984) field names, so what is stored reads as the
@@ -7846,7 +7869,7 @@ def qr_update_node(node_id, fields):
 
 def qr_delete_node(node_id):
     conn = get_conn()
-    for t in ('qr_scan', 'qr_override', 'qr_charge_log'):
+    for t in ('qr_scan', 'qr_override', 'qr_charge_log', 'qr_commitment'):
         conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (node_id,))
     conn.execute("DELETE FROM easing_pending WHERE kind = 'gate' AND row_id = ?",
                  (node_id,))
@@ -8217,7 +8240,7 @@ def qr_apply_due_pending_changes(now_iso):
         # rather than through qr_delete_node because that opens its own
         # connection and this one is mid-transaction.
         if r['field'] == QR_DELETE_FIELD:
-            for t in ('qr_scan', 'qr_override', 'qr_charge_log'):
+            for t in ('qr_scan', 'qr_override', 'qr_charge_log', 'qr_commitment'):
                 conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (r['row_id'],))
             conn.execute("DELETE FROM easing_pending WHERE kind = 'gate' AND row_id = ?",
                          (r['row_id'],))
@@ -8234,6 +8257,76 @@ def qr_apply_due_pending_changes(now_iso):
     conn.commit()
     conn.close()
     return applied
+
+
+# ── The commitment store (see qr_commitment in init_db) ──────────────────
+# Written only by qr_judge.judge. A SEALED row is never rewritten or dropped
+# by anything but the gate's own deletion; every write below is guarded on
+# sealed_at IS NULL in its own WHERE, so two processes cannot disagree.
+
+def qr_get_commitment(node_id, date):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM qr_commitment WHERE node_id = ? AND date = ?',
+                       (node_id, date)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def qr_put_commitment(node_id, date, window, terms, staked_cents, checked_at):
+    ws, we, off = window
+    conn = get_conn()
+    conn.execute(
+        '''INSERT INTO qr_commitment
+             (node_id, date, window_start, window_end, offset_days, terms,
+              staked_cents, checked_at)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(node_id, date) DO UPDATE SET
+             window_start = excluded.window_start, window_end = excluded.window_end,
+             offset_days = excluded.offset_days, terms = excluded.terms,
+             staked_cents = excluded.staked_cents, checked_at = excluded.checked_at
+           WHERE qr_commitment.sealed_at IS NULL''',
+        (node_id, date, ws, we, int(off or 0), terms, staked_cents, checked_at))
+    conn.commit()
+    conn.close()
+
+
+def qr_seal_commitment(node_id, date, sealed_at, staked_cents):
+    conn = get_conn()
+    conn.execute(
+        '''UPDATE qr_commitment SET sealed_at = ?, staked_cents = ?
+           WHERE node_id = ? AND date = ? AND sealed_at IS NULL''',
+        (sealed_at, staked_cents, node_id, date))
+    conn.commit()
+    conn.close()
+
+
+def qr_drop_commitment(node_id, date):
+    conn = get_conn()
+    conn.execute('DELETE FROM qr_commitment WHERE node_id = ? AND date = ? '
+                 'AND sealed_at IS NULL', (node_id, date))
+    conn.commit()
+    conn.close()
+
+
+def qr_sealed_window(node_id, date):
+    conn = get_conn()
+    row = conn.execute(
+        '''SELECT window_start, window_end, offset_days FROM qr_commitment
+           WHERE node_id = ? AND date = ? AND sealed_at IS NOT NULL''',
+        (node_id, date)).fetchone()
+    conn.close()
+    return (row['window_start'], row['window_end'], row['offset_days'] or 0) if row else None
+
+
+def qr_commitments_between(from_date, to_date):
+    conn = get_conn()
+    rows = conn.execute(
+        '''SELECT node_id, date, window_start, window_end, offset_days,
+                  staked_cents, checked_at, sealed_at
+           FROM qr_commitment WHERE date >= ? AND date <= ?
+           ORDER BY date, node_id''', (from_date, to_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def qr_judgment_exists(node_id, date):

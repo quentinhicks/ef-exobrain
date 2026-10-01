@@ -395,26 +395,19 @@ function moneyVerdict(b) {
       sub: `Nothing has been judged since ${agoLabel(b.judge_last_run)}, so no gate is being `
         + 'decided. Nothing below matters until the judge runs again.' };
   }
-  if (b.charging_disabled) {
-    return { cls: 'gd-good', text: 'Charging is disabled in the code. No money can move.',
-      sub: 'qr_judge.CHARGING_DISABLED is on. Days are judged and priced; nothing here can arm it.' };
-  }
-  if (!b.live) {
+  if (!b.armed_at) {
     return { cls: 'gd-good', text: 'Not armed. No money moves.',
       sub: 'Every day is still judged, frozen and priced — the ledger below says what each '
         + 'would have cost ("would have charged").' };
   }
-  if (!b.has_token || !b.has_user) {
+  if (!b.live) {
     return { cls: 'gd-bad', text: 'Armed, but it cannot charge.',
       sub: `The Beeminder ${!b.has_token ? 'token' : 'user'} is missing, so every charge `
         + 'fails without sending anything.' };
   }
-  if (b.dryrun) {
-    return { cls: 'gd-good', text: 'Armed in dry run. No money moves.',
-      sub: 'Every failure calls Beeminder with dryrun set — the whole pipeline, minus the money.' };
-  }
   return { cls: 'gd-live', text: 'LIVE. A missed gate bills real money.',
-    sub: `Bills ${esc(b.user)} — at most ${money(b.cap_cents)} in any 7 days, whatever happens.` };
+    sub: `Bills ${esc(b.user)} — only for a day listed under "At stake", and at most `
+      + `${money(b.cap_cents)} in any 7 days, whatever happens.` };
 }
 
 function renderMoney() {
@@ -426,7 +419,7 @@ function renderMoney() {
     return;
   }
   const v = moneyVerdict(b);
-  const mode = !b.live ? 'off' : b.dryrun ? 'dry' : 'live';
+  const mode = b.armed_at ? 'live' : 'off';
   const confirming = Date.now() < G.armConfirmUntil;
   const pct = b.cap_cents ? Math.min(100, Math.round(b.spent_cents / b.cap_cents * 100)) : 0;
   const tok = G.tokenCheck;
@@ -441,23 +434,18 @@ function renderMoney() {
         <div class="gd-vsub">${v.sub}</div></div>`
     + `<div class="gd-seg" role="group" aria-label="Charging">
         <button data-mode="off" class="${mode === 'off' ? 'gd-on' : ''}">Off</button>
-        <button data-mode="dry" class="${mode === 'dry' ? 'gd-on' : ''}">Dry run</button>
         <button data-mode="live" class="${mode === 'live' ? 'gd-on gd-on-live' : ''}${confirming ? ' gd-confirm' : ''}">${
           confirming ? `Tap again: bill ${esc(b.user || 'nobody')}` : 'Live'}</button>
       </div>
-      <div class="gd-hint">Off is immediate. Live asks twice. Arming stamps the time it happened
-        — a switch left on from before the 2026-09-07 disable does not count.</div>`
+      <div class="gd-hint">Off is immediate. Live asks twice, and reaches FORWARD only: a day is
+        at stake only if charging was armed before its window opened.</div>`
+    + '<h3>At stake</h3>' + stakeList(b)
     + '<h3>The locks, in the order they are checked</h3>'
     + row(mark(!judgeStale(b.judge_last_run)), 'The judge', esc(agoLabel(b.judge_last_run)),
       'Runs on the server every few minutes and freezes each finished day. Stale = nothing is being decided.')
-    + row(mark(!b.charging_disabled, !b.charging_disabled ? false : true), 'Code lock',
-      b.charging_disabled ? 'ON — nothing can charge' : 'lifted',
-      'qr_judge.CHARGING_DISABLED. When on, no request is ever built, whatever the rest says.')
-    + row(mark(b.live, !b.live), 'Armed',
-      b.live ? `since ${esc(stamp(b.armed_at))}`
-        : (b.live_setting && !b.armed_at ? 'no — an old switch is on, never armed here' : 'no'),
-      'Only this page\'s Dry run / Live buttons arm it, and the time is recorded.')
-    + row(mark(true, !b.dryrun), 'Dry run', b.dryrun ? 'on — Beeminder is told not to bill' : 'off — real charges', '')
+    + row(mark(!!b.armed_at, !b.armed_at), 'Armed',
+      b.armed_at ? `since ${esc(stamp(b.armed_at))}` : 'no',
+      'The one switch. Only this page\'s Live button arms it, and the time is recorded.')
     + row(mark(b.has_user), 'Bills', b.has_user ? esc(b.user) : 'no Beeminder user set', '')
     + row(mark(tok ? tok.valid : b.has_token), 'Token',
       tok ? (tok.valid ? 'checked just now — valid' : esc(tok.reason || 'invalid'))
@@ -523,9 +511,32 @@ function renderMoney() {
   });
 }
 
+// What the judge has committed for today and tomorrow (see qr_judge, THE
+// COMMITMENT). A day not listed cannot be charged, so this is the honest
+// answer to "will this charge me".
+function stakeList(b) {
+  const cs = b.commitments || [];
+  if (!cs.length) return '<p class="gd-empty">Nothing is committed for today or tomorrow.</p>';
+  return '<div class="gd-ledger">' + cs.map(c => `<div class="gd-lrow">
+      <span class="gd-ldate">${esc(c.date)}</span>
+      <span class="gd-lgate">${esc(c.label)}</span>
+      <span class="gd-lout">${esc(c.window_start)}–${esc(c.window_end)}${c.offset_days ? ' +1d' : ''}</span>
+      <span class="gd-lcharge">${commitmentWords(c, b.live)}</span>
+    </div>`).join('') + '</div>';
+}
+
+function commitmentWords(c, live) {
+  if (!c) return 'nothing — this day was not committed, so it cannot cost anything';
+  const amount = c.staked_cents ? money(c.staked_cents) : null;
+  if (c.sealed) return amount ? `${amount} at stake — sealed ${esc(stamp(c.sealed_at))}`
+    : 'judged for the record — nothing at stake (not armed when it opened)';
+  return amount ? `${amount} if nothing changes before it opens`
+    : (live ? 'not at stake yet' : 'record only — not armed');
+}
+
 async function setMode(mode) {
   const b = G.billing || {};
-  if (mode === 'live' && !(b.live && !b.dryrun)) {
+  if (mode === 'live' && !b.armed_at) {
     // Twice, deliberately: this is the one press on the page that turns on
     // real money. The second press has to land inside ARM_CONFIRM_MS.
     if (Date.now() >= G.armConfirmUntil) {
@@ -536,12 +547,11 @@ async function setMode(mode) {
     }
   }
   G.armConfirmUntil = 0;
-  const body = mode === 'off' ? { gate_charging_live: false }
-    : { gate_charging_live: true, gate_charge_dryrun: mode === 'dry' };
+  const body = { armed: mode !== 'off' };
   const res = await send('/api/gates/billing', 'PATCH', body);
   if (!res.ok) { toast(refusal(res, 'Charging not changed')); }
   else toast(mode === 'off' ? 'Disarmed. No money can move.'
-    : mode === 'dry' ? 'Armed in dry run — no money moves' : 'LIVE — missed gates now bill real money');
+    : 'LIVE — gates committed from now on bill real money when missed');
   await reloadConfig();
 }
 
@@ -552,6 +562,7 @@ function dayGates() {
 const gateDay = id => dayGates().find(g => g.node_id === id);
 
 function dayState(g) {
+  if (g.verdict && g.verdict.off) return 'off';
   if (g.judged) return g.verdict && g.verdict.passed ? 'met' : 'missed';
   if (g.skipped) return 'off';
   if (!g.active) return 'off';
@@ -839,7 +850,9 @@ function renderDetail() {
   const w = g.window;
   const v = g.verdict || {};
   let verdict;
-  if (g.judged) {
+  if (v.off) {
+    verdict = '○ Nothing was committed this day, so it cannot cost anything.';
+  } else if (g.judged) {
     verdict = v.passed ? `✓ Met — judged and frozen.`
       : `✗ ${esc(gateReason(g.judged.failure_reason))} — ${esc(gateStatus(g.judged.charge_status))}`
         + (g.judged.amount_cents ? ` · ${money(g.judged.amount_cents)}` : '');
@@ -848,7 +861,8 @@ function renderDetail() {
   } else {
     verdict = v.met ? '✓ Cleared. It settles at ' + esc(stamp(v.settles_at)) + '.'
       : `Not cleared yet. If the day ended now it would owe ${money(v.owed_cents)}`
-        + `${g.live ? '' : ' (not live — nothing would be billed)'}. It settles at ${esc(stamp(v.settles_at))}.`;
+        + `${g.commitment && g.commitment.staked_cents && g.live ? '' : ' (nothing is at stake this day)'}`
+        + `. It settles at ${esc(stamp(v.settles_at))}.`;
   }
   const lockedWhy = g.skip_locked && !g.skipped ? 'Locked: this gate closes within 24h.' : '';
   const scans = (g.scans || []).map(sc => `<li class="${sc.satisfies && sc.in_window ? 'gd-good-text' : ''}">
@@ -867,7 +881,7 @@ function renderDetail() {
       <dt>Judged on</dt><dd>${w.all_day ? 'the whole day — the window only places it here'
         : 'the window — proof after it closes is not proof'}</dd>
       <dt>Proof</dt><dd>${esc(p.name)}. ${esc(p.threat)}</dd>
-      <dt>Stake</dt><dd>${money(g.stake_cents)}${g.live ? '' : ' (not live)'}</dd>
+      <dt>Stake</dt><dd>${money(g.stake_cents)} · ${commitmentWords(g.commitment, g.live)}</dd>
       ${g.location ? `<dt>Place</dt><dd>${esc(g.location.name || 'a pinned point')} · within ${
         esc(g.location.radius_m)} m of ${Number(g.location.lat).toFixed(5)}, ${Number(g.location.lng).toFixed(5)}</dd>` : ''}
       ${g.routine ? `<dt>Routine</dt><dd>${esc(g.routine.name)}${g.routine.deadline ? ` · due ${esc(g.routine.deadline)}` : ''}${

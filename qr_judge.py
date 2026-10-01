@@ -126,6 +126,11 @@ def resolve_window(node, ymd, override=None):
     # The source sits above the legacy columns rather than replacing them: the
     # adoption is additive (storage._adopt_gate_schedules), so a gate whose
     # source is somehow missing still judges against the window it always had.
+    # A SEALED day is judged against the window it was sealed with, so that
+    # is the answer for it everywhere (see THE COMMITMENT, above judge()).
+    sealed = storage.qr_sealed_window(node['id'], ymd)
+    if sealed:
+        return sealed
     if override is None:
         override = storage.qr_get_override(node['id'], ymd)
     if override:
@@ -307,6 +312,10 @@ def applies_on(node, ymd, override=None):
     #
     # `override` mirrors resolve_window's parameter exactly: outcomes() has the
     # whole range prefetched and must not go back to the db per day.
+    # A SEALED day runs: it was committed when its window opened, and nothing
+    # after that reaches it (THE COMMITMENT, above judge()).
+    if storage.qr_sealed_window(node['id'], ymd):
+        return True
     if override is None:
         override = storage.qr_get_override(node['id'], ymd)
     if override and override.get('skipped'):
@@ -635,6 +644,129 @@ def _days_to_judge(node, today):
     return older + [yesterday, today]
 
 
+# ── THE COMMITMENT (2026-10-01, Quentin's instruction: simplify the money
+# route so this stops happening) ──────────────────────────────────────────
+#
+# Every money bug before this had one shape: the judge decided AFTER a window
+# closed what the day's commitment had been, by reading the settings as they
+# were THEN — active, armed, run-days, window, routine, skip, tag — so a change
+# between the window and the judgment re-judged the past under the new value.
+# Each was patched one setting at a time (n/a rows, row_revision, the skip
+# store, armed_at, paused gates), and the next feature had to remember all of
+# them, because a day with NO record was a candidate for a charge.
+#
+# The default is inverted. A day is at stake only if the judge SAW IT COMING:
+#
+#   1. Every tick before a window opens refreshes a provisional commitment —
+#      the resolved window, the proof terms, and the stake if charging is
+#      armed — or drops it if the gate is paused, off that day or called off.
+#   2. The first tick after it opens SEALS that row, provided it was refreshed
+#      within COMMIT_LEAD_MIN of the opening and the gate is still running.
+#      The stake survives only if charging is still armed. Otherwise there is
+#      no commitment for the day at all.
+#   3. At settle the judge reads ONLY the sealed row and the proof. No sealed
+#      row: 'n/a', never money. Money also needs charging armed at that moment
+#      — turning it off is immediate.
+#
+# So nothing done after a window opens can reach that day: not resuming, not
+# arming, not editing, not a pawn, not the judge having been down. A sealed
+# window is also what resolve_window and applies_on answer for that day, so
+# the calendar and the read-outs show the window being judged.
+COMMIT_LEAD_MIN = 15
+
+
+def day_opens_at(node, ymd, window):
+    # The moment a day stops being provisional. An all-day gate (and so every
+    # routine gate) is the whole wall day, so it opens at midnight.
+    if is_all_day(node):
+        return _local_dt(ymd, '00:00')
+    return _local_dt(ymd, window[0])
+
+
+# The node fields the verdict reads, stamped so a change after the seal
+# (link -> tag is immediate; a target raised mid-day) cannot reach the day.
+COMMIT_TERMS = ('proof_mode', 'all_day', 'target_minutes', 'geofence_lat')
+
+
+def committed_node(node, commitment):
+    return dict(node, **json.loads(commitment.get('terms') or '{}'))
+
+
+def _commit(node, ymd, now, settings):
+    c = storage.qr_get_commitment(node['id'], ymd)
+    if c and c['sealed_at']:
+        return
+    if storage.qr_judgment_exists(node['id'], ymd):
+        return
+    runs = bool(node['active']) and applies_on(node, ymd)
+    window = resolve_window(node, ymd)
+    opens = day_opens_at(node, ymd, window)
+    if now < opens:
+        if runs:
+            terms = json.dumps({k: node.get(k) for k in COMMIT_TERMS})
+            stake = node_charge_cents(node, settings) if settings['live'] else None
+            storage.qr_put_commitment(node['id'], ymd, window, terms, stake,
+                                      now.isoformat(timespec='seconds'))
+        else:
+            storage.qr_drop_commitment(node['id'], ymd)
+        return
+    if not c:
+        return
+    seen = datetime.fromisoformat(c['checked_at'])
+    if runs and seen >= opens - timedelta(minutes=COMMIT_LEAD_MIN):
+        storage.qr_seal_commitment(node['id'], ymd, now.isoformat(timespec='seconds'),
+                                   c['staked_cents'] if settings['live'] else None)
+    else:
+        storage.qr_drop_commitment(node['id'], ymd)
+
+
+def _settle(node, ymd, now, today, lines):
+    if storage.qr_judgment_exists(node['id'], ymd):
+        return
+    c = storage.qr_get_commitment(node['id'], ymd)
+    if not (c and c['sealed_at']):
+        # Nothing was committed: the gate was paused, off that day, called
+        # off, charging could not see it coming — or the judge was down. Frozen
+        # 'n/a' once the day can no longer be committed, which is the record
+        # saying so, and never a charge.
+        window = resolve_window(node, ymd)
+        if now >= settle_after(node, ymd, None, window):
+            storage.qr_drop_commitment(node['id'], ymd)
+            storage.qr_reserve_judgment(node['id'], ymd, None, 'n/a', None, window=window)
+        return
+
+    term = committed_node(node, c)
+    window = (c['window_start'], c['window_end'], c['offset_days'] or 0)
+    # ONLY a routine gate asks about a routine (2026-09-02). A routine linked
+    # to a SCAN gate is a separate commitment, so it neither softens nor delays.
+    flow = (storage.gating_flow_for_node(node['id'], ymd)
+            if is_routine_gate(term) else None)
+    if now < settle_after(term, ymd, flow, window):
+        return
+    open_iso, close_iso = day_scan_bounds(term, ymd, window)
+    scans = storage.qr_scans_in_window(node['id'], open_iso, close_iso)
+    # The bucket is a running total, so it is resolved ONCE and stamped: a
+    # correction to last Tuesday must not rewrite what Wednesday was owed.
+    hrs = hours_satisfies(term, ymd) if is_hours_gate(term) else None
+    stamp = (hrs[2], hrs[1], hrs[3]) if hrs else None
+    _ok, reason = day_verdict(term, ymd, flow, scans, now, hours=hrs)
+    if reason is None:
+        storage.qr_reserve_judgment(node['id'], ymd, None, 'ok', None, window=window,
+                                    credit_pct=100, hours=stamp)
+        return
+    if ymd < _date_plus(today, -1):
+        # A judge that was down past the day after: judged and frozen, never
+        # charged. Only yesterday and today may touch money.
+        if storage.qr_reserve_judgment(node['id'], ymd, reason, 'stale', None,
+                                       window=window, credit_pct=0, hours=stamp):
+            lines.append('X   %s (%s): %s -> stale' % (node['label'], ymd, reason))
+        return
+    status = charge_for_failure(term, ymd, reason, c['staked_cents'],
+                                window=window, hours=stamp)
+    if status is not None:
+        lines.append('X   %s (%s): %s -> %s' % (node['label'], ymd, reason, status))
+
+
 def judge(now=None, verbose=False):
     now = now or datetime.now()
     today = now.date().isoformat()
@@ -644,122 +776,20 @@ def judge(now=None, verbose=False):
     for a in applied:
         lines.append('applied pending %s on node %s' % (a['field'], a['node_id']))
 
+    settings = charge_settings()
     for node in storage.qr_get_nodes():
-        if not node['active']:
-            # A PAUSED gate's settled days are frozen 'n/a' as they pass. It
-            # used to be skipped outright, so its paused days had no row, and
-            # resuming it made the next tick judge them as commitments: on
-            # 2026-09-30 a gate resumed at 11:20 charged for the morning it
-            # had refused the tap ("this tag is paused") AND for the day
-            # before. The non-run-weekday hole, one switch along.
-            freeze_paused_days(node, now)
-            continue
-        # Yesterday as well as today: a window with offset_days=1 closes on the
-        # day AFTER its date, so it can only be judged on the following tick-day.
-        # This also backfills one missed day if the timer was down at close time.
-        #
-        # BEYOND those two the judge still walks back to the last day it judged
-        # (bounded at BACKFILL_MAX_DAYS), so a timer down for three days does
-        # not leave three days permanently underivable once the freeze means a
-        # day is read from its row. Those older days are judged WITHOUT MONEY:
-        # charging for a day you could not have known was being judged is the
-        # thing every rail in this file exists to prevent. They land as
-        # 'stale', which the cap ignores exactly like 'would_fire'.
+        # Yesterday too: a +1d window opens on its date and may still be open
+        # after midnight. Tomorrow so a window opening just past midnight has
+        # its provisional row from the ticks before it.
+        for ymd in (_date_plus(today, -1), today, _date_plus(today, 1)):
+            _commit(node, ymd, now, settings)
         for ymd in _days_to_judge(node, today):
-            if not applies_on(node, ymd):
-                # A PAST day the gate did not run on is frozen too, as 'n/a'.
-                # Freezing only the days that were judged left the retroactive
-                # hole wide open: a skipped day has no row, so adding a run-day
-                # later (a tightening, immediate) made the next tick judge a
-                # day that was never a commitment and charge for it. Today is
-                # NOT frozen this way — the day is still running, and tightening
-                # onto it mid-day is exactly what tightening is allowed to do.
-                if ymd < today:
-                    storage.qr_reserve_judgment(node['id'], ymd, None, 'n/a', None)
-                continue
-            if storage.qr_judgment_exists(node['id'], ymd):
-                continue
-            money_reach = ymd >= _date_plus(today, -1)
-            start, end, offset = resolve_window(node, ymd)
-
-            # ONLY a routine gate asks about a routine (2026-09-02). A routine
-            # linked to a SCAN gate is a separate commitment with its own gate
-            # and its own stake, so it neither softens this day nor delays it.
-            flow = (storage.gating_flow_for_node(node['id'], ymd)
-                    if is_routine_gate(node) else None)
-            if now < settle_after(node, ymd, flow, (start, end, offset)):
-                continue
-            if storage.qr_judgment_exists(node['id'], ymd):
-                continue
-
-            open_iso, close_iso = day_scan_bounds(node, ymd, (start, end, offset))
-            scans = storage.qr_scans_in_window(node['id'], open_iso, close_iso)
-            # Resolved ONCE and stamped on whichever row this day lands in. The
-            # bucket is a running total, so re-deriving it later would let a
-            # correction to last Tuesday rewrite what Wednesday was judged
-            # against — the credit_pct rule, for the same reason.
-            hrs = hours_satisfies(node, ymd) if is_hours_gate(node) else None
-            stamp = (hrs[2], hrs[1], hrs[3]) if hrs else None
-            _ok, reason = day_verdict(node, ymd, flow, scans, now, hours=hrs)
-            tag = '' if ymd == today else ' (%s)' % ymd
-            if reason is None:
-                # A ROW ON SUCCESS TOO (2026-08-17) — the FREEZE, reversing
-                # "NO ROW ON SUCCESS". A satisfied day used to stay DERIVED
-                # from its scans, which meant a closed day was re-resolved
-                # under whatever the configuration said later: add a weekend
-                # day to a weekday gate on Sunday (a tightening, so immediate)
-                # and the next tick judged Saturday — a day that was never a
-                # commitment when it closed — and charged for it. Stamping the
-                # resolved window makes the judgment answerable on its own
-                # terms. What this costs is what the old comment defended: a
-                # scan that lands AFTER its window was judged no longer flips
-                # the day back to success. Presence is a deadline; late proof
-                # is not proof.
-                storage.qr_reserve_judgment(node['id'], ymd, None, 'ok', None,
-                                            window=(start, end, offset),
-                                            credit_pct=100, hours=stamp)
-                continue
-
-            if not money_reach:
-                # Judged, frozen, never charged — see _days_to_judge.
-                if storage.qr_reserve_judgment(node['id'], ymd, reason, 'stale', None,
-                                               window=(start, end, offset),
-                                               credit_pct=0, hours=stamp):
-                    lines.append('X   %s (%s): %s -> stale (backfill)'
-                                 % (node['label'], ymd, reason))
-                continue
-
-            status = charge_for_failure(node, ymd, reason, window=(start, end, offset),
-                                        hours=stamp,
-                                        settled_at=settle_after(node, ymd, flow,
-                                                                (start, end, offset)))
-            if status is None:
-                continue          # another tick reserved it first
-            lines.append('X   %s%s: %s -> %s' % (node['label'], tag, reason, status))
+            _settle(node, ymd, now, today, lines)
 
     if verbose:
         for line in lines:
             print(line)
     return lines
-
-
-def freeze_paused_days(node, now=None):
-    # Every settled, unjudged day of a gate that is not running lands 'n/a' —
-    # judged, frozen, never charged. Asked by the judge for every paused gate
-    # on every tick, and by the two doors that RESUME one, just before they
-    # do: the tick is five minutes apart, and a gate resumed inside that gap
-    # would otherwise be judged on a window that closed while it was paused.
-    # Today counts once its window has closed; a window still open when the
-    # gate comes back is a commitment again, which is what resuming means.
-    now = now or datetime.now()
-    today = now.date().isoformat()
-    for ymd in _days_to_judge(node, today):
-        if storage.qr_judgment_exists(node['id'], ymd):
-            continue
-        window = resolve_window(node, ymd)
-        if now < settle_after(node, ymd, None, window):
-            continue
-        storage.qr_reserve_judgment(node['id'], ymd, None, 'n/a', None, window=window)
 
 
 def outcomes(from_date, to_date, now=None):
@@ -1200,51 +1230,24 @@ def apply_node_patch(node, fields, now=None):
 
 # ── Charging ─────────────────────────────────────────────────
 #
-# Ported from the Worker 2026-08-11 (see storage.qr_settle_charge for the
-# rails and why each exists). Four independent locks, all default-off, so a
-# half-finished setup cannot move money:
+# ONE SWITCH AND THE CREDENTIALS (2026-10-01, Quentin's instruction). Money
+# moves only when all three hold:
 #
-#   1. gate_charging_live setting is '0'
-#   2. gate_charge_dryrun setting is '1'
-#   3. beeminder_auth_token absent from config.json
-#   4. beeminder_user absent from config.json
-#   5. gate_charging_armed_at unset — written only by the dashboard's arm
-#      action, so a '1' in lock 1 is not armed on its own (2026-09-29)
+#   1. gate_charging_armed_at is set — written only by the arm action of
+#      PATCH /api/gates/billing, cleared by disarming. That is the switch.
+#   2. beeminder_auth_token is in config.json
+#   3. beeminder_user is in config.json
 #
-# The token lives in CONFIG.JSON, never in the database: it is the local
-# equivalent of a Worker secret — a file on the box, gitignored, invisible to
-# the API and to any surface the app renders. The Gates panel can therefore
-# verify it but not read or set it, which was the deliberate choice.
-# CHARGING IS HARD-DISABLED (2026-09-07, Quentin's instruction). The four
-# locks above are SETTINGS — a click in Settings -> Gates arms them again, and
-# three of the four are one click each. This constant is the fifth lock and the
-# only one no surface can reach: while it is True no request is built and none
-# is sent, whatever the settings or config.json say.
+# There were six (a live '1', a dry-run flag, the token, the user, the arming
+# stamp and a code constant), each added to close a hole the last had left,
+# and the panel needed a paragraph to say which combination was in force. The
+# commitment (above judge()) is what made the extras unnecessary: a day costs
+# money only if it was sealed with a stake while armed AND is still armed when
+# it settles, so no switch can reach a day it did not see coming.
 #
-# It is applied at TWO choke points, deliberately:
-#   * charge_settings() forces live=False, so charge_for_failure takes the
-#     already-proven not-live path and a day still lands 'would_fire' — judged,
-#     frozen, logged and priced, with no money branch entered at all. No new
-#     branch on the money path is worth the risk of writing one.
-#   * beeminder_charge() refuses at the network door, so a caller that builds
-#     its own settings dict still cannot post. Returns 'failed' because that is
-#     what 'failed' has always meant here: NOTHING WAS SENT. It must not be
-#     'unknown' — unknown counts against the cap and blocks a retry, which are
-#     both statements about a charge that might exist.
-#
-# The pipeline is intact, not deleted: the stakes, the cap, the fee and every
-# read-out still say what a day would cost. The money suites flip this so the
-# rails stay proven rather than merely present.
-#
-# LIFTED 2026-09-29 (Quentin's instruction: bring the gates back, armed from
-# one dashboard). Lifting it did NOT restore whatever the settings held on
-# 2026-09-07: `live` now also needs `gate_charging_armed_at`, a stamp only the
-# dashboard's arm action writes (PATCH /api/gates/billing). A '1' left in a db
-# from before is therefore NOT armed, whichever process — the app or this
-# script — runs first after the deploy. A migration clearing the old value
-# would have been a race; a condition the old rows cannot meet is not.
-CHARGING_DISABLED = False
-
+# The token lives in CONFIG.JSON, never in the database: the db is dumped to
+# backups and pushed off-box, and a bearer token that moves money does not
+# belong in a backup set. The panel can verify it but not read it.
 BEEMINDER_CHARGES_URL = 'https://www.beeminder.com/api/v1/charges.json'
 BEEMINDER_ME_URL = 'https://www.beeminder.com/api/v1/users/me.json'
 
@@ -1258,20 +1261,15 @@ def _cfg():
 
 
 def charge_settings():
-    # There is no get_setting(); settings arrive as one dict. Defaults here are
-    # the SAFE end of every axis: not live, dry, capped, cheapest.
+    # Defaults are the SAFE end of every axis: not armed, capped, cheapest.
     cfg = _cfg()
     st = storage.get_settings() or {}
+    token = cfg.get('beeminder_auth_token') or ''
+    user = cfg.get('beeminder_user') or ''
+    armed_at = st.get('gate_charging_armed_at') or None
     return {
-        # The kill switch wins over the setting. Reported, not silently
-        # applied: /api/gates/billing ships `charging_disabled` so the panel
-        # can say WHY its live button is dead, instead of a toggle that reads
-        # as saved and is not in force -- the config.json failure, one layer up.
-        'live': ((not CHARGING_DISABLED) and st.get('gate_charging_live') == '1'
-                 and bool(st.get('gate_charging_armed_at'))),
-        'disabled': CHARGING_DISABLED,
-        'armed_at': st.get('gate_charging_armed_at') or None,
-        'dryrun': st.get('gate_charge_dryrun', '1') != '0',
+        'live': bool(armed_at and token and user),
+        'armed_at': armed_at,
         'cap_cents': int(st.get('gate_weekly_cap_cents') or 2500),
         'default_cents': int(st.get('gate_charge_cents') or 200),
         # A fixed per-charge card fee the card provider takes on its own
@@ -1279,8 +1277,8 @@ def charge_settings():
         # a failure costs; Beeminder is billed stake minus this, so the fee
         # never silently raises the price of failing above what was set.
         'fee_cents': int(st.get('gate_card_fee_cents') or 0),
-        'token': cfg.get('beeminder_auth_token') or '',
-        'user': cfg.get('beeminder_user') or '',
+        'token': token,
+        'user': user,
     }
 
 
@@ -1293,16 +1291,12 @@ def node_charge_cents(node, settings):
 
 
 def beeminder_charge(settings, amount_cents, note, sender=None):
-    """Returns (status, charge_id). Statuses mirror the Worker exactly."""
-    if CHARGING_DISABLED:
-        return 'failed', None            # the network door; nothing was sent
+    """Returns (status, charge_id): succeeded, failed (NOTHING was sent) or unknown."""
     if not settings['token'] or not settings['user']:
         return 'failed', None            # nothing was sent
     dollars = '%.2f' % max(1.0, amount_cents / 100.0)   # their minimum is $1
     body = {'auth_token': settings['token'], 'user_id': settings['user'],
             'amount': dollars, 'note': note}
-    if settings['dryrun']:
-        body['dryrun'] = '1'
     send = sender or _http_post
     try:
         ok, data = send(BEEMINDER_CHARGES_URL, body)
@@ -1315,7 +1309,7 @@ def beeminder_charge(settings, amount_cents, note, sender=None):
         return 'unknown', None
     if not ok:
         return 'failed', None
-    return ('dryrun' if settings['dryrun'] else 'succeeded'), _charge_id(data)
+    return 'succeeded', _charge_id(data)
 
 
 def _charge_id(data):
@@ -1364,32 +1358,27 @@ def _http_get(url):
         return 200 <= r.status < 300, json.loads(r.read() or b'{}')
 
 
-def charge_for_failure(node, ymd, reason, sender=None, window=None, hours=None,
-                       settled_at=None):
+def charge_for_failure(node, ymd, reason, staked_cents, sender=None, window=None,
+                       hours=None):
     """The whole money path for one judged failure. Returns the status stored.
+
+    `staked_cents` is what the day's SEALED commitment put at stake — None
+    when nothing was (charging was not armed when the window opened). Money
+    moves only for a staked day while charging is still armed; everything
+    else lands 'would_fire', judged and priced.
 
     Reserve BEFORE charging, and only the tick that won the reservation may
     call Beeminder. Every early return still leaves a row, so the day is
-    judged exactly once whatever happens to the money.
-
-    A failure costs the WHOLE stake. There is no fractional amount any more
-    (2026-09-02): a gate has one proof and one verdict, so the only two prices
-    are the stake and nothing. credit_pct is still stamped — 0 here — because
-    the rows judged under the split carry 50 and judged_outcome reads it.
+    judged exactly once whatever happens to the money. A failure costs the
+    WHOLE stake; credit_pct is stamped 0 because judged_outcome reads it.
     """
     storage.qr_ensure_charge_columns()
     s = charge_settings()
-    # ARMING REACHES FORWARD ONLY. A day that settled before charging was armed
-    # was never a live commitment, so it takes the not-live road and lands
-    # 'would_fire'. Arming at 23:28 on 2026-09-29 charged for that day's 08:15
-    # and 23:15 windows, both closed before the switch was pressed.
-    if (s['live'] and settled_at is not None
-            and settled_at < datetime.fromisoformat(s['armed_at'])):
-        s['live'] = False
-    amount = node_charge_cents(node, s)
+    amount = int(staked_cents) if staked_cents else node_charge_cents(node, s)
     spent = storage.qr_weekly_spent_cents(ymd)
-    capped = s['live'] and (spent + amount) > s['cap_cents']
-    will_charge = s['live'] and not capped
+    staked = bool(staked_cents) and s['live']
+    capped = staked and (spent + amount) > s['cap_cents']
+    will_charge = staked and not capped
 
     status = 'capped' if capped else ('charging' if will_charge else 'would_fire')
     won = storage.qr_reserve_judgment(

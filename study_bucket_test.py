@@ -58,14 +58,8 @@ def fresh(live=False, cap=2500, fee=0):
             os.remove(f)
     storage.init_db()
     storage.qr_ensure_charge_columns()
-    # The pipeline is hard-disabled in production (qr_judge.CHARGING_DISABLED).
-    # A fixture that arms charging opts back in explicitly, so the rails stay
-    # PROVEN rather than merely present -- a suite that silently ran against
-    # the kill switch would pass while testing nothing.
-    qr_judge.CHARGING_DISABLED = not live
-    storage.set_setting('gate_charging_live', '1' if live else '0')
+    # ONE SWITCH (2026-10-01): armed, plus the credentials below.
     storage.set_setting('gate_charging_armed_at', '2026-09-29T12:00:00' if live else '')
-    storage.set_setting('gate_charge_dryrun', '0' if live else '1')
     storage.set_setting('gate_weekly_cap_cents', str(cap))
     storage.set_setting('gate_card_fee_cents', str(fee))
     with open('config.json', 'w') as f:
@@ -106,6 +100,16 @@ def rows_for(node_id, ymd):
                      (node_id, ymd)).fetchone()['c']
     conn.close()
     return n
+
+
+def tick_through(ymd, settled_at):
+    # THE COMMITMENT (2026-10-01): a day is judged only if a tick saw its
+    # window coming and another saw it open — what the 5-minute timer does.
+    for n in storage.qr_get_nodes():
+        opens = qr_judge.day_opens_at(n, ymd, qr_judge.resolve_window(n, ymd))
+        for t in (opens - timedelta(minutes=5), opens):
+            qr_judge.judge(now=t)
+    qr_judge.judge(now=settled_at)
 
 
 # Judged well past the 04:00 close of the day being judged.
@@ -151,7 +155,7 @@ check('the target is an integer number of minutes', isinstance(T, int) and T == 
 fresh()
 nid = hours_gate()
 storage.put_study_entry(nid, YESTERDAY, 360)          # 6h against 5h43m
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(YESTERDAY, settled(YESTERDAY))
 r = row(nid, YESTERDAY)
 check('a met day judges ok and costs nothing',
       (r['failure_reason'], r['charge_status'], r['amount_cents']) == (None, 'ok', None), r)
@@ -162,7 +166,7 @@ check('and stamps what it was judged against',
 fresh()
 nid = hours_gate()
 storage.put_study_entry(nid, YESTERDAY, 240)
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(YESTERDAY, settled(YESTERDAY))
 r = row(nid, YESTERDAY)
 check('a short day fails with its own reason',
       r['failure_reason'] == 'hours_short', r)
@@ -171,14 +175,14 @@ check('for the whole stake, never half — an hours gate has no second half',
 check('and banks half of what was worked', r['bucket_after_minutes'] == 120, r)
 
 # Re-judging must not write a second row or a second amount.
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(YESTERDAY, settled(YESTERDAY))
 check('re-judging the same day writes no second row',
       rows_for(nid, YESTERDAY) == 1, rows_for(nid, YESTERDAY))
 
 # ── no entry at all is a zero, not a skip ───────────────────────────────
 fresh()
 nid = hours_gate()
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(YESTERDAY, settled(YESTERDAY))
 r = row(nid, YESTERDAY)
 check('a night never entered is judged as zero minutes, and fails',
       (r['failure_reason'], r['minutes_logged']) == ('hours_short', 0), r)
@@ -187,8 +191,8 @@ check('a night never entered is judged as zero minutes, and fails',
 fresh()
 nid = hours_gate()
 storage.put_study_entry(nid, day(2), 2 * T + 60)      # two days' worth, two days back
-qr_judge.judge(now=settled(day(2)))
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(day(2), settled(day(2)))
+tick_through(YESTERDAY, settled(YESTERDAY))
 r2, r1 = row(nid, day(2)), row(nid, YESTERDAY)
 check('a surplus carries into the next day', r2['bucket_after_minutes'] == T + 60, r2)
 check('a day whose requirement is already met passes with no entry at all',
@@ -202,12 +206,12 @@ fresh()
 nid = hours_gate()
 storage.qr_update_node(nid, {'days_of_week': '0123456'})
 storage.put_study_entry(nid, day(3), 400)
-qr_judge.judge(now=settled(day(3)))
+tick_through(day(3), settled(day(3)))
 before = row(nid, day(3))['bucket_after_minutes']
 # A day called off lands 'n/a' with a NULL bucket, and the chain must skip it
 # rather than read the NULL as a reset.
 storage.qr_set_override(nid, day(2), '04:00', '04:00', 1, skipped=1)
-qr_judge.judge(now=settled(day(2)))
+tick_through(day(2), settled(day(2)))
 skipped = row(nid, day(2))
 check('a called-off day carries no bucket of its own',
       skipped['charge_status'] == 'n/a' and skipped['bucket_after_minutes'] is None,
@@ -219,10 +223,10 @@ check('and the next day inherits the bucket from BEFORE it, not zero',
 fresh()
 nid = hours_gate()
 storage.put_study_entry(nid, day(2), 400)
-qr_judge.judge(now=settled(day(2)))
+tick_through(day(2), settled(day(2)))
 stamped = row(nid, day(2))
 storage.put_study_entry(nid, day(2), 60)              # a correction, after the fact
-qr_judge.judge(now=settled(day(2)))
+tick_through(day(2), settled(day(2)))
 after = row(nid, day(2))
 check('a judged day is not re-scored when its entry changes',
       (after['req_minutes'], after['minutes_logged'], after['bucket_after_minutes'])
@@ -245,7 +249,7 @@ def fake_sender(url, body):
 fresh(live=True, fee=0)
 nid = hours_gate(stake=500)
 storage.put_study_entry(nid, YESTERDAY, 60)
-qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short', sender=fake_sender,
+qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short', 500, sender=fake_sender,
                             window=('04:00', '04:00', 1),
                             hours=(T, 60, 30))
 r = row(nid, YESTERDAY)
@@ -257,7 +261,7 @@ check('and Beeminder is billed exactly that with no card fee set',
 sent.clear()
 fresh(live=True, fee=30)
 nid = hours_gate(stake=500)
-qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short', sender=fake_sender,
+qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short', 500, sender=fake_sender,
                             window=('04:00', '04:00', 1),
                             hours=(T, 0, 0))
 r = row(nid, YESTERDAY)
@@ -269,7 +273,7 @@ check('while the card sees the remainder',
 sent.clear()
 fresh(live=True, cap=300)
 nid = hours_gate(stake=500)
-status = qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short',
+status = qr_judge.charge_for_failure(node(nid), YESTERDAY, 'hours_short', 500,
                                      sender=fake_sender,
                                      window=('04:00', '04:00', 1),
                                      hours=(T, 0, 0))
@@ -295,7 +299,7 @@ for i, m in enumerate(WORKED):
     passed = m >= req
     b = (b + m - T) if passed else (b + m // 2)
     want.append((d, passed, b))
-    qr_judge.judge(now=settled(d))
+    tick_through(d, settled(d))
 for d, passed, b_after in want:
     r = row(nid, d)
     got = (r['failure_reason'] is None, r['bucket_after_minutes'])
@@ -313,7 +317,7 @@ night = storage.qr_create_node('Night', 'tok-night', '22:00', '02:00', offset_da
 f = storage.create_flow('Night routine')
 storage.update_flow(f['id'], qr_node_id=night)
 hours_gate('tok-study-2')
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(YESTERDAY, settled(YESTERDAY))
 r = row(night, YESTERDAY)
 check('a scan gate with a routine still judges by its own ladder',
       r['failure_reason'] == 'absent' and r['credit_pct'] == 0, r)
@@ -374,7 +378,7 @@ check('a long-closed day is refused with the close in the message',
       code == 409 and body.get('closed') is True, (code, body))
 check('and nothing was written for it', storage.study_entry_minutes(nid, day(3)) == 0)
 
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(YESTERDAY, settled(YESTERDAY))
 code, body = put(YESTERDAY, 300)
 check('a judged day is refused too — the freeze is enforced at the door',
       code == 409, (code, body))
@@ -465,7 +469,7 @@ check('and the undo restores it under the SAME id, not a copy',
 # spans exist and the other after is the same comparison without the teardown.
 nodeA = hours_gate('tok-plan-nomoney')
 storage.put_study_entry(nodeA, YESTERDAY, 120)
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(YESTERDAY, settled(YESTERDAY))
 without = row(nodeA, YESTERDAY)
 
 nodeB = hours_gate('tok-plan-nomoney2')
@@ -474,7 +478,7 @@ for lo, hi in ((540, 660), (780, 960)):
     storage.create_plan_span(YESTERDAY, lo, hi)
 check('spans exist on the day now being judged',
       storage.plan_minutes_for(YESTERDAY) > 0)
-qr_judge.judge(now=settled(YESTERDAY))
+tick_through(YESTERDAY, settled(YESTERDAY))
 with_plan = row(nodeB, YESTERDAY)
 check('a drawn plan changes NOTHING about what the day is judged as',
       (without['failure_reason'], without['req_minutes'],

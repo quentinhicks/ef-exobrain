@@ -2169,22 +2169,18 @@ def get_gates_billing():
     # deliberate fetch rather than part of loadAll.
     storage.qr_ensure_charge_columns()
     s = qr_judge.charge_settings()
-    today = date_cls.today().isoformat()
-    week_from = (date_cls.today() - timedelta(days=6)).isoformat()
+    today = date_cls.today()
+    week_from = (today - timedelta(days=6)).isoformat()
+    labels = {n['id']: n['label'] for n in storage.qr_get_nodes()}
     return jsonify({
+        # ONE SWITCH (2026-10-01): armed or not. `live` is armed AND the
+        # credentials are there — what it takes for money to move at all.
         'live': s['live'],
-        # The hard switch, so the panel can say why its live button is dead
-        # rather than offering one that bounces back to off.
-        'charging_disabled': s.get('disabled', False),
-        # The '1' alone is not armed (a pre-2026-09-07 value survives in old
-        # dbs); the panel shows both halves so "on but not armed" is visible.
-        'live_setting': (storage.get_settings() or {}).get('gate_charging_live') == '1',
-        'armed_at': s.get('armed_at'),
-        'dryrun': s['dryrun'],
+        'armed_at': s['armed_at'],
         'cap_cents': s['cap_cents'],
         'default_cents': s['default_cents'],
         'fee_cents': s['fee_cents'],
-        'spent_cents': storage.qr_weekly_spent_cents(today),
+        'spent_cents': storage.qr_weekly_spent_cents(today.isoformat()),
         'judge_last_run': (storage.get_settings() or {}).get('gate_judge_last_run'),
         'token': qr_judge.verify_token() if request.args.get('verify') else None,
         'has_token': bool(s['token']),
@@ -2192,27 +2188,22 @@ def get_gates_billing():
         # billed. Only the token is withheld.
         'user': s['user'],
         'has_user': bool(s['user']),
-        'recent': storage.qr_charge_rows_between(week_from, today),
+        'recent': storage.qr_charge_rows_between(week_from, today.isoformat()),
+        # WHAT IS AT STAKE, before it costs anything: today's and tomorrow's
+        # commitments, sealed or still provisional (see qr_judge, THE
+        # COMMITMENT). A day not listed here cannot be charged.
+        'commitments': [dict(c, label=labels.get(c['node_id'], f'gate {c["node_id"]}'))
+                        for c in storage.qr_commitments_between(
+                            today.isoformat(), (today + timedelta(days=1)).isoformat())],
     })
 
 
 @app.route('/api/gates/billing', methods=['PATCH'])
 def patch_gates_billing():
-    # The three settings the panel may change. The TOKEN is not among them by
-    # design: it lives in config.json so that no request can read or write it
-    # (see qr_judge's charging header).
+    # The switch and the three amounts. The TOKEN is not among them by design:
+    # it lives in config.json so that no request can read it back.
     data = request.get_json() or {}
-    # Arming charging while qr_judge.CHARGING_DISABLED stands would store a '1'
-    # that never takes effect -- saved, and not in force. Refuse it in words.
-    # Turning it OFF is always allowed: a lock may never be the thing that
-    # stops you locking further.
-    if data.get('gate_charging_live') and qr_judge.CHARGING_DISABLED:
-        return jsonify({'error': 'Charging is disabled in the code '
-                                 '(qr_judge.CHARGING_DISABLED). Nothing can arm it '
-                                 'from here.'}), 409
     allowed = {
-        'gate_charging_live': lambda v: '1' if v else '0',
-        'gate_charge_dryrun': lambda v: '1' if v else '0',
         'gate_weekly_cap_cents': lambda v: str(max(0, int(v))),
         'gate_charge_cents': lambda v: str(max(0, int(v))),
         'gate_card_fee_cents': lambda v: str(max(0, int(v))),
@@ -2220,13 +2211,14 @@ def patch_gates_billing():
     for key, clean in allowed.items():
         if key in data:
             storage.set_setting(key, clean(data[key]))
-    # THE ARMING STAMP (2026-09-29). `live` needs it as well as the '1', and
-    # this is the only writer, so a '1' surviving from before the hard
-    # disable arms nothing (see qr_judge.CHARGING_DISABLED). Re-sending
-    # live=1 keeps the original stamp: it says WHEN it was armed, not when
-    # the switch was last pressed. Disarming clears it.
-    if 'gate_charging_live' in data:
-        if data['gate_charging_live']:
+    # THE SWITCH is the arming stamp and nothing else. Re-arming keeps the
+    # original stamp: it says WHEN it was armed, not when it was last pressed.
+    # `gate_charging_live` is the old name for the same switch, still honoured
+    # so a page loaded before the change can always turn charging OFF.
+    key = 'armed' if 'armed' in data else ('gate_charging_live'
+                                           if 'gate_charging_live' in data else None)
+    if key:
+        if data[key]:
             if not (storage.get_settings() or {}).get('gate_charging_armed_at'):
                 storage.set_setting('gate_charging_armed_at',
                                     datetime.now().isoformat(timespec='seconds'))
@@ -2503,6 +2495,11 @@ def _gate_day_payload(node, ymd, now=None):
         # so the pass is read off that and never off the amount.
         verdict_reason = judged.get('failure_reason')
         passed = not verdict_reason
+    # 'n/a' is not a pass: nothing was committed that day (paused, off, called
+    # off, or not seen coming). Served as `off` so no surface draws it as met.
+    off = bool(judged) and judged.get('charge_status') == 'n/a'
+    if off:
+        passed = False
     stake = qr_judge.node_charge_cents(node, settings)
 
     # THIS GATE'S OWN RECORD (2026-08-30, Quentin's instruction). The billing
@@ -2618,7 +2615,8 @@ def _gate_day_payload(node, ymd, now=None):
         'verdict': {
             'passed': bool(passed),
             'reason': verdict_reason,
-            'owed_cents': 0 if passed else stake,
+            'owed_cents': 0 if (passed or off) else stake,
+            'off': off,
             'proof': node.get('proof_mode') or 'link',
             'met': (bool(flow and flow.get('completed_at'))
                     if qr_judge.is_routine_gate(node)
@@ -2627,10 +2625,24 @@ def _gate_day_payload(node, ymd, now=None):
                 node, ymd, flow, (start, end, offset)).strftime('%Y-%m-%d %H:%M'),
         },
         'stake_cents': stake,
-        'live': settings['live'] and not settings['dryrun'],
+        'live': settings['live'],
+        # THE COMMITMENT for this day, if the judge has written one: sealed
+        # (the window opened and this is what is judged) or provisional (what
+        # it will seal if nothing changes). None means the day cannot cost
+        # anything. staked_cents None is a day judged for the record only.
+        'commitment': _commitment_payload(node['id'], ymd),
         'tags': _tag_payloads(node['id']),
         'pending_changes': storage.qr_get_pending_changes(node['id']),
     }
+
+
+def _commitment_payload(node_id, ymd):
+    c = storage.qr_get_commitment(node_id, ymd)
+    if not c:
+        return None
+    return {'sealed': bool(c['sealed_at']), 'sealed_at': c['sealed_at'],
+            'staked_cents': c['staked_cents'], 'window_start': c['window_start'],
+            'window_end': c['window_end'], 'offset_days': c['offset_days'] or 0}
 
 
 def _scan_local_hhmm(iso, fmt='%H:%M'):
@@ -2914,8 +2926,6 @@ def patch_accountability_node(id):
                                      'with no live tag could never be cleared'}), 400
     immediate, pending = qr_judge.schedule_node_patch(node, data, effective_from)
     if immediate:
-        if 'active' in immediate and not storage.falsy(immediate['active']) and not node['active']:
-            qr_judge.freeze_paused_days(node)
         storage.qr_update_node(id, immediate)
         # Newest intent wins in BOTH directions: a field tightened now must drop
         # any deferred loosening still queued for it, or that older change would
@@ -2991,7 +3001,6 @@ def activate_accountability_node(id):
     if not node['active']:
         immediate, _ = qr_judge.schedule_node_patch(node, {'active': 1})
         if immediate:
-            qr_judge.freeze_paused_days(node)
             storage.qr_update_node(id, immediate)
     return jsonify({'ok': True})
 

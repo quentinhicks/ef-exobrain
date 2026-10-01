@@ -2449,7 +2449,7 @@ function wkGateMark(nodeId) {
 // until it, an unmet gate is still due.
 function wkGateState(g) {
   if (!g.active) return 'paused';
-  if (g.skipped) return 'off';
+  if (g.skipped || (g.verdict && g.verdict.off)) return 'off';
   if (g.verdict && g.verdict.passed) return 'met';
   if (!g.window.closed) return 'open';
   return 'missed';

@@ -35,7 +35,6 @@ def fresh():
             os.remove(f)
     storage.init_db()
     storage.qr_ensure_charge_columns()
-    storage.set_setting('gate_charging_live', '0')
 
 
 YESTERDAY = (date_cls.today() - timedelta(days=1)).isoformat()
@@ -154,6 +153,16 @@ SETTLED = datetime.fromisoformat(date_cls.today().isoformat() + 'T09:00:00')
 TODAY = date_cls.today().isoformat()
 
 
+def tick_through(ymd, settled):
+    # THE COMMITMENT (2026-10-01): a day is judged only if a tick saw its
+    # window coming and another saw it open — what the 5-minute timer does.
+    for n in storage.qr_get_nodes():
+        opens = qr_judge.day_opens_at(n, ymd, qr_judge.resolve_window(n, ymd))
+        for t in (opens - timedelta(minutes=5), opens):
+            qr_judge.judge(now=t)
+    qr_judge.judge(now=settled)
+
+
 def routine_gate(label, token, flow_name='Morning routine'):
     """A gate whose PROOF is its routine. Returns (node_id, flow)."""
     nid = storage.qr_create_node(label, token, '06:00', '08:00')
@@ -183,7 +192,7 @@ def node_row(nid):
 fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-4', '06:00', '08:00')
 scan(nid, YESTERDAY)
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a scanned gate with no routine passes (no failure row)',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 
@@ -192,7 +201,7 @@ nid = storage.qr_create_node('Wake', 'tok-wake-5', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
 storage.update_flow(flow['id'], qr_node_id=nid)
 scan(nid, YESTERDAY)
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('SCANNED but routine undone PASSES — the routine is not this gate',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 
@@ -201,7 +210,7 @@ nid = storage.qr_create_node('Wake', 'tok-wake-6', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
 storage.update_flow(flow['id'], qr_node_id=nid)
 complete(flow['id'], YESTERDAY, '07:30')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('and the routine done without a scan earns the scan gate nothing',
       (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)) == ('absent', 200),
       (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)))
@@ -213,7 +222,7 @@ nid = storage.qr_create_node('Wake', 'tok-wake-6b', '06:00', '08:00')
 flow = storage.create_flow('Morning routine')
 storage.update_flow(flow['id'], qr_node_id=nid)
 complete(flow['id'], YESTERDAY, '08:30')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('no partial price survives: a missed scan is the whole stake',
       cents_for(nid, YESTERDAY) == 200, cents_for(nid, YESTERDAY))
 check('...and credit_pct is stamped 0, never 50',
@@ -227,14 +236,14 @@ fresh()
 nid = storage.qr_create_node('Sleep', 'tok-sleep-6c', '20:00', '23:00')
 flow = storage.create_flow('Night routine')
 storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-240)
-qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T23:01:00'))
+tick_through(TODAY, datetime.fromisoformat(TODAY + 'T23:01:00'))
 check('a linked routine no longer delays a scan gate past its close',
       (reason_for(nid, TODAY), cents_for(nid, TODAY)) == ('absent', 200),
       (reason_for(nid, TODAY), cents_for(nid, TODAY)))
 
 fresh()
 nid = storage.qr_create_node('Sleep', 'tok-sleep-6d', '20:00', '23:00')
-qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T23:01:00'))
+tick_through(TODAY, datetime.fromisoformat(TODAY + 'T23:01:00'))
 check('and a gate with no routine is judged the moment its window closes',
       (reason_for(nid, TODAY), cents_for(nid, TODAY)) == ('absent', 200),
       (reason_for(nid, TODAY), cents_for(nid, TODAY)))
@@ -248,13 +257,13 @@ check('and a gate with no routine is judged the moment its window closes',
 fresh()
 nid, flow = routine_gate('Morning', 'tok-rg-1')
 complete(flow['id'], YESTERDAY, '07:30')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a routine gate whose routine was done passes',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 
 fresh()
 nid, flow = routine_gate('Morning', 'tok-rg-2')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a routine gate whose routine was NOT done costs the whole stake',
       (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY))
       == ('routine_incomplete', 200),
@@ -266,7 +275,7 @@ check('a routine gate whose routine was NOT done costs the whole stake',
 fresh()
 nid, flow = routine_gate('Morning', 'tok-rg-3')
 complete(flow['id'], YESTERDAY, '23:40')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a routine finished at 23:40 on an 06:00-08:00 gate still earns the day',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 
@@ -275,7 +284,7 @@ check('a routine finished at 23:40 on an 06:00-08:00 gate still earns the day',
 fresh()
 nid, flow = routine_gate('Morning', 'tok-rg-4')
 scan(nid, YESTERDAY)
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('scanning a routine gate does not clear it',
       reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
 
@@ -283,7 +292,7 @@ check('scanning a routine gate does not clear it',
 # midnight plus the grace — so a routine finished at 00:05 still earns its day.
 fresh()
 nid, flow = routine_gate('Night', 'tok-rg-5')
-qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T08:01:00'))
+tick_through(TODAY, datetime.fromisoformat(TODAY + 'T08:01:00'))
 check('a routine gate is not judged when its window closes',
       reason_for(nid, TODAY) is None, reason_for(nid, TODAY))
 qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T23:59:00'))
@@ -309,7 +318,7 @@ check('...and once the grace is out, the undone routine is charged',
 fresh()
 nid, flow = routine_gate('Morning', 'tok-rg-6')
 storage.update_flow(flow['id'], qr_node_id=None)
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('unlinking does NOT release a routine gate tonight',
       reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
 
@@ -320,7 +329,7 @@ elapse(flow['id'])                               # the 24h elapses
 check('...and once it is up the gate stops running at all',
       qr_judge.applies_on(node_row(nid), YESTERDAY) is False,
       qr_judge.applies_on(node_row(nid), YESTERDAY))
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('...so the day is frozen n/a rather than charged',
       (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)) == (None, None),
       (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)))
@@ -333,7 +342,7 @@ nid, flow = routine_gate('Morning', 'tok-wake-9')
 # already waits 24h. This door had no check at all — '×' at 20:55 released a
 # 21:00 deadline outright.
 check('deleting a gated routine is DEFERRED, not done', storage.delete_flow(flow['id']))
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('so it does not release the gate tonight',
       reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
 elapse(flow['id'])
@@ -346,8 +355,8 @@ check('…and once the 24h is up, the routine is gone',
 # The reservation is still the lock: re-judging must not double-log.
 fresh()
 nid, flow = routine_gate('Morning', 'tok-wake-10')
-qr_judge.judge(now=SETTLED)
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
+tick_through(YESTERDAY, SETTLED)
 rows = [r for r in storage.qr_charge_rows_between(YESTERDAY, YESTERDAY) if r['node_id'] == nid]
 check('re-running the judge logs the routine failure once', len(rows) == 1, len(rows))
 
@@ -482,19 +491,19 @@ DOW_YDAY = str(date_cls.fromisoformat(YESTERDAY).weekday())
 OTHER = ''.join(d for d in '0123456' if d != DOW_YDAY)
 nid = storage.qr_create_node('Weekday only', 'tok-freeze-1', '06:00', '08:00',
                              days=OTHER)
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a day the gate did not apply to is not judged',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 # Adding a day is a TIGHTENING, so it applies at once — and used to reach back.
 storage.qr_update_node(nid, {'days_of_week': '0123456'})
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('adding a run-day today does not charge for yesterday',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 
 fresh()
 nid = storage.qr_create_node('Sleep', 'tok-freeze-2', '21:00', '23:00')
 scan(nid, YESTERDAY, '22:00')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a satisfied day is judged, not merely left alone',
       storage.qr_judgment_exists(nid, YESTERDAY))
 check('and it stays out of the FAILURE log',
@@ -505,18 +514,21 @@ check('outcomes reads it back as success',
 # The window that judged it is stamped, so narrowing the gate now cannot
 # re-resolve a closed day into a failure.
 storage.qr_update_node(nid, {'window_start': '06:00', 'window_end': '07:00'})
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('narrowing the window afterwards does not re-judge a closed day',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 check('and the day still reads success',
       [o['outcome'] for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)
        if o['node_id'] == nid] == ['success'])
 
-# The backfill reaches further than the two-day window, but never with money.
+# A judge that was down past the day after settles a sealed day WITHOUT money.
+# (A day it never saw open has no commitment at all, and lands n/a.)
 fresh()
 FOUR = (date_cls.today() - timedelta(days=4)).isoformat()
 nid = storage.qr_create_node('Down', 'tok-freeze-3', '06:00', '08:00')
-qr_judge.judge(now=SETTLED)
+for t in ('05:55', '06:00'):                      # it saw day FOUR open...
+    qr_judge.judge(now=datetime.fromisoformat(FOUR + 'T' + t + ':00'))
+qr_judge.judge(now=SETTLED)                       # ...then nothing until today
 rows = [r for r in storage.qr_charge_rows_between(FOUR, FOUR) if r['node_id'] == nid]
 check('a day older than the money reach is judged',
       len(rows) == 1, rows)
@@ -536,7 +548,7 @@ check('and is logged stale, so the cap and the card never see it',
 fresh()
 nid = storage.qr_create_node('Gym', 'tok-allday-1', '06:00', '08:00')
 scan(nid, YESTERDAY, '21:00')                 # long after the window closed
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('control: a scan outside the window fails the day',
       reason_for(nid, YESTERDAY) == 'absent', reason_for(nid, YESTERDAY))
 
@@ -544,7 +556,7 @@ fresh()
 nid = storage.qr_create_node('Gym', 'tok-allday-2', '06:00', '08:00')
 storage.qr_update_node(nid, {'all_day': 1})
 scan(nid, YESTERDAY, '21:00')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('all day: the same scan clears it',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 check('and the day is judged, not left open',
@@ -560,7 +572,7 @@ fresh()
 nid = storage.qr_create_node('Gym', 'tok-allday-3', '06:00', '08:00')
 storage.qr_update_node(nid, {'all_day': 1})
 scan(nid, _date_plus_day(YESTERDAY), '00:30')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a scan after midnight does NOT reach back into the all-day it followed',
       reason_for(nid, YESTERDAY) == 'absent', reason_for(nid, YESTERDAY))
 
@@ -579,7 +591,7 @@ TODAY = date_cls.today().isoformat()
 fresh()
 nid = storage.qr_create_node('Study', 'tok-allday-4', '09:00', '17:00')
 storage.qr_update_node(nid, {'proof_mode': 'hours', 'target_minutes': 60})
-qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T18:00:00'))
+tick_through(TODAY, datetime.fromisoformat(TODAY + 'T18:00:00'))
 check('control: an hours gate is judged the moment its window closes',
       storage.qr_judgment_exists(nid, TODAY))
 
@@ -587,7 +599,7 @@ fresh()
 nid = storage.qr_create_node('Study', 'tok-allday-5', '09:00', '17:00')
 storage.qr_update_node(nid, {'proof_mode': 'hours', 'target_minutes': 60,
                              'all_day': 1})
-qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T18:00:00'))
+tick_through(TODAY, datetime.fromisoformat(TODAY + 'T18:00:00'))
 check('all day: 18:00 is too early to judge it -- the evening is still owed',
       not storage.qr_judgment_exists(nid, TODAY))
 storage.put_study_entry(nid, TODAY, 90)

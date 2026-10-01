@@ -55,14 +55,8 @@ def fresh(live=False, cap=2500, fee=0):
             os.remove(f)
     storage.init_db()
     storage.qr_ensure_charge_columns()
-    # The pipeline is hard-disabled in production (qr_judge.CHARGING_DISABLED).
-    # A fixture that arms charging opts back in explicitly, so the rails stay
-    # PROVEN rather than merely present -- a suite that silently ran against
-    # the kill switch would pass while testing nothing.
-    qr_judge.CHARGING_DISABLED = not live
-    storage.set_setting('gate_charging_live', '1' if live else '0')
+    # ONE SWITCH (2026-10-01): armed, plus the credentials below.
     storage.set_setting('gate_charging_armed_at', '2026-09-29T12:00:00' if live else '')
-    storage.set_setting('gate_charge_dryrun', '0' if live else '1')
     storage.set_setting('gate_weekly_cap_cents', str(cap))
     storage.set_setting('gate_card_fee_cents', str(fee))
     # The token lives in config.json, never the db. Without one beeminder_charge
@@ -127,6 +121,16 @@ def judged(node_id, ymd):
     return storage.qr_node_day_state(node_id, ymd)['judged']
 
 
+def tick_through(ymd, settled):
+    # THE COMMITMENT (2026-10-01): a day is judged only if a tick saw its
+    # window coming and another saw it open — what the 5-minute timer does.
+    for n in storage.qr_get_nodes():
+        opens = qr_judge.day_opens_at(n, ymd, qr_judge.resolve_window(n, ymd))
+        for t in (opens - timedelta(minutes=5), opens):
+            qr_judge.judge(now=t)
+    qr_judge.judge(now=settled)
+
+
 # PAST THE SETTLE POINT, not the wall clock. A routine gate's yesterday is not
 # judgeable until midnight plus ROUTINE_GRACE_HOURS, so a bare judge() here
 # passed by day and failed between midnight and 04:00 — a money tripwire that
@@ -152,7 +156,7 @@ for i, (label, kind, satisfied, want_pct, want_reason) in enumerate(CASES):
         nid, fid = routine_gate('tok-price-%d' % i)
         if satisfied:
             complete(fid, YESTERDAY, '07:30')
-    qr_judge.judge(now=SETTLED)
+    tick_through(YESTERDAY, SETTLED)
     j = judged(nid, YESTERDAY)
     check(label + ': credit %d, reason %s' % (want_pct, want_reason),
           (j or {}).get('credit_pct') == want_pct
@@ -165,7 +169,7 @@ for i, (label, kind, satisfied, want_pct, want_reason) in enumerate(CASES):
 fresh()
 nid, fid = routine_gate('tok-no-half')
 scan(nid, YESTERDAY)                      # a scan cannot buy half of a routine gate
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a scan buys a routine gate NOTHING, not half of it',
       (judged(nid, YESTERDAY) or {}).get('credit_pct') == 0,
       judged(nid, YESTERDAY))
@@ -176,7 +180,7 @@ check('a scan buys a routine gate NOTHING, not half of it',
 fresh()
 nid, fid = routine_gate('tok-late-free')
 complete(fid, YESTERDAY, '23:40')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 check('a routine finished at 23:40 costs nothing at all',
       row(nid, YESTERDAY) is None, row(nid, YESTERDAY))
 
@@ -191,7 +195,7 @@ def sender(url, body):
 
 fresh(live=True)
 nid, fid = routine_gate('tok-money-whole')
-qr_judge.charge_for_failure(node_row(nid), YESTERDAY, 'routine_incomplete',
+qr_judge.charge_for_failure(node_row(nid), YESTERDAY, 'routine_incomplete', 200,
                             sender=sender, window=('06:00', '08:00', 0))
 check('a failure bills the WHOLE $2.00 stake',
       sent and sent[-1]['amount'] == '2.00', sent[-1:])
@@ -213,7 +217,7 @@ sent[:] = []
 fresh(live=True, fee=50)
 storage.set_setting('gate_charge_cents', '400')
 nid, fid = routine_gate('tok-money-fee')
-qr_judge.charge_for_failure(node_row(nid), YESTERDAY, 'routine_incomplete',
+qr_judge.charge_for_failure(node_row(nid), YESTERDAY, 'routine_incomplete', 400,
                             sender=sender, window=('06:00', '08:00', 0))
 check('the fee is visibly out of the bill ($4.00 stake - $0.50 fee)',
       sent and sent[-1]['amount'] == '3.50', sent[-1:])
@@ -230,11 +234,11 @@ check('...while the log and the cap keep the whole $4.00',
 sent[:] = []
 fresh(live=True, cap=300)
 nid, fid = routine_gate('tok-cap-1')
-st = qr_judge.charge_for_failure(node_row(nid), YESTERDAY, 'routine_incomplete',
+st = qr_judge.charge_for_failure(node_row(nid), YESTERDAY, 'routine_incomplete', 200,
                                  sender=sender, window=('06:00', '08:00', 0))
 check('the first $2.00 fits under a $3.00 cap', st == 'succeeded', st)
 nid2, fid2 = routine_gate('tok-cap-2')
-st = qr_judge.charge_for_failure(node_row(nid2), YESTERDAY, 'routine_incomplete',
+st = qr_judge.charge_for_failure(node_row(nid2), YESTERDAY, 'routine_incomplete', 200,
                                  sender=sender, window=('06:00', '08:00', 0))
 check('the second breaches it and is skipped WHOLE, not part-billed',
       st == 'capped', st)
@@ -258,14 +262,14 @@ check('the cap is global — one gate spending it caps a different gate',
 fresh()
 nid, fid = routine_gate('tok-outcome-1')
 complete(fid, YESTERDAY, '07:30')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 out = {(o['node_id'], o['date']): o['outcome']
        for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)}
 check('a met day draws as success', out.get((nid, YESTERDAY)) == 'success', out)
 
 fresh()
 nid, fid = routine_gate('tok-outcome-2')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 out = {(o['node_id'], o['date']): o['outcome']
        for o in qr_judge.outcomes(YESTERDAY, YESTERDAY)}
 check('a missed day draws as failed, and never as partial',
@@ -285,7 +289,7 @@ check('a row from before the split, with no credit at all, reads as failed',
 # the run can no longer earn it either (run_settles_at is the same instant).
 fresh()
 nid, fid = routine_gate('tok-freeze')
-qr_judge.judge(now=SETTLED)
+tick_through(YESTERDAY, SETTLED)
 first = judged(nid, YESTERDAY)
 check('the day was judged and charged', (first or {}).get('failure_reason'), first)
 complete(fid, YESTERDAY, '21:00')          # too late: the day is already judged

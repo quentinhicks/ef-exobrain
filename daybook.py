@@ -134,6 +134,7 @@ TITLES = {
     'gcal_event': 'Calendar',
     'qr_scan': 'Gate scans',
     'qr_charge_log': 'Gate judgments and charges',
+    'qr_commitment': 'Gate commitments — what each day was held to',
     'qr_override': 'Gate overrides for the day',
     'social_log': 'Social — logged',
     'social_rep': 'Social — reps',

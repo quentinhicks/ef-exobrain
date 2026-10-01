@@ -116,6 +116,13 @@ READS = {
     # ── things the judge writes itself, or config ──
     'qr_reserve_judgment': 'written BY the judge; the insert is the lock.',
     'qr_settle_charge': 'written BY the judge, after the API call.',
+    # THE COMMITMENT (2026-10-01): written ONLY by qr_judge.judge (_commit),
+    # from the node and settings as the judge reads them; no route writes it.
+    'qr_get_commitment': 'the judge\'s own commitment rows - nothing else writes them.',
+    'qr_put_commitment': 'written BY the judge before a window opens.',
+    'qr_seal_commitment': 'written BY the judge when the window opens.',
+    'qr_drop_commitment': 'written BY the judge; refuses a sealed row in its own WHERE.',
+    'qr_sealed_window': 'the judge\'s own sealed rows, read back.',
     'qr_judgment_exists': 'the judge\'s own rows — the anti-double-judge guard.',
     'qr_judgments_between': 'the judge\'s own rows — a closed day is read back.',
     'qr_last_judged_date': 'the judge\'s own rows — how far the backfill walks.',
