@@ -218,42 +218,6 @@ select option {
 }
 .m-title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 
-/* The ≡ hub: an icon-rail sheet above the capture bar. */
-#hub-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--overlay);
-  z-index: 160;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-
-#hub-rail {
-  width: 100%;
-  max-width: 430px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px 14px 0 0;
-  padding: 16px 10px 22px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-}
-
-.hub-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 12px 0 10px;
-  border-radius: 10px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-}
-.hub-btn:hover { background: var(--surface-2); color: var(--text-primary); }
-.hub-btn.review-nav-item.has-due { color: var(--text-primary); }
 
 .tab-btn {
   display: flex;
@@ -4838,7 +4802,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   border-top: 1px solid var(--border);
   background: var(--surface-low);
 }
-.eg-cap-plus { font-size: 13px; color: var(--text-secondary); }
 /* THE TOP STRIP (Navigation Options 8b, 2026-10-01): one line of text tabs
    over every surface, the eye and the Settings gear at its right. --tnav-h is
    the top half of the layout contract --gbar-h is the bottom of: every
@@ -4892,6 +4855,14 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   color: var(--text-secondary);
 }
 .tn-icon:hover { color: var(--text-primary); background: var(--surface-2); }
+/* The weekly review is owed (Lists) / a social line is open: a dot. */
+.tn-tab.has-due::after {
+  content: '';
+  width: 5px; height: 5px;
+  margin: 0 0 8px 3px;
+  border-radius: 50%;
+  background: var(--gold);
+}
 #top-nav .tn-gear.on { color: var(--text-primary); background: var(--surface-2); }
 @media (min-width: 900px) {
   #top-nav { padding: env(safe-area-inset-top) 32px 0; gap: 10px; }
@@ -4931,22 +4902,8 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 }
 #eg-clarify:hover { text-decoration: underline; }
 
-#eg-hub {
-  font-size: 17px;
-  color: var(--text-secondary);
-  padding: 2px 6px;
-  line-height: 1;
-}
-#eg-hub:hover { color: var(--accent); }
-
-/* Undo in the global bar — chrome, never a floater. */
-#eg-undo {
-  font-size: 15px;
-  color: var(--text-secondary);
-  padding: 2px 4px;
-  line-height: 1;
-}
-#eg-undo:hover { color: var(--accent); }
+/* Undo in the top strip (10c): greyed while there is nothing to undo. */
+#eg-undo:disabled { opacity: 0.35; cursor: default; background: none; }
 
 /* The context chips — still drawn by the clarify sheet and the tag sheet. */
 .ctx-chip {
@@ -6628,7 +6585,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    Every column edge — the day, the side, the eye, the bar's three cells — is
    derived from it, so they cannot drift apart. The side column's top comes
    from the day's own fixed row heights rather than from a measured offset. */
-.eg-head-day, .eg-side, .eg-list, .gbar-cap, .gbar-acts { display: contents; }
+.eg-head-day, .eg-side, .eg-list { display: contents; }
 @media (min-width: 900px) {
   :root {
     --eg-measure: clamp(460px, calc(100vw - 440px), 720px);
@@ -6724,31 +6681,11 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     max-height: calc(var(--vvh, 100dvh) - var(--eg-col-top) - 40px - var(--gbar-h) - 12px);
   }
 
-  #global-bar {
-    max-width: none;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
-    gap: 0;
-    padding: 0 0 env(safe-area-inset-bottom);
-  }
-  #global-bar .gbar-cap {
-    grid-column: 2;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 0 28px;
-    min-width: 0;
-  }
-  #global-bar .gbar-acts {
-    grid-column: 3;
-    display: flex;
-    align-items: center;
-    gap: clamp(6px, 1vw, 12px);
-    padding: 0 var(--eg-gutter);
-    min-width: 0;
-  }
-  #global-bar .eg-cap-plus { font-size: 18px; color: var(--accent); }
+  /* The dock (Map Page 9a): the field from the left edge, Clarify at the
+     far right, the strip's 32px gutter. */
+  #global-bar { max-width: none; gap: 14px; padding: 0 32px env(safe-area-inset-bottom); }
   #global-bar #eg-capture { font-size: 15px; min-width: 0; }
+  #global-bar #eg-clarify { font-size: 13px; }
 }
 
 /* The add row, and the space under the list that opens it. */
@@ -6871,7 +6808,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    #clarify-sheet's bottom: 0 sits late in the file. Listed by id because a
    few non-overlay fixed elements (toast, stale banner) legitimately keep
    inset: 0. Theme-independent, hence after the light appendix. */
-.m-overlay, #hub-overlay, #logs-overlay, #map-overlay, #modal-overlay, #clarify-backdrop, #clarify-sheet, #fr-sheet-backdrop, #fr-sheet, #ctx-sheet-backdrop, #ctx-sheet, #se-sheet-backdrop, #se-sheet, #sp-sheet-backdrop, #sp-sheet, #ev-sheet-backdrop, #ev-sheet, #en-sheet-backdrop, #en-sheet, #ex-sheet-backdrop, #ex-sheet, #oc-sheet-backdrop, #oc-sheet {
+.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, #clarify-backdrop, #clarify-sheet, #fr-sheet-backdrop, #fr-sheet, #ctx-sheet-backdrop, #ctx-sheet, #se-sheet-backdrop, #se-sheet, #sp-sheet-backdrop, #sp-sheet, #ev-sheet-backdrop, #ev-sheet, #en-sheet-backdrop, #en-sheet, #ex-sheet-backdrop, #ex-sheet, #oc-sheet-backdrop, #oc-sheet {
   /* Above the bar, AND above whatever the browser chrome or the keyboard is
      covering: 100% is the viewport, --vvh is what you can see, so the
      difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
@@ -7472,7 +7409,151 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* ── The top strip's half of the same contract ───────────────────────────
    Every full-screen layer starts UNDER the strip rather than covering it.
    Sheets are not listed: they are modal at z 200 and cover it on purpose. */
-.m-overlay, #hub-overlay, #logs-overlay, #map-overlay, #modal-overlay, #flow-run {
+.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, #flow-run {
   top: var(--tnav-h);
 }
 #flow-run { height: calc(var(--vvh, 100dvh) - var(--gbar-h) - var(--tnav-h)); }
+
+/* ── PAGES, NOT POPUPS (2026-10-01, Quentin's instruction) ───────────────
+   Every surface the strip opens is a PAGE: it fills the window between the
+   strip and the dock, on the day's own ground, with no dimmed backdrop, no
+   drawer sliding in and no ✕ — the strip is the way between pages and Esc
+   still goes back to Now. The reading pages stand in the Now column
+   (--page-w); the Calendar and Projects take the whole width, the way their
+   designs do. Last in the file, so it wins over each surface's own rules. */
+:root { --page-w: 100%; }
+@media (min-width: 900px) { :root { --page-w: var(--eg-measure); } }
+.m-overlay, #logs-overlay, #map-overlay, #modal-overlay {
+  left: 0;
+  right: 0;
+  width: auto;
+  max-width: none;
+  transform: none;
+  background: var(--surface-mid);
+  border: none;
+  justify-content: flex-start;
+}
+.m-close, #logs-close, #map-close, #modal-close { display: none; }
+#cal-overlay > .m-head { display: none; }
+#tab-lists > *, #tab-tracking > *, #tab-social > *, #now-full > * {
+  width: 100%;
+  max-width: var(--page-w);
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+#logs-modal, #block-editor-modal {
+  width: 100%;
+  max-width: var(--page-w);
+  margin: 0 auto;
+  background: var(--surface-mid);
+  animation: none;
+  box-shadow: none;
+}
+#map-modal {
+  width: 100%;
+  max-width: none;
+  border: none;
+  animation: none;
+}
+@media (min-width: 900px) {
+  #tab-lists > *, #tab-tracking > *, #tab-social > *, #now-full > *,
+  #logs-modal, #block-editor-modal {
+    border-left: 1px solid var(--border-soft);
+    border-right: 1px solid var(--border-soft);
+  }
+  #tab-lists > .m-head, #tab-tracking > .m-head, #tab-social > .m-head, #now-full > .m-head {
+    background: var(--surface-mid);
+  }
+}
+
+/* ── THE PROJECTS PAGE (Map Page 9a, 2026-10-01) ─────────────────────────
+   The Now page's three columns: the area's name in the left one, pinned while
+   its projects scroll past in the middle, the right one empty (it holds the
+   page's tools on a wide window). One column on a phone. */
+#map-body { padding: 0; display: block; }
+.mp-area { display: block; border-bottom: 1px solid var(--border-soft); }
+.mp-label { padding: 18px 16px 4px; }
+.mp-label-in { display: flex; align-items: baseline; gap: 8px; }
+.mp-name {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.mp-sub { font: 11px var(--font-mono); color: var(--text-secondary); }
+.mp-col { padding: 4px 16px 14px; }
+.mp-right { display: none; }
+#map-body .pm-empty { padding: 12px 0; }
+#map-body .map-row {
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 8px 5px 25px;
+  margin: 0 -8px;
+  border-radius: 6px;
+}
+#map-body .map-row:hover { background: var(--surface-2); }
+#map-body .map-text { font-size: 15px; line-height: 1.35; }
+#map-body .map-row-project { padding: 6px 8px 4px; }
+#map-body .map-row-project .map-text { font-size: 15.5px; font-weight: 600; color: var(--text-primary); }
+#map-body .map-row-stalled .map-text { color: var(--text-primary); }
+.mp-stalled { padding: 2px 8px 8px 25px; font-size: 13.5px; color: var(--gold); }
+#map-body .map-kids { border-left: none; margin-left: 0; padding-left: 0; }
+#map-body .map-kids .map-kids { padding-left: 17px; }
+#map-body .map-kids .map-row-project { padding-left: 25px; }
+.mp-meta {
+  flex: none;
+  max-width: 50%;
+  margin-top: 3px;
+  font: 12px var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mp-meta .due-chip { border: none; padding: 0; font: inherit; background: none; }
+.mp-meta .due-chip-hot, .mp-wait { color: var(--danger); }
+.mp-meta .due-chip-inherited { text-decoration: underline dotted; }
+#map-body .map-someday-head { padding: 14px 0 4px; }
+#map-body .map-af { margin-top: 0; padding-top: 0; border-top: none; }
+#map-tools .modal-header { border-bottom: none; padding: 10px 16px 0; justify-content: flex-end; gap: 8px; }
+#map-tools .map-filter-pill { margin: 0; }
+#map-search-wrap { padding: 8px 16px 10px; }
+@media (min-width: 900px) {
+  .mp-area {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
+    border-bottom: none;
+  }
+  .mp-label { padding: 30px 32px 0; text-align: right; }
+  .mp-label-in {
+    position: sticky;
+    top: 30px;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+  .mp-col {
+    padding: 22px 28px 14px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .mp-right { display: block; }
+  /* The column runs to the dock even under the last area. */
+  #map-body {
+    background: linear-gradient(var(--border-soft), var(--border-soft))
+        calc(50% - var(--eg-measure) / 2) 0 / 1px 100% no-repeat,
+      linear-gradient(var(--border-soft), var(--border-soft))
+        calc(50% + var(--eg-measure) / 2) 0 / 1px 100% no-repeat;
+  }
+  #map-tools {
+    position: absolute;
+    top: 18px;
+    right: var(--eg-gutter);
+    width: min(280px, calc(var(--eg-side-w) - 2 * var(--eg-gutter)));
+    z-index: 2;
+  }
+  #map-tools .modal-header { padding: 0; justify-content: flex-start; }
+  #map-search-wrap { padding: 8px 0 0; flex-wrap: wrap; }
+  #map-filter-menu { top: 100px; right: var(--eg-gutter); }
+}

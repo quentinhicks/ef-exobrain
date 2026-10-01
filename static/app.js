@@ -324,12 +324,12 @@ async function loadAll() {
   state.accountabilityNodes = Array.isArray(accountabilityNodes) ? accountabilityNodes : [];
   state.calendars = calendars;
   state.settings = settings;
-  // The hub's Social door, closed the moment the flag lands. Done here rather
+  // The strip's Social tab, closed the moment the flag lands. Done here rather
   // than in the markup because the answer is the SERVER's -- the template must
   // not carry a second opinion about whether the feature exists.
-  // The `hidden` CLASS, not the attribute: .hub-btn sets display:flex, which
+  // The `hidden` CLASS, not the attribute: .tn-tab sets display:flex, which
   // beats the UA's [hidden] rule, and .hidden is display:none !important.
-  const soBtn = document.getElementById('hub-social-btn');
+  const soBtn = document.getElementById('tn-social');
   if (soBtn) soBtn.classList.toggle('hidden', !socialEnabled());
   paintPanelToggle(settings.panel_hidden === '1');
   // The db is authoritative; the localStorage mirror only exists to beat the
@@ -377,9 +377,9 @@ function renderAll() {
 }
 
 function updateReviewNavDot() {
-  // The due dot rides on the hub's LISTS icon and the review fold-out header —
+  // The due dot rides on the strip's LISTS tab and the review fold-out header —
   // the review moved into Lists when the GTD tab went (2026-08-16).
-  ['hub-lists-btn'].forEach(id => {
+  ['tn-lists'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.classList.toggle('has-due', !!state.review.due);
   });
@@ -3088,10 +3088,10 @@ function pushUndo(label, inverse) {
 }
 
 function paintUndo() {
-  // ↩ lives in the global bar, which is visible from every surface — this
-  // just keeps it hidden while there is nothing to undo.
+  // ↩ lives in the top strip, which is visible from every page — greyed,
+  // not hidden, while there is nothing to undo, so the strip never shifts.
   const eg = document.getElementById('eg-undo');
-  if (eg) eg.classList.toggle('hidden', !undoStack.length);
+  if (eg) eg.disabled = !undoStack.length;
 }
 
 // ── Capture (one implementation, two entry points) ────────────
@@ -3180,9 +3180,7 @@ function captureDraftGet() {
 // The parts of the bar that are DERIVED from state and must stay honest even
 // when the input is left alone. Everything else in the bar is static markup.
 function renderBarCounts(bar) {
-  const undo = bar.querySelector('#eg-undo');
   const clarify = bar.querySelector('#eg-clarify');
-  if (undo) undo.classList.toggle('hidden', !undoStack.length);
   if (clarify) clarify.textContent = clarifyBarLabel();
 }
 
@@ -3196,19 +3194,12 @@ function renderBar() {
     renderBarCounts(bar);
     return;
   }
-  // Two groups (Now Page Wide, 4b): on a wide window the capture field lines
-  // up under the to-do list and the buttons stand in the column to its right.
-  // On a phone both groups are `display: contents` — one row, as ever.
+  // The dock is for CAPTURING and nothing else (Map Page 9a, 2026-10-01):
+  // the field and Clarify. Undo moved to the top strip with the other page
+  // tools, and the ≡ hub went — every page is a tab now.
   bar.innerHTML = `
-    <div class="gbar-cap">
-      <span class="eg-cap-plus">+</span>
-      <input type="text" id="eg-capture" placeholder="Capture anything…" autocomplete="off">
-    </div>
-    <div class="gbar-acts">
-      <button id="eg-undo" class="${undoStack.length ? '' : 'hidden'}" title="Undo">↩︎</button>
-      <button id="eg-clarify" title="Process the inbox">${clarifyBarLabel()}</button>
-      <button id="eg-hub" title="Everything else">≡</button>
-    </div>
+    <input type="text" id="eg-capture" placeholder="Capture anything..." autocomplete="off">
+    <button id="eg-clarify" title="Process the inbox">${clarifyBarLabel()}</button>
   `;
 
   const input = bar.querySelector('#eg-capture');
@@ -3244,50 +3235,9 @@ function renderBar() {
     }
   });
 
-  bar.querySelector('#eg-undo').addEventListener('click', runUndo);
   bar.querySelector('#eg-clarify').addEventListener('click', openClarify);
-  bar.querySelector('#eg-hub').addEventListener('click', () => {
-    document.getElementById('hub-overlay').classList.toggle('hidden');
-  });
 }
 
-
-// Swipe LEFT anywhere on the day to open the ≡ hub — the phone gesture for
-// the thing the bar's rightmost button does. Touch only: a mouse drag is how
-// an action is placed, and hijacking it would break scheduling.
-//
-// The guards are what keep it from firing by accident:
-//  - it must be mostly HORIZONTAL (|dx| > 2·|dy|), so a fast list scroll and
-//    a swipe are not the same gesture;
-//  - it must clear 70px within 600ms, so a slow drag is not a swipe;
-//  - it never starts inside a text field, a draggable row, the clarify sheet
-//    or an open overlay — those own their own horizontal gestures.
-function initSwipe() {
-  const SWIPE_MIN = 70, SWIPE_MS = 600;
-  let sx = 0, sy = 0, t0 = 0, live = false;
-  const root = document.getElementById('engage-root') || document.body;
-
-  root.addEventListener('pointerdown', e => {
-    live = false;
-    if (e.pointerType === 'mouse') return;
-    if (e.target.closest('input, textarea, select, [draggable="true"], '
-        + '#clarify-sheet, #fr-sheet, .m-overlay:not(.hidden), #flow-run')) return;
-    sx = e.clientX; sy = e.clientY; t0 = Date.now(); live = true;
-  });
-
-  root.addEventListener('pointerup', e => {
-    if (!live) return;
-    live = false;
-    const dx = e.clientX - sx, dy = e.clientY - sy;
-    if (Date.now() - t0 > SWIPE_MS) return;
-    if (dx > -SWIPE_MIN) return;                 // left only
-    if (Math.abs(dx) < Math.abs(dy) * 2) return; // not a scroll
-    const hub = document.getElementById('hub-overlay');
-    if (hub && hub.classList.contains('hidden')) hub.classList.remove('hidden');
-  });
-
-  root.addEventListener('pointercancel', () => { live = false; });
-}
 
 // ── The two shapes every call in this file already had ───────
 //
@@ -5737,9 +5687,8 @@ function wireBeList(el, kind, items, addKind) {
 function initBlockEditor() {
   document.getElementById('modal-close').addEventListener('click', closeBlockEditor);
   document.getElementById('be-back').addEventListener('click', backToSettingsIndex);
-  document.getElementById('modal-overlay').addEventListener('click', e => {
-    if (e.target.id === 'modal-overlay') closeBlockEditor();
-  });
+  // No click-outside-to-close: Settings is a PAGE now (2026-10-01), and its
+  // margins are part of it. The strip and Esc are the ways out.
   document.getElementById('se-sheet-backdrop').addEventListener('click', closeSeSheet);
 
   // The block calendar, built by the server from the same resolved days the
@@ -6790,7 +6739,7 @@ function renderGtdReview() {
   if (phase) html += '</div>';
   if (!steps.length) {
     html = `<div class="gtd-empty">The review routine is missing — it should be
-      in ≡ Lists → routines as “Weekly review”.</div>`;
+      in Lists → routines as “Weekly review”.</div>`;
   }
 
   const weekLabel = new Date(gtdReview.week_start_date + 'T00:00:00')
@@ -7291,7 +7240,6 @@ function openOverRunner(close, back) {
 
 function openM(id) {
   document.querySelectorAll('.m-overlay').forEach(o => o.classList.add('hidden'));
-  document.getElementById('hub-overlay').classList.add('hidden');
   document.getElementById(id).classList.remove('hidden');
   // Labels are measured, and a hidden calendar measures nothing.
   if (id === 'cal-overlay') requestAnimationFrame(settleTimelineLabels);
@@ -7319,14 +7267,12 @@ async function refreshSocialDay(stepId) {
 }
 
 function initHub() {
-  const hub = document.getElementById('hub-overlay');
   // Tapping anywhere else closes the read-out — the backdrop is transparent and
   // covers the screen, so the day stays visible behind what is describing it.
   document.getElementById('gate-pop-backdrop')
     .addEventListener('click', closeGatePop);
   document.getElementById('event-pop-backdrop')
     .addEventListener('click', closeEventPop);
-  hub.addEventListener('click', e => { if (e.target === hub) hub.classList.add('hidden'); });
   document.querySelectorAll('.m-close').forEach(btn => {
     btn.addEventListener('click', () => closeM(btn.dataset.close));
   });
@@ -7359,7 +7305,6 @@ function initHub() {
     if (closeCalWeekPops()) return;
     // So is a category lit up on it.
     if (clearCalPin()) return;
-    if (!hub.classList.contains('hidden')) { hub.classList.add('hidden'); return; }
     // (MAP's rows open the clarify sheet, and the bail above lets the sheet
     // peel first; its filter menu peels just above, before the overlay loop.
     // The settings sheet itself peels at the TOP of this ladder.)
@@ -7448,12 +7393,6 @@ function initHub() {
     const open = [...document.querySelectorAll('.m-overlay:not(.hidden)')].pop();
     if (open) closeM(open.id);
   });
-  document.querySelectorAll('.hub-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      hub.classList.add('hidden');
-      openSurface(btn.dataset.hub);
-    });
-  });
 }
 
 // ── THE TOP STRIP (Navigation Options 8b, 2026-10-01) ────────
@@ -7474,6 +7413,8 @@ function initTopNav() {
   // halves of that second gesture, since a right-click is not a thing a finger
   // has: right-click AND the 550ms long press, the app's own touch rule.
   // Wired ONCE: the eye lives in the static strip now, not in Engage's header.
+  document.getElementById('eg-undo').addEventListener('click', runUndo);
+  paintUndo();
   const eye = document.getElementById('eg-panel-btn');
   paintPrivacyEye();
   // onLongPress swallows the click that trails a fired hold (capture phase,
@@ -7516,7 +7457,6 @@ async function closeSurfaces() {
     return !!el && !el.classList.contains('hidden');
   };
   flushOpenNotes();
-  document.getElementById('hub-overlay').classList.add('hidden');
   if (seSheet.kind) closeSeSheet();
   if (occasionView.open) closeOccasionSheet();
   if (flowRunView.open) closeFlowRun();
@@ -7775,7 +7715,6 @@ function renderLogsFilter() {
 }
 
 function initLogsView() {
-  const overlay = document.getElementById('logs-overlay');
   document.getElementById('logs-close').addEventListener('click', closeLogsView);
   document.getElementById('logs-filter').addEventListener('click', e => {
     e.stopPropagation();
@@ -7789,9 +7728,6 @@ function initLogsView() {
   // would desync the highlight until the next keystroke. Registered once —
   // updateLogHighlight no-ops when the editor isn't open.
   window.addEventListener('resize', updateLogHighlight);
-  overlay.addEventListener('click', e => {
-    if (e.target === overlay) closeLogsView();
-  });
 }
 
 async function closeLogsView() {
@@ -11872,7 +11808,7 @@ async function refreshSocialDot() {
 }
 
 function paintSocialDot() {
-  const btn = document.getElementById('hub-social-btn');
+  const btn = document.getElementById('tn-social');
   const day = socialView.day;
   if (!btn) return;
   // Gold dot = calibrated and a line is still open today. Uncalibrated stays
@@ -12266,7 +12202,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initTopNav();
   initObjectDoors();
   initCalBlockPin();
-  initSwipe();
   initUndo();
   initPrivacyHotkey();
   renderBar();
@@ -13662,7 +13597,6 @@ async function openMap() {
       closeOver('over-runner');
     };
     document.getElementById('map-close').addEventListener('click', shut);
-    overlay.addEventListener('click', e => { if (e.target === overlay) shut(); });
     // Wired once, outside renderMap: re-rendering the body on every keystroke
     // must not take the field you are typing in with it.
     const sortBtn = document.getElementById('map-sort');
@@ -13808,6 +13742,20 @@ function renderMapFilter() {
 // No editor of its own: each row is the object it names (`data-obj`), so its
 // menu and its `›` open the SAME `SETTINGS_SHEETS.area` / `.domain` sheet that
 // Settings opens. One thing, one editor — reached from the thing.
+// MAP PAGE, 9a (2026-10-01, Quentin's design): the Now page's shell — the
+// area's name in the left column where the date sits on Now, pinned while its
+// projects scroll past in the middle one, the right column empty. One section
+// per area; the In pile, a search's hits and the roster wear the same shape.
+// Below 900px the three columns are one, the label a heading over its rows.
+function mpSection(label, sub, rows) {
+  return `<section class="mp-area">
+    <div class="mp-label"><div class="mp-label-in">${label ? `<span class="mp-name">${escHtml(label)}</span>` : ''}${
+      sub ? `<span class="mp-sub">${escHtml(sub)}</span>` : ''}</div></div>
+    <div class="mp-col">${rows}</div>
+    <div class="mp-right"></div>
+  </section>`;
+}
+
 function mapAreasHtml() {
   const items = state.mapItems || [];
   const nByArea = {}, nOnDomain = {};
@@ -14114,15 +14062,22 @@ function renderMap() {
   // it. 'someday' doesn't: the state dropdown already says so on every row, and
   // 23 identical badges is noise on the surface meant for reading the whole
   // inventory at once.
+  // ONE QUIET MONO STRING (Map Page 9a, 2026-10-01): what a row's state
+  // says, joined by ' · ' — waiting, due, a defer date, its own priority, a
+  // push count worth noticing. The tag chips went: they are what the filter
+  // menu narrows by, and on the read-everything surface they were the noise.
   const badge = item => {
-    // Badges compose: an item can be waiting AND due — both are worth the
-    // scan, which is the bar for badging here.
-    let out = item.status === 'waiting' ? '<span class="map-badge map-badge-wait">waiting</span>' : '';
-    out += dueChip(item, 'map-badge');
-    if (item.defer_until && item.defer_until > todayStr) {
-      out += `<span class="map-badge">→ ${escHtml(item.defer_until)}</span>`;
+    const parts = [];
+    if (item.status === 'waiting') parts.push('<span class="mp-wait">waiting</span>');
+    const due = dueChip(item, 'mp-due');
+    if (due) parts.push(due);
+    if (item.defer_until && item.defer_until > todayStr) parts.push(`→ ${escHtml(item.defer_until)}`);
+    const prio = PRIORITY_TAGS.find(t => ownTags(item).includes(t));
+    if (prio) parts.push(prio);
+    if (item.pushed >= 3) {
+      parts.push(`<span title="Not-today'd ${item.pushed} times — too big, not real, or being avoided">pushed ${item.pushed}x</span>`);
     }
-    return out;
+    return parts.join(' · ');
   };
 
   // Chain positions ([1] [2] …) per project — MAP shows the whole chain even
@@ -14138,25 +14093,19 @@ function renderMap() {
     Object.values(byProj).forEach(acts => Object.assign(chainN, chainNumbers(acts)));
   }
 
-  // One control per row: the SELECT button, which opens the clarify sheet for
-  // that row. A stalled project is simply RED — the old "no next action" badge
-  // said in a chip what the colour already says, on the surface built for
-  // reading everything at once.
+  // A row is its TEXT, which is the control: a tap opens the clarify sheet,
+  // a double-click renames, a drag files it. A stalled project says so on a
+  // line under it — the GTD check the review leans on hardest.
   const rowHtml = item => {
     const isProject = item.kind === 'project';
     const isStalled = isProject && stalled.has(item.id);
+    const meta = badge(item);
     return `<div class="map-row${isProject ? ' map-row-project' : ''}${
-        isStalled ? ' map-row-stalled' : ''}${mapPriorityClass(item)}" data-id="${item.id}" draggable="true">
+        isStalled ? ' map-row-stalled' : ''}" data-id="${item.id}" draggable="true">
       ${chainN[item.id] ? `<span class="cl-chain-n" title="Position in this project's dependency chain">[${chainN[item.id]}]</span>` : ''}
       <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(item.content)}</span>
-      <span class="map-tags">${ownTags(item).map(t =>
-        `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}${badge(item)}${
-        item.pushed >= 3 ? `<span class="map-badge map-badge-push" title="Not-today'd ${item.pushed} times — too big, not real, or being avoided">pushed ${item.pushed}x</span>` : ''}</span>
-      <span class="map-acts">
-        <button class="map-open" data-id="${item.id}"
-          title="${isProject ? 'Clarify this project' : 'Clarify this action'}">›</button>
-      </span>
-    </div>`;
+      ${meta ? `<span class="mp-meta">${meta}</span>` : ''}
+    </div>${isStalled ? '<div class="mp-stalled">No actions yet</div>' : ''}`;
   };
 
   // No add affordance here any more: MAP is a reading surface, and "give
@@ -14179,14 +14128,10 @@ function renderMap() {
   // undecided pile you can only reach through the day's Clarify count is a
   // pile you forget you have. It sits at the bottom, below the tree, because
   // the tree is what you came to read.
-  const inboxHtml = inboxItems.length ? `
-    <div class="map-area-group">
-      <div class="map-area-head">In — not yet clarified<span class="map-count">${inboxItems.length}</span></div>
-      ${inboxItems.map(i => `<div class="map-row map-row-in${mapPriorityClass(i)}" data-id="${i.id}">
+  const inboxHtml = inboxItems.length ? mpSection('In', 'not yet clarified',
+    inboxItems.map(i => `<div class="map-row map-row-in" data-id="${i.id}">
         <span class="map-text" title="Tap to clarify · double-click to reword">${escHtml(i.content)}</span>
-        <span class="map-acts"><button class="map-open" data-id="${i.id}" title="Clarify this">›</button></span>
-      </div>`).join('')}
-    </div>` : '';
+      </div>`).join('')) : '';
 
   // ── Search ────────────────────────────────────────────────
   //
@@ -14235,51 +14180,39 @@ function renderMap() {
         || (a.i.content || '').localeCompare(b.i.content || ''));
 
     if (countEl) countEl.textContent = `${hits.length} of ${items.length + inboxItems.length}`;
-    body.innerHTML = hits.length ? hits.map(({ i }) => {
+    body.innerHTML = mpSection('Search', `${hits.length} found`, hits.length ? hits.map(({ i }) => {
       const isIn = !i.status || i.status === 'in';
       const isProject = i.kind === 'project';
       return `<div class="map-row map-row-hit${isProject ? ' map-row-project' : ''}${
           isProject && stalled.has(i.id) ? ' map-row-stalled' : ''}${
           isIn && !i.area_id ? ' map-row-in' : ''}${mapPriorityClass(i)}" data-id="${i.id}">
         <span class="map-text" title="Tap to clarify · double-click to rename">${escHtml(i.content)}</span>
-        <span class="map-tags">${ownTags(i).map(t =>
-          `<span class="map-badge map-badge-tag">${escHtml(t)}</span>`).join('')}${badge(i)}<span class="map-crumb">${
-          escHtml(crumb(i)) || 'in'}</span></span>
-        <span class="map-acts">
-          <button class="map-open" data-id="${i.id}" title="Clarify this">›</button>
-        </span>
+        <span class="mp-meta">${[badge(i), `<span class="map-crumb">${escHtml(crumb(i)) || 'in'}</span>`]
+          .filter(Boolean).join(' · ')}</span>
       </div>`;
-    }).join('') : `<div class="pm-empty">Nothing matches "${escHtml(q)}".</div>`;
+    }).join('') : `<div class="pm-empty">Nothing matches "${escHtml(q)}".</div>`);
     wireMapRows(body, byId);
     mapSelSync();
     return;
   }
   if (countEl) countEl.textContent = '';
 
-  body.innerHTML = (groups.length ? groups.map(d => {
-    const total = d.areas.reduce((n, a) => n + a.items.length, 0);
-    return `<div class="map-domain">
-      <div class="map-domain-head">${escHtml(d.name)}<span class="map-count">${total}</span></div>
-      ${d.areas.map(a => {
-        const live = areaTreeHtml(a.items, false);
-        const later = areaTreeHtml(a.items, true);
-        const nLive = a.items.filter(i => i.status !== 'on_hold').length;
-        const nLater = a.items.length - nLive;
-        return `<div class="map-area-group">
-        <div class="map-area-head">${escHtml(a.name)}<span class="map-count">${nLive}</span></div>
-        ${live}
-        ${later ? `<div class="map-someday-head">Someday / maybe<span class="map-count">${nLater}</span></div>${later}` : ''}
-      </div>`;
-      }).join('')}
-    </div>`;
-  }).join('') : `<div class="pm-empty">${
+  // The domain rides under the area's name: areas are what you read by, and
+  // a domain heading of its own was a second band of chrome over the first.
+  body.innerHTML = (groups.length ? groups.map(d => d.areas.map(a => {
+    const live = areaTreeHtml(a.items, false);
+    const later = areaTreeHtml(a.items, true);
+    const nLater = a.items.filter(i => i.status === 'on_hold').length;
+    return mpSection(a.name, d.name === '—' ? '' : d.name, live
+      + (later ? `<div class="map-someday-head">Someday / maybe<span class="map-count">${nLater}</span></div>${later}` : ''));
+  }).join('')).join('') : mpSection('', '', `<div class="pm-empty">${
     mapLens().key !== 'all' || mapFilterExtras()
       // An empty list under a filter is a fact about the QUESTION, not about
       // the inventory — say which, or it reads as "you have nothing".
       ? `Nothing in the inventory answers “${escHtml(mapLens().name)}”${
           mapFilterExtras() ? ' with those filters' : ''}.`
       : 'Nothing in the inventory yet — capture into the inbox first.'
-  }</div>`) + inboxHtml + mapAreasHtml();
+  }</div>`)) + inboxHtml + mpSection('', '', mapAreasHtml());
 
   const patchItem = (id, patch) => apiSend(`/api/inbox/${id}`, 'PATCH', patch);
   const after = async () => { await refreshMap(); await refreshActiveItems(); };
