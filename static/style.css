@@ -7740,3 +7740,68 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
   #logs-filter-menu { top: 100px; left: 24px; }
 }
+
+/* ── THE SETTINGS PAGE (2026-10-01, Quentin's design) ────────────────────
+   Wide only: the index a sticky column on the left (names, no summaries),
+   every section down the middle column under its own title. Below 900px the
+   index-then-section reading is unchanged and the per-section titles stay
+   hidden (the shared head names the open one). */
+.be-sec-h { display: none; }
+@media (min-width: 900px) {
+  #modal-overlay.be-scroll #block-editor-modal {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    max-width: none;
+    border: none;
+  }
+  #modal-overlay.be-scroll .modal-header,
+  #modal-overlay.be-scroll .be-sec-head { display: none; }
+  #modal-overlay.be-scroll #be-index {
+    grid-column: 1;
+    grid-row: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    padding: 28px 28px 0;
+    overflow-y: auto;
+  }
+  #modal-overlay.be-scroll #be-index > :last-child { border-bottom: none; }
+  #modal-overlay.be-scroll .be-idx-group {
+    padding: 14px 0 4px;
+    font: 600 11px var(--font-ui);
+    letter-spacing: 0.08em;
+  }
+  #modal-overlay.be-scroll .be-nav-row {
+    width: auto;
+    min-height: 0;
+    padding: 4px 8px;
+    margin-right: -8px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    color: var(--text-secondary);
+  }
+  #modal-overlay.be-scroll .be-nav-row.on { color: var(--text-primary); font-weight: 600; }
+  #modal-overlay.be-scroll .be-nav-row:hover { color: var(--text-primary); }
+  #modal-overlay.be-scroll .be-nav-value,
+  #modal-overlay.be-scroll .be-chev { display: none; }
+  #modal-overlay.be-scroll #be-panes {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 8px 0 60vh;
+    border-left: 1px solid var(--border-soft);
+    border-right: 1px solid var(--border-soft);
+  }
+  #modal-overlay.be-scroll .be-section { display: flex; }
+  #modal-overlay.be-scroll .be-sec-h { display: block; padding: 30px 28px 10px; }
+  #modal-overlay.be-scroll .be-sec-h .be-sec-title { font-size: 20px; font-weight: 700; }
+  #modal-overlay.be-scroll .be-sec-h .be-sec-desc { font-size: 13.5px; margin-top: 3px; line-height: 1.45; }
+  /* Rows inset to the column's 28px, the way the design draws them. */
+  #modal-overlay.be-scroll .be-section > *:not(.be-sec-h) { margin-left: 28px; margin-right: 28px; }
+  #modal-overlay.be-scroll .be-list-row,
+  #modal-overlay.be-scroll .be-set-row,
+  #modal-overlay.be-scroll .be-add-row { padding: 9px 8px; margin: 0 -8px; width: calc(100% + 16px); }
+  #modal-overlay.be-scroll .be-sub-head { padding: 18px 0 6px; }
+  #modal-overlay.be-scroll .be-add-row { color: var(--accent); font-size: 14.5px; }
+}

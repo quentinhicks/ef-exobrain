@@ -3886,6 +3886,35 @@ const RRULE_DAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
 // Which section is open; null is the index. The sheet has its own state below.
 const settingsView = { section: null };
 
+// THE SETTINGS PAGE (2026-10-01, Quentin's design): on a wide window every
+// section stands in ONE scroll down the middle column, each under its own
+// title, and the index is a sticky column on the left that names where you
+// are and jumps on a click. The phone keeps the index-then-section reading,
+// where one very long page with no index would be the worse of the two.
+const SETTINGS_WIDE = window.matchMedia('(min-width: 900px)');
+function settingsScroll() { return SETTINGS_WIDE.matches; }
+
+// Which section the scroll is in: the last one whose head has reached the
+// top. Writes the address (settings/<key>) by the one road, syncRoute.
+function settingsSpy() {
+  if (!settingsScroll()) return;
+  const panes = document.getElementById('be-panes');
+  let cur = null;
+  SETTINGS_SECTIONS.forEach(sec => {
+    const el = panes.querySelector(`.be-section[data-betab-panel="${sec.key}"]`);
+    if (el && el.offsetTop - 40 <= panes.scrollTop) cur = sec.key;
+  });
+  if (cur === settingsView.section) return;
+  settingsView.section = cur;
+  paintSettingsIndexOn();
+  syncRoute();
+}
+
+function paintSettingsIndexOn() {
+  document.querySelectorAll('#be-index .be-nav-row').forEach(b =>
+    b.classList.toggle('on', settingsScroll() && b.dataset.section === settingsView.section));
+}
+
 // What the index rows report. Each section's renderer sets its own key as it
 // paints, so a summary can never claim a count its list doesn't show.
 const beCounts = {};
@@ -4258,6 +4287,11 @@ function renderSettingsIndex() {
 function openSettingsSection(key) {
   settingsView.section = key;
   paintSettingsNav();
+  if (settingsScroll()) {
+    const panes = document.getElementById('be-panes');
+    const el = panes.querySelector(`.be-section[data-betab-panel="${key}"]`);
+    if (el) panes.scrollTop = el.offsetTop - 8;
+  }
   if (key === 'times') renderSchedules();
   // Read fresh every time: another session (or an ssh edit) may have changed
   // the file, and a stale "not set" next to a token is the worst thing this
@@ -4276,6 +4310,16 @@ function backToSettingsIndex() {
 }
 
 function paintSettingsNav() {
+  const wide = settingsScroll();
+  document.getElementById('modal-overlay').classList.toggle('be-scroll', wide);
+  if (wide) {
+    // Everything is on the page at once; nothing here hides a section.
+    ['be-index', 'be-panes'].forEach(id => document.getElementById(id).classList.remove('hidden'));
+    document.getElementById('be-back').classList.add('hidden');
+    paintSettingsIndexOn();
+    syncRoute();
+    return;
+  }
   const inSection = settingsView.section != null;
   const sec = SETTINGS_SECTIONS.find(s => s.key === settingsView.section);
   document.getElementById('be-index').classList.toggle('hidden', inSection);
@@ -5685,6 +5729,25 @@ function wireBeList(el, kind, items, addKind) {
 // ── Wiring, open, close ──────────────────────────────────────
 
 function initBlockEditor() {
+  // Each section carries its own title once they can all be on screen, and
+  // they stand in SETTINGS_SECTIONS' order — the order the index reads.
+  const panes = document.getElementById('be-panes');
+  SETTINGS_SECTIONS.forEach(sec => {
+    const el = panes.querySelector(`.be-section[data-betab-panel="${sec.key}"]`);
+    if (!el) return;
+    el.insertAdjacentHTML('afterbegin', `<div class="be-sec-h">
+      <div class="be-sec-title">${escHtml(sec.name)}</div>
+      <div class="be-sec-desc">${escHtml(sec.desc)}</div></div>`);
+    panes.appendChild(el);
+  });
+  let spyFrame = 0;
+  panes.addEventListener('scroll', () => {
+    cancelAnimationFrame(spyFrame);
+    spyFrame = requestAnimationFrame(settingsSpy);
+  });
+  SETTINGS_WIDE.addEventListener('change', () => {
+    if (!document.getElementById('modal-overlay').classList.contains('hidden')) paintSettingsNav();
+  });
   document.getElementById('modal-close').addEventListener('click', closeBlockEditor);
   document.getElementById('be-back').addEventListener('click', backToSettingsIndex);
   // No click-outside-to-close: Settings is a PAGE now (2026-10-01), and its
@@ -5737,6 +5800,15 @@ async function openBlockEditor() {
   renderSettingsIndex();
   paintSettingsNav();
   document.getElementById('modal-overlay').classList.remove('hidden');
+  // On the one-scroll page the sections a phone loads on entry are all on
+  // screen, so they are read now.
+  if (settingsScroll()) {
+    document.getElementById('be-panes').scrollTop = 0;
+    configView.status = '';
+    loadConfigRows();
+    loadAbout();
+    loadAssistantChanges();
+  }
 }
 
 async function closeBlockEditor() {
@@ -7337,7 +7409,8 @@ function initHub() {
         // MAP's close does more than hide it (notes flush, the runner layer
         // comes down), so Esc goes through the button rather than past it.
         else if (id === 'map-overlay') document.getElementById('map-close').click();
-        else if (id === 'modal-overlay' && settingsView.section) backToSettingsIndex();
+        else if (id === 'modal-overlay' && settingsView.section && !settingsScroll()) backToSettingsIndex();
+        else if (id === 'modal-overlay') closeBlockEditor();
         else el.classList.add('hidden');
         return;
       }
