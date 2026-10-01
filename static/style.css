@@ -177,7 +177,12 @@ select option {
   height: 100dvh;
   height: var(--vvh, 100dvh);
   overflow: hidden;
-  background: var(--bg);
+  /* The day's own surface, not the page's (2026-09-30, Quentin: on a laptop
+     the phone layout's spare space either side should be the same colour).
+     On a phone #engage-root covers it all; on a wider window this is what
+     shows beside the 430px column, and a darker --bg made it read as a card
+     floating on a backdrop. */
+  background: var(--surface-mid);
 }
 
 #engage-root,
@@ -4826,14 +4831,16 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
      this the capture bar sits behind the keyboard it just opened. */
   bottom: calc(100% - var(--vvh, 100%));
   width: 100%;
-  max-width: 430px;
   height: var(--gbar-h);
   z-index: 170;              /* above overlays (140–160), below the clarify
                                 sheet (200), people-timer (250), toast (400) */
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 0 14px env(safe-area-inset-bottom);
+  /* Full-width ground, 430px of content: on a phone the padding is the old
+     14px, and on a wider window the bar's own colour runs to both edges
+     instead of stopping in a strip of another one. */
+  padding: 0 max(14px, calc((100% - 430px) / 2 + 14px)) env(safe-area-inset-bottom);
   border-top: 1px solid var(--border);
   background: var(--surface-low);
 }
