@@ -5712,6 +5712,10 @@ function initBlockEditor() {
 }
 
 async function openBlockEditor() {
+  // Up at once on the index as last drawn; every count below repaints it.
+  settingsView.section = null;
+  paintSettingsNav();
+  document.getElementById('modal-overlay').classList.remove('hidden');
   await reloadSettingsState();
   renderBeAreas();
   renderBeDomains();
@@ -7441,7 +7445,9 @@ function initTopNav() {
 }
 
 function paintTopNav() {
-  const top = currentRoute().split('/')[0];
+  // Mid-switch the screen is briefly NOW (one page down, the next not up
+  // yet); the tab lights for where you are going, not that gap.
+  const top = routeView.moving ? routeView.target : currentRoute().split('/')[0];
   // A run is a routine, and routines are in Lists.
   const lit = top === 'run' ? 'lists' : top;
   document.querySelectorAll('#top-nav [data-nav]').forEach(btn => {
@@ -7460,8 +7466,11 @@ async function closeSurfaces() {
   if (seSheet.kind) closeSeSheet();
   if (occasionView.open) closeOccasionSheet();
   if (flowRunView.open) closeFlowRun();
-  if (shown('modal-overlay')) await closeBlockEditor();
-  if (shown('logs-overlay')) await closeLogsView();
+  // Not awaited: each hides itself FIRST and then finishes its writes and
+  // re-reads (a log's save, Settings' feed + day refresh) in the background.
+  // Waiting on them is what made the next page lag behind the click.
+  if (shown('modal-overlay')) closeBlockEditor();
+  if (shown('logs-overlay')) closeLogsView();
   if (shown('map-overlay')) document.getElementById('map-close').click();
   document.querySelectorAll('.m-overlay:not(.hidden)').forEach(o => closeM(o.id));
 }
@@ -7469,8 +7478,31 @@ async function closeSurfaces() {
 async function navigateTo(dest) {
   // Gates is its own document; leaving for it closes nothing worth closing.
   if (dest === 'gates') { openSurface('gates'); return; }
-  await closeSurfaces();
-  if (dest) await openSurface(dest);
+  await goRoute(dest, true);
+}
+
+// ONE SWITCH, ONE ADDRESS (2026-10-01, Quentin's report: the URL read "/"
+// and then "/#/map" on every click, and switching lagged). The address is
+// written ONCE, after the page is up — pushed for a click, so Back works —
+// and nothing the switch does on the way (the old page going down, the day
+// showing for a moment) gets to write one of its own.
+async function goRoute(route, push) {
+  routeView.moving = true;
+  routeView.target = String(route || '').split('/')[0];
+  paintTopNav();
+  // The address goes up WITH the click, not after the page has read its data
+  // (Settings and the week read a dozen things first). The Calendar's day/week
+  // is decided now by the same rule openSurface asks, so the address it gets
+  // is the one it keeps.
+  const lands = route === 'calendar' && calWeekAvailable() && calWantsWeek() ? 'calendar/week' : route;
+  if (push && location.pathname !== routePath(lands)) history.pushState(null, '', routePath(lands));
+  try {
+    await closeSurfaces();
+    if (route) await openRoute(route);
+  } finally {
+    routeView.moving = false;
+  }
+  syncRoute();
 }
 
 // THE ONE OPENER for a hub surface, asked by the hub's buttons and by the
@@ -7508,11 +7540,11 @@ async function openSurface(dest, sub) {
     socialView.form = null; openM('tab-social'); refreshSocial();
   }
   else if (dest === 'logs') {
-    logsView.logs = await fetch('/api/logs').then(r => r.json());
     logsView.open = null;
-    // Unhide FIRST: renderLogs repaints the global bar, and the bar
-    // derives its ✎ log mode from this overlay being visible.
+    // Up at once from what was last read, then repainted from the server.
     document.getElementById('logs-overlay').classList.remove('hidden');
+    renderLogs();
+    logsView.logs = await apiGet('/api/logs', logsView.logs);
     renderLogs();
     if (sub.log && logsView.logs.some(l => l.name === sub.log)) await openLog(sub.log);
   }
@@ -7563,16 +7595,36 @@ function currentRoute() {
   return '';
 }
 
-const routeView = { ready: false, saved: null, timer: null };
+const routeView = { ready: false, saved: null, timer: null, moving: false, target: '' };
+
+// A route is the app's own name for a page (`map`, `logs/x`, `run/3`); the
+// PATH is what the address bar shows (`/projects`, `/log/x`, `/run/3`). Two
+// pages are named differently out there, after their tabs. Flask serves the
+// shell at every one of these (APP_PAGES in app.py).
+const ROUTE_PATHS = { map: 'projects', logs: 'log' };
+
+function routePath(route) {
+  if (!route) return '/';
+  const [top, ...rest] = route.split('/');
+  return '/' + [ROUTE_PATHS[top] || top, ...rest].join('/');
+}
+
+function pathRoute(path) {
+  const [top, ...rest] = String(path || '').replace(/^\/+|\/+$/g, '').split('/');
+  if (!top || top === 'now') return '';
+  const name = Object.keys(ROUTE_PATHS).find(k => ROUTE_PATHS[k] === top) || top;
+  return [name, ...rest].join('/');
+}
 
 function syncRoute() {
   paintTopNav();
   // Nothing is written until the remembered address has been reopened, or
-  // the empty screen of a page still loading would overwrite it.
-  if (!routeView.ready) return;
+  // the empty screen of a page still loading would overwrite it — nor while
+  // a switch is under way, which writes its one address when it lands.
+  if (!routeView.ready || routeView.moving) return;
   const route = currentRoute();
-  const want = route ? `#/${route}` : location.pathname + location.search;
-  if ((location.hash || '') !== (route ? `#/${route}` : '')) history.replaceState(null, '', want);
+  const want = routePath(route);
+  if (location.pathname + location.hash !== want) history.replaceState(null, '', want + location.search);
   if (route === routeView.saved) return;
   clearTimeout(routeView.timer);
   routeView.timer = setTimeout(() => {
@@ -7594,7 +7646,7 @@ async function openRoute(route) {
     // Said out loud only when the ADDRESS BAR asked; a remembered route
     // restored on the phone is not something to apologise for.
     await openSurface('calendar', { view: a === 'week' ? 'week' : null,
-                                    say: /calendar\/week/.test(location.hash) });
+                                    say: routeView.fromAddress && a === 'week' });
   }
   else if (['map', 'tracking', 'social'].includes(top)) await openSurface(top);
 }
@@ -7602,8 +7654,13 @@ async function openRoute(route) {
 async function initRoutes() {
   const saved = (state.settings || {}).last_route;
   routeView.saved = saved == null ? '' : saved;
-  const route = location.hash.length > 2 ? location.hash : routeView.saved;
+  // The address wins: a path (`/projects`), or an old `#/map` link. Only a
+  // bare `/` falls back to where you last were; `/now` means the day.
+  routeView.fromAddress = true;
+  const route = location.hash.length > 2 ? location.hash.replace(/^#\/?/, '')
+    : location.pathname !== '/' ? pathRoute(location.pathname) : routeView.saved;
   try { await openRoute(route); } catch (e) {}
+  routeView.fromAddress = false;
   routeView.ready = true;
   const watch = new MutationObserver(syncRoute);
   ['modal-overlay', 'logs-overlay', 'map-overlay', 'cal-overlay', 'tab-lists',
@@ -7611,9 +7668,11 @@ async function initRoutes() {
     const el = document.getElementById(id);
     if (el) watch.observe(el, { attributes: true, attributeFilter: ['class'] });
   });
-  // A pasted or hand-typed address goes where it says.
+  // Back and Forward go where the address says; so does a pasted old
+  // `#/…` link, which then turns into its path.
+  window.addEventListener('popstate', () => goRoute(pathRoute(location.pathname), false));
   window.addEventListener('hashchange', () => {
-    if (location.hash !== (currentRoute() ? `#/${currentRoute()}` : '')) openRoute(location.hash);
+    if (location.hash.length > 2) goRoute(location.hash.replace(/^#\/?/, ''), false);
   });
   syncRoute();
 }
@@ -13640,8 +13699,11 @@ async function openMap() {
   mapView.sel = null;
   mapView.tMode = false;
   mapView.delArm = null;
-  await refreshMap();
+  // The page is up at once, drawn from what is already loaded, and the
+  // fresh read repaints it — waiting on five fetches first read as lag.
   document.getElementById('map-overlay').classList.remove('hidden');
+  renderMap();
+  await refreshMap();
 }
 
 // The pill NAMES the lens, and counts the domain/tag terms rather than listing

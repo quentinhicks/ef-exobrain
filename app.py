@@ -248,6 +248,20 @@ def index():
     return render_template('index.html')
 
 
+# EVERY PAGE HAS A PATH (2026-10-01, Quentin's instruction): /calendar,
+# /projects, /lists/12, /log/<name>, /settings/areas, /run/3 … are the same
+# static shell; app.js reads the path and opens that page. Still no data in
+# the template — the path is only an address.
+APP_PAGES = ('now', 'calendar', 'projects', 'lists', 'log', 'tracking', 'social',
+             'settings', 'run')
+
+
+@app.route('/<any(%s):page>' % ', '.join(APP_PAGES))
+@app.route('/<any(%s):page>/<path:rest>' % ', '.join(APP_PAGES))
+def app_page(page, rest=None):
+    return render_template('index.html')
+
+
 @app.route('/panel')
 def panel():
     return render_template('panel.html')
@@ -288,7 +302,8 @@ def manifest():
 @app.after_request
 def _no_stale_static(resp):
     if (request.path in ('/', '/panel', '/gates', '/inbox', '/sw.js', '/manifest.webmanifest')
-            or request.path.startswith('/static/')):
+            or request.path.startswith('/static/')
+            or request.path.strip('/').split('/')[0] in APP_PAGES):
         resp.headers['Cache-Control'] = 'no-cache'
     return resp
 
