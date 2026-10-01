@@ -11097,6 +11097,10 @@ function dwWordCount(s) {
 function openDangerousWriting(opts) {
   const o = opts || {};
   dwView.open = true;
+  // Docked in the right column on a wide window, the rest of the app stays in
+  // view but goes inert (style.css, body.dw-open): capture mid-session is the
+  // task-switch the mechanic exists to punish.
+  document.body.classList.add('dw-open');
   dwView.phase = 'setup';
   dwView.text = '';
   dwView.logName = o.logName || null;
@@ -11113,6 +11117,7 @@ function openDangerousWriting(opts) {
 function closeDangerousWriting() {
   dwStopTimers();
   dwView.open = false;
+  document.body.classList.remove('dw-open');
   dwView.phase = 'setup';
   dwView.text = '';
   dwView.logName = null;
