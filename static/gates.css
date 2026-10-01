@@ -5,18 +5,20 @@
    and containers --border — the app's measured rule. */
 
 html, body { height: auto; min-height: 100%; }
-body.gd-body { background: var(--bg); }
+body.gd-body { background: var(--bg); padding-top: var(--tnav-h); }
+/* Under the sheet (40/41) and the toast here, not the app's 170: this page's
+   layers are numbered small. */
+.gd-body #top-nav { background: var(--bg); z-index: 30; }
+.gd-body .tn-tab { text-decoration: none; }
 body.gd-sheet-open { overflow: hidden; }
 
 #gd-head {
-  position: sticky; top: 0; z-index: 20;
+  position: sticky; top: var(--tnav-h); z-index: 20;
   display: flex; align-items: center; gap: 8px;
   max-width: 430px; margin: 0 auto; padding: 10px 16px;
   background: var(--bg); border-bottom: 1px solid var(--border);
 }
 #gd-head h1 { font-size: 17px; font-weight: 600; flex: 1; }
-#gd-back { color: var(--text-secondary); text-decoration: none; font-size: 14px; padding: 6px 4px; }
-#gd-back:hover { color: var(--text-primary); }
 .gd-icon {
   min-width: 36px; height: 36px; border-radius: 8px; font-size: 16px;
   border: 1px solid var(--text-secondary); color: var(--text-primary);

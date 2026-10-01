@@ -7456,6 +7456,83 @@ function initHub() {
   });
 }
 
+// ── THE TOP STRIP (Navigation Options 8b, 2026-10-01) ────────
+//
+// One line of tabs over every surface. A tab is a DOOR, not a second opener:
+// it puts down whatever is up and asks openSurface, the hub's own opener, so
+// the strip cannot drift from the ≡ buttons. Which tab is lit is read off
+// currentRoute() by paintTopNav, called from syncRoute — the address is the
+// one record of what is on screen, and the strip only reads it.
+function initTopNav() {
+  const nav = document.getElementById('top-nav');
+  nav.querySelectorAll('[data-nav]').forEach(btn => {
+    btn.addEventListener('click', () => navigateTo(btn.dataset.nav));
+  });
+  // TWO VERBS ON ONE EYE (2026-09-16, Quentin's instruction). The plain click
+  // is the one you reach for in a hurry — privacy — and the panel, which is
+  // set once and then left alone for weeks, moves to the second gesture. Both
+  // halves of that second gesture, since a right-click is not a thing a finger
+  // has: right-click AND the 550ms long press, the app's own touch rule.
+  // Wired ONCE: the eye lives in the static strip now, not in Engage's header.
+  const eye = document.getElementById('eg-panel-btn');
+  paintPrivacyEye();
+  // onLongPress swallows the click that trails a fired hold (capture phase,
+  // before this one), so the plain click here is only ever a plain click.
+  eye.addEventListener('click', togglePrivacy);
+  // PC: the evergreen pywebview panel. Phone (no pywebview): the same active
+  // section, full-screened.
+  const nowDoor = async () => {
+    if (window.pywebview) {
+      await togglePanel();
+    } else {
+      await navigateTo('');
+      openM('now-full');
+      renderNowFull();
+    }
+  };
+  eye.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    nowDoor();
+  });
+  onLongPress(eye, nowDoor);
+  paintTopNav();
+}
+
+function paintTopNav() {
+  const top = currentRoute().split('/')[0];
+  // A run is a routine, and routines are in Lists.
+  const lit = top === 'run' ? 'lists' : top;
+  document.querySelectorAll('#top-nav [data-nav]').forEach(btn => {
+    btn.classList.toggle('on', btn.dataset.nav === lit);
+  });
+}
+
+// Put down every surface over the day — the top-level rungs of the Esc
+// ladder, each through its own close so nothing it flushes is skipped.
+async function closeSurfaces() {
+  const shown = id => {
+    const el = document.getElementById(id);
+    return !!el && !el.classList.contains('hidden');
+  };
+  flushOpenNotes();
+  document.getElementById('hub-overlay').classList.add('hidden');
+  if (seSheet.kind) closeSeSheet();
+  if (occasionView.open) closeOccasionSheet();
+  if (flowRunView.open) closeFlowRun();
+  if (shown('modal-overlay')) await closeBlockEditor();
+  if (shown('logs-overlay')) await closeLogsView();
+  if (shown('map-overlay')) document.getElementById('map-close').click();
+  document.querySelectorAll('.m-overlay:not(.hidden)').forEach(o => closeM(o.id));
+}
+
+async function navigateTo(dest) {
+  // Gates is its own document; leaving for it closes nothing worth closing.
+  if (dest === 'gates') { openSurface('gates'); return; }
+  await closeSurfaces();
+  if (dest) await openSurface(dest);
+}
+
 // THE ONE OPENER for a hub surface, asked by the hub's buttons and by the
 // address bar alike — a route that re-did what a button does would be the
 // parallel implementation that agrees until one of them grows a step. `sub` is
@@ -7549,6 +7626,7 @@ function currentRoute() {
 const routeView = { ready: false, saved: null, timer: null };
 
 function syncRoute() {
+  paintTopNav();
   // Nothing is written until the remembered address has been reopened, or
   // the empty screen of a page still loading would overwrite it.
   if (!routeView.ready) return;
@@ -12185,6 +12263,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTimeline();
   initLogsView();
   initHub();
+  initTopNav();
   initObjectDoors();
   initCalBlockPin();
   initSwipe();
@@ -16168,11 +16247,11 @@ function renderEngage() {
   }
 
   // NOW PAGE MINIMAL v2 (2026-09-29, Quentin's design): the day and its
-  // arrows on the left, and in the design's empty right slot the privacy eye.
+  // arrows on the left. The privacy eye that stood in the right slot moved to
+  // the top strip (initTopNav, 2026-10-01), where every surface can reach it.
   // NOW PAGE WIDE, 4b (2026-09-30): on a wide window the day (`.eg-head-day`)
   // and the chip with its agenda (`.eg-side`) stand in a column left of the
-  // list, the eye in one to its right. Both wrappers are `display: contents`
-  // on a phone, so the narrow page is exactly what it was.
+  // list. Both wrappers are `display: contents` on a phone.
   header.innerHTML = `
     <div class="eg-head-day">
       <button class="eg-nav" id="eg-prev" title="Previous day">${WK_SVG.prev}</button>
@@ -16185,8 +16264,6 @@ function renderEngage() {
       ${isToday ? '' : '<button id="eg-today" title="Back to today">today</button>'}
     </div>
     <span class="eg-spacer"></span>
-    <button id="eg-panel-btn" class="${privacyOn() ? 'eg-priv-on' : ''}"
-      title="${escHtml(privacyEyeTitle())}">${panelEyeSvg(privacyOn())}</button>
   `;
 
   // The routine details card: the area's blocks as read-only steps (their
@@ -16317,31 +16394,6 @@ function renderEngage() {
     refreshEngage();
   });
 
-  // TWO VERBS ON ONE EYE (2026-09-16, Quentin's instruction). The plain click
-  // is the one you reach for in a hurry — privacy — and the panel, which is
-  // set once and then left alone for weeks, moves to the second gesture. Both
-  // halves of that second gesture, since a right-click is not a thing a finger
-  // has: right-click AND the 550ms long press, the app's own touch rule.
-  const eye = header.querySelector('#eg-panel-btn');
-  // onLongPress swallows the click that trails a fired hold (capture phase,
-  // before this one), so the plain click here is only ever a plain click.
-  eye.addEventListener('click', togglePrivacy);
-  // PC: the evergreen pywebview panel. Phone (no pywebview): the same active
-  // section, full-screened.
-  const nowDoor = async () => {
-    if (window.pywebview) {
-      await togglePanel();
-    } else {
-      openM('now-full');
-      renderNowFull();
-    }
-  };
-  eye.addEventListener('contextmenu', e => {
-    e.preventDefault();
-    e.stopPropagation();
-    nowDoor();
-  });
-  onLongPress(eye, nowDoor);
   const after = async () => { await refreshEngage(); };
 
   // [data-id] scopes this to inventory checkboxes — routine checks carry

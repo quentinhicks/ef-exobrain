@@ -22,8 +22,26 @@
   <meta name="mobile-web-app-capable" content="yes">
 </head>
 <body>
+  <!-- THE TOP STRIP (Navigation Options 8b, 2026-10-01): one line of tabs over
+       every surface, the eye and Settings pinned at its right. The tabs scroll
+       sideways on a phone; the two icons do not. Which tab is lit is DERIVED
+       from currentRoute() (paintTopNav), never kept beside it. -->
+  <nav id="top-nav">
+    <div class="tn-tabs">
+      <button class="tn-tab" data-nav="">Now</button>
+      <button class="tn-tab" data-nav="calendar">Calendar</button>
+      <button class="tn-tab" data-nav="map">Map</button>
+      <button class="tn-tab" data-nav="lists">Lists</button>
+      <button class="tn-tab" data-nav="logs">Log</button>
+      <button class="tn-tab" data-nav="gates">Gates</button>
+    </div>
+    <button id="eg-panel-btn" class="tn-icon"></button>
+    <button class="tn-icon tn-gear" data-nav="settings" title="Settings">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+    </button>
+  </nav>
   <!-- 9c shell: the day is the whole screen; everything else is an overlay
-       reached from the ≡ hub in the capture bar. -->
+       reached from the strip above or the ≡ hub in the capture bar. -->
   <div id="app">
     <div id="engage-root">
       <div id="engage-header"></div>

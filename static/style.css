@@ -4407,12 +4407,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   row-gap: 6px;
 }
 
-#eg-panel-btn {
-  align-self: center;
-  color: var(--text-secondary);
-  padding: 2px 6px 2px 0;
-  line-height: 0;
-}
 #eg-panel-btn:hover { color: var(--accent); }
 /* The eye while the mode is on. It is the one control that must stay findable
    in a washed-out app — the accent survives the filter better than
@@ -4845,6 +4839,65 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   background: var(--surface-low);
 }
 .eg-cap-plus { font-size: 13px; color: var(--text-secondary); }
+/* THE TOP STRIP (Navigation Options 8b, 2026-10-01): one line of text tabs
+   over every surface, the eye and the Settings gear at its right. --tnav-h is
+   the top half of the layout contract --gbar-h is the bottom of: every
+   overlay starts under it (the contract block at the end of the file), so the
+   strip is visible and tappable from anywhere. z 170, the bar's layer — above
+   the overlays (140–165), below every sheet (200), which is modal. */
+:root { --tnav-h: calc(44px + env(safe-area-inset-top)); }
+#app { padding-top: var(--tnav-h); box-sizing: border-box; }
+#top-nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--tnav-h);
+  padding: env(safe-area-inset-top) 14px 0;
+  box-sizing: border-box;
+  z-index: 170;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-mid);
+  border-bottom: 1px solid var(--border-soft);
+}
+/* The tabs scroll sideways on a phone; the two icons stay put beside them. */
+.tn-tabs {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  gap: 22px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tn-tabs::-webkit-scrollbar { display: none; }
+.tn-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+.tn-tab:hover { color: var(--text-primary); }
+.tn-tab.on { color: var(--text-primary); font-weight: 600; border-bottom-color: var(--text-primary); }
+.tn-icon {
+  flex: none;
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+.tn-icon:hover { color: var(--text-primary); background: var(--surface-2); }
+#top-nav .tn-gear.on { color: var(--text-primary); background: var(--surface-2); }
+@media (min-width: 900px) {
+  #top-nav { padding: env(safe-area-inset-top) 32px 0; gap: 10px; }
+  .tn-tabs { gap: 26px; }
+}
+
 /* The mode chip: names where typed text lands; tap = back to inbox. */
 #bar-mode {
   font: 10px var(--font-mono);
@@ -6466,8 +6519,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #engage-header .eg-day-btn { align-items: baseline; gap: 6px; }
 #engage-header .eg-day-name { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
 #engage-header .eg-day-date { font: 14px var(--font-mono); color: var(--text-secondary); }
-#engage-header #eg-panel-btn { padding: 6px; border-radius: 6px; }
-#engage-header #eg-panel-btn:hover { background: var(--surface-2); }
 
 /* The chip. */
 #engage-body .eg-now-chip {
@@ -6583,7 +6634,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     --eg-measure: clamp(460px, calc(100vw - 440px), 720px);
     --eg-side-w: calc((100vw - var(--eg-measure)) / 2);
     --eg-gutter: clamp(16px, 2.4vw, 32px);
-    --eg-col-top: clamp(16px, 3.5vh, 28px);
+    --eg-col-top: calc(var(--tnav-h) + clamp(16px, 3.5vh, 28px));
     --eg-day-rows: 32px 28px;
     --eg-day-h: calc(32px + 28px + 2px);
   }
@@ -6618,11 +6669,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   #engage-header #eg-prev { grid-row: 2; grid-column: 2; }
   #engage-header .eg-day-date { grid-row: 2; grid-column: 3; cursor: pointer; }
   #engage-header #eg-next { grid-row: 2; grid-column: 4; }
-  #engage-header #eg-panel-btn {
-    position: fixed;
-    top: calc(var(--eg-col-top) - 4px);
-    left: calc(50% + var(--eg-measure) / 2 + var(--eg-gutter) - 6px);
-  }
 
   #engage-body {
     align-self: center;
@@ -7423,3 +7469,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .tl-refresh-btn.tl-plan-on { border-color: var(--text-secondary); color: var(--accent); }
 
+/* ── The top strip's half of the same contract ───────────────────────────
+   Every full-screen layer starts UNDER the strip rather than covering it.
+   Sheets are not listed: they are modal at z 200 and cover it on purpose. */
+.m-overlay, #hub-overlay, #logs-overlay, #map-overlay, #modal-overlay, #flow-run {
+  top: var(--tnav-h);
+}
+#flow-run { height: calc(var(--vvh, 100dvh) - var(--gbar-h) - var(--tnav-h)); }

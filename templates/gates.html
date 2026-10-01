@@ -12,8 +12,23 @@
   <link rel="stylesheet" href="/static/gates.css">
 </head>
 <body class="gd-body">
+  <!-- The app's top strip (8b), as links: this is its own document, and each
+       address reopens that surface in the app. `now` names no surface, so it
+       lands on the day rather than on the remembered route. -->
+  <nav id="top-nav">
+    <div class="tn-tabs">
+      <a class="tn-tab" href="/#/now">Now</a>
+      <a class="tn-tab" href="/#/calendar">Calendar</a>
+      <a class="tn-tab" href="/#/map">Map</a>
+      <a class="tn-tab" href="/#/lists">Lists</a>
+      <a class="tn-tab" href="/#/logs">Log</a>
+      <a class="tn-tab on" href="/gates">Gates</a>
+    </div>
+    <a class="tn-icon tn-gear" href="/#/settings" title="Settings">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+    </a>
+  </nav>
   <header id="gd-head">
-    <a id="gd-back" href="/" title="Back to the app">‹ App</a>
     <h1>Gates</h1>
     <button id="gd-undo" class="gd-icon" title="Undo (Ctrl+Z)" disabled>↩</button>
     <button id="gd-reload" class="gd-icon" title="Re-read everything">↻</button>
