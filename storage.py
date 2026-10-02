@@ -4270,6 +4270,35 @@ def write_log(name, content):
     return name
 
 
+# RENAMING keeps the date: it is the file's identity (see _LOG_DATE), and the
+# title is the only part a person ever named. Refuses an empty title and a
+# name already taken — a rename that overwrote another log would be a delete.
+# -> the new name, or None when refused.
+def rename_log(name, title):
+    name = _log_name(name)
+    title = _log_name(title or '')
+    old = os.path.join(LOGS_DIR, name + '.md')
+    if not title or not os.path.exists(old):
+        return None
+    m = _LOG_DATE.match(name)
+    new = ('%s-%s-%s %s' % (m.group(1), m.group(2), m.group(3), title)) if m else title
+    if new == name:
+        return name
+    path = os.path.join(LOGS_DIR, new + '.md')
+    if os.path.exists(path):
+        return None
+    os.rename(old, path)
+    return new
+
+
+# A log is a file, so deleting it is removing the file. The photos it links
+# stay in media/ — an undo puts the same markdown back and they reappear.
+def delete_log(name):
+    path = os.path.join(LOGS_DIR, _log_name(name) + '.md')
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def create_log(name, tags=None, created=None, fresh=False):
     # The DATE is stamped here, not typed. It used to be part of what you had
     # to write in the name; the name is just the topic now.

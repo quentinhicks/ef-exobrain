@@ -12078,6 +12078,72 @@ async function logDraftCommit() {
   }
 }
 
+// RENAME A LOG (2026-10-01, Quentin's instruction): double-click its name in
+// the list, or its title over the editor. The date stays in the filename; only
+// the title changes. Undo renames it back.
+function logRenameEl(span, name) {
+  const meta = logsView.logs.find(l => l.name === name);
+  const was = meta ? meta.title : span.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 's2-rename-input lg-rename';
+  input.value = was;
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const finish = async ok => {
+    if (settled) return;
+    settled = true;
+    const v = input.value.trim();
+    if (ok && v && v !== was) await renameLog(name, v, was);
+    else renderLogs();
+  };
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+async function renameLog(name, title, was) {
+  if (logsView.open === name) await flushLogSave();
+  const r = await apiSend(`/api/logs/${encodeURIComponent(name)}`, 'PATCH', { title }).catch(() => null);
+  const out = r && r.ok ? await r.json() : null;
+  if (!out) { toast('That title is taken by another log'); renderLogs(); return; }
+  if (logsView.open === name) logsView.open = out.name;
+  pushUndo(`renamed log to "${title}"`, async () => {
+    if (logsView.open === out.name) await flushLogSave();
+    const back = await apiSend(`/api/logs/${encodeURIComponent(out.name)}`, 'PATCH', { title: was })
+      .then(x => (x.ok ? x.json() : null)).catch(() => null);
+    if (back && logsView.open === out.name) logsView.open = back.name;
+    logsView.logs = await apiGet('/api/logs', logsView.logs);
+    renderLogs();
+  });
+  logsView.logs = await apiGet('/api/logs', logsView.logs);
+  renderLogs();
+}
+
+// DELETE A LOG: the × on the row you are on. The undo writes the same file
+// back under its own name (fresh, so nothing made since is overwritten).
+async function deleteLog(name) {
+  if (logsView.open === name) await flushLogSave();
+  const log = await apiGet(`/api/logs/${encodeURIComponent(name)}`, null);
+  if (!log) return;
+  await apiSend(`/api/logs/${encodeURIComponent(name)}`, 'DELETE');
+  const meta = logsView.logs.find(l => l.name === name);
+  pushUndo(`deleted log "${(meta && meta.title) || name}"`, async () => {
+    const back = await apiSend('/api/logs', 'POST', { name, fresh: true }).then(x => x.json());
+    await apiSend(`/api/logs/${encodeURIComponent(back.name)}`, 'PUT', { content: log.content });
+    logsView.logs = await apiGet('/api/logs', logsView.logs);
+    await openLog(back.name);
+  });
+  if (logsView.open === name) { logsView.open = null; logsView.content = ''; }
+  logsView.logs = await apiGet('/api/logs', logsView.logs);
+  renderLogs();
+}
+
 // Words and characters of the log — of the SELECTION while there is one.
 function paintLogCounts() {
   const ta = document.getElementById('log-editor');
@@ -12107,8 +12173,9 @@ function renderLogs() {
     const head = m !== month ? `<div class="lg-month">${escHtml(m)}</div>` : '';
     month = m;
     return `${head}<button class="log-row${l.name === logsView.open ? ' on' : ''}" data-name="${escHtml(l.name)}">
-        <span class="log-row-name">${escHtml(l.title)}</span>
+        <span class="log-row-name" title="Double-click to rename">${escHtml(l.title)}</span>
         <span class="log-row-date">${logShortDate(l)}</span>
+        <span class="lg-del" role="button" data-del="${escHtml(l.name)}" title="Delete this log">×</span>
         ${(l.hits || []).filter(Boolean).map(h =>
           `<span class="log-hit">${hlLogHit(h, logsView.q)}</span>`).join('')}
       </button>`;
@@ -12141,7 +12208,7 @@ function renderLogs() {
       <main class="lg-main">${logsView.open ? `
         <div class="log-editor-bar">
           <button id="log-back" class="log-back-btn">‹ All logs</button>
-          <h1 class="lg-title">${escHtml((openMeta && openMeta.title) || logsView.open)}</h1>
+          <h1 class="lg-title" title="Double-click to rename">${escHtml((openMeta && openMeta.title) || logsView.open)}</h1>
           <span id="log-save-status" class="log-save-status"></span>
           <button id="log-photo" class="log-photo-btn">+ photo</button>
           <input type="file" id="log-photo-input" accept="image/*" hidden>
@@ -12166,8 +12233,27 @@ function renderLogs() {
 
   renderLogsFilter();
 
+  body.querySelectorAll('.lg-del[data-del]').forEach(x => x.addEventListener('click', e => {
+    e.stopPropagation();
+    deleteLog(x.dataset.del);
+  }));
+  // A double-click renames. The single click waits out the double-click
+  // window before it opens the log (MAP's and Lists' rule), or the open would
+  // repaint the row out from under the rename.
+  let openTimer = null;
+  body.querySelectorAll('.log-row[data-name] .log-row-name').forEach(span =>
+    span.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      clearTimeout(openTimer);
+      logRenameEl(span, span.closest('.log-row').dataset.name);
+    }));
+  const head = body.querySelector('.lg-title');
+  if (head) head.addEventListener('dblclick', () => logRenameEl(head, logsView.open));
   body.querySelectorAll('.log-row').forEach(row => {
-    row.addEventListener('click', async () => {
+    row.addEventListener('click', async e => {
+      if (e.detail > 1 || row.querySelector('.lg-rename')) return;
+      clearTimeout(openTimer);
+      await new Promise(z => { openTimer = setTimeout(z, 220); });
       // A log is open BESIDE the list now, so picking another is the moment
       // the open one is put down — its pending save (or the blank log's
       // first write) goes first.

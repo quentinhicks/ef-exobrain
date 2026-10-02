@@ -8023,3 +8023,13 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   /* The routine runner is a page: it stands in the Now column. */
   #flow-run { max-width: var(--eg-measure); border-color: var(--border-soft); }
 }
+
+/* A log's × — on the row you are on, and under the pointer (always there on
+   a touch screen, which has no hover). */
+.lg-del { display: none; width: 18px; text-align: center; font-size: 15px; color: var(--text-secondary); cursor: pointer; }
+.lg-del:hover { color: var(--danger); }
+#logs-modal .log-row.on .lg-del, #logs-modal .log-row:hover .lg-del { display: inline-block; }
+.lg-draft-row .lg-del { display: none !important; }
+@media (hover: none) { #logs-modal .log-row .lg-del { display: inline-block; } }
+.lg-rename { flex: 1; min-width: 0; font: inherit; }
+.lg-title.lg-rename, h1 + .lg-rename { font-size: 24px; font-weight: 600; }

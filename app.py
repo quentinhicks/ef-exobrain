@@ -1469,6 +1469,20 @@ def put_log(name):
     return '', 204
 
 
+@app.route('/api/logs/<name>', methods=['PATCH'])
+def patch_log(name):
+    new = storage.rename_log(name, (request.get_json() or {}).get('title'))
+    if new is None:
+        return jsonify({'error': 'A log needs a title, and that one is taken'}), 409
+    return jsonify({'name': new})
+
+
+@app.route('/api/logs/<name>', methods=['DELETE'])
+def delete_log(name):
+    storage.delete_log(name)
+    return '', 204
+
+
 # Multipart, not JSON: base64 in a JSON body would be a third of the phone's
 # photo again, held whole in memory on both ends, for nothing. The cap is here
 # rather than app.MAX_CONTENT_LENGTH so it applies to THIS route only — every
