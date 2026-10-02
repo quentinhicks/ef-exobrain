@@ -11083,6 +11083,10 @@ const dwView = {
   goalKind: 'time', goalTime: 10, goalWords: 500,
   hardcore: false,
   text: '', startedAt: 0, logName: null,
+  // The log a session WRITES INTO (its name), or null for a new log. Set by
+  // the Logs page, whose button means "the log I am writing" (2026-10-01,
+  // Quentin's instruction); every other door makes a log of its own.
+  appendTo: null,
   idleTimer: null, warnTimer: null, tick: null,
 };
 
@@ -11104,6 +11108,7 @@ function openDangerousWriting(opts) {
   dwView.phase = 'setup';
   dwView.text = '';
   dwView.logName = o.logName || null;
+  dwView.appendTo = o.appendTo || null;
   if (o.goalKind) dwView.goalKind = o.goalKind;
   if (o.goalTime) dwView.goalTime = o.goalTime;
   if (o.goalWords) dwView.goalWords = o.goalWords;
@@ -11121,6 +11126,7 @@ function closeDangerousWriting() {
   dwView.phase = 'setup';
   dwView.text = '';
   dwView.logName = null;
+  dwView.appendTo = null;
   document.getElementById('dw-session').classList.add('hidden');
 }
 
@@ -11152,13 +11158,29 @@ async function dwSucceed() {
   dwView.phase = 'releasing';
   dwStopTimers();
   const text = dwView.text;
-  const d = new Date();
-  const stamp = `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()}`;
-  const first = text.replace(/\s+/g, ' ').trim().slice(0, 48).replace(/[\\/:*?"<>|]/g, '');
-  const name = dwView.logName || `${stamp} ${first || 'writing'}`;
-  const log = await apiSend('/api/logs', 'POST', { name }).then(r => r.json());
-  const body = text;
-  await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT', { content: body });
+  let log;
+  if (dwView.appendTo) {
+    // INTO THE LOG ON SCREEN: what it already says, then the session. Read
+    // back from the server rather than the editor, which the page flushed
+    // before the session opened and nothing has touched since.
+    log = await fetch(`/api/logs/${encodeURIComponent(dwView.appendTo)}`).then(r => r.json());
+    const had = log.content || '';
+    const sep = !had.trim() ? '' : had.endsWith('\n\n') ? '' : had.endsWith('\n') ? '\n' : '\n\n';
+    await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT',
+      { content: (had.trim() ? had : '') + sep + text });
+  } else {
+    const d = new Date();
+    const stamp = `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()}`;
+    const first = text.replace(/\s+/g, ' ').trim().slice(0, 48).replace(/[\\/:*?"<>|]/g, '');
+    const name = dwView.logName || `${stamp} ${first || 'writing'}`;
+    // `fresh`: a NEW log whatever the name. Without it a name already taken
+    // today (a second sweep, a title used twice) reopened that file and the
+    // PUT below overwrote it.
+    log = await apiSend('/api/logs', 'POST', { name, fresh: true }).then(r => r.json());
+    await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT', { content: text });
+    // The blank log's title became this log's name, so the blank log is spent.
+    if (dwView.logName && dwView.logName === (logsView.draftTitle || '').trim()) logsView.draftTitle = '';
+  }
   closeDangerousWriting();
   openM('logs-overlay');
   // The sweep step releases its log while the routine is still open behind it
@@ -11215,6 +11237,16 @@ function dwPaintProgress() {
   }
 }
 
+// Where a finished session lands, said before it starts.
+function dwTargetLine() {
+  if (dwView.appendTo) {
+    const meta = logsView.logs.find(l => l.name === dwView.appendTo);
+    return `<div class="dw-target">Adds to <b>${escHtml((meta && meta.title) || dwView.appendTo)}</b>, after what is already there.</div>`;
+  }
+  if (dwView.logName) return `<div class="dw-target">Becomes a new log, <b>${escHtml(dwView.logName)}</b>.</div>`;
+  return '';
+}
+
 function renderDangerous() {
   const el = document.getElementById('dw-session');
   if (!el) return;
@@ -11238,6 +11270,7 @@ function renderDangerous() {
     el.innerHTML = `
       <div class="dw-wrap">
         <div class="dw-title">Dangerous writing</div>
+        ${dwTargetLine()}
         <div class="dw-warn">Stop typing for ${DW_IDLE_MS / 1000} seconds and everything you have written is destroyed. There is no recovery. Finish the goal and it is yours.</div>
 
         <div class="cl-sec"><span class="cl-label">Goal</span></div>
@@ -12006,11 +12039,15 @@ function wireLogDraft() {
 
 async function logDraftCommit() {
   clearTimeout(logsView.saveTimer);
-  if (logsView.open || logsView.committing) return;
+  // A first write already under way is AWAITED, never skipped: the blur that
+  // a click on a page button causes starts one, and the button's own handler
+  // has to land after it or it finds no log open (the Dangerous writing door
+  // made a second, separate log that way).
+  if (logsView.committing) return logsView.committing;
+  if (logsView.open) return;
   const text = logsView.draftText || '';
   if (!text.trim()) return;
-  logsView.committing = true;
-  try {
+  logsView.committing = (async () => {
     const log = await apiSend('/api/logs', 'POST',
       { name: (logsView.draftTitle || '').trim() || 'Untitled', tags: [], fresh: true }).then(r => r.json());
     // Whatever was typed while the file was being made goes with it.
@@ -12033,8 +12070,11 @@ async function logDraftCommit() {
     const ta = document.getElementById('log-editor');
     if (ta && keep) { ta.focus(); ta.setSelectionRange(keep[0], keep[1]); }
     if (logsView.dirty) logsView.saveTimer = setTimeout(flushLogSave, 1000);
+  })();
+  try {
+    await logsView.committing;
   } finally {
-    logsView.committing = false;
+    logsView.committing = null;
   }
 }
 
@@ -12136,8 +12176,16 @@ function renderLogs() {
       openLog(row.dataset.name);
     });
   });
-  document.getElementById('log-dangerous')
-    .addEventListener('click', openDangerousWriting);
+  // THE LOG YOU ARE WRITING (2026-10-01, Quentin's instruction): the session
+  // lands in the log on screen. Its pending save goes first, and a blank log
+  // that already holds text becomes a file first, so the session appends to
+  // it; a blank log with only a title becomes a new log of that title.
+  document.getElementById('log-dangerous').addEventListener('click', async () => {
+    await logDraftCommit();
+    await flushLogSave();
+    openDangerousWriting({ appendTo: logsView.open,
+      logName: logsView.open ? null : (logsView.draftTitle || '').trim() || null });
+  });
   // Name and tags, and NO date to type — the server stamps today. Typing
   // '26-8-17' in front of every log was a filing convention the app can keep
   // for you, and getting it subtly wrong is what made the list unsortable.

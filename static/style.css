@@ -6908,6 +6908,13 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: var(--danger);
   padding: 0 14px 12px;
 }
+.dw-target {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  padding: 0 14px 8px;
+}
+.dw-target b { color: var(--text-primary); font-weight: 600; }
 .dw-actions { display: flex; align-items: center; gap: 10px; padding: 14px 14px 0; }
 .dw-begin {
   flex: 1;
