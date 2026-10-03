@@ -381,6 +381,17 @@ ASSISTANT_WRITES = (
     ('POST', re.compile(r'^/api/overrides$'),
      {'block_id', 'date', 'cancelled', 'start_time', 'end_time'}),
     ('DELETE', re.compile(r'^/api/overrides/\d+$'), set()),
+    # A BLOCK FOR ONE DATE (2026-10-03, Quentin's instruction): the planning
+    # skill places one-off hours — "20 hours of COS330 before the midterm" —
+    # and those are local facts, so they get the local store, never a weekly
+    # row. Same footing as the overrides above: off the money path, logged.
+    ('POST', re.compile(r'^/api/day-blocks$'),
+     {'date', 'start_min', 'end_min', 'label', 'color', 'area_id', 'domain_id',
+      'location_id', 'description'}),
+    ('PATCH', re.compile(r'^/api/day-blocks/\d+$'),
+     {'date', 'start_min', 'end_min', 'label', 'color', 'area_id', 'domain_id',
+      'location_id', 'description'}),
+    ('DELETE', re.compile(r'^/api/day-blocks/\d+$'), set()),
 )
 
 
@@ -404,7 +415,7 @@ def _assistant_scope():
             return None
     return jsonify({'error': 'the assistant may only change gate deadlines (a day\'s '
                              'window, calling a day off, the weekly schedule) and the '
-                             'weekly block schedule'}), 403
+                             'block schedule (weekly blocks, and blocks for one date)'}), 403
 
 
 @app.after_request
@@ -1313,6 +1324,9 @@ def get_blocks():
 @app.route('/api/blocks', methods=['POST'])
 def post_block():
     data = request.get_json()
+    refused = _refuse_dated_weekly(data)
+    if refused:
+        return refused
     days = data['days']
     for day in days:
         overlap = storage.validate_no_overlap(day, data['start_time'], data['end_time'])
@@ -1355,6 +1369,9 @@ def cancel_block_scheduled(id, field):
 @app.route('/api/blocks/<int:id>', methods=['PATCH'])
 def patch_block(id):
     data = request.get_json()
+    refused = _refuse_dated_weekly(data)
+    if refused:
+        return refused
     # A DATE turns the same patch into a scheduled one: nothing about the block
     # changes today, and every surface that draws a day resolves it through
     # storage.row_as_of from that date on. No 24h rule here — a block is not on
@@ -1410,6 +1427,99 @@ def post_override():
 def delete_override(id):
     storage.delete_override(id)
     return '', 204
+
+
+# THE WEEK AND THE DAY ARE TWO STORES, AND A WRITE NAMES ONE (2026-10-03,
+# Quentin's instruction: "do NOT mix the two"). GLOBAL: /api/blocks — weekdays,
+# and a change dated forward with effective_from. LOCAL: /api/overrides (a
+# weekly block's one date) and /api/day-blocks (a block that exists on one
+# date only). A field belonging to the other half is REFUSED, never ignored:
+# a `date` dropped silently off a weekly write is a one-off turned into every
+# Tuesday, which is exactly the mix this exists to stop.
+WEEKLY_ONLY = ('days', 'day_of_week', 'effective_from', 'active', 'priority')
+
+
+def _refuse_dated_weekly(data):
+    if 'date' in (data or {}):
+        return jsonify({'error': 'the weekly schedule has no dates — a block for one '
+                                 'date is POST /api/day-blocks, a weekly block\'s one '
+                                 'date is POST /api/overrides'}), 400
+    return None
+
+
+def _day_block_body(data, partial):
+    out = {}
+    if 'date' in data or not partial:
+        if not _YMD_RE.match(str(data.get('date') or '')):
+            return None, 'date must be YYYY-MM-DD'
+        out['date'] = data['date']
+    if 'start_min' in data or 'end_min' in data or not partial:
+        span, err = _plan_span_bounds(data)
+        if err:
+            return None, 'start_min and end_min are minutes from that date\'s midnight, ' \
+                         'at least 5 apart, ending by 2880'
+        out['start_min'], out['end_min'] = span
+    if 'label' in data or not partial:
+        label = str(data.get('label') or '').strip()
+        if not label:
+            return None, 'a block needs a label'
+        out['label'] = label
+    if 'color' in data or not partial:
+        if not re.match(r'^#[0-9a-fA-F]{6}$', str(data.get('color') or '')):
+            return None, 'color must be #rrggbb'
+        out['color'] = data['color']
+    for k in ('area_id', 'domain_id', 'location_id'):
+        if k in data:
+            out[k] = data[k] or None
+    if 'description' in data:
+        out['description'] = str(data.get('description') or '')
+    return out, None
+
+
+@app.route('/api/day-blocks')
+def get_day_blocks_route():
+    start = request.args.get('from') or ''
+    end = request.args.get('to') or start
+    if not (_YMD_RE.match(start) and _YMD_RE.match(end)):
+        return jsonify({'error': 'from and to must be YYYY-MM-DD'}), 400
+    return jsonify(storage.get_day_blocks(start, end))
+
+
+@app.route('/api/day-blocks', methods=['POST'])
+def post_day_block():
+    data = request.get_json(force=True) or {}
+    weekly = [k for k in WEEKLY_ONLY if k in data]
+    if weekly:
+        return jsonify({'error': f'{", ".join(weekly)} belong to the weekly schedule '
+                                 '(/api/blocks); a day block is one date'}), 400
+    body, err = _day_block_body(data, partial=False)
+    if err:
+        return jsonify({'error': err}), 400
+    # `id` is only ever sent by an undo replaying a delete.
+    return jsonify(storage.create_day_block(
+        body['date'], body['start_min'], body['end_min'], body['label'], body['color'],
+        body.get('area_id'), body.get('domain_id'), body.get('location_id'),
+        body.get('description') or '', id=data.get('id') or None)), 201
+
+
+@app.route('/api/day-blocks/<int:id>', methods=['PATCH', 'DELETE'])
+def day_block_route(id):
+    if not storage.get_day_block(id):
+        return jsonify({'error': 'no such day block'}), 404
+    if request.method == 'DELETE':
+        storage.delete_day_block(id)
+        return '', 204
+    data = request.get_json(force=True) or {}
+    weekly = [k for k in WEEKLY_ONLY if k in data]
+    if weekly:
+        return jsonify({'error': f'{", ".join(weekly)} belong to the weekly schedule '
+                                 '(/api/blocks); a day block is one date'}), 400
+    if ('start_min' in data) != ('end_min' in data):
+        return jsonify({'error': 'send start_min and end_min together'}), 400
+    body, err = _day_block_body(data, partial=True)
+    if err:
+        return jsonify({'error': err}), 400
+    return jsonify(storage.update_day_block(id, body))
 
 
 # Local snapshot only. Git is no longer a sync or backup layer for data: the

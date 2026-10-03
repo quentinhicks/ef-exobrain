@@ -88,7 +88,8 @@ def _migrate_project_to_area(conn):
 # Still ONE filing per row: `domain_id` is written only where `area_id` is not
 # (`filing_updates` is the one place that decides it), so a row under an area
 # takes that area's domain and cannot also claim a different one of its own.
-FILED_TABLES = ('inbox_item', 'recurring_block', 'plan_span', 'recurring_task', 'flow')
+FILED_TABLES = ('inbox_item', 'recurring_block', 'day_block', 'plan_span', 'recurring_task',
+                'flow')
 
 # The one SQL answer to "which domain is this row in", for a row aliased `i`
 # LEFT JOINed to its area as `a`. Served under the name `domain_id`, so every
@@ -1252,6 +1253,31 @@ def init_db():
                               (SELECT name FROM location WHERE id = plan_span.location_id)
                             WHERE location_id IS NOT NULL''')
         conn.commit()
+    # A BLOCK FOR ONE DATE (2026-10-03, Quentin's instruction: "make sure there
+    # is a difference between global changes and local day to day changes, and
+    # do NOT mix the two"). The week is recurring_block — GLOBAL, one row per
+    # weekday, dated forward through easing_pending. A day is LOCAL, and had
+    # only half a store: block_override can cancel or move a weekly block on a
+    # date, but nothing could ADD one, so "two hours of COS330 on Tuesday the
+    # 7th" could only be written as a weekly block — a local fact filed in the
+    # global store. This is the other half. It never names a weekday, nothing
+    # weekly reads it, and block_segments_for resolves it beside the week, so
+    # every surface that draws a day draws it with no second answer.
+    # Minutes from midnight of `date`; end_min past 1440 runs into tomorrow.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS day_block (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            date        TEXT NOT NULL,
+            start_min   INTEGER NOT NULL,
+            end_min     INTEGER NOT NULL,
+            label       TEXT NOT NULL,
+            color       TEXT NOT NULL,
+            area_id     INTEGER REFERENCES area(id),
+            domain_id   INTEGER,
+            location_id INTEGER REFERENCES location(id),
+            description TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS study_entry (
             node_id    INTEGER NOT NULL REFERENCES qr_node(id),
@@ -2921,8 +2947,27 @@ def block_segments_for(date_str, with_cancelled=False):
                         'scheduled_change': any(r['effective_date'] <= on_date
                                                 for r in revisions.get(raw['id'], ()))})
 
+    # The LOCAL half: blocks that exist on one date only. Already the day's own
+    # statement, so no override and no revision applies to them — moving one
+    # moves the row. `block_id` is None on purpose: nothing keyed by a weekly
+    # block (an override, a hide, the Block Editor) may match one.
+    def add_day_blocks(on_date, offset):
+        for r in conn.execute('SELECT * FROM day_block WHERE date = ?', (on_date,)):
+            start, end = r['start_min'] + offset, r['end_min'] + offset
+            if end <= 0:
+                continue
+            out.append({'block_id': None, 'day_block_id': r['id'], 'area_id': r['area_id'],
+                        'domain_id': r['domain_id'], 'label': r['label'],
+                        'start': start, 'end': end, 'date': on_date,
+                        'overridden': False, 'cancelled': False,
+                        'color': r['color'], 'location_id': r['location_id'],
+                        'description': r['description'] or '', 'priority': None,
+                        'scheduled_change': False})
+
     add(day.weekday(), date_str, 0)
     add((day.weekday() - 1) % 7, (day - timedelta(days=1)).isoformat(), -1440)
+    add_day_blocks(date_str, 0)
+    add_day_blocks((day - timedelta(days=1)).isoformat(), -1440)
     conn.close()
     out.sort(key=lambda r: r['start'])
     return out
@@ -4439,6 +4484,64 @@ def upsert_override(block_id, date, **fields):
 def delete_override(id):
     conn = get_conn()
     conn.execute('DELETE FROM block_override WHERE id = ?', (id,))
+    conn.commit()
+    conn.close()
+
+
+# ── Day blocks: the LOCAL half of the schedule (see the day_block table) ──
+
+DAY_BLOCK_FIELDS = ('date', 'start_min', 'end_min', 'label', 'color', 'location_id',
+                    'description')
+
+
+def get_day_blocks(start_ymd, end_ymd):
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM day_block WHERE date BETWEEN ? AND ? '
+                        'ORDER BY date, start_min, id', (start_ymd, end_ymd)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_day_block(id):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM day_block WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def create_day_block(ymd, start_min, end_min, label, color, area_id=None, domain_id=None,
+                     location_id=None, description='', id=None):
+    f = filing_updates(area_id, domain_id)
+    # `id` re-inserts an ORIGINAL id — an undo of a delete, the inbox restore
+    # idiom — so anything still holding the old id points at the row again.
+    conn = get_conn()
+    cur = conn.execute(
+        'INSERT INTO day_block (id, date, start_min, end_min, label, color, area_id, domain_id,'
+        ' location_id, description) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        (id or None, ymd, int(start_min), int(end_min), label, color, f['area_id'],
+         f['domain_id'], location_id or None, description or ''))
+    conn.commit()
+    row_id = id or cur.lastrowid
+    conn.close()
+    return get_day_block(row_id)
+
+
+def update_day_block(id, fields):
+    updates = {k: fields[k] for k in DAY_BLOCK_FIELDS if k in fields}
+    if 'area_id' in fields or 'domain_id' in fields:
+        updates.update(filing_updates(fields.get('area_id'), fields.get('domain_id')))
+    if updates:
+        conn = get_conn()
+        sets = ', '.join(f'{k} = ?' for k in updates)
+        conn.execute(f'UPDATE day_block SET {sets} WHERE id = ?', list(updates.values()) + [id])
+        conn.commit()
+        conn.close()
+    return get_day_block(id)
+
+
+def delete_day_block(id):
+    conn = get_conn()
+    conn.execute('DELETE FROM day_block WHERE id = ?', (id,))
     conn.commit()
     conn.close()
 

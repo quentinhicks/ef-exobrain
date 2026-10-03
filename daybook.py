@@ -142,6 +142,7 @@ TITLES = {
     'interaction': 'People — interactions',
     'observation': 'Observations',
     'block_override': 'Block changes',
+    'day_block': 'Blocks for this day only',
     'block_feedback': 'Block feedback',
     'daily_todo': 'Day plan',
     'daily_review': 'Daily review',
