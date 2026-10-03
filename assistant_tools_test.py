@@ -60,13 +60,13 @@ def fake_call(method, path, body=None, reason=None):
 
 blocks_mcp.call = fake_call
 T = lambda name, **a: blocks_mcp.TOOLS[name][0](a)
-week = lambda: {b['block_id']: b for b in T('list_blocks')['week']}
+week = lambda: {b['block_id']: b for b in T('week_list')['week']}
 future = (date_cls.today() + timedelta(days=7))
 FUT = future.isoformat()
 dow = lambda d: blocks_mcp.DAYS[d.weekday()]
 
 # ── the week ──────────────────────────────────────────────────
-out = T('add_block', label='Deep work', days=['mo', 'we', 'fr'], start='09:00', end='12:00',
+out = T('week_add_block', label='Deep work', days=['mo', 'we', 'fr'], start='09:00', end='12:00',
         reason='a morning of focus')
 ids = out['block_ids']
 check('add_block makes one row per weekday', len(ids) == 3, out)
@@ -75,32 +75,32 @@ check('...each on its own day',
       sorted(w[i]['day'] for i in ids) == ['fr', 'mo', 'we'], [w[i]['day'] for i in ids])
 check('...and list_blocks reads them back', all(w[i]['start'] == '09:00' for i in ids), w)
 try:
-    T('add_block', label='Clash', days=['mo'], start='10:00', end='11:00', reason='x')
+    T('week_add_block', label='Clash', days=['mo'], start='10:00', end='11:00', reason='x')
     check('an overlapping block is refused', False)
 except gates_mcp.ToolError as e:
     check('an overlapping block is refused, in the app\'s words', 'Overlaps' in str(e), e)
 
 mo = next(i for i in ids if w[i]['day'] == 'mo')
-T('update_block', block_id=mo, start='08:30', reason='earlier start')
+T('week_update_block', block_id=mo, start='08:30', reason='earlier start')
 b = week()[mo]
 check('update_block changes only what it was given',
       (b['start'], b['end'], b['label'], b['day']) == ('08:30', '12:00', 'Deep work', 'mo'), b)
-T('update_block', block_id=mo, day='tu', reason='move it')
+T('week_update_block', block_id=mo, day='tu', reason='move it')
 check('...including the day', week()[mo]['day'] == 'tu', week()[mo])
 
-T('update_block', block_id=mo, end='13:00', effective_from=FUT, reason='longer from next week')
+T('week_update_block', block_id=mo, end='13:00', effective_from=FUT, reason='longer from next week')
 b = week()[mo]
 check('a dated change leaves today alone', b['end'] == '12:00', b)
 check('...and is listed as scheduled',
       any(c['field'] == 'end_time' and c['from_day'] == FUT for c in b.get('scheduled_changes', [])),
       b.get('scheduled_changes'))
-T('cancel_scheduled_change', block_id=mo, field='end_time', reason='never mind')
+T('week_cancel_scheduled_change', block_id=mo, field='end_time', reason='never mind')
 check('cancel_scheduled_change calls it off', not week()[mo].get('scheduled_changes'),
       week()[mo].get('scheduled_changes'))
 
-T('set_block_active', block_id=mo, active=False, reason='pause')
+T('week_set_active', block_id=mo, active=False, reason='pause')
 check('set_block_active pauses', week()[mo]['active'] is False, week()[mo])
-T('set_block_active', block_id=mo, active=True, reason='resume')
+T('week_set_active', block_id=mo, active=True, reason='resume')
 check('...and resumes', week()[mo]['active'] is True, week()[mo])
 
 # ── one day ───────────────────────────────────────────────────
@@ -109,17 +109,56 @@ day = future
 while dow(day) != 'we':
     day += timedelta(days=1)
 D = day.isoformat()
-seg = lambda: next(s for s in T('get_day', date=D)['blocks'] if s['block_id'] == we)
-T('set_day_hours', block_id=we, date=D, start='14:00', end='16:00', reason='afternoon only')
+seg = lambda: next(s for s in T('days_view', **{'from': D})['days'][0]['blocks']
+                   if s.get('block_id') == we)
+T('day_set_block_hours', block_id=we, date=D, start='14:00', end='16:00', reason='afternoon only')
 check('set_day_hours moves that date', (seg()['start'], seg()['end']) == ('14:00', '16:00'), seg())
 check('...and not the week', week()[we]['start'] == '09:00', week()[we])
-T('cancel_day', block_id=we, date=D, reason='holiday')
+T('day_cancel_block', block_id=we, date=D, reason='holiday')
 check('cancel_day cancels that date', seg()['cancelled'] is True, seg())
-T('restore_day', block_id=we, date=D, reason='back on')
+T('day_restore_block', block_id=we, date=D, reason='back on')
 check('restore_day puts the week back',
       (seg()['cancelled'], seg()['start'], seg()['changed_for_this_day']) == (False, '09:00', False), seg())
 
-T('delete_block', block_id=we, reason='drop wednesdays')
+# ── a block for one date (the LOCAL store) ────────────────────
+week_before = client.get('/api/blocks').get_json()
+view = lambda: T('days_view', **{'from': D})['days'][0]
+out = T('day_add_block', date=D, label='Deep work', start='13:00', end='15:00', reason='exam push')
+dbid = out['day_block_id']
+mine = [b for b in view()['blocks'] if b.get('day_block_id') == dbid]
+check('day_add_block puts a block on that date', len(mine) == 1 and mine[0]['kind'] == 'day'
+      and (mine[0]['start'], mine[0]['end']) == ('13:00', '15:00'), view())
+check('...borrowing the weekly colour of the same label',
+      client.get(f'/api/day-blocks?from={D}').get_json()[0]['color']
+      == next(b for b in week_before if b['label'] == 'Deep work')['color'])
+check('...and leaves the week exactly as it was', client.get('/api/blocks').get_json() == week_before)
+check('...and is counted apart from the weekly hours',
+      T('days_view', **{'from': D})['hours_by_label']['Deep work'] == {'weekly': 3.0, 'day_only': 2.0,
+                                                                     'total': 5.0},
+      T('days_view', **{'from': D})['hours_by_label'])
+check('free gaps leave out what the blocks cover',
+      not any(g.startswith('13:00') or g.startswith('09:00') for g in view()['free']), view()['free'])
+try:
+    T('day_add_block', date=D, label='Clash', start='10:00', end='11:00', reason='x')
+    check('a day block over a weekly one is refused', False)
+except gates_mcp.ToolError as e:
+    check('a day block over a weekly one is refused, naming what it hits', 'Deep work' in str(e), e)
+T('day_add_block', date=D, label='Clash', start='10:00', end='11:00', allow_overlap=True,
+  reason='agreed double-booking')
+check('...unless the overlap is accepted',
+      any(b['label'] == 'Clash' for b in view()['blocks']), view())
+T('day_update_block', day_block_id=dbid, start='15:00', end='17:30', reason='later')
+mine = next(b for b in view()['blocks'] if b.get('day_block_id') == dbid)
+check('day_update_block moves it', (mine['start'], mine['end']) == ('15:00', '17:30'), mine)
+T('day_remove_block', day_block_id=dbid, reason='done early')
+check('day_remove_block removes it', not any(b.get('day_block_id') == dbid
+                                             for b in view()['blocks']))
+check('...and the week was never touched', client.get('/api/blocks').get_json() == week_before)
+check('every tool says which half it writes',
+      all(desc.startswith(('GLOBAL', 'LOCAL')) for n, (_, desc, _, _) in blocks_mcp.TOOLS.items()
+          if n.startswith(('week_add', 'week_update', 'week_set', 'week_delete', 'day_'))))
+
+T('week_delete_block', block_id=we, reason='drop wednesdays')
 check('delete_block deletes one weekday', we not in week() and mo in week(), list(week()))
 
 # ── the scope ─────────────────────────────────────────────────
