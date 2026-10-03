@@ -3302,6 +3302,7 @@ function renderBar() {
   // not decide that you are typing.
   input.value = captureDraftGet();
   input.addEventListener('input', () => captureDraftSet(input.value));
+  wireEdgeFade(input);
   input.addEventListener('keydown', async e => {
     if (e.key === 'Escape') {
       // Peel: text first, then let the overlay's own Esc take over.
@@ -7583,7 +7584,29 @@ function initTopNav() {
     nowDoor();
   });
   onLongPress(eye, nowDoor);
+  wireEdgeFade(nav.querySelector('.tn-tabs'));
+  nav.querySelectorAll('.tn-search input').forEach(wireEdgeFade);
+  window.addEventListener('resize', () =>
+    document.querySelectorAll('.edge-fade').forEach(paintEdgeFade));
   paintTopNav();
+}
+
+// TEXT FADES AT A BAR'S EDGE (2026-10-02, Quentin's instruction): the strip's
+// tabs and the bars' fields used to stop dead mid-word. Whichever side has
+// more text past it fades (.fade-l / .fade-r), so the cut says "there is
+// more" — read off the element's own scroll, so it is right at any width.
+function paintEdgeFade(el) {
+  const max = el.scrollWidth - el.clientWidth;
+  el.classList.toggle('fade-l', el.scrollLeft > 1);
+  el.classList.toggle('fade-r', el.scrollLeft < max - 1);
+}
+function wireEdgeFade(el) {
+  el.classList.add('edge-fade');
+  // A frame later: a field scrolls to its caret AFTER the key or the blur.
+  const paint = () => requestAnimationFrame(() => paintEdgeFade(el));
+  ['scroll', 'input', 'focus', 'blur', 'keyup', 'pointerup'].forEach(t =>
+    el.addEventListener(t, paint));
+  paint();
 }
 
 function paintTopNav() {
@@ -7600,6 +7623,8 @@ function paintTopNav() {
   document.querySelectorAll('#top-nav .tn-tools').forEach(g =>
     g.classList.toggle('hidden', g.dataset.page !== lit));
   if (lit === 'calendar') renderCalFilter();
+  // The page's tools just took (or gave back) the tabs' width.
+  document.querySelectorAll('#top-nav .edge-fade').forEach(paintEdgeFade);
 }
 
 // Put down every surface over the day — the top-level rungs of the Esc

@@ -4430,12 +4430,16 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 .eg-spacer { flex: 1; }
 
 /* The bar is fixed, so the day's scroller pads under it. */
-#engage-body { flex: 1; overflow-y: auto; padding: 4px 0 calc(var(--gbar-h) + 10px); }
+/* overflow-x is HIDDEN, not the auto overflow-y implies: the list only ever
+   scrolls down, and a few pixels of row (a pasted URL, a long tag) used to
+   grow a sideways scrollbar. Long tokens wrap in .eg-text below; this is the
+   floor for whatever else does not. */
+#engage-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 0 calc(var(--gbar-h) + 10px); }
 
 .eg-row { display: flex; align-items: center; gap: 9px; padding: 4px 14px; }
 .eg-time { width: 40px; flex: none; font: 10px var(--font-mono); color: var(--text-secondary); }
 .eg-end { flex: none; font: 10px var(--font-mono); color: var(--text-secondary); }
-.eg-text { flex: 1; font-size: 13px; color: var(--text-primary); min-width: 0; }
+.eg-text { flex: 1; font-size: 13px; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
 /* Long-press is a gesture on these; keep iOS from selecting/calling out. */
 .eg-block, .eg-event, .tl-block, .tl-gcal-event {
   -webkit-touch-callout: none;
@@ -4835,6 +4839,17 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   scrollbar-width: none;
 }
 .tn-tabs::-webkit-scrollbar { display: none; }
+/* Text past a bar's edge fades rather than stopping mid-word (paintEdgeFade
+   says which side has more). A mask, so it is right on either ground and in
+   either theme with no colour of its own. */
+.edge-fade {
+  --fade-l: 0px;
+  --fade-r: 0px;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
+}
+.edge-fade.fade-l { --fade-l: 28px; }
+.edge-fade.fade-r { --fade-r: 28px; }
 /* The underline sits just under the WORD (Lists/Log designs, 2026-10-01),
    not on the strip's bottom edge. */
 .tn-tab {
