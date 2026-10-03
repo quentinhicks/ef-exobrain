@@ -1502,10 +1502,13 @@ def post_day_block():
         body.get('description') or '', id=data.get('id') or None)), 201
 
 
-@app.route('/api/day-blocks/<int:id>', methods=['PATCH', 'DELETE'])
+@app.route('/api/day-blocks/<int:id>', methods=['GET', 'PATCH', 'DELETE'])
 def day_block_route(id):
-    if not storage.get_day_block(id):
+    row = storage.get_day_block(id)
+    if not row:
         return jsonify({'error': 'no such day block'}), 404
+    if request.method == 'GET':
+        return jsonify(row)
     if request.method == 'DELETE':
         storage.delete_day_block(id)
         return '', 204

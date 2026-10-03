@@ -1305,8 +1305,8 @@ function renderBlocksLayer(bodyH = 600) {
       ? `<span class="tl-block-sublabel" data-obj="area:${proj.id}">${escHtml(proj.name)}</span>` : ''}${locLabel}`;
     const inner = `<div class="tl-block-bar"></div>${tier === 'none' ? ''
       : `<div class="tl-text" data-tl-rank="0">${labelSpan}${subs}</div>`}`;
-    return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}"
-                 data-block-id="${b.id}" data-obj="block:${b.id}" data-purpose="${escHtml(purpose)}"
+    return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}${seg.dayBlockId ? ' tl-block-day' : ''}"
+                 ${blockObjAttrs(seg)} data-purpose="${escHtml(purpose)}"
                  ${blockCatAttrs(seg)}
                  data-start-min="${startMin}" data-end-min="${endMin}"
                  style="top:${top}%;height:${height}%;cursor:${cont ? 'default' : 'pointer'};
@@ -1457,6 +1457,7 @@ function initBlockBarDrag(layer, dateStr, geo) {
   layer.querySelectorAll('.tl-block:not(.tl-block-cont):not(.tl-block-cancelled) .tl-block-bar').forEach(bar => {
     const blockEl = bar.parentElement;
     const blockId = parseInt(blockEl.dataset.blockId);
+    const dayBlockId = parseInt(blockEl.dataset.dayBlockId);
     const origStart = parseInt(blockEl.dataset.startMin);
     const origEnd = parseInt(blockEl.dataset.endMin);
 
@@ -1512,6 +1513,11 @@ function initBlockBarDrag(layer, dateStr, geo) {
       async function onUp() {
         document.body.style.cursor = '';
         if (!moved || (curS === origStart && curE === origEnd)) { g.repaint(); return; }
+        if (dayBlockId) {
+          await undoableDayBlockMove(dayBlockId, curS, curE);
+          g.repaint();
+          return;
+        }
         // Read BEFORE the write: the inverse of this drop is the override the
         // day had before it, and "none" is a delete of whatever the POST
         // creates — see restoreBlockOverride.
@@ -2118,8 +2124,21 @@ function segmentRow(s) {
     name: s.label,
     cat: blockCatKey(s.label),
     description: s.description || '',
+    dayBlockId: s.day_block_id || null,
     cont,
   };
+}
+
+// WHICH HALF A DRAWN BLOCK BELONGS TO (2026-10-03, Quentin's instruction: a
+// global change and a local one must never mix). A WEEKLY block is
+// `block:<id>` and carries data-block-id — overrides, hides, the category pin
+// and the Block Editor all key off it. A block for ONE DATE is `dayblock:<id>`
+// and carries data-day-block-id INSTEAD, so nothing weekly can match it and
+// every verb it offers edits that date's row and nothing else.
+function blockObjAttrs(s) {
+  return s.dayBlockId
+    ? `data-obj="dayblock:${s.dayBlockId}" data-day-block-id="${s.dayBlockId}"`
+    : `data-obj="block:${s.b.id}" data-block-id="${s.b.id}"`;
 }
 
 // WHAT A STRETCH OF A BLOCK IS FOR (2026-09-30, Quentin's instruction: "see
@@ -2547,8 +2566,8 @@ function renderCalWeek() {
         const [a, b] = clip(s.startMin, s.endMin);
         if (b <= a) return '';
         if (!s.cancelled) legendBlocks.set(s.label.replace(/ \(cont\.\)$/, ''), s.b.color);
-        return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}"
-          data-block-id="${s.b.id}" data-obj="block:${s.b.id}"
+        return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}${s.dayBlockId ? ' tl-block-day' : ''}"
+          ${blockObjAttrs(s)}
           data-date="${d}" data-start-min="${a}" data-end-min="${b}"
           data-purpose="${escHtml(blockPurpose(s))}" ${blockCatAttrs(s)}
           style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
@@ -3462,6 +3481,44 @@ async function restoreBlockOverride(blockId, date, prev, createdId) {
 function undoableBlockOverride(blockId, date, prev, createdId, label) {
   pushUndo(label, () => restoreBlockOverride(blockId, date, prev, createdId));
 }
+
+// A BLOCK FOR ONE DATE is its own row, so its inverses are the row's: a move
+// is undone by the times the row had (read from the server first — a week
+// column's drawn times are clipped to the hours it shows), a removal by
+// re-inserting the ORIGINAL id. Neither touches the week.
+async function undoableDayBlockMove(id, startMin, endMin) {
+  const prev = await apiGet(`/api/day-blocks/${id}`, null);
+  if (!prev || !prev.id) { toast('That block is gone'); return; }
+  const res = await apiSend(`/api/day-blocks/${id}`, 'PATCH',
+    { start_min: startMin, end_min: endMin });
+  if (!res.ok) { toast('Could not move that block'); return; }
+  pushUndo(`moved "${prev.label}"`, async () => {
+    await apiSend(`/api/day-blocks/${id}`, 'PATCH',
+      { start_min: prev.start_min, end_min: prev.end_min });
+    await refreshAfterUndo();
+  });
+  await refreshAfterUndo();
+}
+
+async function removeDayBlock(id) {
+  const row = await apiGet(`/api/day-blocks/${id}`, null);
+  if (!row || !row.id) { toast('That block is gone'); return false; }
+  const res = await apiSend(`/api/day-blocks/${id}`, 'DELETE');
+  if (!res.ok) { toast('Could not remove that block'); return false; }
+  pushUndo(`removed "${row.label}"`, async () => {
+    await apiSend('/api/day-blocks', 'POST', row);
+    await refreshAfterUndo();
+  });
+  await refreshAfterUndo();
+  return true;
+}
+
+// Its one day-level verb. The date is the ROW's own, never the viewed day, so
+// the verb is the same wherever the block is drawn.
+registerObjectVerbs('dayblock', (kind, id) => kind !== 'dayblock' ? [] : [
+  { label: 'Remove from this date', danger: true, rightClick: true,
+    run: () => removeDayBlock(parseInt(id)) },
+]);
 
 // The common case: a PATCH whose inverse is the same PATCH with the values
 // the item had before. `fields` is the list of keys being changed.
@@ -5636,6 +5693,50 @@ const SETTINGS_SHEETS = {
   // Delete is the whole retirement story, and it is undoable. (The routine
   // sheet's missing Pause is the precedent for naming a gap rather than
   // inventing a verb to fill it.)
+  // A BLOCK FOR ONE DATE's editor — the local half, never the week. Like the
+  // plan span it is day data, so the same NAMED GAP: no Pause (a paused
+  // one-off is a block that is not a block); Remove is its whole retirement,
+  // and undoable. To change every week, the weekly block has its own sheet.
+  dayblock: {
+    title: () => 'Block for one date',
+    save: () => 'Save block',
+    removeLabel: 'Remove from this date',
+    blank: () => ({ label: '', date: '', start: '', end: '', area: '', description: '' }),
+    load: b => ({ label: b.label, date: b.date, start: clockHHMM(b.start_min),
+                  end: clockHHMM(b.end_min), area: filingKey(b),
+                  description: b.description || '' }),
+    fields: v => [
+      { key: 'label', label: 'Name', kind: 'text',
+        hint: 'This date only. The weekly schedule is not touched — to change every '
+              + 'week, edit the weekly block in Settings → Blocks.' },
+      { key: 'date', label: 'Date', kind: 'date' },
+      { key: 'start', label: 'From', kind: 'time', half: true },
+      { key: 'end', label: 'To', kind: 'time', half: true },
+      { key: 'area', label: 'For', kind: 'select', options: () => seFilingOptions(v.area) },
+      { key: 'description', label: 'Purpose', kind: 'text', placeholder: 'e.g. midterm review' },
+    ],
+    submit: async (v, b) => {
+      const label = (v.label || '').trim();
+      if (!label || !v.date || !v.start || !v.end) return 'Name, date, from and to are required.';
+      const lo = timeToMinutes(v.start);
+      const end = spanEndMin(v.start, v.end);
+      if (isNaN(lo) || isNaN(end) || end - lo < 5) return 'A block runs at least 5 minutes.';
+      const fields = { label, date: v.date, start_min: lo, end_min: end,
+                       ...filingBody(v.area), description: (v.description || '').trim() };
+      const prev = {};
+      Object.keys(fields).forEach(k => { prev[k] = b[k] === undefined ? null : b[k]; });
+      const res = await apiSend(`/api/day-blocks/${b.id}`, 'PATCH', fields);
+      if (!res.ok) return ((await res.json().catch(() => ({}))).error) || 'Error saving that block.';
+      pushUndo(`edited "${b.label}"`, async () => {
+        await apiSend(`/api/day-blocks/${b.id}`, 'PATCH', prev);
+        await refreshAfterUndo();
+      });
+      await refreshAfterUndo();
+      return null;
+    },
+    remove: async b => removeDayBlock(b.id),
+  },
+
   planspan: {
     title: () => 'Planned hours',
     save: () => 'Save span',
@@ -7032,6 +7133,14 @@ const OBJECT_KINDS = {
   // A drawn plan span. Unlike every other kind here it is DAY data rather than
   // permanent structure, so its sheet has no Pause — see the named gap on
   // SETTINGS_SHEETS.planspan.
+  // A block for ONE date (the local store). Fetched by id rather than found in
+  // a cache: it is drawn on the day view, the week and Engage, each holding a
+  // different day.
+  dayblock: { noun: 'block',
+    find: async id => {
+      const r = await apiGet(`/api/day-blocks/${id}`, null);
+      return r && r.id ? r : null;
+    } },
   planspan: { noun: 'span',
     find: id => ((state.plan || {}).spans || []).find(s => String(s.id) === String(id)) },
 };
@@ -16432,7 +16541,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   // cannot disagree about which blocks a day has. Yesterday's overnight tail
   // (a negative start) is skipped here: Engage lists the day's own commitments.
   viewSegmentsFor(dateStr).filter(s => s.start >= 0).forEach(s => {
-    const seg = { minute: s.start, endMin: s.end, id: s.block_id,
+    const seg = { minute: s.start, endMin: s.end, id: s.block_id, dayBlockId: s.day_block_id,
                   label: s.label, cancelled: !!s.cancelled, color: s.color };
     if (routineAreaIds.has(s.area_id)) {
       (routineGroups[s.area_id] = routineGroups[s.area_id] || []).push(seg);
@@ -16675,9 +16784,12 @@ function renderEngage() {
       </div>`;
     }
     if (r.kind === 'block') {
-      return `<div class="eg-row eg-block${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
-        data-block="${r.id}" data-obj="block:${r.id}" data-obj-tap="1"
-        title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}">
+      // A block for one date is not a weekly block: no data-block, so the
+      // ⌘-click cancel (an override of the WEEK's block) cannot reach it.
+      return `<div class="eg-row eg-block${r.dayBlockId ? ' eg-block-day' : ''}${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
+        ${r.dayBlockId ? `data-obj="dayblock:${r.dayBlockId}" data-obj-tap="1" title="This date only"`
+          : `data-block="${r.id}" data-obj="block:${r.id}" data-obj-tap="1"
+        title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}"`}>
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-swatch eg-swatch-block" style="--block-color:${escHtml(r.color || '#888888')}"></span>
         <span class="eg-text">${escHtml(r.label)}</span>

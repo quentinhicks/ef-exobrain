@@ -6320,6 +6320,14 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   filter: none;
   background: color-mix(in srgb, var(--block-color) var(--wk-bar), transparent);
 }
+/* A BLOCK FOR ONE DATE hatches the OTHER way (2026-10-03): the week's blocks
+   lean one direction, a one-off leans the other, so a day planned on top of
+   the week reads as such at a glance — same colour, no new value to theme. */
+#cal-overlay .tl-block-day {
+  background: repeating-linear-gradient(45deg,
+    color-mix(in srgb, var(--block-color) var(--wk-hatch), transparent) 0 1.5px,
+    transparent 1.5px 7px);
+}
 /* With no bar to turn red, a cancelled block says so in its hatch. */
 #cal-overlay .tl-block-cancelled {
   background: repeating-linear-gradient(135deg,
@@ -6509,6 +6517,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .eg-swatch { width: 14px; height: 14px; border-radius: 3px; flex: none; }
 .eg-swatch-block {
   background: repeating-linear-gradient(135deg,
+    color-mix(in srgb, var(--block-color) 55%, transparent) 0 1.5px,
+    transparent 1.5px 4.5px);
+}
+/* A block for ONE date leans the other way, as it does on the calendar. */
+.eg-block-day .eg-swatch-block {
+  background: repeating-linear-gradient(45deg,
     color-mix(in srgb, var(--block-color) 55%, transparent) 0 1.5px,
     transparent 1.5px 4.5px);
 }
