@@ -12366,7 +12366,10 @@ function renderLogs() {
     logsView.logs = await apiGet('/api/logs', logsView.logs);
     renderLogs();
   });
-  if (document.activeElement !== document.getElementById('logs-q')) ta.focus();
+  // Not on a touch screen: there the focus raises the keyboard over the log
+  // you opened to READ, and a tap in the text is how writing starts anyway.
+  if (document.activeElement !== document.getElementById('logs-q')
+      && !matchMedia('(hover: none)').matches) ta.focus();
 }
 
 // ── Social exposure v1 (dryrun) ──────────────────────────────
@@ -12776,11 +12779,23 @@ function renderSocial() {
 // published once as `--vvh` and every fixed layer is sized from it. One
 // variable, read in CSS, so a new surface inherits the answer instead of
 // re-deriving it: the same bargain as --gbar-h.
+//
+// AND THE PAGE MAY NOT PAN UNDER IT (2026-10-02, Quentin's report: a huge gap
+// while typing, and stuck in a log). Opening the keyboard also SCROLLS the
+// page to bring the field into view, while the layers already rose by the
+// keyboard's height off --vvh — so they rose twice: a keyboard-high gap
+// under the capture bar, and the top strip (the tabs, "‹ All logs") panned
+// off the top with no way back to it, sometimes even after the keyboard
+// closed. Nothing in this document scrolls the WINDOW — every surface is a
+// fixed layer with its own scroller — so any window scroll is that pan, and
+// it is put back. Not while pinch-zoomed: that pan is the reader's own.
 function initVisibleHeight() {
   const vv = window.visualViewport;
   const set = () => {
     document.documentElement.style.setProperty(
       '--vvh', Math.round(vv ? vv.height : window.innerHeight) + 'px');
+    const zoomed = vv && Math.abs(vv.scale - 1) > 0.01;
+    if (!zoomed && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
   };
   set();
   if (vv) {
@@ -12789,6 +12804,7 @@ function initVisibleHeight() {
     vv.addEventListener('scroll', set);
   }
   window.addEventListener('resize', set);
+  window.addEventListener('scroll', set, { passive: true });
   // The rotation fires before the new size is settled, hence the beat.
   window.addEventListener('orientationchange', () => setTimeout(set, 80));
 }
