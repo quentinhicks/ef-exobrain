@@ -16561,6 +16561,10 @@ function renderEngage() {
   const header = document.getElementById('engage-header');
   const body = document.getElementById('engage-body');
   if (!header || !body) return;
+  // A rename half-typed on a to-do row is data (the renderBar rule): the
+  // repaints from timers and focus would destroy the field. Its own finish
+  // drops the mark before it repaints.
+  if (document.activeElement && document.activeElement.classList.contains('eg-renaming')) return;
 
   const now = new Date();
   const dateStr = egDateStr();
@@ -17172,15 +17176,57 @@ function renderEngage() {
     // tap-to-arm-then-tap-a-gap placement is gone (2026-08-11): it was a
     // two-step gesture with an invisible second target, and the sheet's Show-on
     // date+TIME already places an action on any day. One path, not two.
+    // A DOUBLE-CLICK RENAMES (2026-10-02, Quentin's instruction) — MAP's
+    // gesture, so the single click waits out the double-click window first.
+    // The pool may write wording; it is the one structural thing it may not.
+    let clickTimer = null;
     row.addEventListener('click', e => {
       if (!e.target.classList.contains('eg-text')) return;
       // Same race as the checkbox: a long press on the row re-renders, taking
       // its own click guard with it, and the synthesized click would then open
       // clarify on top of the ◐ you just set.
       if (justLongPressed()) return;
+      if (e.detail > 1) return;
+      clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        const id = parseInt(row.dataset.id);
+        const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+        if (item) openClarifyForItem(item, after);
+      }, 220);
+    });
+    row.addEventListener('dblclick', e => {
+      const span = e.target.closest('.eg-text');
+      if (!span) return;
+      clearTimeout(clickTimer);
       const id = parseInt(row.dataset.id);
       const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
-      if (item) openClarifyForItem(item, after);
+      if (!item) return;
+      row.draggable = false;
+      const input = document.createElement('input');
+      input.type = 'text';
+      // eg-renaming is what renderEngage's guard looks for.
+      input.className = 's2-rename-input eg-renaming';
+      input.value = item.content;
+      span.replaceWith(input);
+      input.focus();
+      input.select();
+      let settled = false;
+      const finish = async save => {
+        if (settled) return;
+        settled = true;
+        input.classList.remove('eg-renaming');
+        const content = input.value.trim();
+        if (!save || !content || content === item.content) { renderEngage(); return; }
+        undoablePatch(item, ['content'], `renamed "${item.content}"`);
+        await patchInboxItem(id, { content });
+        await after();
+      };
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        // stopPropagation, or initHub's Esc peels the page behind the field.
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      });
+      input.addEventListener('blur', () => finish(true));
     });
   });
 
