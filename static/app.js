@@ -1275,7 +1275,7 @@ function renderBlocksLayer(bodyH = 600) {
   // start. A block scheduled to move or pause on a future date is already
   // resolved into this, which is what makes the change visible before it
   // lands rather than the moment it does.
-  const segments = viewSegmentsFor(dateStr).map(segmentRow);
+  const segments = drawnSegments(viewSegmentsFor(dateStr)).map(segmentRow);
 
   if (!segments.length && !state.blocks.some(b => b.active)) {
     layer.innerHTML = '<div class="tl-placeholder">No blocks yet — open Block Editor to add your schedule</div>';
@@ -2109,6 +2109,27 @@ function viewSegmentsFor(dateStr) {
     ? state.viewSegments.segments : [];
 }
 
+// A CANCELLED BLOCK IS DRAWN ONLY WHERE NOTHING LIVE STANDS ON IT (2026-10-04,
+// Quentin: the one-offs must not intersect the weeklys). Cancelling a weekly
+// stretch to make room for a block for one date is the common case, and
+// drawing both crossed two hatches over the same hours. The cancellation is
+// still served and still true; where a live block covers it, it is simply not
+// drawn, and any uncovered rest still is, struck through, with its door back.
+function drawnSegments(segs) {
+  const live = segs.filter(s => !s.cancelled);
+  const out = [];
+  segs.forEach(s => {
+    if (!s.cancelled) { out.push(s); return; }
+    let pieces = [[s.start, s.end]];
+    live.forEach(l => {
+      pieces = pieces.flatMap(([a, b]) => (l.end <= a || l.start >= b) ? [[a, b]]
+        : [[a, Math.min(b, l.start)], [Math.max(a, l.end), b]].filter(([x, y]) => y - x >= 5));
+    });
+    pieces.forEach(([a, b]) => out.push({ ...s, start: a, end: b }));
+  });
+  return out;
+}
+
 // One segment as the renderers want it: the day question is the SERVER's, the
 // cosmetic join (which location is that id) stays here.
 function segmentRow(s) {
@@ -2185,22 +2206,6 @@ function blockCatAttrs(s) {
     data-what="${escHtml([s.description, when].filter(Boolean).join(' · '))}"`;
 }
 
-function calPinStats(cat) {
-  const days = calWeek.on ? weekDates() : [viewDay()];
-  let n = 0, mins = 0;
-  days.forEach(d => {
-    const segs = calWeek.on ? ((calWeek.days[d] || {}).segments || []) : viewSegmentsFor(d);
-    // Yesterday's overnight tail (a negative start) is the SAME stretch as the
-    // one the day before drew, so it is not counted twice.
-    segs.forEach(sg => {
-      if (sg.start < 0 || sg.cancelled || blockCatKey(sg.label) !== cat) return;
-      n++;
-      mins += sg.end - sg.start;
-    });
-  });
-  return `${n}× ${calWeek.on ? 'this week' : 'this day'} · ${humanMinutes(mins)}`;
-}
-
 function paintCalPin() {
   let style = document.getElementById('cal-pin-style');
   if (!style) {
@@ -2208,25 +2213,14 @@ function paintCalPin() {
     style.id = 'cal-pin-style';
     document.head.appendChild(style);
   }
-  const bar = document.getElementById('cal-pin-bar');
   if (!calPin.cat) {
     style.textContent = '';
-    if (bar) { bar.classList.add('hidden'); bar.innerHTML = ''; }
     return;
   }
   const k = CSS.escape(calPin.cat);
   style.textContent = `#cal-overlay .tl-block[data-cat]:not([data-cat="${k}"]) { opacity: 0.3; }
 #cal-overlay .tl-block[data-cat="${k}"] { --wk-hatch: var(--wk-hatch-on);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--block-color) 60%, transparent); }`;
-  if (!bar) return;
-  bar.innerHTML = `<span class="cal-pin-sw" style="--block-color:${escHtml(calPin.color)}"></span>
-    <span class="cal-pin-name">${escHtml(calPin.name)}</span>
-    <span class="cal-pin-what">${escHtml(calPin.what)}</span>
-    <span class="cal-pin-stats">${escHtml(calPinStats(calPin.cat))}</span>
-    <button class="wk-btn" data-pin="menu" aria-label="This stretch's menu">⋯</button>
-    <button class="wk-btn" data-pin="edit">Edit</button>
-    <button class="wk-btn wk-icon" data-pin="clear" aria-label="Stop highlighting">✕</button>`;
-  bar.classList.remove('hidden');
 }
 
 function clearCalPin() {
@@ -2296,29 +2290,15 @@ function initCalBlockPin() {
     if (justPointerDragged() || justLongPressed()) return;
     e.stopPropagation();
     toggleCalPin(el);
+    // NO BAR (2026-10-04, Quentin: the strip naming the block was
+    // unnecessary). It held the stretch's menu and Edit, the only doors on a
+    // calendar whose right-click removes — so the click opens that menu here,
+    // at the pointer, for a weekly block and a one-off alike.
+    if (!calPin.cat) return;
+    const [kind, id] = (el.dataset.obj || '').split(':');
+    if (kind && id) openObjectMenu(e.clientX, e.clientY + 4, kind, id, verbsFor(kind, id, el));
   });
 
-  document.getElementById('cal-pin-bar').addEventListener('click', e => {
-    const btn = e.target.closest('[data-pin]');
-    if (!btn) return;
-    const act = btn.dataset.pin;
-    if (act === 'clear') { clearCalPin(); return; }
-    if (act === 'edit') {
-      const c = blockCategoryOf(calPin.name);
-      if (!c) { toast('That block is gone'); return; }
-      openSeSheet('blockcat', c);
-      return;
-    }
-    if (act === 'menu') {
-      const sel = `.tl-block[data-block-id="${CSS.escape(String(calPin.blockId))}"]`
-        + (calPin.date ? `[data-date="${calPin.date}"]` : '');
-      const el = cal.querySelector(sel);
-      if (!el) { toast('That stretch is no longer drawn'); return; }
-      const r = btn.getBoundingClientRect();
-      openObjectMenu(r.left, r.bottom + 4, 'block', calPin.blockId,
-                     verbsFor('block', calPin.blockId, el));
-    }
-  });
 }
 
 // ── THE WEEK (2026-09-29, Quentin's "Calendar Week" design) ──────────────
@@ -2560,7 +2540,7 @@ function renderCalWeek() {
 
     // The DAY VIEW'S OWN block element (tl-block + its bar), so the day's drag,
     // menu and styles are this column's too — one element, two surfaces.
-    const blocks = day.segments.map(segmentRow)
+    const blocks = drawnSegments(day.segments).map(segmentRow)
       .filter(s => !state.tlHidden.block[`${s.b.id}:${d}`])
       .map(s => {
         const [a, b] = clip(s.startMin, s.endMin);

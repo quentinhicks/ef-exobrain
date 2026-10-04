@@ -6376,32 +6376,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 #blk-hover b { font-weight: 600; color: var(--text-primary); }
 #blk-hover span:last-child { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
-#cal-pin-bar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  min-height: 40px;
-  padding: 4px 12px 4px 16px;
-  border-top: 1px solid var(--border-soft);
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--surface-low);
-  font-size: 13px;
-}
-.cal-pin-name { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
-.cal-pin-what {
-  flex: 1;
-  min-width: 0;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.cal-pin-stats { font: 12px var(--font-mono); color: var(--text-secondary); white-space: nowrap; }
-/* A phone: what the stretch is for takes its own line under the name. */
-@media (max-width: 600px) {
-  .cal-pin-what { order: 10; flex-basis: 100%; }
-}
 
 #cal-overlay .tl-gcal-event {
   right: auto;
