@@ -16705,13 +16705,15 @@ function renderEngage() {
   // header are still where you see and change what is gating.
   const pool = poolBase
     .filter(i => locOk(i) && deviceOk(i) && timeOk(i) && dayOk(i))
-    // BY DUE DATE (2026-08-07: deadlines sort the pool; no deadline sorts
-    // last), then oldest-first as always. A DOT DOES NOT MOVE A ROW
-    // (2026-09-30, Quentin's instruction): in Forster's Final Version the
-    // order IS the method — you dot down the list and work back up it — so a
-    // dotted row floating to the top scrambled the chain it was dotted into.
-    .sort((a, b) => (dueOf(a) || '9999').localeCompare(dueOf(b) || '9999')
-      || (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
+    // OLDEST FIRST, AND NOTHING ELSE. A DOT DOES NOT MOVE A ROW (2026-09-30,
+    // Quentin's instruction): in Forster's Final Version the order IS the
+    // method — you dot down the list and work back up it — so a dotted row
+    // floating to the top scrambled the chain it was dotted into. NOR DOES A
+    // DUE DATE (2026-10-05, Quentin's instruction, reversing "deadlines sort
+    // the pool" of 2026-08-07): a dated row, a recurring one included, jumped
+    // above everything already on the list. Every row lands at the bottom when
+    // it is added; the due chip still says when it is due.
+    .sort((a, b) => (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
 
   // WHAT COMES BACK ON THIS DAY. A deferred item vanishes from every surface
   // until its date, which is the point — but it also means walking forward to
