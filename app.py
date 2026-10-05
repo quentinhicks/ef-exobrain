@@ -641,10 +641,6 @@ def get_inbox():
 def get_inbox_active():
     domain_id = request.args.get('domain_id', type=int)
     storage.seed_recurring_tasks()
-    # A routine marked "also a task" seeds its action from the same read, for
-    # the same reason: the pool is what asks the question, so the pool is where
-    # the answer gets made.
-    storage.seed_flow_tasks()
     # No filter = every available item across domains: the Engage context
     # picker narrows client-side so switching contexts costs no round trip.
     # (?area_id was a third branch nothing has called since the pool became
@@ -2171,9 +2167,6 @@ def get_gtd_review():
     review = storage.get_gtd_review(request.args.get('week'))
     review['counts'] = storage.get_gtd_review_counts()
     review['habit'] = storage.get_habit_week_for(date_cls.today().isoformat())
-    # The STEPS are a routine now (storage._seed_review_flow) — this row keeps
-    # only what is the review's own and no routine's: the note and the filing.
-    review['flow_id'] = storage.get_review_flow_id()
     return jsonify(review)
 
 
@@ -2221,12 +2214,8 @@ _YMD_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 # app.js reads days_of_week, weekly_windows, today_override and
 # pending_changes off each node, and the QR manager is built around them.
 
-def _node_payload(node, today, routines=None):
+def _node_payload(node, today):
     ov = storage.qr_get_override(node['id'], today)
-    # `routine` is what makes this gate PASS beyond presence, and it is set in
-    # the routine editor rather than here — so the gate has to say it, or the
-    # rule that judges it is invisible from the surface that configures it.
-    rt = next((f for f in (routines or []) if f.get('qr_node_id') == node['id']), None)
     # `schedule_label` and `day_windows` come from the SAME resolution the judge
     # uses (qr_judge.resolve_window), so the panel, the timeline and the judge
     # cannot disagree about when a gate runs. The client is never handed a rule.
@@ -2257,11 +2246,6 @@ def _node_payload(node, today, routines=None):
     return dict(node,
                 today_override=ov,
                 today_state=state_now,
-                routine=rt['name'] if rt else None,
-                routine_id=rt['id'] if rt else None,
-                # The offset is set from the GATE sheet now (it is minutes from
-                # this gate's deadline), so the gate has to carry it.
-                routine_offset_min=(rt.get('offset_min') if rt else None),
                 schedule_label=label,
                 day_windows=storage.qr_gate_day_windows(node),
                 pending_changes=pending,
@@ -2508,15 +2492,13 @@ def accountability_nodes():
             storage.qr_ensure_node_source(node_id)
         node = [n for n in storage.qr_get_nodes() if n['id'] == node_id][0]
         return jsonify(_node_payload(node, today)), 201
-    # Land anything whose 24h is up before answering — same idiom as
-    # apply_due_flow_pendings inside get_flows. The judge does this on its own
+    # Land anything whose 24h is up before answering. The judge does this on its own
     # tick, but a queued DELETE has no other way to take effect on a box where
     # the timer isn't running, and the answer would keep listing a gate the
     # user already deleted. apply_at has passed either way, so nothing about
     # judgment changes.
     storage.qr_apply_due_pending_changes(datetime.now().isoformat())
-    routines = storage.get_flows()
-    return jsonify([_node_payload(n, today, routines) for n in storage.qr_get_nodes()])
+    return jsonify([_node_payload(n, today) for n in storage.qr_get_nodes()])
 
 
 # WHAT THIS GATE IS, ON ONE DAY, out of this box's own database (2026-08-21,
@@ -2524,7 +2506,7 @@ def accountability_nodes():
 # a scan did not clear it there was nowhere to look, and "the app does not know
 # I am in Kanji Hall" is not answerable from a label. Every number the judge
 # would charge on is here, RESOLVED BY THE JUDGE'S OWN FUNCTIONS rather than
-# assembled a second way: resolve_window, applies_on, routine_deadline and
+# assembled a second way: resolve_window, applies_on, day_verdict and
 # scan_satisfies. A transparency surface that re-derives its answers would show
 # you a day the judge does not believe in, which is worse than showing nothing.
 #
@@ -2562,25 +2544,6 @@ def _gate_day_payload(node, ymd, now=None):
     else:
         source = 'the gate default'
 
-    # The pawn moves the OPENING earlier by COMPUTATION, never as a written
-    # override, so it is invisible in every column — which is exactly why it
-    # belongs here. An override stands as written and the pawn does not apply
-    # (resolve_window returns before _less_pawned), so say that rather than
-    # showing minutes that did nothing.
-    pawn_min = storage.pawned_minutes_for_node(node['id'], ymd)
-    # What the close ACTUALLY lost — asked of the judge, never re-derived here.
-    # It is 0 on an override day and less than pawn_min when the cost was
-    # clamped at the opening, which is precisely the difference this row is for.
-    pawn_taken = qr_judge.pawn_giveback(node, ymd, override=override)
-    flow = storage.gating_flow_for_node(node['id'], ymd)
-    pawned = []
-    if flow:
-        names = {f['id']: f['name'] for f in storage.get_flows()}
-        for st in storage.steps_pawned_into(flow['id'], ymd):
-            pawned.append({'content': st.get('content'),
-                           'minutes': st.get('pawn_minutes') or 0,
-                           'from_routine': names.get(st.get('flow_id'))})
-
     loc = None
     if node.get('geofence_lat') is not None:
         named = next((l for l in storage.get_locations()
@@ -2612,15 +2575,13 @@ def _gate_day_payload(node, ymd, now=None):
                           in_window=open_iso <= sc['scanned_at'] <= close_iso,
                           satisfies=bool(qr_judge.scan_satisfies(node, sc))))
 
-    r_due = qr_judge.routine_deadline(node, flow, ymd) if flow else None
-    r_open_min, r_due_min = qr_judge.flow_day_window(flow, ymd) if flow else (None, None)
     settings = qr_judge.charge_settings()
     # WHERE THE DAY STANDS, priced. The same predicate the judge charges on
     # (day_verdict), asked of the scans inside the window — so an unjudged day
     # shows what it would cost if it ended now, and a judged one is read back
     # from its row rather than recomputed under a config that has since moved.
     in_window = [sc for sc in scans if sc['in_window']]
-    passed, verdict_reason = qr_judge.day_verdict(node, ymd, flow, in_window)
+    passed, verdict_reason = qr_judge.day_verdict(node, ymd, in_window)
     judged = storage.qr_node_day_state(node['id'], ymd)['judged']
     if judged:
         # A frozen row decides its own day. `failure_reason` is what a row
@@ -2702,16 +2663,13 @@ def _gate_day_payload(node, ymd, now=None):
         # drag restores (or DELETEs, when there was none).
         'override': override,
         'proof_mode': node.get('proof_mode') or 'link',
-        # THE MINUTES ARE SERVED, not re-derived. The timeline draws four
-        # dotted lines from this payload — scan open/close and the routine's
-        # open/due — and every one of them is a resolution rule the judge owns:
-        # the window ladder, the offset, the pawn, the routine's own schedule
-        # or its offset from the gate. A client that recomputed any of them
-        # would draw a day the judge does not believe in.
+        # THE MINUTES ARE SERVED, not re-derived. The timeline draws the
+        # window from this payload, and both ends are a resolution rule the
+        # judge owns (the window ladder, the offset). A client that recomputed
+        # them would draw a day the judge does not believe in.
         #
         # Minutes run from midnight of THIS date, so past 1440 means tomorrow
-        # (a +1d deadline, a routine due after midnight). Same convention as
-        # flow_day_window, and as the client's semantic minutes.
+        # (a +1d deadline). Same convention as the client's semantic minutes.
         'window': {'start': start, 'end': end, 'offset_days': offset,
                    'close_date': close_date, 'from': source,
                    'start_min': qr_judge._hhmm_min(start),
@@ -2724,19 +2682,8 @@ def _gate_day_payload(node, ymd, now=None):
                    # the moment a decorative window ends.
                    'all_day': all_day,
                    'closed': now >= qr_judge.settle_after(
-                       node, ymd, flow, (start, end, offset))},
+                       node, ymd, (start, end, offset))},
         'history': history,
-        'pawn': {'minutes': pawn_min, 'steps': pawned,
-                 'taken_min': pawn_taken, 'applied': bool(pawn_taken)},
-        'routine': None if not flow else {
-            'name': flow['name'], 'id': flow['id'],
-            'deadline': r_due.strftime('%H:%M') if r_due else None,
-            # open_min is None for a routine with no schedule of its own: it
-            # has a deadline but no hour it starts at, and the timeline draws
-            # the line it has rather than inventing one.
-            'open_min': r_open_min, 'due_min': r_due_min,
-            'own_window': bool(r_open_min is not None),
-            'completed_at': flow.get('completed_at')},
         'location': loc,
         'scans': scans,
         'hours': hours,
@@ -2751,11 +2698,9 @@ def _gate_day_payload(node, ymd, now=None):
             'owed_cents': 0 if (passed or off) else stake,
             'off': off,
             'proof': node.get('proof_mode') or 'link',
-            'met': (bool(flow and flow.get('completed_at'))
-                    if qr_judge.is_routine_gate(node)
-                    else any(sc['satisfies'] for sc in in_window)),
+            'met': any(sc['satisfies'] for sc in in_window),
             'settles_at': qr_judge.settle_after(
-                node, ymd, flow, (start, end, offset)).strftime('%Y-%m-%d %H:%M'),
+                node, ymd, (start, end, offset)).strftime('%Y-%m-%d %H:%M'),
         },
         'stake_cents': stake,
         'live': settings['live'],
@@ -3036,16 +2981,12 @@ def patch_accountability_node(id):
         storage.qr_add_pending_change(id, storage.QR_DELETE_FIELD, '1', at, effective)
         return jsonify({'pending': True, 'apply_at': at, 'effective_date': effective})
 
-    if str(data.get('proof_mode') or '') == 'routine' and node.get('proof_mode') != 'routine':
-        # The same rule the tag mode is held to, one proof kind along: a gate
-        # nothing can clear is not a commitment, it is a charge every day. A
-        # routine gate is cleared by its LINKED routine, so there has to be one
-        # — refused in words at the door rather than applied and discovered at
-        # 04:00. (Losing the routine later is handled too, on the safe end:
-        # applies_on stops the gate running at all, so the day lands 'n/a'.)
-        if not storage.gate_has_routine(id):
-            return jsonify({'error': 'link a daily routine first — a routine gate with '
-                                     'no routine could never be cleared'}), 400
+    if str(data.get('proof_mode') or '') == 'routine':
+        # ROUTINE GATES ARE GONE (2026-10-05, Quentin's instruction: routines
+        # are plain lists now, and nothing runs them). A row that still says
+        # 'routine' never runs (qr_judge.applies_on), so accepting the mode
+        # would make a gate that is silently off.
+        return jsonify({'error': 'routine gates are gone'}), 400
 
     if str(data.get('proof_mode') or '') == 'tag' and node.get('proof_mode') != 'tag':
         # A gate nothing can clear is not a commitment, it is a charge every
@@ -3460,161 +3401,6 @@ def get_geocode():
         return jsonify({'error': f'lookup failed: {e}'}), 502
 
 
-# --- Interactive routines (flows) ---
-#
-# There is no routine push any more (2026-08-11). The gate is enforced where the
-# database is, by storage.routine_gate_for_node in qr_judge — so linking a
-# routine is a local write and nothing has to be told about it.
-
-@app.route('/api/flows')
-def get_flows_route():
-    date = request.args.get('date') or date_cls.today().isoformat()
-    return jsonify(storage.get_flows(date))
-
-
-@app.route('/api/flows', methods=['POST'])
-def post_flow():
-    data = request.get_json()
-    name = (data.get('name') or '').strip()
-    if not name:
-        return jsonify({'error': 'name is required'}), 400
-    return jsonify(storage.create_flow(name)), 201
-
-
-@app.route('/api/flows/<int:id>', methods=['PATCH'])
-def patch_flow(id):
-    data = request.get_json()
-    _s = object()
-    kwargs = {}
-    if 'name' in data:
-        kwargs['name'] = data['name']
-    if 'qr_node_id' in data:
-        kwargs['qr_node_id'] = data['qr_node_id']
-    if 'offset_min' in data:
-        kwargs['offset_min'] = data['offset_min']
-    if 'before_node_id' in data:
-        kwargs['before_node_id'] = data['before_node_id']
-    if 'source_uid' in data:
-        kwargs['source_uid'] = data['source_uid']
-    for f in ('as_task', 'days_of_week', 'area_id', 'domain_id', 'period'):
-        if f in data:
-            kwargs[f] = data[f]
-    try:
-        flow = storage.update_flow(id, **kwargs)
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 400
-    return jsonify(flow)
-
-
-# PUT IT IN THE POOL NOW (2026-08-25, asked for). A routine that is also a task
-# appears on the days its schedule says; this is the explicit "I want it today"
-# — the same seeding, the same ledger, one action per period either way. No date
-# default to argue about: the client sends the day it is looking at.
-@app.route('/api/flows/<int:id>/seed-task', methods=['POST'])
-def post_flow_seed_task(id):
-    d = request.get_json(silent=True) or {}
-    ymd = d.get('date')
-    if ymd and not _YMD_RE.match(ymd):
-        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
-    item = storage.seed_flow_task_now(id, ymd)
-    if not item:
-        return jsonify({'error': 'it is already in the pool, or this period is '
-                                 'already finished'}), 409
-    return jsonify(item), 201
-
-
-@app.route('/api/flows/<int:id>', methods=['DELETE'])
-def delete_flow_route(id):
-    # A gated routine's deletion is an easing and comes back deferred, in the
-    # same shape the step-delete route uses.
-    apply_at = storage.delete_flow(id)
-    if apply_at:
-        return jsonify({'pending': True, 'apply_at': apply_at})
-    return '', 204
-
-
-@app.route('/api/flows/<int:id>/steps', methods=['POST'])
-def post_flow_step(id):
-    data = request.get_json()
-    content = (data.get('content') or '').strip()
-    if not content and data.get('kind', 'text') == 'text':
-        return jsonify({'error': 'content is required'}), 400
-    return jsonify(storage.create_flow_step(
-        id, content, data.get('kind', 'text'), data.get('requirement', 'hard'),
-        data.get('days_of_week'), data.get('duration_min'))), 201
-
-
-@app.route('/api/flow-steps/<int:id>', methods=['PATCH'])
-def patch_flow_step(id):
-    data = request.get_json()
-    return jsonify(storage.update_flow_step(
-        id, content=data.get('content'), kind=data.get('kind'),
-        requirement=data.get('requirement'), position=data.get('position'),
-        days_of_week=data.get('days_of_week', storage._UNSET),
-        rrule=data.get('rrule', storage._UNSET),
-        pawn_to_flow_id=data.get('pawn_to_flow_id', storage._UNSET),
-        pawn_minutes=data.get('pawn_minutes', storage._UNSET),
-        soft_content=data.get('soft_content', storage._UNSET),
-        ref_list_id=data.get('ref_list_id', storage._UNSET),
-        duration_min=data.get('duration_min', storage._UNSET),
-        # The same 'from when' a gate's sheet asks. A FLOOR: it can push an
-        # easing later, never past the 24h it already owes.
-        effective_from=data.get('effective_from')))
-
-
-# Pawning is a DAY-level act, not a config edit, so it is its own route rather
-# than a field on the PATCH above: pushing a step onto tonight's routine should
-# never be reachable by accident from a form that edits the routine itself.
-@app.route('/api/flow-steps/<int:id>/pawn', methods=['POST', 'DELETE'])
-def pawn_flow_step_route(id):
-    try:
-        # The DAY comes from the runner's pinned run-day, not this process's
-        # wall clock: a run opened at 23:50 and continued past midnight would
-        # otherwise stamp pawned_date with the NEW day — the step never arrives
-        # in tonight's receiving routine, tonight's gate is not shortened, and
-        # TOMORROW's deadline silently moves earlier for debt incurred tonight.
-        body = request.get_json(silent=True) or {}
-        step = storage.pawn_flow_step(id, on=request.method == 'POST',
-                                      date=body.get('date') or request.args.get('date'))
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 400
-    if step is None:
-        return jsonify({'error': 'unknown step'}), 404
-    return jsonify(step)
-
-
-@app.route('/api/flow-steps/<int:id>', methods=['DELETE'])
-def delete_flow_step_route(id):
-    # {'pending': True} = the 24h easing gate deferred it (gated routine).
-    return jsonify(storage.delete_flow_step(id))
-
-
-@app.route('/api/flow-steps/<int:id>/pending', methods=['DELETE'])
-def cancel_flow_step_pending_route(id):
-    return jsonify(storage.cancel_flow_step_pending(id) or {})
-
-
-@app.route('/api/flows/<int:id>/pending', methods=['DELETE'])
-def cancel_flow_pending_route(id):
-    return jsonify(storage.cancel_flow_pending(id, request.args.get('field')) or {})
-
-
-@app.route('/api/flows/<int:id>/run', methods=['PUT'])
-def put_flow_run(id):
-    data = request.get_json()
-    date = data.get('date') or date_cls.today().isoformat()
-    # The client sends the DAY it is on; which run that day belongs to is the
-    # flow's business (a weekly routine files under its Monday). Normalising
-    # here means no caller has to know the rule.
-    date = storage.flow_period_key_for(id, date)
-    steps = data.get('steps') or {}
-    # The client's `completed` is a request, not a verdict — a gate can hang on
-    # it, so the server re-checks today's steps and every hard metrics step.
-    completed = bool(data.get('completed')) and storage.run_completion_ok(id, date, steps)
-    run = storage.upsert_flow_run(id, date, json.dumps(steps), completed)
-    return jsonify(run)
-
-
 # --- Schedules: the one occurrence source (schedule.py) ------
 #
 # One collection for all three constructors — the picker decides which by what
@@ -3988,8 +3774,8 @@ def post_accountability_override(id):
         return jsonify({'error': 'Locked — deadline within 24h'}), 403
     offset = d.get('window_end_offset_days') or 0
     # A deadline dragged above its own opening is an unsatisfiable gate — the
-    # window would be empty and every day would judge absent. Same clamp the
-    # pawn shortening uses: never past the opening. (The drag is bounded client
+    # window would be empty and every day would judge absent. Never past the
+    # opening. (The drag is bounded client
     # side too; this is the lock on the money path.)
     if qr_judge._hhmm_min(d['window_end']) + offset * 1440 < qr_judge._hhmm_min(d['window_start']):
         return jsonify({'error': 'A deadline cannot come before the window opens'}), 400
