@@ -281,6 +281,27 @@ def settings_refresh_fails(lines):
     return fails
 
 
+# A DOCKED SURFACE CARRIES ONE CLASS (2026-10-05, Quentin: the sheets and
+# dangerous writing "overlay over the page instead of expanding the existing
+# page"). Docking was a list of ids in style.css that moved each box to the
+# right edge and told the page nothing, so every one covered the page's right
+# column. `.dock-panel` now both places a panel and makes the page give up its
+# width (style.css, the NO POPUPS block) — so a sheet or read-out without it
+# would float over the page again. Scanned: every *-sheet / *-pop / *-session
+# element in the shell.
+INDEX_HTML = os.path.join(HERE, 'templates', 'index.html')
+DOCKED = re.compile(r'<[a-z]+ id="([a-z-]+-(?:sheet|pop|session))"([^>]*)>')
+
+
+def dock_panel_fails():
+    with open(INDEX_HTML, encoding='utf-8') as f:
+        html = f.read()
+    return [(0, '#' + i, 'class="dock-panel" — a docked surface makes the page '
+                         'give up its width; without it, it covers the page')
+            for i, rest in DOCKED.findall(html)
+            if not re.search(r'class="[^"]*(?<![\w-])dock-panel(?![\w-])', rest)]
+
+
 def main():
     with open(APP_JS, encoding='utf-8') as f:
         body = f.read()
@@ -292,6 +313,7 @@ def main():
     fails += runner_eviction_fails(lines)
     fails += step_control_fails(body)
     fails += settings_refresh_fails(lines)
+    fails += dock_panel_fails()
     for n, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('//') or stripped.startswith('*'):
@@ -345,6 +367,8 @@ midnight, a paused row, or a config change.""")
           % len(set(STEP_SELECTOR.findall(body))))
     print('  settings      %d list(s) read state, both write doors refresh'
           % len(STATE_RENDERERS))
+    print('  docked panels %d in the shell, each one makes the page give up its width'
+          % len(DOCKED.findall(open(INDEX_HTML, encoding='utf-8').read())))
     return 0
 
 

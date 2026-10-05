@@ -7914,37 +7914,57 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 @media (min-width: 900px) { .lg-title-in { font-size: 24px; } }
 
-/* ── NO POPUPS: every sheet DOCKS INTO THE RIGHT COLUMN (2026-10-01,
-   Quentin's instruction) ───────────────────────────────────────────────────
+/* ── NO POPUPS: every sheet DOCKS INTO THE RIGHT COLUMN, AND THE PAGE MAKES
+   ROOM FOR IT (2026-10-01, Quentin's instruction; reflow 2026-10-05) ───────
    On a wide window a sheet is not a card floating over a dimmed page but the
    right column itself, opened: full height between the strip and the dock,
-   on the page's own ground, a hairline at its left edge, nothing dimmed. It
-   is still one layer (z 200) with its invisible tap-off catcher, so tapping
-   the page puts it down exactly as before; Esc peels it the same way. The
-   read-outs (a gate's day, an event) open in the same place rather than
-   beside what was tapped, and dangerous writing stands there too — the rest
-   of the app visible but inert while it runs. A phone keeps its sheets: it
-   has no right column. --dock-w is the column, never narrower than a form. */
+   on the page's own ground, a hairline at its left edge, nothing dimmed.
+
+   ONE CLASS IS THE WHOLE CONTRACT: `.dock-panel` on the element (index.html).
+   It used to be a list of ids here that only MOVED each box to the right
+   edge, and nothing told the page — so every docked surface sat ON the
+   page's right column, covering it (Quentin: "overlays over the page instead
+   of expanding the existing page"). Now the same class answers both halves:
+   it places the panel, and while one is open (:has) --dock-open is its width,
+   which the page gives up — #app's padding, every page layer's right edge and
+   --view-w, the width Engage's fixed columns are measured from. A new sheet
+   joins by carrying the class; client_rules_test holds it.
+
+   It is still one layer (z 200) with its invisible tap-off catcher, so
+   tapping the page puts it down exactly as before; Esc peels it the same way.
+   A phone keeps its sheets: it has no right column. --dock-w is the column,
+   never narrower than a form — measured from the WINDOW, not from --view-w,
+   which it decides. */
+:root { --view-w: 100vw; }
 @media (min-width: 900px) {
-  :root { --dock-w: max(340px, var(--eg-side-w)); }
-  #clarify-sheet, #fr-sheet, #ctx-sheet, #se-sheet, #sp-sheet,
-  #ev-sheet, #en-sheet, #ex-sheet, #oc-sheet, #gate-pop, #event-pop {
+  :root {
+    --dock-w: max(340px, calc((100vw - clamp(460px, calc(100vw - 440px), 720px)) / 2));
+    --view-w: calc(100vw - var(--dock-open, 0px));
+  }
+  :root:has(.dock-panel:not(.hidden)) { --dock-open: var(--dock-w); }
+  #app { padding-right: var(--dock-open, 0px); }
+  .m-overlay, #logs-overlay, #map-overlay, #modal-overlay { right: var(--dock-open, 0px); }
+  #flow-run { left: calc(var(--view-w) / 2); }
+  #engage-body .eg-rt-pop { left: calc(var(--view-w) / 2 + var(--eg-measure) / 2 + 12px); }
+
+  /* !important because each sheet's own id rule outranks a class. */
+  .dock-panel {
     left: auto !important;
     right: 0 !important;
     top: var(--tnav-h) !important;
     bottom: var(--gbar-h) !important;
-    transform: none;
-    width: var(--dock-w);
-    max-width: none;
-    max-height: none;
-    border: none;
-    border-left: 1px solid var(--border-soft);
-    border-radius: 0;
-    box-shadow: none;
-    background: var(--surface-mid);
-    padding: 10px 10px 16px;
+    transform: none !important;
+    width: var(--dock-w) !important;
+    max-width: none !important;
+    max-height: none !important;
+    border: none !important;
+    border-left: 1px solid var(--border-soft) !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: var(--surface-mid) !important;
+    padding: 10px 10px 16px !important;
   }
-  #gate-pop, #event-pop { padding: 24px; font-size: 14px; }
+  #gate-pop, #event-pop { padding: 24px !important; font-size: 14px; }
   /* Nothing dims behind the panel — it is beside the page, not over it —
      and the phone's drag handle has nothing to drag. */
   .eg-dimmed,
@@ -7963,28 +7983,37 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   .cl-item { padding-top: 14px; padding-bottom: 18px; }
   .cl-sec { padding-top: 6px; }
 
-  /* Dangerous writing, docked: the right column, top to bottom (it is still
-     the one surface over the dock), and an invisible layer over the rest. */
-  #dw-session {
-    left: auto;
-    right: 0;
-    top: var(--tnav-h);
-    transform: none;
-    width: var(--dock-w);
-    max-width: none;
-    height: auto;
-    bottom: 0;
-    border: none;
-    border-left: 1px solid var(--border-soft);
-    background: var(--surface-mid);
-    padding: 0 10px;
-  }
+  /* Dangerous writing's SETUP docks like any panel, but top to bottom (it is
+     still the one surface over the dock), with an invisible layer over the
+     rest. */
+  #dw-session { bottom: 0 !important; height: auto; padding: 0 10px !important; }
   body.dw-open::after {
     content: '';
     position: fixed;
     inset: 0;
     z-index: 239;
   }
+  /* WHILE WRITING it takes all three columns (2026-10-05, Quentin's
+     instruction), in the style of the Log page's middle column: the page's
+     ground, the text in the --eg-measure column between two hairlines. It is
+     then not a panel beside the page, so nothing makes room for it. */
+  #dw-session:has(.dw-writing) {
+    left: 0 !important;
+    width: auto !important;
+    border-left: none !important;
+    padding: 0 !important;
+  }
+  :root:has(#dw-session:not(.hidden) .dw-writing) { --dock-open: 0px; }
+  #dw-session .dw-writing {
+    width: var(--eg-measure);
+    margin: 0 auto;
+    padding: 28px 24px 0;
+    box-sizing: border-box;
+    border-left: 1px solid var(--border-soft);
+    border-right: 1px solid var(--border-soft);
+  }
+  #dw-session .dw-writing .dw-editor { padding: 0; font-size: 14px; line-height: 1.65; }
+  #dw-session .dw-writing .dw-foot { padding-left: 0; padding-right: 0; }
 
   /* The routine runner is a page: it stands in the Now column. */
   #flow-run { max-width: var(--eg-measure); border-color: var(--border-soft); }

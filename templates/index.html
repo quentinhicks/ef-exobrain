@@ -76,7 +76,7 @@
            same closeClarify that now flushes notes) instead of hitting whatever
            surface is behind. -->
       <div id="clarify-backdrop" class="hidden"></div>
-      <div id="clarify-sheet" class="hidden"></div>
+      <div id="clarify-sheet" class="dock-panel hidden"></div>
     </div>
   </div>
 
@@ -139,41 +139,41 @@
   <!-- One context tag's configuration: device, location, time period.
        Opened by right-click / long-press on a tag chip in the ctx picker. -->
   <div id="ctx-sheet-backdrop" class="hidden"></div>
-  <div id="ctx-sheet" class="hidden"></div>
+  <div id="ctx-sheet" class="dock-panel hidden"></div>
 
   <!-- One routine step's settings, as a clarify-shaped sheet: the row on the
        list is text + badges + ›, and every SETTING is decided in here. -->
   <div id="fr-sheet-backdrop" class="hidden"></div>
-  <div id="fr-sheet" class="hidden"></div>
+  <div id="fr-sheet" class="dock-panel hidden"></div>
   <div id="ev-sheet-backdrop" class="hidden"></div>
-  <div id="ev-sheet" class="hidden"></div>
+  <div id="ev-sheet" class="dock-panel hidden"></div>
   <div id="en-sheet-backdrop" class="hidden"></div>
-  <div id="en-sheet" class="hidden"></div>
+  <div id="en-sheet" class="dock-panel hidden"></div>
 
   <!-- ENDING one thing: an experiment (and, in the same breath, tomorrow's) or
        a habit. One sheet behind three doors — the nightly routine, Tracking and
        the weekly review — because the line it asks for is the evidence the
        review judges, and a prompt() is not a gesture a phone has. -->
   <div id="ex-sheet-backdrop" class="hidden"></div>
-  <div id="ex-sheet" class="hidden"></div>
+  <div id="ex-sheet" class="dock-panel hidden"></div>
 
   <!-- WHAT THE JUDGE KNOWS about one gate on the day being looked at. A POPUP,
        not a sheet: it is a read-out you open next to the pill you are asking
        about, glance at and dismiss, so it stays beside its subject instead of
        taking the screen and hiding the day it describes. Nothing in it writes. -->
   <div id="gate-pop-backdrop" class="hidden"></div>
-  <div id="gate-pop" class="hidden"></div>
+  <div id="gate-pop" class="dock-panel hidden"></div>
 
   <!-- What the CALENDAR knows about one event: the gate read-out's twin, and
        deliberately the same geometry and layer. Read-only — nothing in it
        writes; "Open occasion" is a door to the editor, not a second one. -->
   <div id="event-pop-backdrop" class="hidden"></div>
-  <div id="event-pop" class="hidden"></div>
+  <div id="event-pop" class="dock-panel hidden"></div>
 
   <!-- One OCCASION: the actions a kind of event always brings with it.
        Opened by tapping an event on the day. -->
   <div id="oc-sheet-backdrop" class="hidden"></div>
-  <div id="oc-sheet" class="hidden"></div>
+  <div id="oc-sheet" class="dock-panel hidden"></div>
 
   <!-- Reference lists: GTD's non-actionable keeps (books, movies, gifts…).
        Deliberately outside the action inventory — no MAP row, no predicate. -->
@@ -217,7 +217,7 @@
   <!-- Dangerous writing: stop typing and the draft is destroyed. The ONE
        surface that covers the global bar (z 240) — capture during a session
        is exactly the task-switch the mechanic exists to punish. -->
-  <div id="dw-session" class="hidden"></div>
+  <div id="dw-session" class="dock-panel hidden"></div>
 
   <!-- Logs modal -->
   <div id="logs-overlay" class="hidden">
@@ -386,7 +386,7 @@
        its own Save; it shares #clarify-sheet's geometry and z-layer, and the
        section behind it dims rather than scrolls. -->
   <div id="se-sheet-backdrop" class="hidden"></div>
-  <div id="se-sheet" class="hidden"></div>
+  <div id="se-sheet" class="dock-panel hidden"></div>
 
   <!-- The SCHEDULE PICKER: one dialog, three sources. It opens as a single rule
        and the type is a consequence of what gets answered — the Follows row at
@@ -397,7 +397,7 @@
        Same geometry as #clarify-sheet, one layer above the settings sheet:
        Settings → Times is the only surface it opens from today. -->
   <div id="sp-sheet-backdrop" class="hidden"></div>
-  <div id="sp-sheet" class="hidden"></div>
+  <div id="sp-sheet" class="dock-panel hidden"></div>
 
   <!-- THE global bar: one context-sensitive bottom bar for the whole app.
        Every overlay opens ABOVE it (bottom: var(--gbar-h)), so capture, undo,
