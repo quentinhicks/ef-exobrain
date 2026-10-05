@@ -4,11 +4,12 @@ Fifth tripwire. The others are about WHICH DAY; this one is about WHO DECIDES.
 
 qr_judge charges real money. Every value it reads is therefore an authority —
 if a client can set it, a client can decide what it costs. That is not
-hypothetical: put_flow_run stored whatever `completed` it was sent, and the
-only thing enforcing a hard metrics step was a DISABLED BUTTON driven by a
+hypothetical: put_flow_run once stored whatever `completed` it was sent, and
+the only thing enforcing a hard metrics step was a DISABLED BUTTON driven by a
 boolean the runner had cached when it opened. A stale tab, a second device or
 a replayed PUT completed a gated run with metrics unanswered, and the gate
-judged the day satisfied.
+judged the day satisfied. (The routine gate and its runner are gone since
+2026-10-05; the rule they taught stays.)
 
 So the rule: ANYTHING THE MONEY PATH READS IS RECOMPUTED WHERE IT IS WRITTEN.
 A client's flag is a request, never a verdict.
@@ -39,29 +40,6 @@ import storage          # noqa: E402
 # is not an answer is silence, which is what this file exists to prevent.
 READS = {
     # ── things a CLIENT can influence, and what re-decides them ──
-    'gate_has_routine':
-        'flow.qr_node_id — whether a routine is ATTACHED to a routine gate, '
-        'which decides whether that gate runs at all (qr_judge.applies_on). A '
-        'client CAN set the link, but only in the tightening direction: '
-        'storage.delete_flow and the unlink both queue as easings and land '
-        'through apply_due_flow_pendings, which this function calls before it '
-        'answers. Attaching one is immediate, and attaching a routine to a '
-        'gate can only make the gate run — it cannot clear a day, because '
-        'day_verdict still asks whether the RUN was completed.',
-    'gating_flow_for_node':
-        'flow_run.completed_at — RECOMPUTED at the write: put_flow_run honours '
-        'completed only after run_completion_ok re-checks today\'s day_steps '
-        'and every hard metrics step (storage.run_completion_ok).',
-    'pawned_minutes_for_flow':
-        'the SERVER decides, and it is the number pawned_minutes_for_node is '
-        'written in terms of — one sum, from flow_step rows the pawn route '
-        'stamps with the RUN day. Since 2026-08-25 it can only move a '
-        'window OPENING earlier (qr_judge.opened_earlier), so no value it '
-        'returns can shorten a deadline or cost money.',
-    'pawned_minutes_for_node':
-        'flow_step.pawned_date — shortens a gate deadline, so it is a money '
-        'input. Guarded at the write by pawn_flow_step refusing a step with no '
-        'destination; the DAY comes from the runner\'s pinned run day.',
     'qr_get_nodes':
         'qr_node — every field change goes through qr_judge.apply_node_patch, '
         'which PENDS anything it cannot prove tighter (24h).',
@@ -81,7 +59,7 @@ READS = {
     'qr_scans_between':
         'same rows, read for the ✓/✗ history.',
     'schedule_resolver':
-        'schedule_source — a gated flow\'s source change runs through '
+        'schedule_source — a gate\'s source change runs through '
         'schedule.demands_less and pends if looser.',
 
     # ── a change dated forward (2026-08-17) ──
@@ -90,18 +68,6 @@ READS = {
         '"which day does it govern". Rounds UP off midnight, so a change '
         'landing mid-afternoon governs the NEXT day: overstating a loosening '
         'would show a gate as relaxed on a day still being judged.',
-    'flow_as_of':
-        'the SERVER decides, and only the calendar can move it: a routine\'s '
-        'window fields as they stood on that date, from row_revision. A client '
-        'cannot write a revision — they are recorded by storage at the door '
-        'that changes the field, from the value read before the write. It '
-        'makes the judge STRICTER about history, not looser: a day is resolved '
-        'against the rule that was in force then, which is the same principle '
-        'as a judged day being frozen.',
-    'record_revision':
-        'not a read — the writer of the above, called by storage itself with '
-        'the value a field held before it changed. Named here because the '
-        'scanner sees it in the same module; nothing in the judge calls it.',
     'row_as_of':
         'not data — layers dated changes onto a row for a FUTURE day, which is '
         'how the calendar draws Wednesday. Past and today cannot be affected: '
@@ -266,13 +232,6 @@ def main():
     for name in sorted(READS):
         if name not in called and getattr(storage, name, None) is not None:
             print(f'STALE storage.{name} — the judge no longer calls it')
-
-    # The guard named in the completed_at entry has to be real: it is the one
-    # that was missing entirely, and a comment claiming it would be worse than
-    # nothing.
-    if getattr(storage, 'run_completion_ok', None) is None:
-        fails.append('storage.run_completion_ok is gone — nothing re-checks a '
-                     'run the client claims is complete')
 
     check_sources(fails)
 

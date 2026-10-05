@@ -6,10 +6,10 @@ Quentin's instruction): what this box knows about one gate on one day, so that
 
 The thing it must never do is answer with its own arithmetic. Every number here
 is asked of the function that would charge for it — qr_judge.resolve_window,
-applies_on, routine_deadline, scan_satisfies — so this file mostly checks that
-the payload AGREES with the judge on the same day, including the cases where
-the judge is surprising: a pawn shortening the deadline invisibly, a date
-override that stands as written, a scan that landed 40m outside the fence.
+applies_on, day_verdict, scan_satisfies — so this file mostly checks that the
+payload AGREES with the judge on the same day, including the cases where the
+judge is surprising: a date override that stands as written, a scan that
+landed 40m outside the fence.
 """
 
 import datetime
@@ -106,44 +106,25 @@ late = [s for s in d['scans'] if not s['in_window']]
 check('a scan after the window closed is still listed', len(late) == 1,
       [(s['scanned_at'], s['in_window']) for s in d['scans']])
 
-# ── the pawn, which is invisible in every column ──────────────────────────
-flow = c.post('/api/flows', json={'name': 'Morning routine'}).get_json()
-c.patch('/api/flows/%s' % flow['id'], json={'qr_node_id': GID})
-other = c.post('/api/flows', json={'name': 'Night routine'}).get_json()
-step = c.post('/api/flows/%s/steps' % other['id'],
-              json={'content': 'Lay out clothes'}).get_json()
-c.patch('/api/flow-steps/%s' % step['id'],
-        json={'pawn_to_flow_id': flow['id'], 'pawn_minutes': 20})
-c.post('/api/flow-steps/%s/pawn' % step['id'], json={'date': TODAY})
-
+# ── the routine and the pawn are gone (2026-10-05) ────────────────────────
 d = day()
-check('the pawned minutes are named', d['pawn']['minutes'] == 20, d['pawn'])
-check('...along with the step that arrived and where it came from',
-      d['pawn']['steps'] and d['pawn']['steps'][0]['content'] == 'Lay out clothes'
-      and d['pawn']['steps'][0]['from_routine'] == 'Night routine', d['pawn']['steps'])
-# 2026-08-25: pawned work moves the OPENING, never the close (qr_judge.
-# opened_earlier). The read-out shows the window the judge uses either way,
-# which is what this check is really for — the two must not disagree.
-check('...and the deadline the judge uses is the SHORTENED one',
-      d['window']['end'] == qr_judge.resolve_window(storage.qr_get_nodes()[0], TODAY)[1]
-      and d['window']['end'] == '09:40', d['window'])
-check('the gating routine is named with its own deadline',
-      d['routine'] and d['routine']['name'] == 'Morning routine', d.get('routine'))
+check('the read-out no longer carries a routine or a pawn',
+      'routine' not in d and 'pawn' not in d, sorted(d))
+check('...and the deadline it shows is the one the judge uses',
+      d['window']['end'] == qr_judge.resolve_window(storage.qr_get_nodes()[0], TODAY)[1],
+      d['window'])
 
-# ── a date override stands as written, and the pawn does NOT shorten it ───
+# ── a date override stands as written ─────────────────────────────────────
 #
 # On a FUTURE day: an override within 24h of its own close is refused outright
 # (override_locked), so today cannot answer this question.
 SOON = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
-c.post('/api/flow-steps/%s/pawn' % step['id'], json={'date': SOON})
 ov = c.post('/api/accountability/nodes/%s/overrides' % GID,
             json={'date': SOON, 'window_start': '06:00', 'window_end': '11:00'})
 check('an override on a future day is accepted', ov.status_code == 200, ov.get_json())
 d = day(SOON)
 check('an override wins, and the read-out says which layer answered',
       d['window']['end'] == '11:00' and 'day only' in d['window']['from'], d['window'])
-check('...and it says the pawn did NOT apply, rather than showing dead minutes',
-      d['pawn']['minutes'] == 20 and d['pawn']['applied'] is False, d['pawn'])
 
 # ── the money numbers, without leaking the token ──────────────────────────
 d = day()

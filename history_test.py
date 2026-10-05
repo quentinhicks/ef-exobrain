@@ -13,8 +13,7 @@ said the routine was due at.
 `row_revision` is the past half of `easing_pending`: the value a field held
 BEFORE a change, from the day the change starts governing. `storage.row_as_of`
 layers both halves, so a caller keeps asking one question — what did this row
-say on that day — and `qr_judge._flow_on` is the single hop that makes every
-routine answer honour it.
+say on that day.
 
 These checks run against a scratch database, never the real one.
 """
@@ -32,7 +31,6 @@ _tmp = tempfile.mkdtemp(prefix='qpa-history-')
 os.chdir(_tmp)
 
 import storage                      # noqa: E402  (after the chdir, like every suite here)
-import qr_judge                     # noqa: E402
 
 passed = 0
 failed = 0
@@ -54,60 +52,30 @@ def day(offset):
 
 storage.init_db()
 
-# A gate at 09:00 and a routine that hangs off it, so the routine's deadline is
-# the gate's close plus its offset — the field the report was about.
-node_id = storage.qr_create_node('Desk', 'tok-history', '06:00', '09:00')
-flow = storage.create_flow('Morning')
-storage.update_flow(flow['id'], qr_node_id=node_id, offset_min=0)
-
-
-def due_on(ymd):
-    f = next(x for x in storage.get_flows() if x['id'] == flow['id'])
-    return qr_judge.flow_day_window(f, ymd)[1]
-
-
-check('the deadline starts at the gate close', due_on(day(0)), 9 * 60)
-check('and the same last week', due_on(day(-7)), 9 * 60)
-
-# ── the report: change it today ─────────────────────────────────────────────
-storage.update_flow(flow['id'], offset_min=-30)      # earlier: a tightening
-check('today moves', due_on(day(0)), 8 * 60 + 30)
-check('tomorrow moves', due_on(day(1)), 8 * 60 + 30)
-check('LAST WEEK DOES NOT', due_on(day(-7)), 9 * 60)
-check('and neither does yesterday', due_on(day(-1)), 9 * 60)
-
-# ── a second change stacks: each day resolves against the rule of its own time
-storage.update_flow(flow['id'], offset_min=-60)
-check('today takes the newest', due_on(day(0)), 8 * 60)
-check('yesterday still holds the first value', due_on(day(-1)), 9 * 60)
-
-# The earliest change AFTER a date is what says what the field held then, so a
-# day between two changes reads the middle value — not the oldest, not the
-# newest. (Recorded by hand: both changes above landed today, and the test
-# cannot travel in time.)
+# The ROUTINE half this file was written for is gone with the routines
+# (2026-10-05) — routines are plain lists, and nothing resolves a routine's
+# deadline any more. What stays is the mechanism: a recorded revision says what
+# a field held BEFORE the day it changed, and row_as_of answers each day against
+# the rule of its own time.
+ROW = {'id': 1, 'offset_min': -60}
 conn = storage.get_conn()
-storage.record_revision(conn, 'flow', flow['id'], 'offset_min', -15, day(-3))
+storage.record_revision(conn, 'probe', 1, 'offset_min', 0, day(0))
+storage.record_revision(conn, 'probe', 1, 'offset_min', -30, day(0))
+storage.record_revision(conn, 'probe', 1, 'offset_min', -15, day(-3))
 conn.commit()
+revs = storage._past_revisions(conn, 'probe', 1)
 conn.close()
-check('a day before the dated revision reads its old value', due_on(day(-5)), 8 * 60 + 45)
-check('a day after it is unaffected by it', due_on(day(-1)), 9 * 60)
 
-# ── the window field, not just the offset ──────────────────────────────────
-src = storage.create_schedule_source(
-    'rule', title='evenings', start=f'{day(-30)}T20:00:00', duration='PT1H',
-    recurrenceRules=[{'frequency': 'daily', 'interval': 1}])
-storage.update_flow(flow['id'], source_uid=src['uid'])
-check('its own window governs today', due_on(day(0)), 21 * 60)
-check('and the past keeps the gate-derived deadline', due_on(day(-1)), 9 * 60)
 
-# ── the future half still works: a queued easing is NOT in force yet ────────
-storage.update_flow(flow['id'], source_uid=None)
-storage.update_flow(flow['id'], offset_min=90)       # later: an easing, waits 24h
-check('a queued easing leaves today alone', due_on(day(0)), 8 * 60)
-row = storage.get_conn().execute(
-    "SELECT COUNT(*) AS n FROM easing_pending WHERE kind = 'flow' AND field = 'offset_min'"
-).fetchone()
-check('and is queued', row['n'], 1)
+def offset_on(ymd):
+    return storage.row_as_of(ROW, revs, ymd)['offset_min']
+
+
+check('today takes the newest', offset_on(day(0)), -60)
+check('tomorrow too', offset_on(day(1)), -60)
+check('a day between two changes reads the middle value', offset_on(day(-1)), 0)
+check('a day before the dated revision reads its old value', offset_on(day(-5)), -15)
+check('a value comes back with its type', type(offset_on(day(-5))), int)
 
 # ── row_as_of itself, both directions, in one call ─────────────────────────
 mixed = [

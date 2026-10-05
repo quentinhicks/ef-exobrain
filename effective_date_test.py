@@ -21,6 +21,8 @@ the change actually decides.
     The routine half took no date AT ALL: _pend never passed apply_at, so every
     flow and flow_step easing was now + 24h whatever was asked for. Gates had
     had `effective_from` since 2026-08-17; routines simply never got it.
+    (That half left with the routines on 2026-10-05: routines are plain lists
+    now and nothing about them eases.)
 
 Both halves keep the rule that makes the forward date safe on the money path:
 A DATE IS A FLOOR, NEVER A BYPASS. It can push a landing later, never earlier,
@@ -28,7 +30,6 @@ and an easing dated inside its own delay still serves the delay.
 """
 
 import os
-import sqlite3
 import sys
 import tempfile
 from datetime import date as date_cls, datetime, timedelta
@@ -88,52 +89,6 @@ check('moving the opening earlier is judged against the earlier reading',
 check('moving it later is judged against the CURRENT (earlier) opening',
       qr_judge._governs_min(node, {'window_start': '08:00'}, at) == M6,
       qr_judge._governs_min(node, {'window_start': '08:00'}, at))
-
-# ── A routine easing can be dated, and the floor still holds ─
-flow = storage.create_flow('Morning')
-step = storage.create_flow_step(flow['id'], 'Meditate', days_of_week='0123456')
-conn = sqlite3.connect(storage.DB_PATH)
-conn.execute('UPDATE flow SET qr_node_id = 1 WHERE id = ?', (flow['id'],))
-conn.commit()
-conn.close()
-
-
-def pending_row():
-    c = sqlite3.connect(storage.DB_PATH)
-    c.row_factory = sqlite3.Row
-    r = c.execute("SELECT * FROM easing_pending WHERE kind = 'flow_step'").fetchone()
-    c.close()
-    return r
-
-
-TODAY = date_cls.today()
-SUNDAY = (TODAY + timedelta(days=4)).isoformat()
-
-# Dropping a day from a GATED routine is an easing, so it queues.
-storage.update_flow_step(step['id'], days_of_week='012345', effective_from=SUNDAY)
-r = pending_row()
-check('a routine easing dated four days out lands on that day, not tomorrow',
-      r['effective_date'] == SUNDAY, r['effective_date'])
-check('...and its apply_at is that morning, not now + 24h',
-      r['apply_at'].startswith(SUNDAY), r['apply_at'])
-
-# A FLOOR, never a bypass: a date inside the delay does not shorten it.
-storage.update_flow_step(step['id'], days_of_week='01234',
-                         effective_from=TODAY.isoformat())
-r = pending_row()
-check('an easing dated TODAY still serves its 24h',
-      r['effective_date'] > TODAY.isoformat(), r['effective_date'])
-storage.update_flow_step(step['id'], days_of_week='0123',
-                         effective_from=(TODAY - timedelta(days=30)).isoformat())
-check('...and dating it into the PAST cannot reach back either',
-      pending_row()['effective_date'] > TODAY.isoformat(),
-      pending_row()['effective_date'])
-
-# No date at all behaves exactly as it did before any of this.
-storage.update_flow_step(step['id'], days_of_week='012')
-check('no date is the old behaviour, untouched',
-      pending_row()['effective_date'] > TODAY.isoformat(),
-      pending_row()['effective_date'])
 
 for line in ok + bad:
     print(line)

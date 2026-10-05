@@ -32,11 +32,22 @@ c = A.app.test_client()
 TODAY = datetime.date.today().isoformat()
 YDAY = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
 
-# two routines: morning and night, each with a metrics step
-mf = c.post('/api/flows', json={'name': 'Morning'}).get_json()
-nf = c.post('/api/flows', json={'name': 'Night'}).get_json()
-ms = c.post(f"/api/flows/{mf['id']}/steps", json={'content': 'metrics', 'kind': 'metrics'}).get_json()
-ns = c.post(f"/api/flows/{nf['id']}/steps", json={'content': 'metrics', 'kind': 'metrics'}).get_json()
+# Two askers, morning and night. They were routine steps; routines are lists
+# now (2026-10-05) and nothing creates a step any more, but an entry is still
+# keyed by the step that asked it, so the rows are written directly here.
+def metrics_step(name):
+    conn = storage.get_conn()
+    fid = conn.execute('INSERT INTO flow (name) VALUES (?)', (name,)).lastrowid
+    sid = conn.execute(
+        "INSERT INTO flow_step (flow_id, kind, content) VALUES (?, 'metrics', 'metrics')",
+        (fid,)).lastrowid
+    conn.commit()
+    conn.close()
+    return {'id': sid}
+
+
+ms = metrics_step('Morning')
+ns = metrics_step('Night')
 
 # ── the four shapes ──
 mood = c.post('/api/metrics', json={'name': 'Mood', 'kind': 'scale', 'scale_min': 1, 'scale_max': 7,
@@ -152,9 +163,7 @@ check('an answer already given survives narrowing the days',
 # THE MONEY CASE. A hard metrics step can gate a QR. A step whose metrics all
 # fall on other days has nothing to ask and must be COMPLETE — reading the
 # empty list as unsatisfiable would make it impossible to clear six days a week.
-lone = c.post('/api/flows', json={'name': 'Lonely'}).get_json()
-ls = c.post(f"/api/flows/{lone['id']}/steps",
-            json={'content': 'metrics', 'kind': 'metrics'}).get_json()
+ls = metrics_step('Lonely')
 check('a metrics step with NOTHING bound is still not complete',
       c.get(f"/api/metrics/step/{ls['id']}?date={TODAY}").get_json()['complete'] is False)
 off = c.post('/api/metrics', json={'name': 'Off-day only', 'kind': 'count',
@@ -185,38 +194,6 @@ check('pausing the last metric on a step leaves it COMPLETE, not unsatisfiable',
 c.patch(f"/api/metrics/{off['id']}", json={'active': 1})
 check('and un-pausing asks it again',
       c.get(f"/api/metrics/step/{ls['id']}?date={TODAY}").get_json()['complete'] is False)
-
-# THE SERVER DECIDES COMPLETION, not the client. The only thing enforcing a
-# hard metrics step used to be a disabled Done button driven by a boolean the
-# runner cached when it opened — so a stale tab, a second device or a replayed
-# PUT completed a gated run with metrics unanswered and the gate judged the day
-# satisfied.
-forge = c.post('/api/flows', json={'name': 'Forgeable'}).get_json()
-fs = c.post(f"/api/flows/{forge['id']}/steps",
-            json={'content': 'metrics', 'kind': 'metrics'}).get_json()
-fm = c.post('/api/metrics', json={'name': 'Mood tonight', 'kind': 'scale',
-                                  'step_ids': [fs['id']]}).get_json()
-run = c.put(f"/api/flows/{forge['id']}/run",
-            json={'date': TODAY, 'steps': {str(fs['id']): '21:00'},
-                  'completed': True}).get_json()
-check('a run claiming completion with metrics unanswered is REFUSED',
-      not run.get('completed_at'), run)
-c.put('/api/metrics/entry', json={'date': TODAY, 'metric_id': fm['id'],
-                                  'step_id': fs['id'], 'value': 3})
-run = c.put(f"/api/flows/{forge['id']}/run",
-            json={'date': TODAY, 'steps': {str(fs['id']): '21:00'},
-                  'completed': True}).get_json()
-check('and accepted once the metric is answered', bool(run.get('completed_at')), run)
-
-# A step that was never credited cannot be completed past either.
-skip = c.post('/api/flows', json={'name': 'Skippable'}).get_json()
-s1 = c.post(f"/api/flows/{skip['id']}/steps", json={'content': 'One'}).get_json()
-c.post(f"/api/flows/{skip['id']}/steps", json={'content': 'Two'}).get_json()
-run = c.put(f"/api/flows/{skip['id']}/run",
-            json={'date': TODAY, 'steps': {str(s1['id']): '21:00'},
-                  'completed': True}).get_json()
-check('completion with an uncredited step is refused too',
-      not run.get('completed_at'), run)
 
 # ── the settings row names WHERE it is asked ────────────────────
 m_mood = [m for m in c.get('/api/metrics').get_json() if m['id'] == mood['id']][0]

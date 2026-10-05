@@ -308,18 +308,14 @@ for d, passed, b_after in want:
 
 # ── the NIGHT gate is untouched by any of this ──────────────────────────
 #
-# The whole reason the hours entry is a SOFT step on the night routine: a hard
-# one would sit in day_steps and hold the sleep gate open. Here the weaker
-# claim, but the one that would break silently: adding an hours gate does not
-# change what a scan-and-routine gate is judged as.
+# The claim that would break silently: adding an hours gate does not change
+# what a scan gate is judged as.
 fresh()
 night = storage.qr_create_node('Night', 'tok-night', '22:00', '02:00', offset_days=1)
-f = storage.create_flow('Night routine')
-storage.update_flow(f['id'], qr_node_id=night)
 hours_gate('tok-study-2')
 tick_through(YESTERDAY, settled(YESTERDAY))
 r = row(night, YESTERDAY)
-check('a scan gate with a routine still judges by its own ladder',
+check('a scan gate still judges by its own ladder',
       r['failure_reason'] == 'absent' and r['credit_pct'] == 0, r)
 check('and its window was resolved, not borrowed from the hours gate',
       (r['window_start'], r['window_end']) == ('22:00', '02:00'), r)

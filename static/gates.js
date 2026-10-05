@@ -40,7 +40,6 @@ const G = {
   events: [],          // /api/gcal — context only, never judged
   segments: [],        // /api/blocks/day — context only
   locations: [],
-  flows: [],
   settings: {},
   sel: null,           // node id selected on the day view
   edit: null,          // the open editor: { id, v, tag, confirmDelete }
@@ -200,10 +199,14 @@ const PROOF = {
       + 'worthless. It proves the TAG was tapped: fixed in place, that is where you were. '
       + 'It cannot tell whether someone else carried a loose tag for you.',
   },
+  // RETIRED (2026-10-05): routines are plain lists and nothing runs them, so a
+  // gate still saying 'routine' never runs. Named so a leftover row reads as
+  // what it is; never offered (the Proof select drops `retired`), and the
+  // server refuses it.
   routine: {
-    name: 'Its routine, finished', strength: 'self-reported', cls: 'gd-weak',
-    threat: 'Cleared by finishing the linked routine in this app. The server re-checks that '
-      + 'every hard step was done, but nothing outside the app witnesses it.',
+    name: 'Routine (retired)', strength: 'never runs', cls: 'gd-weak', retired: true,
+    threat: 'Routine gates are gone: this gate never runs and is never charged until it is '
+      + 'given another proof.',
   },
   hours: {
     name: 'Hours reported', strength: 'self-reported', cls: 'gd-weak',
@@ -289,7 +292,7 @@ const current = (c, k) => loadSeq[k] === c[k];
 async function loadAll() {
   const date = G.date;
   const c = claim(['day', 'nodes', 'billing', 'ledger', 'segments', 'context']);
-  const [day, nodes, billing, ledger, events, segments, locations, flows, settings] = await Promise.all([
+  const [day, nodes, billing, ledger, events, segments, locations, settings] = await Promise.all([
     getJSON(`/api/gates/day?date=${date}`, G.day),
     getJSON('/api/accountability/nodes', G.nodes),
     getJSON('/api/gates/billing', G.billing),
@@ -297,7 +300,6 @@ async function loadAll() {
     getJSON('/api/gcal', G.events),
     getJSON(`/api/blocks/day?date=${date}&all=1`, G.segments),
     getJSON('/api/locations', G.locations),
-    getJSON('/api/flows', G.flows),
     getJSON('/api/settings', G.settings),
   ]);
   if (G.date !== date) return;            // navigated away while reading
@@ -310,7 +312,6 @@ async function loadAll() {
     G.settings = settings || G.settings;
     G.events = Array.isArray(events) ? events : G.events;
     G.locations = Array.isArray(locations) ? locations : G.locations;
-    G.flows = Array.isArray(flows) ? flows : G.flows;
   }
   if (G.settings.theme) {
     applyTheme(G.settings.theme);
@@ -886,10 +887,6 @@ function renderDetail() {
       <dt>Stake</dt><dd>${money(g.stake_cents)} · ${commitmentWords(g.commitment, g.live)}</dd>
       ${g.location ? `<dt>Place</dt><dd>${esc(g.location.name || 'a pinned point')} · within ${
         esc(g.location.radius_m)} m of ${Number(g.location.lat).toFixed(5)}, ${Number(g.location.lng).toFixed(5)}</dd>` : ''}
-      ${g.routine ? `<dt>Routine</dt><dd>${esc(g.routine.name)}${g.routine.deadline ? ` · due ${esc(g.routine.deadline)}` : ''}${
-        g.routine.completed_at ? ` · done ${esc(stamp(g.routine.completed_at))}` : ' · not done'}</dd>` : ''}
-      ${g.pawn && g.pawn.minutes ? `<dt>Pawned in</dt><dd>${g.pawn.minutes} min${
-        g.pawn.applied ? `, opening moved ${g.pawn.taken_min} min earlier` : ' (a day change stands as written)'}</dd>` : ''}
       ${g.hours ? `<dt>Hours</dt><dd>${g.hours.logged_minutes || 0} of ${g.hours.required_minutes || 0} min${
         g.hours.frozen ? ' (frozen)' : ''}</dd>` : ''}
     </dl>
@@ -938,7 +935,7 @@ function renderGates() {
       <div class="gd-badges">${proofBadge(n)}${!n.active ? '<span class="gd-badge">paused</span>' : ''}${
         pend ? `<span class="gd-badge gd-pend">${pend} scheduled</span>` : ''}${
         n.all_day ? '<span class="gd-badge">all day</span>' : ''}</div>
-      <div class="gd-hint">${esc(n.schedule_label || 'no schedule')}${n.routine ? ` · routine: ${esc(n.routine)}` : ''}</div>
+      <div class="gd-hint">${esc(n.schedule_label || 'no schedule')}</div>
     </button>`;
   }).join('');
   el.innerHTML = sectionHead('Gates', '<button class="gd-btn gd-small" id="gd-new">+ Gate</button>')
@@ -961,10 +958,6 @@ function openEditor(id) {
     allDay: n.all_day ? '1' : '0', allDay0: n.all_day ? '1' : '0',
     stake: n.charge_cents == null ? '' : (n.charge_cents / 100).toFixed(2),
     location: '', radius: n.geofence_radius_m || '',
-    routine: n.routine_id == null ? '' : String(n.routine_id),
-    routine0: n.routine_id == null ? '' : String(n.routine_id),
-    offset: n.routine_offset_min == null ? '' : String(n.routine_offset_min),
-    offset0: n.routine_offset_min == null ? '' : String(n.routine_offset_min),
     sched: false, days: [], from: '', to: '',
     effective: '',
   } : { label: '', sched: true, days: ['mo', 'tu', 'we', 'th', 'fr'], from: '09:00', to: '10:00',
@@ -993,10 +986,7 @@ async function loadTaps(id) {
 }
 
 function passesWhen(v, n) {
-  if (v.proof === 'routine') {
-    const f = G.flows.find(x => String(x.id) === v.routine);
-    return f ? `"${f.name}" is finished, any time that day` : 'nothing — no routine is linked, so it does not run';
-  }
+  if (v.proof === 'routine') return 'nothing — routine gates are gone, so it never runs';
   if (v.proof === 'hours') {
     return 'the minutes you report meet the day\'s requirement'
       + (v.allDay === '1' ? ', reported any time that day' : ', inside the window');
@@ -1051,8 +1041,6 @@ function renderSheet() {
     const p = PROOF[v.proof] || PROOF.link;
     const scanKind = v.proof === 'link' || v.proof === 'tag';
     const pend = pendingGroups((n.pending_changes || []));
-    const dailyFlows = G.flows.filter(f => (f.period || 'day') === 'day');
-    const linked = dailyFlows.find(f => String(f.id) === v.routine);
     const scanUrl = `${G.settings.gate_scan_url || ''}/scan/${n.token}`;
     const taps = G.taps[n.id];
     body = `
@@ -1063,13 +1051,13 @@ function renderSheet() {
 
       <label class="gd-field">Proof
         <select data-k="proof" data-rerender="1">
-          ${Object.entries(PROOF).map(([k, pp]) => `<option value="${k}"${v.proof === k ? ' selected' : ''}>${esc(pp.name)} — ${esc(pp.strength)}</option>`).join('')}
+          ${Object.entries(PROOF).filter(([k, pp]) => !pp.retired || v.proof0 === k).map(([k, pp]) => `<option value="${k}"${v.proof === k ? ' selected' : ''}${pp.retired ? ' disabled' : ''}>${esc(pp.name)} — ${esc(pp.strength)}</option>`).join('')}
         </select></label>
       <div class="gd-threat ${p.cls}"><b>${esc(p.strength)}.</b> ${esc(p.threat)}</div>
       <div class="gd-hint">${v.proof === 'tag' ? 'Going back to the link is an easing, so it waits 24h.'
         : 'Switching to tag-only applies at once, and is refused until a tag with its keys is live.'}</div>
 
-      ${v.proof === 'routine' ? '<div class="gd-field"><div class="gd-flabel">Judged on</div>the whole day — a routine gate never has a deadline inside it</div>'
+      ${v.proof === 'routine' ? ''
         : `<label class="gd-field">Judged on
         <select data-k="allDay" data-rerender="1">
           <option value="0"${v.allDay === '0' ? ' selected' : ''}>Inside the window</option>
@@ -1092,16 +1080,6 @@ function renderSheet() {
 
       <label class="gd-field">Stake <span class="gd-money-in">$<input type="number" min="0" step="0.25" data-k="stake" value="${esc(v.stake)}" placeholder="${G.billing ? (G.billing.default_cents / 100).toFixed(2) : 'default'}"></span></label>
       <div class="gd-hint">What failing this gate costs, whole or nothing. Blank uses the default. Raising it applies now; lowering waits 24h.</div>
-
-      <label class="gd-field">${v.proof === 'routine' ? 'The routine' : 'Linked routine'}
-        <select data-k="routine" data-rerender="1"><option value="">${v.proof === 'routine' ? '— none, so the gate cannot run —' : '— none —'}</option>
-          ${dailyFlows.map(f => `<option value="${f.id}"${String(f.id) === v.routine ? ' selected' : ''}>${esc(f.name)}</option>`).join('')}
-        </select></label>
-      <div class="gd-hint">${v.proof === 'routine' ? 'This routine IS the gate: finishing it on the day clears it, and nothing else does.'
-        : 'On a scan gate a routine is only a deadline reference and a place in the runner — it never fails or delays the gate. To put money on it, give it its own gate with Proof set to the routine.'}</div>
-      ${linked && v.routine === v.routine0 && v.proof !== 'routine' && linked.window_open_min == null ? `
-      <label class="gd-field">Routine due <span class="gd-money-in"><input type="number" step="5" data-k="offset" value="${esc(v.offset)}"> min after the gate closes</span></label>
-      <div class="gd-hint">Negative means before. A later deadline is an easing and waits 24h.</div>` : ''}
 
       ${scanKind ? `<div class="gd-field"><div class="gd-flabel">Scan link</div>
         <div class="gd-mono gd-wrap">${esc(scanUrl)}</div>
@@ -1384,30 +1362,6 @@ async function saveGate(n) {
     body.source_uid = src.uid;
   }
   const messages = [];
-  // The routine link lives on the FLOW, so moving it is two writes.
-  if (v.routine !== v.routine0) {
-    if (v.routine0) {
-      const r = await send(`/api/flows/${v.routine0}`, 'PATCH', { qr_node_id: null });
-      if (!r.ok) return fail(refusal(r, 'Could not unlink the old routine'));
-      // SAY WHEN IT LANDS. Off a scan gate it is gone now; where it still
-      // eases something (it is this gate's proof, or minutes are pawned into
-      // it) the server queues it 24h and answers with the link still on —
-      // which used to read here as "Nothing changed".
-      if (r.data && String(r.data.qr_node_id) === String(n.id) && !v.routine) {
-        messages.push('routine: comes off in 24h (an easing — '
-          + (v.proof0 === 'routine' ? 'it is this gate’s proof)' : 'minutes are pawned into it)'));
-      } else if (!v.routine) {
-        messages.push('routine: unlinked');
-      }
-    }
-    if (v.routine) {
-      const r = await send(`/api/flows/${v.routine}`, 'PATCH', { qr_node_id: n.id });
-      if (!r.ok) return fail(refusal(r, 'Could not link the routine'));
-    }
-  } else if (v.routine && v.offset !== v.offset0 && String(v.offset).trim() !== '') {
-    const r = await send(`/api/flows/${v.routine}`, 'PATCH', { offset_min: parseInt(v.offset) });
-    if (!r.ok) return fail(refusal(r, 'Could not move the routine deadline'));
-  }
   if (Object.keys(body).length) {
     if (v.effective) body.effective_from = v.effective;
     const res = await send(`/api/accountability/nodes/${n.id}`, 'PATCH', body);
@@ -1477,14 +1431,13 @@ function renderRules() {
     <li><b>A judged day is frozen.</b> After a day settles the judge writes one row for it — met, missed, or did
       not run — stamped with the window it was judged against. Later settings never rewrite it. Only yesterday
       and today can move money; an older day found unjudged is judged "too old to charge".</li>
-    <li><b>One gate, one proof, one price.</b> A day either costs the whole stake or nothing. A routine linked to
-      a scan gate never fails it.</li>
+    <li><b>One gate, one proof, one price.</b> A day either costs the whole stake or nothing.</li>
     <li><b>The money rails.</b> The ${money(b.cap_cents)} weekly cap counts the last 7 days, and a charge that
       would cross it is skipped whole. A lost response is logged "unknown", counts against the cap, and is never
       retried — a retry of a charge that went through bills twice. Beeminder is billed the stake minus the
       ${money(b.fee_cents)} card fee.</li>
     <li><b>What each proof is worth.</b> A tag tap is cryptographic. A link scan and its geofence are an honour
-      system — the phone reports its own location. Routines and hours are self-reported.</li>
+      system — the phone reports its own location. Hours are self-reported.</li>
     <li><b>Who can change this page.</b> It has no login: any device on your tailnet can open it and change
       anything here, including arming. The tailnet is the whole boundary. The only public part is the scan
       server, which serves the scan and tap routes and can read nothing but a gate's name.</li>

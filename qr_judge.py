@@ -4,8 +4,8 @@
 #
 # JUDGMENT IS PRESENCE-ONLY: a window is judged the moment it closes, and the
 # test is a satisfying scan (geofence-passing where a geofence is set). The
-# retired to-do gate is gone — a QR URL is location proof plus, where a routine
-# is LINKED to the gate, that routine having been done (see routine_gate_for_node).
+# retired to-do gate is gone, and so is the routine gate (2026-10-05) — a QR URL
+# is location proof.
 #
 # CHARGING IS NOT PORTED. The Worker's money path was disabled at five layers
 # and re-enabling it is a deliberate, staged protocol (QR-accountability/
@@ -135,22 +135,9 @@ def resolve_window(node, ymd, override=None):
         override = storage.qr_get_override(node['id'], ymd)
     if override:
         # A day override is a deliberate decision about THIS day, so it stands as
-        # written — the pawn does not shorten it further. Anything else and
-        # dragging tonight's deadline would silently move again.
+        # written.
         return (override['window_start'], override['window_end'],
                 override.get('window_end_offset_days') or 0)
-    return _less_pawned(node, ymd, base_window(node, ymd))
-
-
-def base_window(node, ymd):
-    """The gate's window BEFORE any pawn: source > weekly > node defaults.
-
-    Named apart from resolve_window because two questions are asked of it —
-    what the window IS (resolve_window, pawn applied) and what the pawn
-    actually TOOK OFF it (pawn_giveback, which needs the before to subtract
-    from the after). Re-deriving the ladder in the second place is the shape
-    this codebase keeps banning.
-    """
     from_source = source_window_for(node, ymd)
     if from_source:
         return from_source
@@ -162,143 +149,9 @@ def base_window(node, ymd):
             node.get('window_end_offset_days') or 0)
 
 
-# ── WHAT A PAWN DOES TO A WINDOW (2026-08-25, Quentin's instruction) ─────────
-#
-# A step pushed onto a later routine takes its minutes with it, so that routine
-# has more to do — and the three windows involved answer that differently. They
-# are three rules, not one, which is exactly why each is named:
-#
-#   the SCAN moves Y earlier       (moved_earlier) — the price. A scan is the
-#                                  claim that you are done, and carrying debt
-#                                  into a night means being done sooner. The
-#                                  whole window slides: its WIDTH is what the
-#                                  commitment actually promised you, and a
-#                                  price that ate it made a gate you could not
-#                                  satisfy rather than one that demanded more
-#                                  (2026-09-02, Quentin's instruction — it used
-#                                  to pull the close in and leave the opening,
-#                                  so a 60-minute window pawned 50 left ten
-#                                  minutes to hit).
-#   the ROUTINE opens Y earlier    (opened_earlier) — the room. More to do in
-#                                  the same evening means starting sooner.
-#   the ROUTINE'S DEADLINE stays   — by construction, not by exception: a
-#                                  derived deadline is "X after the scan
-#                                  closes", so on a pawned day it is X + Y
-#                                  after a close that already moved Y in. The
-#                                  arithmetic lands it exactly where it was.
-#
-# Each rule is written once and every window asks for it, so a future window
-# kind gets this behaviour by asking rather than by remembering. What a caller
-# supplies is only WHOSE minutes to use (pawn_shift / node_pawn_shift), which
-# is the one thing that differs between them.
-def pawn_shift(flow_id, ymd):
-    """How many minutes earlier this routine has to open today. Never negative."""
-    return max(0, storage.pawned_minutes_for_flow(flow_id, ymd))
-
-
-def node_pawn_shift(node, ymd):
-    """The same number for the gate that a routine gates."""
-    return max(0, storage.pawned_minutes_for_node(node['id'], ymd))
-
-
-def opened_earlier(start_min, end_min, minutes):
-    """(start, end) with the OPENING pulled back by `minutes`. The close stays.
-
-    Clamped at midnight of the day being asked about: a window is expressed in
-    minutes from that midnight, and a start before it would be a statement about
-    a day this window does not describe.
-    """
-    if not minutes:
-        return start_min, end_min
-    return max(0, start_min - minutes), end_min
-
-
-def moved_earlier(start_min, end_min, minutes):
-    """(start, end) with the WHOLE window slid earlier by `minutes`. Width kept.
-
-    Pawning costs you TIME OF DAY, never room: the close comes in because a
-    scan is the claim that you are done, and the opening comes with it because
-    the width is what the commitment promised. Pulling only the close in made
-    the price compound — a 60-minute window pawned 50 left ten minutes to hit,
-    and pawned 60 left none, which is a gate you cannot satisfy rather than one
-    that demands more.
-
-    Clamped at midnight of the day being asked about, the same bound and the
-    same reason as opened_earlier: a window is expressed in minutes from that
-    midnight, so a start before it would describe a different day. The width
-    survives the clamp — that is the whole point of it.
-    """
-    if not minutes:
-        return start_min, end_min
-    width = end_min - start_min
-    start = max(0, start_min - minutes)
-    return start, start + width
-
-
-def _less_pawned(node, ymd, window):
-    """The gate's SCAN window, slid earlier by the pawned minutes.
-
-    This is the half that costs something, and it is meant to: the scan says
-    you are done, so carrying work into the evening means being done sooner.
-    The routine's own deadline does NOT move with it — see routine_deadline,
-    which adds the same minutes back.
-
-    Applied AFTER the source/weekly/default resolution but NOT after a date
-    override: an override is a deliberate day-level decision about this gate and
-    stands exactly as written, so resolve_window returns before reaching here.
-    pawn_giveback answers the same question the other way round — what this took
-    off — and returns 0 on an override for that reason.
-    """
-    minutes = node_pawn_shift(node, ymd)
-    if minutes <= 0:
-        return window
-    start, end, offset = window
-    start_min = _hhmm_min(start)
-    end_min = _hhmm_min(end) + int(offset or 0) * 24 * 60
-    start_min, end_min = moved_earlier(start_min, end_min, minutes)
-    new_offset, rest = divmod(end_min, 24 * 60)
-    return (f'{start_min // 60:02d}:{start_min % 60:02d}',
-            f'{rest // 60:02d}:{rest % 60:02d}', new_offset)
-
-
 def _hhmm_min(hhmm):
     h, m = str(hhmm).split(':')
     return int(h) * 60 + int(m)
-
-
-# WHAT THE CLOSE ACTUALLY LOST, which is not always what was pawned (fixed
-# 2026-08-30). routine_deadline gives the pawned minutes back so the routine's
-# deadline lands exactly where it stood unpawned — "X after a close that moved
-# Y in, plus Y". That arithmetic only holds when the close really moved Y, and
-# there are two live cases where it does not:
-#
-#   a DATE OVERRIDE stands as written and loses nothing (resolve_window returns
-#   before _less_pawned), so the raw add-back pushed the routine's deadline Y
-#   minutes PAST where it stood — pawning bought free time on the day you had
-#   already dragged the window;
-#   a cost larger than the DAY is only partly paid, because moved_earlier
-#   clamps the slide at midnight — a 5000-minute step cannot move a 23:00 close
-#   back more than the 1380 minutes there are before it, and giving back 5000
-#   put the deadline four days later.
-#
-# Both are loosenings on the money path (the routine earns half the day's
-# credit), and both are ONE cause: a second place re-deriving what the close
-# did instead of asking. So it is asked here, once, and routine_deadline is
-# now a reader.
-def pawn_giveback(node, ymd, override=None):
-    """Minutes the pawn took OFF this gate's close on this date. Never negative."""
-    if override is None:
-        override = storage.qr_get_override(node['id'], ymd)
-    if override:
-        return 0
-    minutes = node_pawn_shift(node, ymd)
-    if minutes <= 0:
-        return 0
-    start, end, offset = base_window(node, ymd)
-    start_min = _hhmm_min(start)
-    end_min = _hhmm_min(end) + int(offset or 0) * 24 * 60
-    _, closed = moved_earlier(start_min, end_min, minutes)
-    return end_min - closed
 
 
 def applies_on(node, ymd, override=None):
@@ -320,17 +173,14 @@ def applies_on(node, ymd, override=None):
         override = storage.qr_get_override(node['id'], ymd)
     if override and override.get('skipped'):
         return False
-    # A ROUTINE GATE WITH NO ROUTINE DOES NOT RUN. Asked BEFORE the schedule
-    # branches below, both of which RETURN — written after them once, where it
-    # was reachable only by a gate with no source, so a gate that had lost its
-    # routine went on being judged and charged. The schedule says which DAYS a
-    # gate runs; this says whether there is anything for it to ask at all, and
-    # a question with no subject is not a commitment. Lands 'n/a' by the same
+    # A RETIRED PROOF NEVER RUNS. Routine gates are gone (2026-10-05): nothing
+    # runs a routine any more, so a row still saying 'routine' has nothing that
+    # could clear it, and a gate nothing can clear is not a commitment, it is a
+    # daily charge. The PATCH route refuses the mode; this is the lock on the
+    # safe end for a row that somehow still carries it. Asked BEFORE the
+    # schedule branches below, both of which RETURN. Lands 'n/a' by the same
     # road a non-run weekday does: judged, frozen, never charged.
-    # Date-free on purpose (storage.gate_has_routine): whether a routine is
-    # ATTACHED is a fact about the gate, not about this date, and the run is a
-    # different question asked later by day_verdict.
-    if is_routine_gate(node) and not storage.gate_has_routine(node['id']):
+    if is_retired_proof(node):
         return False
     # With a source, "does it run today" is whether the source has an occurrence
     # — days_of_week is only the fallback for a gate that has no source yet.
@@ -363,135 +213,6 @@ def _utc_iso(ymd, hhmm):
     return datetime.utcfromtimestamp(epoch).strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
 
-# ── Two deadlines, not one (2026-08-15) ───────────────────────────────────
-#
-# A gate is satisfied by a SCAN and, where a routine is linked, by that routine.
-# They are two commitments with two clocks: the window on the node is the SCAN's
-# deadline, and the routine has its own. Either one missed at ITS OWN deadline
-# renders the day false — the judge no longer waits for the scan window to close
-# before noticing that a 21:00 routine was not done.
-#
-# Mirrors flowDueMin in app.js: the routine's own window where it has one, else
-# the deadline it is anchored to (`before_node_id` if set, otherwise the gate it
-# gates) plus `offset_min`. One rule, two implementations that must agree — the
-# app draws it and the judge charges for it.
-
-
-# A ROUTINE IS RESOLVED AS IT STOOD ON THAT DAY (2026-08-24, Quentin: "it
-# changed the routine window settings in the past"). Its window fields are
-# dated — storage.record_revision keeps what they held before each change — so
-# every question about a DATE goes through here first and the day you already
-# lived keeps the deadline it actually had.
-#
-# One hop, at the two doors that read those fields (_flow_own_end and
-# routine_deadline), which is every path into flow_day_window as well.
-def _flow_on(flow, ymd):
-    return storage.flow_as_of(flow, ymd=ymd) or flow
-
-
-def _flow_own_end(flow, ymd, resolve=None):
-    flow = _flow_on(flow, ymd)
-    uid = flow.get('source_uid')
-    if not uid:
-        return None
-    if resolve is None:
-        resolve, _ = storage.schedule_resolver()
-    src = resolve(uid)
-    if not src:
-        return None
-    day = date_cls.fromisoformat(ymd)
-    try:
-        occs = schedule.occurrences(src, resolve, day, day)
-    except schedule.Cycle:
-        return None
-    occ = next(((s, e) for s, e in occs if s.date() == day), None)
-    return occ[1] if occ else None
-
-
-def routine_deadline(node, flow, ymd, resolve=None):
-    """When the linked routine is due on this date, as a local datetime."""
-    flow = _flow_on(flow, ymd)
-    own = _flow_own_end(flow, ymd, resolve)
-    if own:
-        return own
-    anchor_id = flow.get('before_node_id') or flow.get('qr_node_id')
-    if not anchor_id:
-        return None
-    anchor = node if (node and anchor_id == node['id']) else next(
-        (n for n in storage.qr_get_nodes() if n['id'] == anchor_id), None)
-    if not anchor:
-        return None
-    _, end, offset = resolve_window(anchor, ymd)
-    due = _local_dt(close_date_of(ymd, offset), end)
-    # A "before X" routine is due when X closes, full stop; the offset belongs
-    # to the gate it gates, not to a deadline it merely points at.
-    if not flow.get('before_node_id'):
-        # "X after the scan closes" — and on a pawned day that close has
-        # already moved in (_less_pawned), so this adds back exactly what it
-        # lost. The routine's deadline therefore lands where it stood unpawned:
-        # the pawn buys the evening more room and charges the SCAN for it,
-        # which is the whole shape of the mechanic (Quentin, 2026-08-25).
-        # ASK what the close lost (pawn_giveback) rather than assuming it was
-        # the pawned minutes — an override loses nothing and an absurd cost is
-        # clamped, and both used to push this deadline past where it began.
-        due += timedelta(minutes=(flow.get('offset_min') or 0)
-                                 + pawn_giveback(anchor, ymd))
-    return due
-
-
-# THE DEADLINE AS DATA (2026-08-17). app.js used to answer this itself in
-# flowWindow/flowDueMin, and the two disagreed on every midnight-crossing
-# window: day_intervals is CLIPPED and sorted by start, so a 23:00→07:00
-# routine's from_previous tail ({'00:00','07:00'}) sorts first and the client
-# took it — showing the routine due at 07:00 THIS morning, overdue all day,
-# while the judge charged against 07:00 the NEXT. Display and the money path
-# disagreeing is the one thing this codebase calls a cardinal sin, so the
-# client is a reader now and this is the single implementation.
-#
-# Returns minutes from midnight of `ymd`, which may exceed 1440 — that is the
-# whole point, and what the tail-clipping lost.
-def flow_day_window(flow, ymd, resolve=None):
-    """(open_min, due_min) for a routine on a date; either may be None."""
-    flow = _flow_on(flow, ymd)
-    open_min = None
-    own = _flow_own_end(flow, ymd, resolve)
-    if own and flow.get('source_uid'):
-        if resolve is None:
-            resolve, _ = storage.schedule_resolver()
-        src = resolve(flow['source_uid'])
-        day = date_cls.fromisoformat(ymd)
-        try:
-            occs = schedule.occurrences(src, resolve, day, day)
-        except schedule.Cycle:
-            occs = []
-        # The occurrence STARTING on this day, never the tail of yesterday's.
-        occ = next(((s, e) for s, e in occs if s.date() == day), None)
-        if occ:
-            open_min = occ[0].hour * 60 + occ[0].minute
-    due = routine_deadline(None, flow, ymd, resolve)
-    if due is None:
-        return open_min, None
-    base = date_cls.fromisoformat(ymd)
-    due_min = ((due.date() - base).days * 1440) + due.hour * 60 + due.minute
-    # Work pawned IN opens the routine earlier and leaves its deadline alone —
-    # the same call the gate makes, so the two cannot drift apart.
-    if open_min is not None:
-        open_min, due_min = opened_earlier(open_min, due_min,
-                                           pawn_shift(flow.get('id'), ymd))
-    return open_min, due_min
-
-
-def _completed_local(iso):
-    """flow_run.completed_at (UTC, tz-aware) as a naive LOCAL datetime."""
-    if not iso:
-        return None
-    try:
-        dt = datetime.fromisoformat(iso)
-    except ValueError:
-        return None
-    return datetime.fromtimestamp(dt.timestamp()) if dt.tzinfo else dt
-
-
 # ── ONE GATE, ONE PROOF, ONE VERDICT (2026-09-02, Quentin's instruction) ──
 #
 # This REPLACES the 50/50 split of 2026-08-22, which priced a scan and a linked
@@ -502,24 +223,14 @@ def _completed_local(iso):
 # pre-lost: each checkpoint keeps its own live incentive all day, and no
 # checkpoint's failure discounts another's.
 #
-# The code had already argued this once. An hours gate refuses to be linked to
-# the routine that hosts its entry step (see day_verdict), because entering the
-# hours IS finishing that routine, so one act would have paid for two halves.
-# That is this rule, one gate earlier.
-#
 # So a gate is cleared by exactly ONE kind of proof, named in proof_mode:
 #
 #   'link' / 'tag'  a scan inside the window          (scan_satisfies)
 #   'hours'         a number that meets the day's bar (hours_satisfies)
-#   'routine'       its linked routine, finished      (below)
 #
-# A routine gate has NO DEADLINE (Quentin, 2026-09-02): its commitment is the
-# WALL DAY — done at all, on the day it was owed. `routine_deadline` still
-# answers when the routine is DUE, and the runner still shows it, but nothing
-# on the money path asks. What it costs to have no deadline is paid in the
-# timing instead: the day cannot settle at any clock time inside it, so a
-# routine gate settles at the wall day's end plus ROUTINE_GRACE_HOURS, which is
-# the same instant a run stops being able to earn its day (run_settles_at).
+# 'routine' (its linked routine, finished) was the third until 2026-10-05,
+# when routines became plain lists and nothing ran them any more. A row that
+# still says it never runs — see is_retired_proof.
 #
 # THERE IS NO PARTIAL CREDIT ANY MORE. credit_pct is still written — 100 on a
 # pass, 0 on a fail — and judged_outcome still reads the 50s frozen into rows
@@ -527,100 +238,34 @@ def _completed_local(iso):
 # it said. Nothing can write a 50 again.
 
 
-def day_verdict(node, ymd, flow, scans, now=None, hours=None):
+def day_verdict(node, ymd, scans, now=None, hours=None):
     """Did this gate's day pass? (ok, reason). THE one answer.
 
     `reason` is NULL on a pass — a row with no failure_reason is a judged
     success, which is what the freeze made a row mean (qr_reserve_judgment).
     """
     if is_hours_gate(node):
-        # A number, not a scan. The routine that HOSTS the entry step is
-        # deliberately not this gate's proof: entering the hours IS finishing
-        # that routine, so making it clear the gate would credit one act twice.
+        # A number, not a scan.
         passed = (hours or hours_satisfies(node, ymd))[0]
         return (True, None) if passed else (False, 'hours_short')
-
-    if is_routine_gate(node):
-        # THE WALL DAY, with no deadline inside it. Late is not a failure here
-        # and has no reason to be recorded as one, so there is no 'routine_late'
-        # — the run either belongs to this day or it does not, and a run belongs
-        # to the day it was OPENED on (flowRunView.date), not the clock at the
-        # moment it was ticked.
-        if flow is None:
-            # No routine attached: there is nothing this gate could ask, so it
-            # cannot be failed. applies_on already stops it running at all, and
-            # the PATCH route refuses to leave a gate in this state — both
-            # because a gate nothing can clear is not a commitment, it is a
-            # daily charge. This is the third lock, on the safe end.
-            return True, None
-        return (True, None) if flow['completed_at'] else (False, 'routine_incomplete')
 
     return ((True, None) if any(scan_satisfies(node, sc) for sc in scans)
             else (False, 'absent'))
 
 
-# HOW FAR PAST MIDNIGHT A ROUTINE CAN STILL EARN ITS DAY (2026-08-25,
-# Quentin's instruction; it earned a HALF until 2026-09-02, and now earns the
-# whole gate). Midnight alone contradicted a rule the app already
-# had: a run belongs to the day it was OPENED on, and openFlowRun deliberately
-# resumes yesterday's unfinished run — so a night routine finished at 00:05
-# credits a day the judge, which settles at 00:00 and runs every five minutes,
-# had already frozen. The day was earned and unearnable at the same time.
-#
-# Four hours, not twenty-four. A full day would keep Monday chargeable while
-# Tuesday's routine was already running, so two money days would be open at
-# once; this covers the finish-after-midnight case that actually happens and
-# closes the day before the next one starts.
-ROUTINE_GRACE_HOURS = 4
-
-
-def settle_after(node, ymd, flow, window):
+def settle_after(node, ymd, window):
     """The moment this day can be judged without the answer still moving.
 
     A gate proved by a SCAN or by a NUMBER settles when its window closes:
     nothing about the day can change after that, which is what a window is.
-
-    A ROUTINE gate has no deadline inside its day, so there is no clock time
-    within the day at which its answer stops moving — it settles at the wall
-    day's end plus the grace, the same instant a run stops being able to earn
-    its day (run_settles_at). Judging earlier would charge for a routine that
-    was about to be done, and a judged day is FROZEN, so there is no second
-    look. This is the price of having no deadline, and it is paid here.
-
-    `flow` is accepted and ignored for the scan kinds ON PURPOSE: a routine
-    linked to a scan gate no longer delays or softens that gate's judgment
-    (2026-09-02). The two are separate commitments now.
     """
-    if is_routine_gate(node):
-        return run_settles_at(ymd)
     if is_all_day(node):
         # The wall day ends, and with it the last minute that could have
-        # cleared this gate. NOT the routine's four-hour grace: that grace
-        # exists for the RUN's pin (a night ticked at 00:05 belongs to the
-        # night it was opened on), and a scan or a number at 00:30 is a fact
-        # about the new day, not the old one.
+        # cleared this gate: a scan or a number at 00:30 is a fact about the
+        # new day, not the old one.
         return _local_dt(_date_plus(ymd, 1), '00:00')
     start, end, offset = window
     return _local_dt(close_date_of(ymd, offset), end)
-
-
-def run_settles_at(ymd):
-    """The moment a RUN opened on `ymd` stops being able to earn that day.
-
-    The runner pins its day (`flowRunView.date`) so a night routine ticked at
-    00:05 credits the night it started — but the pin has to end somewhere, or
-    every later write in the session files under a day that closed hours ago.
-    That end is the same grace the money path already uses: past it the day is
-    settled, judged and frozen, so nothing more can be earned on it.
-
-    Served to the client rather than mirrored there (`get_flows`), because a
-    client re-derivation of a rule the judge charges against is a bug even
-    while it agrees. No node and no window: this is the ROUTINE half's outer
-    bound, and settle_after IS this for a routine gate, so a routine's day
-    ends at the same instant whether you ask the runner or the judge.
-    """
-    return (_local_dt(_date_plus(ymd, 1), '00:00')
-            + timedelta(hours=ROUTINE_GRACE_HOURS))
 
 
 # How far back a judge that has been down will reach. Bounded so a database
@@ -649,7 +294,7 @@ def _days_to_judge(node, today):
 #
 # Every money bug before this had one shape: the judge decided AFTER a window
 # closed what the day's commitment had been, by reading the settings as they
-# were THEN — active, armed, run-days, window, routine, skip, tag — so a change
+# were THEN — active, armed, run-days, window, skip, tag — so a change
 # between the window and the judgment re-judged the past under the new value.
 # Each was patched one setting at a time (n/a rows, row_revision, the skip
 # store, armed_at, paused gates), and the next feature had to remember all of
@@ -669,15 +314,15 @@ def _days_to_judge(node, today):
 #      — turning it off is immediate.
 #
 # So nothing done after a window opens can reach that day: not resuming, not
-# arming, not editing, not a pawn, not the judge having been down. A sealed
+# arming, not editing, not the judge having been down. A sealed
 # window is also what resolve_window and applies_on answer for that day, so
 # the calendar and the read-outs show the window being judged.
 COMMIT_LEAD_MIN = 15
 
 
 def day_opens_at(node, ymd, window):
-    # The moment a day stops being provisional. An all-day gate (and so every
-    # routine gate) is the whole wall day, so it opens at midnight.
+    # The moment a day stops being provisional. An all-day gate is the whole
+    # wall day, so it opens at midnight.
     if is_all_day(node):
         return _local_dt(ymd, '00:00')
     return _local_dt(ymd, window[0])
@@ -730,18 +375,20 @@ def _settle(node, ymd, now, today, lines):
         # 'n/a' once the day can no longer be committed, which is the record
         # saying so, and never a charge.
         window = resolve_window(node, ymd)
-        if now >= settle_after(node, ymd, None, window):
+        if now >= settle_after(node, ymd, window):
             storage.qr_drop_commitment(node['id'], ymd)
             storage.qr_reserve_judgment(node['id'], ymd, None, 'n/a', None, window=window)
         return
 
     term = committed_node(node, c)
     window = (c['window_start'], c['window_end'], c['offset_days'] or 0)
-    # ONLY a routine gate asks about a routine (2026-09-02). A routine linked
-    # to a SCAN gate is a separate commitment, so it neither softens nor delays.
-    flow = (storage.gating_flow_for_node(node['id'], ymd)
-            if is_routine_gate(term) else None)
-    if now < settle_after(term, ymd, flow, window):
+    if now < settle_after(term, ymd, window):
+        return
+    if is_retired_proof(term):
+        # Sealed under a proof that no longer exists (a routine gate sealed
+        # before 2026-10-05): nothing can be asked of it, so the day is the
+        # record of a gate that did not run — 'n/a', never money.
+        storage.qr_reserve_judgment(node['id'], ymd, None, 'n/a', None, window=window)
         return
     open_iso, close_iso = day_scan_bounds(term, ymd, window)
     scans = storage.qr_scans_in_window(node['id'], open_iso, close_iso)
@@ -749,7 +396,7 @@ def _settle(node, ymd, now, today, lines):
     # correction to last Tuesday must not rewrite what Wednesday was owed.
     hrs = hours_satisfies(term, ymd) if is_hours_gate(term) else None
     stamp = (hrs[2], hrs[1], hrs[3]) if hrs else None
-    _ok, reason = day_verdict(term, ymd, flow, scans, now, hours=hrs)
+    _ok, reason = day_verdict(term, ymd, scans, now, hours=hrs)
     if reason is None:
         storage.qr_reserve_judgment(node['id'], ymd, None, 'ok', None, window=window,
                                     credit_pct=100, hours=stamp)
@@ -824,10 +471,9 @@ def outcomes(from_date, to_date, now=None):
             open_iso, close_iso = day_scan_bounds(node, ymd, (start, end, offset))
             # WHEN the day stops moving, asked of the judge's own function
             # rather than re-derived from the window — an all-day gate closes
-            # at midnight and a routine gate four hours after it, and painting
-            # either as failed while it was still winnable is the bug this
-            # avoids. (`flow` is None here and settle_after ignores it.)
-            settles = settle_after(node, ymd, None, (start, end, offset))
+            # at midnight, and painting it as failed while it was still
+            # winnable is the bug this avoids.
+            settles = settle_after(node, ymd, (start, end, offset))
             j = judged.get((node['id'], ymd))
             if j and j['charge_status'] == 'n/a':
                 # Frozen as "the gate did not run that day" — neutral, exactly
@@ -968,7 +614,10 @@ def is_hours_gate(node):
     return (node.get('proof_mode') or 'link') == 'hours'
 
 
-def is_routine_gate(node):
+# A PROOF THAT NO LONGER EXISTS (2026-10-05). 'routine' was cleared by a
+# routine's run, and the runner is gone. The ONE answer, asked by applies_on
+# (the gate never runs) and _settle (a day sealed under it lands 'n/a').
+def is_retired_proof(node):
     return (node.get('proof_mode') or 'link') == 'routine'
 
 
@@ -977,19 +626,13 @@ def is_routine_gate(node):
 # A morning routine has a time it is MEANT to happen at and a commitment that
 # is really "today"; study hours are a number owed by the day and nothing about
 # a clock. Both were being judged against a window that existed to place the
-# pill. A routine gate has said exactly this since 2026-09-02 — the wall day,
-# no deadline inside it — and `all_day` is that same rule, made settable for
-# the other proofs instead of hard-coded to one of them. So this predicate is
-# the ONE answer to "does this gate's window judge", and the routine branch
-# below is why it is not simply the column: routine gates ARE all-day by
-# construction, and a second way of asking would eventually disagree.
+# pill. So this predicate is the ONE answer to "does this gate's window judge".
 #
 # What the window still does, on every gate: `applies_on` decides which DAYS
-# from the schedule, the pill draws at the window, an hours step opens with it,
-# and a pawn can still move an opening earlier. What it stops doing is deciding
-# whether the day was met.
+# from the schedule and the pill draws at the window. What it stops doing is
+# deciding whether the day was met.
 def is_all_day(node):
-    return is_routine_gate(node) or bool(node.get('all_day'))
+    return bool(node.get('all_day'))
 
 
 def day_scan_bounds(node, ymd, window):
@@ -1087,8 +730,7 @@ def is_loosening(field, current, nxt, node=None):
         # of being deleted: a 06:00 deadline becomes "sometime today". It
         # waits 24h. Putting the window back in charge is a tightening and
         # applies at once, cancelling any queued easing, like every other
-        # field. (A ROUTINE gate is all-day whatever this column says — see
-        # is_all_day — so on one of those the flag is inert either way.)
+        # field.
         return not _falsy(nxt) and _falsy(current)
     if field == 'active':
         # Switching a gate OFF is the purest loosening there is. The dedicated
@@ -1098,19 +740,20 @@ def is_loosening(field, current, nxt, node=None):
         # judged. Turning one back ON is tightening and applies immediately.
         return _falsy(nxt) and not _falsy(current)
     if field == 'proof_mode':
-        # ONE provable tightening, and everything else waits (2026-09-02, when
-        # 'routine' joined 'link', 'tag' and 'hours'). link -> tag is the only
+        # ONE provable tightening, and everything else waits (2026-09-02).
+        # link -> tag is the only
         # move that unambiguously demands MORE: the gate stops accepting a URL
         # you can open from bed and starts needing the object in your hand. It
         # applies at once, but only where a live tag exists to clear it with,
         # which app.py refuses at the door rather than pending.
         #
         # Every other move swaps one kind of proof for a DIFFERENT kind, and
-        # there is no scale on which a scan and a routine and a number can be
-        # compared — so none of them is proven tighter, and the allowlist rule
-        # says they wait. This branch used to read `current == 'tag'`, which
-        # was blacklist-shaped: link -> hours and link -> routine both fell
-        # through as tightenings and applied instantly on the money path.
+        # there is no scale on which a scan and a number can be compared — so
+        # none of them is proven tighter, and the allowlist rule says they
+        # wait. This branch used to read `current == 'tag'`, which was
+        # blacklist-shaped: link -> hours fell through as a tightening and
+        # applied instantly on the money path. (Moving TO 'routine' is refused
+        # at the door since 2026-10-05; moving off it waits like any swap.)
         return not (str(current) != 'tag' and str(nxt) == 'tag')
     if field in ('geofence_lat', 'geofence_lng'):
         # A fence cannot be proven tighter by comparing coordinates: moving it

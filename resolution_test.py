@@ -59,9 +59,9 @@ RESOLUTIONS = {
         'not served on its own: it is the PAST half of "what did this row say '
         'on that day", layered by the same function that layers the future '
         'half (easing_pending). Every reader asks through the resolver of the '
-        'row it modifies — a routine through qr_judge.flow_day_window, which '
-        'calls storage.flow_as_of first — so nothing re-derives it and nothing '
-        'reads this table directly.'),
+        'row it modifies, so nothing re-derives it and nothing reads this '
+        'table directly. (Its one writer was the routine window, retired '
+        '2026-10-05; the mechanism is kept and history_test pins it.)'),
     'qr_node': (
         'qr_judge.resolve_window',
         'served: node.day_windows, keyed by exact DATE (nodeWindowForDate reads '
@@ -69,13 +69,13 @@ RESOLUTIONS = {
         'INPUT to that ladder, already day-keyed, so it projects nothing '
         'itself and is deliberately absent below.'),
     'flow': (
-        'qr_judge.flow_day_window',
-        'served: due_min / window_open_min, plus day_steps and period_key from '
-        'get_flows(date). flowDueMin is a READER.'),
+        None,
+        'RETIRED 2026-10-05: routines are plain lists (storage._routines_to_'
+        'lists), nothing runs them, and the rows are kept dormant.'),
     'flow_step': (
-        'storage.step_due_on',
-        "served: s.due and day_steps. The client trusts the server's answer; "
-        'pawned_date is per-day state on top (steps_pawned_into).'),
+        None,
+        'RETIRED with flow. step_due_on survives only as the weekday predicate '
+        'metrics_for_step asks of a METRIC.'),
     'metric': (
         'storage.metrics_for_step',
         "a SECOND filter under the step's own days; served per step, paused "
