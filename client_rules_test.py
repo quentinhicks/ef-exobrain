@@ -48,7 +48,7 @@ APP_JS = os.path.join(HERE, 'static', 'app.js')
 # pattern -> (what to use instead, the function allowed to contain it)
 BANNED = [
     (re.compile(r'formatDateYMD\(new Date\(\)\)'),
-     'wallDay() / viewDay() / runDay() — say WHICH day you mean',
+     'wallDay() / viewDay() — say WHICH day you mean',
      'function wallDay()'),
     (re.compile(r'formatDateYMD\(state\.currentDate\)'),
      'viewDay()',
@@ -75,10 +75,11 @@ BANNED = [
 # ── The day a RUN's work is filed under ──────────────────────
 #
 # Every endpoint here takes a DATE saying which day the fact belongs to, so a
-# function naming one is answering "which day" — and inside the routine runner,
-# or any surface the runner RAISES over itself, that answer is runDay(). The
-# list is of ENDPOINTS, not of functions: nothing has to be remembered when a
-# new caller appears, which is the same reason authority_test scans qr_judge
+# function naming one is answering "which day" — and that answer is the day the
+# SURFACE is about, sent explicitly, never the clock. (It was runDay(), the
+# routine runner's pinned day, until the runner went on 2026-10-05.) The list
+# is of ENDPOINTS, not of functions: nothing has to be remembered when a new
+# caller appears, which is the same reason authority_test scans qr_judge
 # instead of keeping a curated list.
 DAY_FILING = [
     re.compile(r'/api/journal/'),
@@ -87,18 +88,12 @@ DAY_FILING = [
     re.compile(r'/api/people/night'),
     re.compile(r'/api/people/\$\{[^}]*\}/interactions'),
     re.compile(r'/api/tag-daily/answer'),
-    re.compile(r'/api/flows/\$\{[^}]*\}/run'),
 ]
 
-# The one legitimate clock read in such a function, and why it is legitimate.
-# WHICH day the run pins to has to be decided from the clock — that is exactly
-# what flowRunDate answers (is yesterday's run still resumable?). Anything else
-# reading the clock in a day-filing function is the bug above.
-CLOCK_OK = [
-    (re.compile(r'flowRunDate\('),
-     "the pin itself is decided from the clock — flowRunDate asks whether "
-     "yesterday's run is still resumable"),
-]
+# The legitimate clock reads in such a function, each with why. Empty since
+# the runner went (2026-10-05): flowRunDate, which decided from the clock which
+# day a run pinned to, was the only one.
+CLOCK_OK = []
 
 
 def owning_function(lines, i):
@@ -182,71 +177,9 @@ def object_door_fails(body):
     return out
 
 
-# ── A ROUTINE IS RUN TO THE END, WITHOUT LEAVING IT ──────────
-#
-# (2026-09-03, Quentin's instruction.) A step's own handlers may not close the
-# run. Four of them did: both calendar passes, the clarify act and the mind
-# sweep called closeFlowRun() and dropped you on the day screen with the
-# routine gone — while its gate was still holding the day open — and the
-# comment beside them said there was no way back. There is: openOverRunner
-# raises the surface above #flow-run (165) and closing it lands you back on the
-# step you left.
-#
-# Scoped to the STEP HANDLERS, not to the file: the runner still closes itself
-# when the last step is credited, when the day it was pinned to settles, when
-# there is nothing in it to run, and when you press ✕ or Esc. Those are the run
-# ENDING. This bans the run being taken away mid-way by something a step asked
-# you to do.
-RUNNER_HANDLERS = 'function wireFlowStep('
-
-
-def runner_eviction_fails(lines):
-    start = next((i for i, l in enumerate(lines)
-                  if l.startswith(RUNNER_HANDLERS)), None)
-    if start is None:
-        return [(0, RUNNER_HANDLERS, "the runner's step handlers have been "
-                 'renamed — point this check at them again')]
-    out = []
-    for n in range(start + 1, len(lines)):
-        line = lines[n]
-        if re.match(r'^(async )?function ', line):
-            break
-        stripped = line.strip()
-        if stripped.startswith('//') or stripped.startswith('*'):
-            continue
-        if 'closeFlowRun' in line:
-            out.append((n + 1, stripped[:88],
-                        'openOverRunner(close, back) — a step may raise a '
-                        'surface OVER the run, never in place of it'))
-    return out
-
-
-# ── A STEP'S CONTROL MUST BE ADDRESSED THE WAY IT IS WRITTEN ──
-#
-# (2026-09-03.) When the runner became a scroll every step's inputs became
-# mounted at once, so `wireFlowStep` addresses each control by CLASS, scoped to
-# its own section — an id could not stay unique across two steps of the same
-# kind. The markup was left emitting ids. Eleven controls therefore matched
-# nothing and did nothing: the CRM opener, the plan opener, the hours box, the
-# experiment's start/keep/end/edit, the clarify act and the mind sweep. A dead
-# button is the worst kind of missing feature, because it looks present.
-#
-# So: every class `wireFlowStep` asks for must exist as a class in the markup.
-# Scanned, not curated — a control added tomorrow is covered the day it is
-# written.
-STEP_SELECTOR = re.compile(r"""sec\.querySelector(?:All)?\('\.([a-zA-Z-]+)'""")
-
-
-def step_control_fails(body):
-    out = []
-    for cls in sorted(set(STEP_SELECTOR.findall(body))):
-        if re.search(r'class="[^"]*(?<![\w-])%s(?![\w-])' % re.escape(cls), body):
-            continue
-        why = 'no markup carries class="%s"' % cls
-        if 'id="%s"' % cls in body:
-            why = 'the markup gives it an id="%s" instead — a step control is '                   'addressed by CLASS, because two steps of one kind mount at once' % cls
-        out.append((0, ".%s" % cls, why))
-    return out
+# (Two checks on the routine RUNNER lived here: no step handler may close the
+# run, and every class wireFlowStep asks for must exist in the markup. Both
+# went with the runner on 2026-10-05.)
 
 
 # ONE COPY, ONE REFRESH (2026-09-23). A block added in Settings did not
@@ -310,8 +243,6 @@ def main():
         lines = f.read().split('\n')
 
     fails = object_door_fails(body)
-    fails += runner_eviction_fails(lines)
-    fails += step_control_fails(body)
     fails += settings_refresh_fails(lines)
     fails += dock_panel_fails()
     for n, line in enumerate(lines):
@@ -338,8 +269,8 @@ def main():
             if any(p.search(lines[n]) for p, _why in CLOCK_OK):
                 continue
             fails.append((n + 1, stripped[:88],
-                          'runDay() — %s() files a dated fact, so its day is '
-                          'the run that work belongs to' % name))
+                          'the surface\'s own day — %s() files a dated fact, so '
+                          'it sends the day it is about, never the clock' % name))
 
     if fails:
         fails.sort()
@@ -355,16 +286,13 @@ midnight, a paused row, or a config change.""")
         return 1
 
     print('app.js uses the accessors.')
-    print('  which day     wallDay / viewDay / runDay')
+    print('  which day     wallDay / viewDay')
     print('  past midnight spanEndMin / windowEndMin / clockHHMM / DAY_MIN')
-    print("  a run's day   %d function(s) file a dated fact, none from the clock"
+    print('  a dated write %d function(s) file a dated fact, none from the clock'
           % len(dated))
     print('  money path    no gate is hidden through the view-dismissal store')
     print('  object door   %d kind(s) declared, all of them editable'
           % len(declared_kinds(body)))
-    print("  the runner    no step handler closes the run you are sitting in")
-    print('  step controls %d selector(s) in wireFlowStep, all of them live'
-          % len(set(STEP_SELECTOR.findall(body))))
     print('  settings      %d list(s) read state, both write doors refresh'
           % len(STATE_RENDERERS))
     print('  docked panels %d in the shell, each one makes the page give up its width'

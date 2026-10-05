@@ -60,14 +60,6 @@ LEDGERS = {
         'that day — item and placement, ledger row included so the event '
         'returning mints afresh. A mint whose item is already GONE was '
         'finished by hand and its row stands.'),
-    'flow_task_seed': (
-        'storage.seed_flow_tasks',
-        'storage.seed_flow_tasks',
-        'storage._delete_flow_rows',
-        "the completed-run branch: a routine already done for its period has "
-        "its seeded action and placement deleted rather than left in the pool "
-        "looking outstanding. update_flow also clears the ledger when as_task "
-        "goes off, so switching it back on asks again today."),
     'qr_charge_log': (
         'storage.qr_reserve_judgment',
         None,
@@ -95,7 +87,12 @@ RECONCILE_WAIVED = {
 
 # Ledger-shaped by name, but not a memo of a projection.
 NOT_LEDGERS = {
-    'flow_run': 'the run itself — user data, not a memo of anything',
+    'flow_run': 'the run itself — user data, not a memo of anything '
+                '(dormant since routines became lists, 2026-10-05)',
+    'flow_task_seed': 'DORMANT since 2026-10-05: routines are lists and nothing '
+                      'seeds a routine task any more, so nothing writes it and '
+                      'there is nothing for it to drift from. A routine that was '
+                      'a task became a recurring_task (storage._routines_to_lists).',
     'social_log': 'a rep as it was logged, price stamped; user data',
     'gcal_recurring_seen': 'a fetch cache, rebuilt freely (daybook SKIPs it)',
     'todo_sync': 'retired sync marker (daybook SKIPs it)',

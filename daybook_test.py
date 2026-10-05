@@ -78,9 +78,15 @@ storage.create_inbox_item('write the history exporter')
 storage.create_area('Home', 'standard')
 storage.set_journal_day(TODAY, {'bottleneck': 'the exporter', 'rating': 6}) \
     if hasattr(storage, 'set_journal_day') else None
-review = [f for f in storage.get_flows(TODAY) if f['name'] == 'Weekly review'][0]
-storage.upsert_flow_run(review['id'], storage.flow_period_key('week', date_cls.today()),
-                        '{"1": "done"}', False)
+# Routines are lists now (2026-10-05) and nothing writes a run, but the rows
+# already written are history: a weekly run still belongs to every day of its
+# week. Written directly, the way the runner used to file it (under Monday).
+conn = storage.get_conn()
+fid = conn.execute("INSERT INTO flow (name, period) VALUES ('Weekly review', 'week')").lastrowid
+conn.execute("INSERT INTO flow_run (flow_id, date, steps) VALUES (?, ?, ?)",
+             (fid, storage._week_start(date_cls.today()), '{"1": "done"}'))
+conn.commit()
+conn.close()
 
 text = daybook.render_day(TODAY)
 

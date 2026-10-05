@@ -1,15 +1,16 @@
-"""The routine gate: a linked routine is half of what decides a gate.
+"""Which proof clears which gate, and when the day is judged.
 
 Run: python qr_gate_test.py
 
-This file exists because the gate was CLAIMED and not enforced. The app pushed
-routine flags to the Cloudflare Worker, whose judge was disarmed on 2026-08-08,
-so the panel promised "the gate fails unless this routine is done" while
-qr_judge only ever checked presence. The tests below are the enforcement.
+This file began as the ROUTINE gate's enforcement (a linked routine deciding a
+gate). Routine gates are gone since 2026-10-05 — routines are plain lists and
+nothing runs them — so what is asserted about them now is the safe end: a row
+that still says 'routine' never runs and is never charged, and the mode is
+refused at the door. Everything else here is about scan, hours and all-day
+gates, and stays as it was.
 """
 
 import os
-import sqlite3
 import sys
 import tempfile
 from datetime import date as date_cls, datetime, timedelta
@@ -50,34 +51,6 @@ def scan(node_id, ymd, hhmm='07:00', geo_pass=None):
     storage.qr_log_scan(node_id, iso, None, None, geo_pass)
 
 
-def complete(flow_id, ymd, hhmm):
-    """Finish a run at a LOCAL wall-clock time on that date.
-
-    upsert_flow_run stamps completed_at with the clock NOW, which for a
-    yesterday-dated fixture is always late — and since 2026-08-15 the judge
-    asks WHEN a routine was done, not merely whether. So the stamp is written
-    explicitly, in the shape storage writes it (UTC, offset-aware).
-    """
-    storage.upsert_flow_run(flow_id, ymd, '{}', True)
-    local = datetime.fromisoformat(f'{ymd}T{hhmm}:00')
-    iso = datetime.utcfromtimestamp(local.timestamp()).isoformat() + '+00:00'
-    conn = sqlite3.connect(storage.DB_PATH)
-    conn.execute('UPDATE flow_run SET completed_at = ? WHERE flow_id = ? AND date = ?',
-                 (iso, flow_id, ymd))
-    conn.commit()
-    conn.close()
-
-
-def elapse(flow_id, kind='flow'):
-    """Run the 24h clock out on every easing queued for a row."""
-    conn = sqlite3.connect(storage.DB_PATH)
-    conn.execute(
-        'UPDATE easing_pending SET apply_at = ? WHERE kind = ? AND row_id = ?',
-        ('2000-01-01T00:00:00', kind, flow_id))
-    conn.commit()
-    conn.close()
-
-
 def _date_plus_day(ymd):
     return (date_cls.fromisoformat(ymd) + timedelta(days=1)).isoformat()
 
@@ -103,52 +76,9 @@ def cents_for(node_id, ymd):
     return int(stake * (1 - (rows[0]['credit_pct'] or 0) / 100.0))
 
 
-# ── the predicate ────────────────────────────────────────────
-fresh()
-nid = storage.qr_create_node('Wake', 'tok-wake-1', '06:00', '08:00')
-check('a gate with no routine linked is gated by nothing',
-      storage.routine_gate_for_node(nid, YESTERDAY) is None,
-      storage.routine_gate_for_node(nid, YESTERDAY))
-
-flow = storage.create_flow('Morning routine')
-storage.update_flow(flow['id'], qr_node_id=nid)
-check('linking one makes the gate answer False until it is done',
-      storage.routine_gate_for_node(nid, YESTERDAY) is False,
-      storage.routine_gate_for_node(nid, YESTERDAY))
-
-storage.upsert_flow_run(flow['id'], YESTERDAY, '{}', True)
-check('completing it answers True', storage.routine_gate_for_node(nid, YESTERDAY) is True,
-      storage.routine_gate_for_node(nid, YESTERDAY))
-check('and only for THAT date — a routine done yesterday does not pass today',
-      storage.routine_gate_for_node(nid, date_cls.today().isoformat()) is False,
-      storage.routine_gate_for_node(nid, date_cls.today().isoformat()))
-
-# A partial run is not a done run: upsert_flow_run stamps completed_at only on
-# the last credit, so resuming mid-routine must not open the gate.
-fresh()
-nid = storage.qr_create_node('Wake', 'tok-wake-2', '06:00', '08:00')
-flow = storage.create_flow('Morning routine')
-storage.update_flow(flow['id'], qr_node_id=nid)
-storage.upsert_flow_run(flow['id'], YESTERDAY, '{"1": "07:01"}', False)
-check('a PARTIAL run does not satisfy the gate',
-      storage.routine_gate_for_node(nid, YESTERDAY) is False,
-      storage.routine_gate_for_node(nid, YESTERDAY))
-
-# before_node_id is a DEADLINE reference, not a gate (2026-08-10).
-fresh()
-gated = storage.qr_create_node('Wake', 'tok-wake-3', '06:00', '08:00')
-other = storage.qr_create_node('Sleep', 'tok-sleep-3', '21:00', '22:00')
-flow = storage.create_flow('Morning routine')
-storage.update_flow(flow['id'], before_node_id=other)
-check('a routine that only REFERENCES a gate as a deadline gates nothing',
-      storage.routine_gate_for_node(other, YESTERDAY) is None,
-      storage.routine_gate_for_node(other, YESTERDAY))
-
 # WHEN THESE RUN, not when the clock says. Every block below judges YESTERDAY
-# and reads the row back, so it needs a `now` past the moment yesterday settles
-# — which for a ROUTINE gate is midnight plus ROUTINE_GRACE_HOURS. Left as a
-# bare judge(), the suite passed by day and failed between midnight and 04:00,
-# which is a tripwire that lies for four hours a night.
+# and reads the row back, so it needs a `now` past the moment yesterday settles.
+# Left as a bare judge(), a suite passes by day and lies in the small hours.
 SETTLED = datetime.fromisoformat(date_cls.today().isoformat() + 'T09:00:00')
 TODAY = date_cls.today().isoformat()
 
@@ -163,22 +93,6 @@ def tick_through(ymd, settled):
     qr_judge.judge(now=settled)
 
 
-def routine_gate(label, token, flow_name='Morning routine'):
-    """A gate whose PROOF is its routine. Returns (node_id, flow)."""
-    nid = storage.qr_create_node(label, token, '06:00', '08:00')
-    flow = storage.create_flow(flow_name)
-    storage.update_flow(flow['id'], qr_node_id=nid)
-    # Straight to the column: the 24h easing road has its own tests, and this is
-    # a fixture, not a change of mind.
-    storage.qr_update_node(nid, {'proof_mode': 'routine'})
-    # WITH A SCHEDULE SOURCE, deliberately. applies_on returns early on the
-    # source branch, and the "no routine, so it does not run" check was once
-    # written BELOW that return - which made it unreachable for every gate the
-    # app actually creates, while a sourceless test fixture passed anyway.
-    storage.qr_ensure_node_source(nid)
-    return nid, flow
-
-
 def node_row(nid):
     return [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
 
@@ -186,42 +100,18 @@ def node_row(nid):
 # ── through judge(): A SCAN GATE IS JUDGED ON ITS SCAN (2026-09-02) ────
 #
 # This REVERSES the 50/50 split of 2026-08-22 and the coupled rule before it.
-# A gate has ONE proof. A routine linked to a scan gate is a deadline reference
-# and a place in the runner; it is not half of this gate's price, and it can no
-# longer fail this gate or delay its judgment.
+# A gate has ONE proof.
 fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-4', '06:00', '08:00')
 scan(nid, YESTERDAY)
 tick_through(YESTERDAY, SETTLED)
-check('a scanned gate with no routine passes (no failure row)',
+check('a scanned gate passes (no failure row)',
       reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
 
-fresh()
-nid = storage.qr_create_node('Wake', 'tok-wake-5', '06:00', '08:00')
-flow = storage.create_flow('Morning routine')
-storage.update_flow(flow['id'], qr_node_id=nid)
-scan(nid, YESTERDAY)
-tick_through(YESTERDAY, SETTLED)
-check('SCANNED but routine undone PASSES — the routine is not this gate',
-      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
-
-fresh()
-nid = storage.qr_create_node('Wake', 'tok-wake-6', '06:00', '08:00')
-flow = storage.create_flow('Morning routine')
-storage.update_flow(flow['id'], qr_node_id=nid)
-complete(flow['id'], YESTERDAY, '07:30')
-tick_through(YESTERDAY, SETTLED)
-check('and the routine done without a scan earns the scan gate nothing',
-      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)) == ('absent', 200),
-      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)))
-
-# THERE IS NO HALF ANY MORE. Whatever the routine did, the scan gate costs the
-# whole stake or nothing — the two prices a single proof can have.
+# THERE IS NO HALF ANY MORE. A scan gate costs the whole stake or nothing —
+# the two prices a single proof can have.
 fresh()
 nid = storage.qr_create_node('Wake', 'tok-wake-6b', '06:00', '08:00')
-flow = storage.create_flow('Morning routine')
-storage.update_flow(flow['id'], qr_node_id=nid)
-complete(flow['id'], YESTERDAY, '08:30')
 tick_through(YESTERDAY, SETTLED)
 check('no partial price survives: a missed scan is the whole stake',
       cents_for(nid, YESTERDAY) == 200, cents_for(nid, YESTERDAY))
@@ -229,136 +119,43 @@ check('...and credit_pct is stamped 0, never 50',
       storage.qr_charge_rows_between(YESTERDAY, YESTERDAY)[0]['credit_pct'] == 0,
       storage.qr_charge_rows_between(YESTERDAY, YESTERDAY)[0]['credit_pct'])
 
-# A SCAN GATE IS JUDGED WHEN ITS WINDOW SHUTS, again. Waiting for the day to end
-# was the split's timing rule, and it existed only because a routine could still
-# earn half after the window closed. Nothing can now, so nothing waits.
-fresh()
-nid = storage.qr_create_node('Sleep', 'tok-sleep-6c', '20:00', '23:00')
-flow = storage.create_flow('Night routine')
-storage.update_flow(flow['id'], qr_node_id=nid, offset_min=-240)
-tick_through(TODAY, datetime.fromisoformat(TODAY + 'T23:01:00'))
-check('a linked routine no longer delays a scan gate past its close',
-      (reason_for(nid, TODAY), cents_for(nid, TODAY)) == ('absent', 200),
-      (reason_for(nid, TODAY), cents_for(nid, TODAY)))
-
+# A SCAN GATE IS JUDGED WHEN ITS WINDOW SHUTS. Nothing can change the day after
+# that, so nothing waits.
 fresh()
 nid = storage.qr_create_node('Sleep', 'tok-sleep-6d', '20:00', '23:00')
 tick_through(TODAY, datetime.fromisoformat(TODAY + 'T23:01:00'))
-check('and a gate with no routine is judged the moment its window closes',
+check('a scan gate is judged the moment its window closes',
       (reason_for(nid, TODAY), cents_for(nid, TODAY)) == ('absent', 200),
       (reason_for(nid, TODAY), cents_for(nid, TODAY)))
 
-# ── A ROUTINE GATE: the wall day, and no deadline inside it ──────────
+# ── A ROUTINE GATE IS GONE (2026-10-05) ───────────────────────────────
 #
-# (2026-09-02, Quentin's instruction.) Its commitment is "done at all, on the
-# day it was owed". There is no clock time inside the day at which that can be
-# said, so it settles at the day's end plus the grace — the same instant a run
-# stops being able to earn its day.
+# Nothing runs a routine any more, so a row still saying 'routine' has nothing
+# that could clear it — and a gate nothing can clear is not a commitment, it is
+# a daily charge. It never runs (applies_on), so every day lands 'n/a'.
 fresh()
-nid, flow = routine_gate('Morning', 'tok-rg-1')
-complete(flow['id'], YESTERDAY, '07:30')
-tick_through(YESTERDAY, SETTLED)
-check('a routine gate whose routine was done passes',
-      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
-
-fresh()
-nid, flow = routine_gate('Morning', 'tok-rg-2')
-tick_through(YESTERDAY, SETTLED)
-check('a routine gate whose routine was NOT done costs the whole stake',
-      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY))
-      == ('routine_incomplete', 200),
-      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)))
-
-# LATE IS NOT A FAILURE. The gate's window is 06:00-08:00 and the routine was
-# finished at 23:40; there is no 'routine_late' any more, because there is no
-# deadline for it to be late against.
-fresh()
-nid, flow = routine_gate('Morning', 'tok-rg-3')
-complete(flow['id'], YESTERDAY, '23:40')
-tick_through(YESTERDAY, SETTLED)
-check('a routine finished at 23:40 on an 06:00-08:00 gate still earns the day',
-      reason_for(nid, YESTERDAY) is None, reason_for(nid, YESTERDAY))
-
-# A SCAN CANNOT CLEAR IT. The proof is the routine and nothing else — the same
-# exclusivity 'tag' has, one proof kind along.
-fresh()
-nid, flow = routine_gate('Morning', 'tok-rg-4')
-scan(nid, YESTERDAY)
-tick_through(YESTERDAY, SETTLED)
-check('scanning a routine gate does not clear it',
-      reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
-
-# THE TIMING. Judged neither at the window's close nor at midnight, but at
-# midnight plus the grace — so a routine finished at 00:05 still earns its day.
-fresh()
-nid, flow = routine_gate('Night', 'tok-rg-5')
-tick_through(TODAY, datetime.fromisoformat(TODAY + 'T08:01:00'))
-check('a routine gate is not judged when its window closes',
-      reason_for(nid, TODAY) is None, reason_for(nid, TODAY))
-qr_judge.judge(now=datetime.fromisoformat(TODAY + 'T23:59:00'))
-check('...nor one minute before midnight',
-      reason_for(nid, TODAY) is None, reason_for(nid, TODAY))
-tomorrow = (date_cls.today() + timedelta(days=1)).isoformat()
-qr_judge.judge(now=datetime.fromisoformat(tomorrow + 'T03:59:00'))
-check('...nor inside the grace, where a run can still be finished',
-      reason_for(nid, TODAY) is None, reason_for(nid, TODAY))
-check('settle_after says the same instant run_settles_at does',
-      qr_judge.settle_after(node_row(nid), TODAY, None, ('06:00', '08:00', 0))
-      == qr_judge.run_settles_at(TODAY))
-qr_judge.judge(now=datetime.fromisoformat(tomorrow + 'T04:05:00'))
-check('...and once the grace is out, the undone routine is charged',
-      (reason_for(nid, TODAY), cents_for(nid, TODAY)) == ('routine_incomplete', 200),
-      (reason_for(nid, TODAY), cents_for(nid, TODAY)))
-
-# A ROUTINE GATE WITH NO ROUTINE DOES NOT RUN. Unlinking is an easing, so it
-# takes 24h; once it lands, applies_on stops answering for the gate at all and
-# the day is frozen 'n/a' — judged and never charged. A gate nothing can clear
-# must not be a daily charge, which is the same rule that refuses the mode at
-# the door in the first place.
-fresh()
-nid, flow = routine_gate('Morning', 'tok-rg-6')
-storage.update_flow(flow['id'], qr_node_id=None)
-tick_through(YESTERDAY, SETTLED)
-check('unlinking does NOT release a routine gate tonight',
-      reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
-
-fresh()
-nid, flow = routine_gate('Morning', 'tok-rg-7')
-storage.update_flow(flow['id'], qr_node_id=None)
-elapse(flow['id'])                               # the 24h elapses
-check('...and once it is up the gate stops running at all',
+nid = storage.qr_create_node('Morning', 'tok-rg-1', '06:00', '08:00')
+storage.qr_update_node(nid, {'proof_mode': 'routine'})
+storage.qr_ensure_node_source(nid)       # applies_on returns early on a source
+check('a leftover routine gate does not run',
       qr_judge.applies_on(node_row(nid), YESTERDAY) is False,
       qr_judge.applies_on(node_row(nid), YESTERDAY))
+scan(nid, YESTERDAY)
 tick_through(YESTERDAY, SETTLED)
-check('...so the day is frozen n/a rather than charged',
-      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)) == (None, None),
+check('...so its day is frozen n/a rather than charged',
+      (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)) == (None, None)
+      and storage.qr_judgment_exists(nid, YESTERDAY),
       (reason_for(nid, YESTERDAY), cents_for(nid, YESTERDAY)))
-
-
-# Deleting the routine outright is the same release.
-fresh()
-nid, flow = routine_gate('Morning', 'tok-wake-9')
-# DELETING a gated routine is a larger easing than unlinking it, and unlinking
-# already waits 24h. This door had no check at all — '×' at 20:55 released a
-# 21:00 deadline outright.
-check('deleting a gated routine is DEFERRED, not done', storage.delete_flow(flow['id']))
-tick_through(YESTERDAY, SETTLED)
-check('so it does not release the gate tonight',
-      reason_for(nid, YESTERDAY) == 'routine_incomplete', reason_for(nid, YESTERDAY))
-elapse(flow['id'])
-conn = storage.get_conn()
-storage.apply_due_flow_pendings(conn)
-conn.close()
-check('…and once the 24h is up, the routine is gone',
-      not [f for f in storage.get_flows() if f['id'] == flow['id']])
+check('and it is not all-day by construction any more',
+      qr_judge.is_all_day(node_row(nid)) is False)
 
 # The reservation is still the lock: re-judging must not double-log.
 fresh()
-nid, flow = routine_gate('Morning', 'tok-wake-10')
+nid = storage.qr_create_node('Morning', 'tok-wake-10', '06:00', '08:00')
 tick_through(YESTERDAY, SETTLED)
 tick_through(YESTERDAY, SETTLED)
 rows = [r for r in storage.qr_charge_rows_between(YESTERDAY, YESTERDAY) if r['node_id'] == nid]
-check('re-running the judge logs the routine failure once', len(rows) == 1, len(rows))
+check('re-running the judge logs the failure once', len(rows) == 1, len(rows))
 
 
 # ── THE EASING REGIME IS AN ALLOWLIST (2026-08-17) ───────────────────────
@@ -387,97 +184,6 @@ check('adding a fence where there was none is tightening',
       imm == {'geofence_lat': 41.0}, (imm, pend))
 imm, pend = qr_judge.apply_node_patch(node, {'label': 'Renamed'})
 check('a rename is not a commitment change', imm == {'label': 'Renamed'}, (imm, pend))
-
-# ── PENDINGS ARE PER FIELD ───────────────────────────────────────────────
-# On a ROUTINE gate, where an unlink still eases (a scan gate's applies at
-# once — see "UNLINKING FROM A SCAN GATE" below).
-fresh()
-nid, flow = routine_gate('Sleep', 'tok-ease-2', 'Night routine')
-storage.update_flow(flow['id'], offset_min=-60)
-storage.update_flow(flow['id'], qr_node_id=None)          # easing 1: unlink
-storage.update_flow(flow['id'], offset_min=30)            # easing 2: later offset
-f = [x for x in storage.get_flows(TODAY) if x['id'] == flow['id']][0]
-fields = sorted(p['field'] for p in (f['pending'] or []))
-check('queueing a second easing does not delete the first',
-      fields == ['offset_min', 'qr_node_id'], fields)
-
-# ── UNLINKING FROM A SCAN GATE APPLIES AT ONCE (2026-09-30) ─────────────
-#
-# A routine linked to a scan gate is a deadline reference, never half the
-# verdict, so taking it off eases nothing — and the 24h it used to wait read on
-# the dashboard as the unlink being refused. It still waits where it DOES ease:
-# the routine is the gate's proof, or minutes are pawned into it.
-def linked(fid):
-    return [x for x in storage.get_flows(TODAY) if x['id'] == fid][0]['qr_node_id']
-
-fresh()
-nid = storage.qr_create_node('Wake', 'tok-unlink-1', '07:00', '08:00')
-flow = storage.create_flow('Morning routine')
-storage.update_flow(flow['id'], qr_node_id=nid)
-storage.update_flow(flow['id'], qr_node_id=None)
-check('unlinking a routine from a SCAN gate applies at once', linked(flow['id']) is None,
-      linked(flow['id']))
-f = [x for x in storage.get_flows(TODAY) if x['id'] == flow['id']][0]
-check('...and queues nothing', not (f['pending'] or []), f['pending'])
-
-fresh()
-nid = storage.qr_create_node('Hours', 'tok-unlink-2', '07:00', '08:00')
-storage.qr_update_node(nid, {'proof_mode': 'hours'})
-flow = storage.create_flow('Study log')
-storage.update_flow(flow['id'], qr_node_id=nid)
-storage.update_flow(flow['id'], qr_node_id=None)
-check('...and from an HOURS gate', linked(flow['id']) is None, linked(flow['id']))
-
-fresh()
-nid, flow = routine_gate('Morning', 'tok-unlink-3')
-storage.update_flow(flow['id'], qr_node_id=None)
-check("unlinking a ROUTINE gate's own routine still waits 24h", linked(flow['id']) == nid,
-      linked(flow['id']))
-
-fresh()
-nid = storage.qr_create_node('Sleep', 'tok-unlink-4', '21:00', '23:00')
-night = storage.create_flow('Night routine')
-storage.update_flow(night['id'], qr_node_id=nid)
-morning = storage.create_flow('Morning routine')
-step = storage.create_flow_step(morning['id'], 'Read', 'text', 'hard', None, None)
-conn = storage.get_conn()
-conn.execute('UPDATE flow_step SET pawn_to_flow_id = ?, pawn_minutes = 30, pawned_date = ? WHERE id = ?',
-             (night['id'], TODAY, step['id']))
-conn.commit(); conn.close()
-check('(the pawn shortens the scan gate tonight)', storage.pawned_minutes_for_node(nid, TODAY) == 30,
-      storage.pawned_minutes_for_node(nid, TODAY))
-storage.update_flow(night['id'], qr_node_id=None)
-check("...so with minutes pawned in, unlinking a scan gate's routine waits 24h",
-      linked(night['id']) == nid, linked(night['id']))
-check('...and the window stays shortened tonight', storage.pawned_minutes_for_node(nid, TODAY) == 30,
-      storage.pawned_minutes_for_node(nid, TODAY))
-
-
-# ── THE DEADLINE IS SERVED (2026-08-17) ──────────────────────────────────
-#
-# app.js used to compute this itself from (src.intervals || [])[0]. But
-# day_intervals is CLIPPED and sorted by start, so a 23:00→07:00 routine's
-# from_previous TAIL sorts first: the client read the window as 00:00–07:00 and
-# showed the routine due this morning, overdue all day, while the judge charged
-# against 07:00 the NEXT morning. Display and the money path must not disagree.
-fresh()
-nid = storage.qr_create_node('Sleep', 'tok-cross', '21:00', '23:00')
-flow = storage.create_flow('Night')
-past = (date_cls.today() - timedelta(days=30)).isoformat()
-src = storage.create_schedule_source(
-    kind='rule', title='Night window', start=f'{past}T23:00:00', duration='PT8H',
-    recurrenceRules=[{'frequency': 'daily'}])
-storage.update_flow(flow['id'], qr_node_id=nid,
-                    source_uid=src['uid'] if isinstance(src, dict) else src)
-f = [x for x in storage.get_flows(TODAY) if x['id'] == flow['id']][0]
-check('a routine window across midnight opens at 23:00, not at the clipped tail',
-      f['window_open_min'] == 23 * 60, f['window_open_min'])
-check('and is due 07:00 TOMORROW — past 1440, which the tail lost',
-      f['due_min'] == 31 * 60, f['due_min'])
-check('the served deadline is the one the judge charges against',
-      qr_judge.routine_deadline(None, f, TODAY).isoformat()
-      == f'{_date_plus_day(TODAY)}T07:00:00',
-      qr_judge.routine_deadline(None, f, TODAY))
 
 # ── THE FREEZE (2026-08-17) ──────────────────────────────────────────────
 #
@@ -541,9 +247,7 @@ check('and is logged stale, so the cap and the card never see it',
 # Quentin's instruction: a morning routine has a time it is MEANT to happen at
 # and a commitment that is really "today"; study hours are a number the day
 # owes and nothing to do with a clock. Both were judged against a window that
-# only existed to place the pill. `all_day` says the window judges nothing --
-# the rule a routine gate has had since 2026-09-02, made settable for the other
-# proofs rather than hard-coded to one of them.
+# only existed to place the pill. `all_day` says the window judges nothing.
 
 fresh()
 nid = storage.qr_create_node('Gym', 'tok-allday-1', '06:00', '08:00')
@@ -566,8 +270,7 @@ check('outcomes reads the same day the same way',
        if o['node_id'] == nid] == ['success'])
 
 # A scan at 23:59 counts; one at 00:30 is a fact about the NEXT day. The bound
-# is the wall day, not the routine gate's four-hour grace -- that grace exists
-# for the RUN's pin, which a scan does not have.
+# is the wall day.
 fresh()
 nid = storage.qr_create_node('Gym', 'tok-allday-3', '06:00', '08:00')
 storage.qr_update_node(nid, {'all_day': 1})
@@ -578,9 +281,9 @@ check('a scan after midnight does NOT reach back into the all-day it followed',
 
 node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
 check('an all-day gate settles at midnight, not at its decorative window',
-      qr_judge.settle_after(node, YESTERDAY, None, ('06:00', '08:00', 0))
+      qr_judge.settle_after(node, YESTERDAY, ('06:00', '08:00', 0))
       == datetime.fromisoformat(_date_plus_day(YESTERDAY) + 'T00:00:00'),
-      qr_judge.settle_after(node, YESTERDAY, None, ('06:00', '08:00', 0)))
+      qr_judge.settle_after(node, YESTERDAY, ('06:00', '08:00', 0)))
 
 # THE STUDY CASE, which is what was actually asked for: hours reported in the
 # evening against a daytime window. The number was always dated rather than
@@ -607,17 +310,6 @@ qr_judge.judge(now=datetime.fromisoformat(_date_plus_day(TODAY) + 'T00:05:00'))
 check('and hours reported at 20:00 earn the day when it does settle',
       storage.qr_judgment_exists(nid, TODAY) and reason_for(nid, TODAY) is None,
       reason_for(nid, TODAY))
-
-# A ROUTINE gate is all-day by construction, whatever the column says: one
-# predicate, so the two cannot disagree.
-fresh()
-nid = storage.qr_create_node('Night', 'tok-allday-6', '21:00', '23:00')
-flow = storage.create_flow('Night routine')
-storage.update_flow(flow['id'], qr_node_id=nid)
-storage.qr_update_node(nid, {'proof_mode': 'routine'})
-node = [n for n in storage.qr_get_nodes() if n['id'] == nid][0]
-check('a routine gate is all-day with the flag off',
-      qr_judge.is_all_day(node) and not node['all_day'], node['all_day'])
 
 # -- and the 24h teeth still bite --
 check('turning the window off is a loosening',
@@ -658,6 +350,26 @@ client.patch(f'/api/accountability/nodes/{nid}/activate')
 check('and resuming calls that queued pause off',
       not any(p['field'] == 'active' for p in storage.qr_get_pending_changes(nid)),
       storage.qr_get_pending_changes(nid))
+
+
+# THE ROUTINE MODE IS REFUSED AT THE DOOR (2026-10-05), in words. (Here, after
+# the app is imported: it holds the db open, so no fresh() may follow.)
+nid = storage.qr_create_node('Wake', 'tok-rg-2', '06:00', '08:00')
+r = client.patch(f'/api/accountability/nodes/{nid}', json={'proof_mode': 'routine'})
+check('PATCH proof_mode=routine is refused',
+      r.status_code == 400 and 'routine gates are gone' in (r.get_json() or {}).get('error', ''),
+      (r.status_code, r.get_json()))
+check('...and the gate keeps its proof', node_row(nid)['proof_mode'] == 'link',
+      node_row(nid)['proof_mode'])
+
+# ── PENDINGS ARE PER FIELD ───────────────────────────────────────────────
+nid = storage.qr_create_node('Sleep', 'tok-ease-2', '21:00', '23:00',
+                             lat=40.0, lng=-75.0, radius=100)
+client.patch(f'/api/accountability/nodes/{nid}', json={'geofence_radius_m': 300})
+client.patch(f'/api/accountability/nodes/{nid}', json={'window_end': '22:30'})
+fields = sorted(p['field'] for p in storage.qr_get_pending_changes(nid))
+check('queueing a second easing does not delete the first',
+      fields == ['geofence_radius_m', 'window_end'], fields)
 
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

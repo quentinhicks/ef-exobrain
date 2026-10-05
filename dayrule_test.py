@@ -15,8 +15,8 @@ So every write route that defaults its date is listed here, with why. A new
 one FAILS THIS TEST until someone adds it deliberately — which is the whole
 point: the failure is the conversation.
 
-The client-side half of the same rule is app.js's wallDay() / viewDay() /
-runDay(), which exist so a call site shows which day it means.
+The client-side half of the same rule is app.js's wallDay() / viewDay(),
+which exist so a call site shows which day it means.
 """
 
 import os
@@ -37,23 +37,20 @@ ALLOWED = {
     ('DELETE', '/api/engage/placements/<int:item_id>'):
         'unplacing from the day it is placed on',
     ('PUT', '/api/metrics/entry'):
-        'client sends it — the runner passes its pinned run day',
+        'client sends it — the day the answer is about',
     ('POST', '/api/social/specs'):
         'a plan is made for a day; the client sends it',
     ('POST', '/api/social/reps'):
         'a rep is logged when it happens — the clock IS the answer here',
     ('POST', '/api/habits/<int:id>/mark'):
-        'client sends it — runDay(), so a mark after midnight files under the night',
-    ('PUT', '/api/flows/<int:id>/run'):
-        'client sends it — flowRunView.date, pinned when the runner opened',
+        'client sends it — the day the mark is about',
     ('POST', '/api/tag-daily/answer'):
         'client sends it — an answer is a statement about a particular day',
     ('POST', '/api/people/night'):
         'client sends it — the routine states the night it is filling',
     ('PATCH', '/api/habit-experiments/<int:id>'):
-        'client sends it — the run day for an experiment ended in the nightly '
-        'routine, so resolving one at 00:20 files under the night it ran, and '
-        'the experiment that replaces it starts on that same day',
+        'client sends it — the day it resolved on, and the experiment that '
+        'replaces it starts on that same day',
 
     # These do not file a fact under a day at all — they stamp a CREATION or
     # read a window forward from now. The clock is the honest answer.
@@ -145,8 +142,8 @@ def main():
         for f_ in fails:
             print('  FAIL  ' + f_)
         print('\nA write files a fact under a DAY. Send it explicitly from the '
-              '\nsurface that knows which day it means (runDay() in a runner, '
-              '\nthe viewed day on the timeline) — or add the route to ALLOWED '
+              '\nsurface that knows which day it means (the viewed day on the '
+              '\ntimeline, the row\'s own date) — or add the route to ALLOWED '
               '\nabove with the reason the clock really is the right answer.')
         return 1
 
