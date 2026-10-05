@@ -218,7 +218,6 @@ select option {
 }
 .m-title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 
-
 .tab-btn {
   display: flex;
   flex-direction: column;
@@ -743,18 +742,6 @@ select option {
 .se-geo-label { font-size: 11px; color: var(--text-secondary); }
 .se-geo-picked { font-size: 13px; color: var(--accent); overflow-wrap: anywhere; }
 .se-geo-coords { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
-
-/* Pawning: the step's own setting, and the note the receiving routine shows. */
-.fr-pawn-sel { font: 12px var(--font-ui); max-width: 170px; }
-.fr-pawn-min { width: 64px; font-family: var(--font-mono); }
-/* Two classes on purpose: .fr-note is defined later in this file and would win
-   on equal specificity, leaving the consequence looking like ordinary prose. */
-.fr-note.fr-pawned-in {
-  color: var(--gold);
-  border-top: 1px solid var(--border-soft);
-  margin-top: 10px;
-  padding-top: 8px;
-}
 
 /* A field whose editor is the PICKER: the row states the schedule in words and
    the › hands it over. A consumer never grows fields of its own for time. */
@@ -2886,167 +2873,9 @@ body.calendar-minimized #review-modal {
   animation: modal-slide-in 0.25s ease;
 }
 
-#review-panel {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px 32px;
-}
-
-/* ---- GTD weekly review ---- */
-
-.gr-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-
-.gr-week { font-size: 15px; color: var(--text-primary); }
-
-.gr-progress {
-  font: 12px var(--font-mono);
-  color: var(--text-secondary);
-}
-
-.gr-criterion {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-style: italic;
-  margin-bottom: 22px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.gr-phase { margin-bottom: 22px; }
-
-/* The header is the phase's HANDLE: dragging it moves the run of steps under
-   it (wireReviewPhaseDrag). Padded to a finger target — the label itself is
-   11px, which is a size to read, not a size to grab. */
-.gr-phase-name {
-  font: 11px var(--font-ui);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
-  padding: 8px 0;
-  cursor: grab;
-  user-select: none;
-}
-
-.gr-phase-name::before {
-  content: '⠿ ';
-  letter-spacing: 0;
-  opacity: 0.45;
-}
-
-.gr-phase-dragging {
-  opacity: 0.65;
-  background: var(--surface-2);
-  border-radius: 6px;
-}
-
-.gr-phase-dragging .gr-phase-name { cursor: grabbing; }
-
-.gr-step {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 7px 0;
-  cursor: pointer;
-}
-
-.gr-step input { margin-top: 3px; flex: none; }
-
-.gr-step-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-
-.gr-step-label {
-  font-size: 13px;
-  color: var(--text-primary);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.gr-step-hint { font-size: 11px; color: var(--text-secondary); }
-
-.gr-step-done .gr-step-label { color: var(--text-secondary); text-decoration: line-through; }
-.gr-step-done .gr-step-hint { opacity: 0.5; }
-.gr-step-done .gr-badge { text-decoration: none; }
-
-.gr-badge {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1px 7px;
-  white-space: nowrap;
-}
-
-.gr-badge-ok { color: var(--accent); border-color: var(--accent); }
-.gr-badge-bad { color: var(--danger); border-color: var(--danger); }
-
 /* The merged projects step: every active project, its actions under it, and
    the ones with none carrying the danger rule the old stalled-only list wore.
    Replaces .gr-stalled — one list answers both halves now. */
-.gr-projects { margin: 6px 0 0; }
-
-.gr-proj {
-  margin: 0 0 8px;
-  padding: 0 0 0 10px;
-  border-left: 2px solid var(--border-soft);
-}
-
-.gr-proj-stalled { border-left-color: var(--danger); }
-
-.gr-proj-head {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  font-size: 12px;
-}
-
-.gr-proj-name { flex: 1; color: var(--text-primary); font-weight: 600; }
-
-.gr-proj-sum {
-  font-size: 11px;
-  color: var(--text-secondary);
-  padding: 0 0 6px;
-}
-
-.gr-proj-acts { margin: 2px 0 0; }
-
-.gr-proj-none {
-  font-size: 11px;
-  color: var(--danger);
-  padding: 2px 0;
-}
-
-.gr-footer {
-  border-top: 1px solid var(--border);
-  padding-top: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.gr-field { display: flex; flex-direction: column; gap: 4px; }
-
-.gr-field span { font-size: 11px; color: var(--text-secondary); }
-
-.gr-field input {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  font: 13px var(--font-ui);
-  padding: 6px 8px;
-  border-radius: 4px;
-}
-
-.gr-completed {
-  font-size: 12px;
-  color: var(--accent);
-}
 
 @media print {
   #sidebar, .tl-header, #content {
@@ -3679,8 +3508,6 @@ body.np-body {
   border-radius: 3px;
   padding: 2px 12px;
 }
-
-body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #cal-overlay, body.over-runner #logs-overlay { z-index: 170; }
 
 /* Journal tab */
 #tab-journal {
@@ -4464,19 +4291,7 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 /* The routine a gate is waiting on — its OWN row under the hairline, not a chip
    on it. Accent = still to do (it is what makes the gate judge ✓), success =
    the run completed today. */
-.eg-flow-row .eg-text { color: var(--text-primary); }
-.eg-flow-done .eg-text { color: var(--text-secondary); }
-.eg-qr-flow {
-  font: 10px var(--font-mono);
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 9px;
-  padding: 1px 8px;
-  flex: none;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.eg-qr-flow-done { color: var(--success); border-color: var(--success); }
+
 .eg-qr-rule { flex: 1; height: 1px; background: var(--grid-line); }
 .eg-qr-tick { font: 11px var(--font-mono); color: var(--success); }
 .eg-qr-success .eg-time,
@@ -4505,40 +4320,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 }
 .eg-check:hover { border-color: var(--accent); background: var(--tint); }
 
-/* ▶ INSTEAD OF THE TICK on a row a routine seeded (flow.as_task). Same 14px
-   box the checkbox occupies so the column of controls stays a column, but it
-   carries the mark: the row's one control is "run it", not "call it done".
-   Ticking such a row off would retire the seed with the routine never run.
-   The finger target is padded past the 14px box — below ~36px a sub-target
-   cannot be hit on a phone.
-   The MARK is what distinguishes it from the tick box, not a colour: it used
-   to be outlined in accent, which made the one blue thing in a column of
-   ordinary rows read as a status rather than a verb. Ink, like every other
-   run mark in the app; the outline keeps --text-secondary, the same control
-   outline the checkbox beside it uses (3:1 in both themes). */
-.eg-run {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  border: 1.5px solid var(--text-secondary);
-  border-radius: 4px;
-  color: var(--text-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
-  touch-action: manipulation;
-}
-.eg-run:hover { background: var(--tint); }
-
-/* The routine's length, derived from its steps rather than stored as a tag —
-   it sits with the estimate tags and reads as one, in accent so it is legible
-   as "this came with the routine". Two classes, because .eg-tag is defined
-   further down the file and a single-class rule here would simply lose to it. */
-.eg-tag.eg-tag-len { color: var(--accent); border-color: var(--accent); }
 /* ◐ in progress (press-and-hold): accent, half-filled, floats first in the
    pool. A glance state only — nothing else reads it. */
 .eg-check-started {
@@ -4990,216 +4771,6 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 }
 .ref-del:hover { color: var(--danger); opacity: 1; }
 
-/* ── Routines (flows): index rows, step editor, the runner ──── */
-.fr-due { font: 10px var(--font-mono); color: var(--gold); flex: none; }
-/* Running a routine is that row's own verb, so the mark takes the row's ink
-   rather than the accent — the same call as the review fold-out's. 32px
-   because it is the control you tap to start a routine on a phone. */
-.fr-play {
-  color: var(--text-primary);
-  font-size: 13px;
-  padding: 6px 8px;
-  min-height: 32px;
-}
-
-/* The drawn ▶ (playMark). Inline beside a label it needs the optical nudge a
-   text glyph would have carried; on its own it is centred by its button. */
-.play-mark { vertical-align: -1px; }
-.fr-play-big {
-  margin: 12px 0 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 16px;
-  align-self: flex-start;
-}
-.fr-link { display: flex; align-items: center; gap: 7px; margin: 10px 0 2px; flex-wrap: wrap; }
-.fr-offset {
-  width: 64px;
-  font: 12px var(--font-mono);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-primary);
-  padding: 4px 6px;
-}
-.fr-link-hint { font: 10px var(--font-mono); color: var(--text-secondary); margin-bottom: 8px; }
-.fr-req {
-  font: 10px var(--font-mono);
-  border: 1px solid var(--danger);
-  color: var(--danger);
-  border-radius: 9px;
-  padding: 1px 7px;
-}
-.fr-req-soft { border-color: var(--text-secondary); color: var(--text-secondary); }
-.fr-feature { color: var(--accent); }
-.fr-up, .fr-down { color: var(--text-secondary); padding: 2px 4px; font-size: 12px; }
-.fr-up:hover, .fr-down:hover { color: var(--accent); }
-
-/* The day picker lives in the step SHEET now (see #fr-sheet) — a row on a
-   list is text + badges + ›, and the settings are decided in the sheet. */
-.fr-sheet-days { gap: 4px; align-items: center; }
-.fr-day {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 5px;
-  cursor: pointer;
-}
-.fr-day-on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
-.fr-day-all { font: 10px var(--font-mono); color: var(--text-secondary); margin-left: 4px; }
-/* A step that doesn't run today, on the surface that shows the whole routine
-   — dimmed, never hidden: the editor has to show every step to edit it. */
-.fr-step-off .ref-text, .fr-step-off .cl-chain-n { opacity: 0.45; }
-.fr-of { color: var(--text-secondary); font-size: 9px; }
-/* Badges: what the settings decided, scannable without opening the sheet. */
-.fr-badge {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  background: var(--surface-2);
-  border-radius: 4px;
-  padding: 1px 5px;
-  flex: none;
-}
-/* What the routine adds up to. A statement under the list, not a badge on it —
-   it belongs to the whole routine rather than any one step. */
-.fr-total {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  padding: 6px 2px 0;
-}
-.fr-open { color: var(--text-secondary); padding: 2px 6px; font-size: 14px; }
-.fr-open:hover { color: var(--accent); }
-.fr-sheet-del { color: var(--danger); }
-
-#flow-run {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  top: 0;
-  height: calc(var(--vvh, 100dvh) - var(--gbar-h));
-  width: 100%;
-  max-width: 430px;
-  background: var(--surface-mid);
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-  z-index: 165;               /* over tab-lists (140), under the bar's 170 */
-  display: flex;
-  flex-direction: column;
-}
-.fr-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.fr-title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text-primary); }
-.fr-meta { font: 11px var(--font-mono); color: var(--text-secondary); }
-/* ONE SCROLL, NOT A DECK OF PAGES (2026-09-02). The page used to hold exactly
-   one step and a foot of verbs; it holds every step of the run now, a plain one
-   as a checkbox row and a step that ASKS something as a card. The bottom
-   padding clears the global bar so the last row is reachable with a thumb. */
-.fr-page {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 14px calc(26px + env(safe-area-inset-bottom));
-}
-.fr-step { flex-shrink: 0; }
-/* A ROW is a finger-sized target end to end: the tick, the sentence, and the
-   step's own verbs if it has any. 44px is the floor, not the height - a long
-   step wraps and the row grows with it. */
-.fr-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  min-height: 44px;
-  padding: 10px 4px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.fr-row-main { flex: 1; min-width: 0; padding-top: 2px; }
-.fr-row-text { font-size: 15px; color: var(--text-primary); overflow-wrap: anywhere; }
-.fr-row-verbs { display: flex; gap: 6px; flex-shrink: 0; }
-.eg-check.fr-tick {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-  /* The outline of a CONTROL owes 3:1, which --border does not carry
-     (2026-08-17) - so it takes --text-secondary, like every other one. */
-  border: 1px solid var(--text-secondary);
-}
-/* .eg-check:hover paints --tint, which is two classes deep and therefore beat a
-   bare .fr-tick-on: the ticked box came back accent-BORDERED but transparent,
-   with a dark ✓ on it that could not be seen. The on-state has to be at least
-   as specific as the hover it is overriding. */
-.eg-check.fr-tick-on,
-.eg-check.fr-tick-on:hover {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-/* A CARD is the old page, in place. */
-.fr-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-}
-.fr-card > * { flex-shrink: 0; }
-.fr-card-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: 2px;
-}
-.fr-card-foot .fr-done { margin-left: auto; }
-/* Done is DIM, not gone: the run is a list of what today asked, and a finished
-   step disappearing would make the list shorter every time you looked at it. */
-.fr-step-done { opacity: 0.5; }
-.fr-step-done .fr-row-text { text-decoration: line-through; }
-.fr-step-big { font-size: 17px; font-weight: 600; color: var(--text-primary); }
-.fr-note { font: 12px var(--font-ui); color: var(--text-secondary); }
-.fr-note-hard { color: var(--danger); }
-.fr-rating { display: flex; gap: 6px; }
-.fr-rate {
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-primary);
-}
-.fr-rate-on { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
-
-/* The runner page is a flex COLUMN, so every child shrinks by default. On a
-   phone that squeezed the nightly journal — the two textareas collapsed to a
-   sliver and the experiment block below them was clipped — because the page is
-   taller than the viewport and flex paid for it out of the children. Nothing
-   here may be compressed: the page SCROLLS instead (2026-08-15). Still true of
-   the cards, which are flex columns of their own (.fr-card > *). */
-.fr-page > * { flex-shrink: 0; }
-/* .cl-notes is written for a sheet, which supplies its own 14px gutter; inside
-   the runner the card already has one, so it spans the width it is given. */
-.fr-page .cl-notes { width: 100%; margin: 0; min-height: 68px; }
-.fr-exp { display: flex; flex-direction: column; gap: 8px; }
-.fr-exp-head { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.fr-exp .cl-row { padding: 0; }
-.fr-exp .cl-action { width: 100%; }
-/* Wrap onto the next line rather than truncating: three verbs on one phone-wide
-   row do not fit, and a half-word button is unreadable. */
-.fr-exp .cl-pill { white-space: nowrap; }
-
 /* ── Dependency chains (clarify's ⛓ editor + the [n] badges) ── */
 .cl-chain {
   margin: 0 14px 8px;
@@ -5251,26 +4822,7 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
   background: rgba(152, 185, 221, 0.12);
 }
 
-/* ── Review: waiting-for and repeatedly-pushed lists ───────── */
-
-.gr-list {
-  list-style: none;
-  margin: 4px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.gr-list li {
-  display: flex;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.gr-list li > span:first-child { flex: 1; color: var(--text-primary); }
-.gr-list-meta { flex: none; font-size: 11px; color: var(--text-secondary); }/* ── Mobile modal overrides ─────────────────────────────────── */
+/* ── Mobile modal overrides ─────────────────────────────────── */
 /* Every modal is a phone-sized surface now: full width, capped at the shell,
    centered over the letterboxed column on a big screen. */
 
@@ -5285,47 +4837,12 @@ body.over-runner #tab-social, body.over-runner #map-overlay, body.over-runner #c
 
 #cal-strips { flex: none; }
 
-/* GTD overlay: weekly-review fold-out at the top */
-#gtd-review-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 11px 14px;
-  width: 100%;
-  text-align: left;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 600;
-  position: relative;
-  flex: none;
-}
-#gtd-review-head:hover { background: var(--surface-2); }
 /* ▶ RUN THE REVIEW as the routine it is. A span, not a button — it lives
    inside #gtd-review-head, which is itself a button; it takes the right-hand
    end of the row and the chevron follows it. */
-.gr-run {
-  margin-left: auto;
-  /* The same ink as the label it sits beside, not the accent: running the
-     review is the row's own verb, not a second thing competing with it. */
-  color: var(--text-primary);
-  padding: 4px 8px;
-  /* Centres the mark against the text rather than against a line box that a
-     glyph's own metrics were deciding. */
-  display: flex;
-  align-items: center;
-}
-.gr-run:hover { color: var(--text-secondary); }
+
 .gtd-review-chevron { margin-left: 4px; color: var(--text-secondary); }
-#review-panel {
-  flex: none;
-  max-height: 58%;
-  overflow-y: auto;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border-soft);
-  padding: 0 14px 12px;
-}#tracking-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+#tracking-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 
 /* Journal: day cards */
 /* -- Tracking: the metric list, and one metric's days -------------------- */
@@ -5549,7 +5066,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    behind. No scrim — the day already dims via .eg-dimmed; this is behaviour,
    not look. */
 #clarify-backdrop,
-#fr-sheet-backdrop,
 #ctx-sheet-backdrop,
 #se-sheet-backdrop,
 #sp-sheet-backdrop,
@@ -5567,7 +5083,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    one datatype over: a list row decides nothing, the sheet decides everything.
    Same geometry, same layer — they are never open at once. */
 #clarify-sheet,
-#fr-sheet,
 #ctx-sheet,
 #se-sheet,
 #sp-sheet,
@@ -5580,7 +5095,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   transform: translateX(-50%);
   width: 100%;
   max-width: 430px;
-  bottom: 0;                  /* the bar contract at the end of the file wins */
+  bottom: 0;                  
   /* 88% of the VISIBLE screen. A percentage resolves against the layout
      viewport, so on a phone with the keyboard up a sheet could be taller than
      the room it had — which is how a Save button ends up under the keyboard
@@ -6547,8 +6062,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #engage-body .eg-pool .eg-row:hover { background: var(--tint); }
 #engage-body .eg-pool .eg-text { font-size: 16px; line-height: 1.4; color: var(--text-primary); }
 #engage-body .eg-inprog .eg-text { color: var(--text-primary); }
-#engage-body .eg-check,
-#engage-body .eg-run {
+#engage-body .eg-check{
   width: 18px;
   height: 18px;
   margin-top: 2px;
@@ -6804,7 +6318,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    #clarify-sheet's bottom: 0 sits late in the file. Listed by id because a
    few non-overlay fixed elements (toast, stale banner) legitimately keep
    inset: 0. Theme-independent, hence after the light appendix. */
-.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, #clarify-backdrop, #clarify-sheet, #fr-sheet-backdrop, #fr-sheet, #ctx-sheet-backdrop, #ctx-sheet, #se-sheet-backdrop, #se-sheet, #sp-sheet-backdrop, #sp-sheet, #ev-sheet-backdrop, #ev-sheet, #en-sheet-backdrop, #en-sheet, #ex-sheet-backdrop, #ex-sheet, #oc-sheet-backdrop, #oc-sheet {
+.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, #clarify-backdrop, #clarify-sheet, #ctx-sheet-backdrop, #ctx-sheet, #se-sheet-backdrop, #se-sheet, #sp-sheet-backdrop, #sp-sheet, #ev-sheet-backdrop, #ev-sheet, #en-sheet-backdrop, #en-sheet, #ex-sheet-backdrop, #ex-sheet, #oc-sheet-backdrop, #oc-sheet {
   /* Above the bar, AND above whatever the browser chrome or the keyboard is
      covering: 100% is the viewport, --vvh is what you can see, so the
      difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
@@ -6997,36 +6511,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    it is not startable yet, it is a heads-up about what this day already owes. */
 .eg-defer-row { opacity: 0.78; }
 .eg-defer-row .eg-text { cursor: pointer; }
-/* A review step you can act on from where you read it. */
-.gr-act {
-  display: inline-block;
-  margin-top: 5px;
-  font: 11px var(--font-mono);
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 14px;
-  padding: 3px 10px;
-  cursor: pointer;
-}
-.gr-sub { margin: 6px 0 2px 4px; padding-left: 10px; border-left: 1px solid var(--border); }
-.gr-sub-head { font: 10px var(--font-mono); color: var(--text-secondary); margin-bottom: 3px; }
-.gr-sub-item { display: flex; align-items: flex-start; gap: 7px; padding: 2px 0; cursor: pointer; }
-.gr-sub-label { font-size: 12px; color: var(--text-primary); }
-.gr-sub-done .gr-sub-label { color: var(--text-secondary); text-decoration: line-through; }
+
 /* The review pass banner: the only chrome the mode adds to the timeline. */
-.rp-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 14px;
-  background: var(--tint-faint);
-  border-bottom: 1px solid var(--accent);
-  font: 11px var(--font-mono);
-  color: var(--text-secondary);
-}
-.rp-bar-end { background: var(--tint); }
-.rp-step { color: var(--accent); font-weight: 600; }
-.rp-meta { color: var(--text-secondary); }
+
 #rp-next, #rp-done {
   font: 11px var(--font-mono);
   color: var(--on-accent);
@@ -7122,15 +6609,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    Two axes per forming habit on the nightly page (mark = adherence, effort =
    the automaticity probe); verdicts in the review; the standing view in the
    Journal tab. Never on Engage. */
-.fr-habit { margin-top: 14px; border-top: 1px solid var(--border-soft); padding-top: 8px; }
-.fr-habit-name { font: 600 13px var(--font-sans); color: var(--text-primary); margin-bottom: 4px; }
-.gr-habit-tally { margin: 12px 0 4px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;
-  display: flex; flex-direction: column; gap: 8px; }
-.gr-ht-head { font: 10px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-secondary); }
-.gr-ht-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font: 13px var(--font-sans); }
-.gr-ht-counts { font: 11px var(--font-mono); color: var(--text-secondary); }
-.gr-ht-suggest { font: 12px var(--font-sans); color: var(--success); }
-.gr-ht-verbs { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+
 .gr-ht-input { flex: 1; min-width: 160px; font: 12px var(--font-sans); }
 /* About: the app link. Wraps, because a tailnet host is long and the column is
    430px — truncating the one thing this pane exists to hand over would be
@@ -7402,10 +6881,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* ── The top strip's half of the same contract ───────────────────────────
    Every full-screen layer starts UNDER the strip rather than covering it.
    Sheets are not listed: they are modal at z 200 and cover it on purpose. */
-.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, #flow-run {
+.m-overlay, #logs-overlay, #map-overlay, #modal-overlay{
   top: var(--tnav-h);
 }
-#flow-run { height: calc(var(--vvh, 100dvh) - var(--gbar-h) - var(--tnav-h)); }
 
 /* ── PAGES, NOT POPUPS (2026-10-01, Quentin's instruction) ───────────────
    Every surface the strip opens is a PAGE: it fills the window between the
@@ -7892,14 +7370,13 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   .ref-peek-n { font: 12px var(--font-mono); color: var(--text-secondary); }
   .ref-peek-open { font-size: 12.5px; color: var(--text-secondary); padding: 3px 6px; border-radius: 6px; }
   .ref-peek-open:hover { background: var(--surface-2); color: var(--text-primary); }
-  .ref-peek .fr-play { width: 26px; height: 26px; }
+  
   .ref-peek-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px;
     line-height: 1.4; color: var(--text-primary); }
   .ref-peek-dot { width: 4px; height: 4px; margin: 8px 6px 0; flex: none; border-radius: 50%; background: var(--text-secondary); }
   .ref-peek-done { color: var(--text-secondary); text-decoration: line-through; }
   .ref-peek-sub { color: var(--text-secondary); }
-  .ref-peek-h { padding: 10px 0 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--text-secondary); }
+  
   .ref-peek-empty { padding: 6px 0; font-size: 13.5px; color: var(--text-secondary); }
 }
 
@@ -7944,7 +7421,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   :root:has(.dock-panel:not(.hidden)) { --dock-open: var(--dock-w); }
   #app { padding-right: var(--dock-open, 0px); }
   .m-overlay, #logs-overlay, #map-overlay, #modal-overlay { right: var(--dock-open, 0px); }
-  #flow-run { left: calc(var(--view-w) / 2); }
+  
   #engage-body .eg-rt-pop { left: calc(var(--view-w) / 2 + var(--eg-measure) / 2 + 12px); }
 
   /* !important because each sheet's own id rule outranks a class. */
@@ -8015,8 +7492,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   #dw-session .dw-writing .dw-editor { padding: 0; font-size: 14px; line-height: 1.65; }
   #dw-session .dw-writing .dw-foot { padding-left: 0; padding-right: 0; }
 
-  /* The routine runner is a page: it stands in the Now column. */
-  #flow-run { max-width: var(--eg-measure); border-color: var(--border-soft); }
+  
+  
 }
 
 /* A log's × — on the row you are on, and under the pointer (always there on
