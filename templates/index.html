@@ -35,7 +35,6 @@
       <button class="tn-tab" data-nav="logs">Log</button>
       <button class="tn-tab" data-nav="tracking">Tracking</button>
       <button class="tn-tab hidden" data-nav="social" id="tn-social">Social</button>
-      <button class="tn-tab" data-nav="gates">Gates</button>
     </div>
     <!-- EACH PAGE'S OWN SELECTOR AND SEARCH (2026-10-01, Quentin's
          instruction): one group per page that has them, shown only while that
@@ -314,6 +313,9 @@
 
         <section class="be-section" data-betab-panel="qr">
           <div id="be-qr-section"></div>
+          <!-- The Gates dashboard, mounted (2026-10-05): its own document, the
+               one gate editor. src is set on first open (mountGatesFrame). -->
+          <iframe id="gates-frame" class="gates-frame" title="Gates"></iframe>
         </section>
 
         <section class="be-section" data-betab-panel="calendars">

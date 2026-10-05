@@ -269,9 +269,14 @@ def panel():
 
 # THE GATES DASHBOARD (2026-09-29, Quentin's instruction): the one place a
 # gate is configured, moved on its day and armed. Its own document and its own
-# gates.js, touching none of app.js — the panel's arrangement.
+# gates.js, touching none of app.js — the panel's arrangement. Since
+# 2026-10-05 (Quentin: put Gates into Settings, no Gates tab) it is MOUNTED in
+# Settings → Gates as a frame (`?embed=1`), still the one editor; a bare
+# /gates is an old address and lands there.
 @app.route('/gates')
 def gates_dashboard():
+    if not request.args.get('embed'):
+        return redirect('/settings/qr')
     return render_template('gates.html')
 
 

@@ -8028,3 +8028,14 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 @media (hover: none) { #logs-modal .log-row .lg-del { display: inline-block; } }
 .lg-rename { flex: 1; min-width: 0; font: inherit; }
 .lg-title.lg-rename, h1 + .lg-rename { font-size: 24px; font-weight: 600; }
+
+/* Settings → Gates: the dashboard, mounted. It scrolls inside its own frame,
+   which is the height of what you can see, so its sheets (fixed inside it)
+   open in view. */
+.gates-frame {
+  display: block;
+  width: 100%;
+  height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h) - 24px);
+  border: none;
+  background: var(--surface-mid);
+}

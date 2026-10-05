@@ -9,6 +9,9 @@ body.gd-body { background: var(--bg); padding-top: var(--tnav-h); }
 /* Under the sheet (40/41) and the toast here, not the app's 170: this page's
    layers are numbered small. */
 .gd-body #top-nav { background: var(--bg); z-index: 30; }
+/* Mounted in Settings → Gates: the app's strip is outside the frame. */
+body.gd-body.gd-embed { padding-top: 0; background: var(--surface-mid); }
+.gd-embed #top-nav { display: none; }
 .gd-body .tn-tab { text-decoration: none; }
 body.gd-sheet-open { overflow: hidden; }
 

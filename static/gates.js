@@ -374,7 +374,9 @@ function writeRoute() {
   else if (G.edit) parts.push('gate=new');
   else if (G.sel) parts.push(`sel=${G.sel}`);
   const h = parts.length ? '#' + parts.join('&') : '';
-  if (location.hash !== h) history.replaceState(null, '', location.pathname + h);
+  // The search is kept: mounted in Settings this page is /gates?embed=1, and
+  // losing the flag would make a reload redirect the frame into the app.
+  if (location.hash !== h) history.replaceState(null, '', location.pathname + location.search + h);
 }
 function readRoute() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -1542,6 +1544,9 @@ document.addEventListener('visibilitychange', () => {
 });
 
 (async function start() {
+  // MOUNTED IN SETTINGS (2026-10-05): the app's own strip is around the
+  // frame, so this page's copy of it goes.
+  if (new URLSearchParams(location.search).get('embed')) document.body.classList.add('gd-embed');
   const gate = readRoute();
   paintUndo();
   await loadAll();

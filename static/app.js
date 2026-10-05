@@ -200,11 +200,29 @@ function registerObjectVerbs(name, fn) { objectVerbProviders.set(name, fn); }
 // static/gates.js) and nowhere in this file: one editor, so two cannot drift.
 // This window still DRAWS gates and reads them out; every door that used to
 // write one now opens the dashboard at that gate and day.
-function openGatesDashboard(nodeId, date) {
+// SETTINGS → GATES (2026-10-05, Quentin: put Gates into Settings, no Gates
+// tab). The dashboard is MOUNTED there as a frame (/gates?embed=1) — the same
+// document and the same gates.js, so it is still the one editor — and every
+// door that opened /gates opens that section, at the gate and day it named.
+function gatesFrameSrc(nodeId, date) {
   const parts = [];
   if (date && date !== wallDay()) parts.push(`date=${date}`);
   if (nodeId != null) parts.push(`sel=${nodeId}`);
-  location.href = '/gates' + (parts.length ? '#' + parts.join('&') : '');
+  return '/gates?embed=1' + (parts.length ? '#' + parts.join('&') : '');
+}
+
+// Loaded once and left alone after that, so a Settings repaint never reloads
+// it mid-edit; only a door naming a gate or a day points it somewhere new.
+function mountGatesFrame(src) {
+  const frame = document.getElementById('gates-frame');
+  if (!frame) return;
+  if (src) frame.src = src;
+  else if (!frame.getAttribute('src')) frame.src = gatesFrameSrc(null, null);
+}
+
+async function openGatesDashboard(nodeId, date) {
+  mountGatesFrame(gatesFrameSrc(nodeId, date));
+  await goRoute('settings/qr', true);
 }
 
 const state = {
@@ -4081,7 +4099,7 @@ const SETTINGS_SECTIONS = [
     desc: 'Places a gate or a context tag can be pinned to.',
     summary: () => String(beCounts.locations || 0) },
   { key: 'qr', name: 'Gates', group: 'Where and what',
-    desc: 'Scan points that gate the day.',
+    desc: 'Every gate: its settings, the day, the money and the record.',
     summary: () => plural(beCounts.qr, 'gate') },
   { key: 'metrics', name: 'Metrics', group: 'Where and what',
     desc: 'What you track about yourself. Asked on a routine step — a metric can '
@@ -4434,6 +4452,7 @@ function openSettingsSection(key) {
   if (key === 'metrics') loadMetrics().then(renderMetricsSettings);
   if (key === 'about') loadAbout();
   if (key === 'assistant') loadAssistantChanges();
+  if (key === 'qr') mountGatesFrame();
 }
 
 function backToSettingsIndex() {
@@ -7741,8 +7760,7 @@ async function closeSurfaces() {
 }
 
 async function navigateTo(dest) {
-  // Gates is its own document; leaving for it closes nothing worth closing.
-  if (dest === 'gates') { openSurface('gates'); return; }
+  if (dest === 'gates') dest = 'settings/qr';
   await goRoute(dest, true);
 }
 
@@ -7797,7 +7815,7 @@ async function openSurface(dest, sub) {
   }
   else if (dest === 'map') { openMap(); }
   else if (dest === 'tracking') { openM('tab-tracking'); openTracking(); }
-  else if (dest === 'gates') { openGatesDashboard(null, null); }
+  else if (dest === 'gates') { await openSurface('settings', { section: 'qr' }); }
   else if (dest === 'social') {
     // Belt-and-braces: the button is hidden below, but the hub is also
     // reachable by keyboard and a dead door is worse than an absent one.
@@ -13897,11 +13915,10 @@ async function renderQrManager() {
   // Everything about a gate is on the dashboard. What stays is the day's
   // BOUNDARY — which gates clip this window's calendar — a view setting of
   // this app, not a commitment.
-  panel.innerHTML = `<div class="gb-boundary"><span>Gates are set up, moved and armed on
-      their own page: every setting, the day, the money and the record.</span>
-      <button id="gb-open-gates">Open Gates ›</button></div>
-    ${gatesBoundary(nodes)}`;
-  document.getElementById('gb-open-gates').addEventListener('click', () => openGatesDashboard(null, null));
+  // The dashboard itself is the frame under this (#gates-frame), mounted
+  // once; this repaints only the boundary above it.
+  panel.innerHTML = gatesBoundary(nodes);
+  if (settingsScroll()) mountGatesFrame();
   const edit = document.getElementById('gb-boundary-edit');
   if (edit) edit.addEventListener('click', () => { gatesView.boundary = true; renderQrManager(); });
   [['ac-wake-node', 'qr_wake_node_id'], ['ac-sleep-node', 'qr_sleep_node_id']].forEach(([selId, key]) => {
