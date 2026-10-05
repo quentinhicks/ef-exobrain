@@ -2182,8 +2182,9 @@ function purposeItem(blockEl) {
 // ── A CATEGORY, LIT UP (2026-09-30, Quentin's "Calendar Block Hover" design,
 // 6b: "hover over and click … all COS330 regions light up") ────────────────
 //
-// NO HOVER LABEL (2026-10-05, Quentin: the label at a block's top naming its
-// category was unnecessary — the block already says what it is). CLICKING a block lights up every block of that category on
+// Hovering a block puts a one-line label at its top — its category and what
+// this stretch is for (removed 2026-10-05 by mistake, restored the same day
+// on Quentin's word). CLICKING it lights up every block of that category on
 // the calendar and fades the rest, and a bar over the grid says what it is,
 // how much of the week goes to it, and holds the two doors a click used to
 // be: `Edit` (the category's sheet) and `⋯` (this stretch's menu). Clicking
@@ -2242,8 +2243,45 @@ function toggleCalPin(el) {
   paintCalPin();
 }
 
+function hideBlockHover() {
+  const tip = document.getElementById('blk-hover');
+  if (tip) tip.classList.add('hidden');
+}
+
+function showBlockHover(el) {
+  let tip = document.getElementById('blk-hover');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'blk-hover';
+    document.body.appendChild(tip);
+  }
+  const r = el.getBoundingClientRect();
+  // A tall block (the night) starts above the scrolled view; its label sits
+  // at the top of what is visible of it instead.
+  const sc = el.closest('.wk-scroll, #right-panel');
+  const floor = sc ? sc.getBoundingClientRect().top : 0;
+  tip.innerHTML = `<span class="cal-pin-sw" style="--block-color:${
+    escHtml(el.style.getPropertyValue('--block-color'))}"></span><b>${escHtml(el.dataset.name || '')}</b><span>${
+    escHtml(el.dataset.what || '')}</span>`;
+  tip.style.left = `${r.left + 12}px`;
+  tip.style.top = `${Math.max(r.top, floor) + 3}px`;
+  // Wider than a narrow column when it has to be: it floats over the grid.
+  tip.style.maxWidth = `${Math.max(280, r.width - 16)}px`;
+  tip.classList.remove('hidden');
+}
+
 function initCalBlockPin() {
   const cal = document.getElementById('cal-overlay');
+  cal.addEventListener('pointerover', e => {
+    if (e.pointerType !== 'mouse') return;
+    const el = e.target.closest('.tl-block[data-cat]');
+    if (el && !e.target.closest('.tl-gcal-event, .wk-gate')) showBlockHover(el);
+    else hideBlockHover();
+  });
+  cal.addEventListener('pointerleave', hideBlockHover);
+  cal.addEventListener('pointerdown', hideBlockHover);
+  document.addEventListener('scroll', hideBlockHover, true);
+
   cal.addEventListener('click', e => {
     const el = e.target.closest('.tl-block[data-cat]');
     if (!el) return;
@@ -7447,7 +7485,7 @@ function closeM(id) {
   flushOpenNotes();
   const el = document.getElementById(id);
   el.classList.add('hidden');
-  if (id === 'cal-overlay') clearCalPin();
+  if (id === 'cal-overlay') { clearCalPin(); hideBlockHover(); }
   // A surface the RUNNER raised above itself returns to its own layer, and the
   // step it was opened from re-reads whatever it asked about (the layer's own
   // `back`). ONE layer for all of them: openM shows one .m-overlay at a time,
