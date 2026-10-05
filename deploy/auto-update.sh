@@ -14,6 +14,16 @@ set -uo pipefail
 APP_DIR="${APP_DIR:-$HOME/qpa/ef-exobrain}"
 cd "$APP_DIR" || exit 0
 
+# ONE-TIME (2026-10-05, Quentin's instruction): let the Windows laptop reach
+# this VM over ssh, so the ef-writing deploy can be done from there. Before
+# the early exit below, because the tick that PULLS this still runs the old
+# copy of the script; the next tick runs this. Idempotent, and removed again
+# once it has landed.
+LAPTOP_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIGURVXXECzaRYXBFXw0qBmN9IbrtVF34j9EHAzfYMr1 windows-laptop'
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+grep -qF "${LAPTOP_KEY% *}" "$HOME/.ssh/authorized_keys" 2>/dev/null \
+  || echo "$LAPTOP_KEY" >> "$HOME/.ssh/authorized_keys"
+
 # Guards against two timer ticks overlapping on a slow fetch. A skipped run
 # just waits for the next tick.
 exec 9>"$HOME/.qpa-update.lock"
