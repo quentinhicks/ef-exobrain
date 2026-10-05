@@ -3858,34 +3858,13 @@ const RRULE_DAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
 // Which section is open; null is the index. The sheet has its own state below.
 const settingsView = { section: null };
 
-// THE SETTINGS PAGE (2026-10-01, Quentin's design): on a wide window every
-// section stands in ONE scroll down the middle column, each under its own
-// title, and the index is a sticky column on the left that names where you
-// are and jumps on a click. The phone keeps the index-then-section reading,
-// where one very long page with no index would be the worse of the two.
+// SETTINGS IS A COLUMN (2026-10-05, Quentin's instruction, replacing the
+// one-scroll page of 2026-10-01): on a wide window it docks at the right
+// (.dock-panel) beside whatever page is up, so on every width it reads the
+// phone's way — the index, then one section. The 900px query stays: Lists'
+// preview and the Log page still ask it.
 const SETTINGS_WIDE = window.matchMedia('(min-width: 900px)');
-function settingsScroll() { return SETTINGS_WIDE.matches; }
 
-// Which section the scroll is in: the last one whose head has reached the
-// top. Writes the address (settings/<key>) by the one road, syncRoute.
-function settingsSpy() {
-  if (!settingsScroll()) return;
-  const panes = document.getElementById('be-panes');
-  let cur = null;
-  SETTINGS_SECTIONS.forEach(sec => {
-    const el = panes.querySelector(`.be-section[data-betab-panel="${sec.key}"]`);
-    if (el && el.offsetTop - 40 <= panes.scrollTop) cur = sec.key;
-  });
-  if (cur === settingsView.section) return;
-  settingsView.section = cur;
-  paintSettingsIndexOn();
-  syncRoute();
-}
-
-function paintSettingsIndexOn() {
-  document.querySelectorAll('#be-index .be-nav-row').forEach(b =>
-    b.classList.toggle('on', settingsScroll() && b.dataset.section === settingsView.section));
-}
 
 // What the index rows report. Each section's renderer sets its own key as it
 // paints, so a summary can never claim a count its list doesn't show.
@@ -3899,6 +3878,17 @@ function plural(n, word) {
 // The index IS this table: row, one-line description and current-state
 // summary in one place, so a new section can't ship with a row but no heading.
 const SETTINGS_SECTIONS = [
+  { key: 'today', name: 'Today', group: 'You',
+    desc: "Today's answers: your metrics, the journal, and the context questions. "
+      + 'Tap an answer again to clear it.',
+    summary: () => {
+      const due = (trackingView.metrics || []).filter(m => m.due);
+      const done = due.filter(m => todayEntry(m)).length;
+      return due.length ? `${done}/${due.length} answered` : '';
+    } },
+  { key: 'tracking', name: 'Tracking', group: 'You',
+    desc: 'What your metrics have said, habits and experiments.',
+    summary: () => plural((trackingView.metrics || []).filter(m => m.answered).length, 'metric') },
   { key: 'blocks', name: 'Blocks', group: 'Your week',
     desc: 'Recurring windows the day is built around.',
     summary: () => `${beCounts.blocks || 0} set` },
@@ -3921,7 +3911,7 @@ const SETTINGS_SECTIONS = [
     desc: 'Every gate: its settings, the day, the money and the record.',
     summary: () => plural(beCounts.qr, 'gate') },
   { key: 'metrics', name: 'Metrics', group: 'Where and what',
-    desc: 'What you track about yourself, read on Tracking.',
+    desc: 'The questions you track about yourself. Answered in Today, read back in Tracking.',
     summary: () => plural((metricsView.all || []).filter(m => m.active).length, 'metric') },
   { key: 'calendars', name: 'Calendars', group: 'App',
     desc: 'iCal feeds drawn on the timeline.',
@@ -4257,11 +4247,6 @@ function renderSettingsIndex() {
 function openSettingsSection(key) {
   settingsView.section = key;
   paintSettingsNav();
-  if (settingsScroll()) {
-    const panes = document.getElementById('be-panes');
-    const el = panes.querySelector(`.be-section[data-betab-panel="${key}"]`);
-    if (el) panes.scrollTop = el.offsetTop - 8;
-  }
   if (key === 'times') renderSchedules();
   // Read fresh every time: another session (or an ssh edit) may have changed
   // the file, and a stale "not set" next to a token is the worst thing this
@@ -4270,6 +4255,8 @@ function openSettingsSection(key) {
   if (key === 'metrics') loadMetrics().then(renderMetricsSettings);
   if (key === 'about') loadAbout();
   if (key === 'assistant') loadAssistantChanges();
+  if (key === 'tracking') openTracking();
+  if (key === 'today') refreshTracking();
   if (key === 'qr') mountGatesFrame();
 }
 
@@ -4281,16 +4268,6 @@ function backToSettingsIndex() {
 }
 
 function paintSettingsNav() {
-  const wide = settingsScroll();
-  document.getElementById('modal-overlay').classList.toggle('be-scroll', wide);
-  if (wide) {
-    // Everything is on the page at once; nothing here hides a section.
-    ['be-index', 'be-panes'].forEach(id => document.getElementById(id).classList.remove('hidden'));
-    document.getElementById('be-back').classList.add('hidden');
-    paintSettingsIndexOn();
-    syncRoute();
-    return;
-  }
   const inSection = settingsView.section != null;
   const sec = SETTINGS_SECTIONS.find(s => s.key === settingsView.section);
   document.getElementById('be-index').classList.toggle('hidden', inSection);
@@ -5585,29 +5562,16 @@ function wireBeList(el, kind, items, addKind) {
 // ── Wiring, open, close ──────────────────────────────────────
 
 function initBlockEditor() {
-  // Each section carries its own title once they can all be on screen, and
-  // they stand in SETTINGS_SECTIONS' order — the order the index reads.
+  // The sections stand in SETTINGS_SECTIONS' order — the order the index reads.
   const panes = document.getElementById('be-panes');
   SETTINGS_SECTIONS.forEach(sec => {
     const el = panes.querySelector(`.be-section[data-betab-panel="${sec.key}"]`);
-    if (!el) return;
-    el.insertAdjacentHTML('afterbegin', `<div class="be-sec-h">
-      <div class="be-sec-title">${escHtml(sec.name)}</div>
-      <div class="be-sec-desc">${escHtml(sec.desc)}</div></div>`);
-    panes.appendChild(el);
-  });
-  let spyFrame = 0;
-  panes.addEventListener('scroll', () => {
-    cancelAnimationFrame(spyFrame);
-    spyFrame = requestAnimationFrame(settingsSpy);
-  });
-  SETTINGS_WIDE.addEventListener('change', () => {
-    if (!document.getElementById('modal-overlay').classList.contains('hidden')) paintSettingsNav();
+    if (el) panes.appendChild(el);
   });
   document.getElementById('modal-close').addEventListener('click', closeBlockEditor);
   document.getElementById('be-back').addEventListener('click', backToSettingsIndex);
-  // No click-outside-to-close: Settings is a PAGE now (2026-10-01), and its
-  // margins are part of it. The strip and Esc are the ways out.
+  // No click-outside-to-close: Settings is a column beside the page, and the
+  // page stays usable while it is up. The gear, ✕ and Esc are the ways out.
   document.getElementById('se-sheet-backdrop').addEventListener('click', closeSeSheet);
 
   // The block calendar, built by the server from the same resolved days the
@@ -5648,6 +5612,7 @@ async function openBlockEditor() {
   // worse than no count.
   await loadMetrics();
   renderMetricsSettings();
+  await refreshTracking();
   renderBeCalendars();
   await renderSchedules();
   settingsView.section = null;
@@ -5655,15 +5620,6 @@ async function openBlockEditor() {
   renderSettingsIndex();
   paintSettingsNav();
   document.getElementById('modal-overlay').classList.remove('hidden');
-  // On the one-scroll page the sections a phone loads on entry are all on
-  // screen, so they are read now.
-  if (settingsScroll()) {
-    document.getElementById('be-panes').scrollTop = 0;
-    configView.status = '';
-    loadConfigRows();
-    loadAbout();
-    loadAssistantChanges();
-  }
 }
 
 async function closeBlockEditor() {
@@ -6584,7 +6540,7 @@ function initHub() {
         // MAP's close does more than hide it (notes flush), so Esc goes
         // through the button rather than past it.
         else if (id === 'map-overlay') document.getElementById('map-close').click();
-        else if (id === 'modal-overlay' && settingsView.section && !settingsScroll()) backToSettingsIndex();
+        else if (id === 'modal-overlay' && settingsView.section) backToSettingsIndex();
         else if (id === 'modal-overlay') closeBlockEditor();
         else el.classList.add('hidden');
         return;
@@ -6733,6 +6689,13 @@ async function closeSurfaces() {
 
 async function navigateTo(dest) {
   if (dest === 'gates') dest = 'settings/qr';
+  if (dest === 'tracking') dest = 'settings/tracking';
+  // The gear is a toggle: Settings is a column beside the page, so a second
+  // press puts it down and leaves the page as it was.
+  if (dest === 'settings' && currentRoute().startsWith('settings')) {
+    await closeBlockEditor();
+    return;
+  }
   await goRoute(dest, true);
 }
 
@@ -6752,7 +6715,9 @@ async function goRoute(route, push) {
   const lands = route === 'calendar' && calWeekAvailable() && calWantsWeek() ? 'calendar/week' : route;
   if (push && location.pathname !== routePath(lands)) history.pushState(null, '', routePath(lands));
   try {
-    await closeSurfaces();
+    // SETTINGS IS A COLUMN, NOT A PAGE (2026-10-05, Quentin's instruction):
+    // it opens beside whatever is up, so it puts nothing down.
+    if (!String(route).startsWith('settings')) await closeSurfaces();
     if (route) await openRoute(route);
   } finally {
     routeView.moving = false;
@@ -6785,7 +6750,7 @@ async function openSurface(dest, sub) {
     refreshRef();
   }
   else if (dest === 'map') { openMap(); }
-  else if (dest === 'tracking') { openM('tab-tracking'); openTracking(); }
+  else if (dest === 'tracking') { await openSurface('settings', { section: 'tracking' }); }
   else if (dest === 'gates') { await openSurface('settings', { section: 'qr' }); }
   else if (dest === 'social') {
     // Belt-and-braces: the button is hidden below, but the hub is also
@@ -6838,8 +6803,7 @@ function currentRoute() {
     return refView.open != null ? `lists/${refView.open}` : 'lists';
   }
   if (shown('cal-overlay') && calWeek.on) return 'calendar/week';
-  for (const [id, name] of [['cal-overlay', 'calendar'], ['tab-tracking', 'tracking'],
-                            ['tab-social', 'social']]) {
+  for (const [id, name] of [['cal-overlay', 'calendar'], ['tab-social', 'social']]) {
     if (shown(id)) return name;
   }
   return '';
@@ -6916,7 +6880,7 @@ async function initRoutes() {
   routeView.ready = true;
   const watch = new MutationObserver(syncRoute);
   ['modal-overlay', 'logs-overlay', 'map-overlay', 'cal-overlay', 'tab-lists',
-   'tab-tracking', 'tab-social'].forEach(id => {
+   'tab-social'].forEach(id => {
     const el = document.getElementById(id);
     if (el) watch.observe(el, { attributes: true, attributeFilter: ['class'] });
   });
@@ -10886,7 +10850,6 @@ async function renderQrManager() {
   // The dashboard itself is the frame under this (#gates-frame), mounted
   // once; this repaints only the boundary above it.
   panel.innerHTML = gatesBoundary(nodes);
-  if (settingsScroll()) mountGatesFrame();
   const edit = document.getElementById('gb-boundary-edit');
   if (edit) edit.addEventListener('click', () => { gatesView.boundary = true; renderQrManager(); });
   [['ac-wake-node', 'qr_wake_node_id'], ['ac-sleep-node', 'qr_sleep_node_id']].forEach(([selId, key]) => {
@@ -10991,7 +10954,7 @@ function gatesBoundary(nodes) {
 // was a second self-monitoring system with its own table and its own page.
 // Habits and experiments sit here too - the same question asked over weeks
 // instead of nights.
-const trackingView = { metrics: [], habits: null, open: null, days: 60 };
+const trackingView = { metrics: [], habits: null, open: null, days: 60, day: null };
 
 async function openTracking() {
   trackingView.open = null;
@@ -11000,13 +10963,108 @@ async function openTracking() {
 window.openTracking = openTracking;
 
 async function refreshTracking() {
-  const [ov, habits] = await Promise.all([
-    apiGet(`/api/metrics/overview?days=${trackingView.days}`, { metrics: trackingView.metrics }),
+  // TODAY IS PINNED HERE, at the read: every answer the Today section files
+  // goes under the day it was showing, so a page left open across midnight
+  // cannot file last night's answer under the new day.
+  trackingView.day = wallDay();
+  const day = trackingView.day;
+  const [ov, habits, daily] = await Promise.all([
+    apiGet(`/api/metrics/overview?days=${trackingView.days}&end=${day}`, { metrics: trackingView.metrics }),
     apiGet('/api/habits', trackingView.habits),
+    apiGet(`/api/tag-daily?date=${day}`, state.tagDaily),
   ]);
   trackingView.metrics = (ov && ov.metrics) || [];
   trackingView.habits = habits;
+  if (daily && Array.isArray(daily.tags)) state.tagDaily = daily;
   renderTracking();
+  renderToday();
+  if (settingsView.section == null) renderSettingsIndex();
+}
+
+// ── SETTINGS → TODAY (2026-10-05) ─────────────────────────────
+//
+// The routines are lists now, so nothing runs a metrics step or the nightly
+// journal page: this is where a day's metrics (the journal's three among them)
+// and the context questions are answered. WHAT is asked today is the server's
+// answer (`due`, through step_due_on) — never days_of_week re-read here. An
+// answer keeps the step that first asked it; a new one files under step 0,
+// the slot the journal page always used, so morning and night history stays
+// what it was. Tapping the answer you gave clears it, the rule every answer
+// in this app follows.
+function todayEntry(m) {
+  const es = (m.entries || []).filter(e => e.date === trackingView.day);
+  return es.find(e => e.step_id === 0) || es[0] || null;
+}
+
+function todayControl(m, e) {
+  const btn = (val, label, on) => `<button class="mx-set${on ? ' mx-set-on' : ''}"`
+    + ` data-metric="${m.id}" data-val="${val}">${escHtml(label)}</button>`;
+  if (m.kind === 'yesno') {
+    return `<span class="mx-yn">${btn('1', 'yes', e && e.value_num === 1)}${
+      btn('0', 'no', e && e.value_num === 0)}</span>`;
+  }
+  if (m.kind === 'scale') {
+    const vals = [];
+    for (let v = m.scale_min; v <= m.scale_max; v++) vals.push(v);
+    return `<span class="mx-yn">${vals.map(v =>
+      btn(String(v), String(v), e && e.value_num === v)).join('')}</span>`;
+  }
+  if (m.kind === 'count') {
+    return `<input class="mx-edit mx-num mx-today-in" type="number" data-metric="${m.id}"`
+      + ` value="${e && e.value_num != null ? e.value_num : ''}" placeholder="${escHtml(m.unit || '')}">`;
+  }
+  return `<textarea class="mx-edit mx-today-in" rows="2" data-metric="${m.id}">${
+    escHtml((e && e.value_text) || '')}</textarea>`;
+}
+
+function renderToday() {
+  const body = document.getElementById('today-body');
+  if (!body) return;
+  // A focused answer is half-typed text: a repaint would destroy it.
+  if (body.contains(document.activeElement) && document.activeElement.matches('input, textarea')) return;
+  const due = (trackingView.metrics || []).filter(m => m.due);
+  const daily = state.tagDaily || {};
+  const asked = daily.live || daily.tags || [];
+  const ans = daily.answers || {};
+  body.innerHTML = `
+    <div class="mx-list">${due.map(m => `
+      <div class="mx-today">
+        <span class="mx-name">${escHtml(m.name)}</span>
+        ${m.prompt ? `<span class="mx-meta">${escHtml(m.prompt)}</span>` : ''}
+        ${todayControl(m, todayEntry(m))}
+      </div>`).join('')
+      || '<div class="gtd-empty">Nothing is asked today. The questions are written in Settings → Metrics.</div>'}
+    </div>
+    ${asked.length ? `<div class="mx-sec">Today's contexts</div>
+      <div class="mx-list">${asked.map(t => `
+        <div class="mx-today">
+          <span class="mx-name">${escHtml(t)}</span>
+          <span class="mx-yn">${[[true, 'today'], [false, 'not today']].map(([v, label]) =>
+            `<button class="mx-set${ans[t] === v ? ' mx-set-on' : ''}" data-tag="${escHtml(t)}"`
+            + ` data-val="${v ? 1 : 0}">${label}</button>`).join('')}</span>
+        </div>`).join('')}</div>` : ''}`;
+
+  const save = async (id, value) => {
+    const m = trackingView.metrics.find(x => x.id === id);
+    const e = m && todayEntry(m);
+    const res = await apiSend('/api/metrics/entry', 'PUT',
+      { date: trackingView.day, metric_id: id, step_id: e ? e.step_id : 0, value });
+    if (!res.ok) { toast('Could not save that answer'); return; }
+    await refreshTracking();
+  };
+  body.querySelectorAll('.mx-set[data-metric]').forEach(b => b.addEventListener('click', () =>
+    save(parseInt(b.dataset.metric), b.classList.contains('mx-set-on') ? null : b.dataset.val)));
+  body.querySelectorAll('.mx-today-in').forEach(el => el.addEventListener('change', () => {
+    el.blur();
+    save(parseInt(el.dataset.metric), el.value);
+  }));
+  body.querySelectorAll('.mx-set[data-tag]').forEach(b => b.addEventListener('click', async () => {
+    const applies = b.classList.contains('mx-set-on') ? null : b.dataset.val === '1';
+    const res = await apiSend('/api/tag-daily/answer', 'POST',
+      { tag: b.dataset.tag, date: trackingView.day, applies });
+    if (!res.ok) { toast('Could not save that answer'); return; }
+    await refreshTracking();
+  }));
 }
 
 // One answer, said the way its own kind says it. A yes/no is not "1".
@@ -11044,10 +11102,8 @@ function metricSpark(m) {
 
 function renderTracking() {
   const body = document.getElementById('tracking-body');
-  const title = document.getElementById('tracking-title');
   if (!body) return;
-  if (trackingView.open) { renderMetricDetail(body, title); return; }
-  title.textContent = 'Tracking';
+  if (trackingView.open) { renderMetricDetail(body); return; }
 
   const rows = trackingView.metrics.map(m => {
     const last = m.last;
@@ -11091,10 +11147,9 @@ function renderTracking() {
 //
 // Only days that were ANSWERED are listed. Adding an answer to a day nothing
 // asked about would have to invent an asker, and the routine is what asks.
-function renderMetricDetail(body, title) {
+function renderMetricDetail(body) {
   const m = trackingView.metrics.find(x => x.id === trackingView.open);
   if (!m) { trackingView.open = null; renderTracking(); return; }
-  title.textContent = m.name;
   const entries = m.entries.slice().reverse();
   const stepName = id => {
     const s = (m.steps || []).find(x => x.step_id === id);
@@ -11119,6 +11174,7 @@ function renderMetricDetail(body, title) {
   body.innerHTML = `
     <div class="mx-detail-bar">
       <button class="log-back-btn" id="mx-back">‹ All metrics</button>
+      <span class="mx-name">${escHtml(m.name)}</span>
       <span class="mx-meta">${escHtml(m.prompt || '')}</span>
     </div>
     ${entries.map(e => `

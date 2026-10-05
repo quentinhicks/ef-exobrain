@@ -33,7 +33,6 @@
       <button class="tn-tab" data-nav="map">Projects</button>
       <button class="tn-tab" data-nav="lists" id="tn-lists">Lists</button>
       <button class="tn-tab" data-nav="logs">Log</button>
-      <button class="tn-tab" data-nav="tracking">Tracking</button>
       <button class="tn-tab hidden" data-nav="social" id="tn-social">Social</button>
     </div>
     <!-- EACH PAGE'S OWN SELECTOR AND SEARCH (2026-10-01, Quentin's
@@ -191,21 +190,6 @@
     <div id="social-body"></div>
   </div>
 
-  <!-- TRACKING: what you monitor about yourself, and what it has said. The
-       metrics were collected nightly and rendered NOWHERE until this page
-       existed; the journal's rating and prompts are three of them now, not a
-       table of their own. Habits and experiments sit here too — they are the
-       same question asked over weeks instead of nights. -->
-  <div id="tab-tracking" class="m-overlay hidden">
-    <div class="m-head">
-      <span class="m-title" id="tracking-title">Tracking</span>
-      <button class="modal-close-btn m-close" data-close="tab-tracking">✕</button>
-    </div>
-    <div id="tracking-wrap">
-      <div id="tracking-body"></div>
-    </div>
-  </div>
-
   <!-- Dangerous writing: stop typing and the draft is destroyed. The ONE
        surface that covers the global bar (z 240) — capture during a session
        is exactly the task-switch the mechanic exists to punish. -->
@@ -246,7 +230,7 @@
        navigation. Ported from Claude Design (project
        82343144-9c74-405a-8a03-5d1a2c5b82c7, file GTD Panel Layouts.dc.html,
        panel 11a). -->
-  <div id="modal-overlay" class="hidden">
+  <div id="modal-overlay" class="dock-panel hidden">
     <div id="block-editor-modal">
       <div class="modal-header">
         <button id="be-back" class="be-back hidden">‹ Settings</button>
@@ -266,6 +250,14 @@
           <div class="be-sec-title" id="be-sec-title"></div>
           <div class="be-sec-desc" id="be-sec-desc"></div>
         </div>
+
+        <section class="be-section" data-betab-panel="today">
+          <div id="today-body"></div>
+        </section>
+
+        <section class="be-section" data-betab-panel="tracking">
+          <div id="tracking-body"></div>
+        </section>
 
         <section class="be-section" data-betab-panel="blocks">
           <div id="be-blocks-list" class="be-list"></div>

@@ -4918,6 +4918,10 @@ body.np-body {
 .mx-num { font-family: var(--font-mono); max-width: 90px; flex: none; }
 
 .mx-yn { display: flex; gap: 6px; flex: 1; }
+/* Settings → Today: one question a row, its answer under it. */
+.mx-today { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+.mx-today .mx-yn { flex-wrap: wrap; }
+.mx-today .mx-edit { width: 100%; box-sizing: border-box; }
 .mx-set {
   font: 11px var(--font-mono);
   color: var(--text-secondary);
@@ -6098,8 +6102,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .eg-head-day, .eg-side, .eg-list { display: contents; }
 @media (min-width: 900px) {
   :root {
-    --eg-measure: clamp(460px, calc(100vw - 440px), 720px);
-    --eg-side-w: calc((100vw - var(--eg-measure)) / 2);
+    --eg-measure: clamp(460px, calc(var(--view-w) - 440px), 720px);
+    --eg-side-w: calc((var(--view-w) - var(--eg-measure)) / 2);
     --eg-gutter: clamp(16px, 2.4vw, 32px);
     --eg-col-top: calc(var(--tnav-h) + clamp(16px, 3.5vh, 28px));
     --eg-day-rows: 32px 28px;
@@ -7276,70 +7280,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
 }
 
-/* ── THE SETTINGS PAGE (2026-10-01, Quentin's design) ────────────────────
-   Wide only: the index a sticky column on the left (names, no summaries),
-   every section down the middle column under its own title. Below 900px the
-   index-then-section reading is unchanged and the per-section titles stay
-   hidden (the shared head names the open one). */
-.be-sec-h { display: none; }
-@media (min-width: 900px) {
-  #modal-overlay.be-scroll #block-editor-modal {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
-    max-width: none;
-    border: none;
-  }
-  #modal-overlay.be-scroll .modal-header,
-  #modal-overlay.be-scroll .be-sec-head { display: none; }
-  #modal-overlay.be-scroll #be-index {
-    grid-column: 1;
-    grid-row: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    padding: 28px 28px 0;
-    overflow-y: auto;
-  }
-  #modal-overlay.be-scroll #be-index > :last-child { border-bottom: none; }
-  #modal-overlay.be-scroll .be-idx-group {
-    padding: 14px 0 4px;
-    font: 600 11px var(--font-ui);
-    letter-spacing: 0.08em;
-  }
-  #modal-overlay.be-scroll .be-nav-row {
-    width: auto;
-    min-height: 0;
-    padding: 4px 8px;
-    margin-right: -8px;
-    border: none;
-    border-radius: 6px;
-    font-size: 14px;
-    color: var(--text-secondary);
-  }
-  #modal-overlay.be-scroll .be-nav-row.on { color: var(--text-primary); font-weight: 600; }
-  #modal-overlay.be-scroll .be-nav-row:hover { color: var(--text-primary); }
-  #modal-overlay.be-scroll .be-nav-value,
-  #modal-overlay.be-scroll .be-chev { display: none; }
-  #modal-overlay.be-scroll #be-panes {
-    grid-column: 2;
-    grid-row: 1;
-    padding: 8px 0 60vh;
-    border-left: 1px solid var(--border-soft);
-    border-right: 1px solid var(--border-soft);
-  }
-  #modal-overlay.be-scroll .be-section { display: flex; }
-  #modal-overlay.be-scroll .be-sec-h { display: block; padding: 30px 28px 10px; }
-  #modal-overlay.be-scroll .be-sec-h .be-sec-title { font-size: 20px; font-weight: 700; }
-  #modal-overlay.be-scroll .be-sec-h .be-sec-desc { font-size: 13.5px; margin-top: 3px; line-height: 1.45; }
-  /* Rows inset to the column's 28px, the way the design draws them. */
-  #modal-overlay.be-scroll .be-section > *:not(.be-sec-h) { margin-left: 28px; margin-right: 28px; }
-  #modal-overlay.be-scroll .be-list-row,
-  #modal-overlay.be-scroll .be-set-row,
-  #modal-overlay.be-scroll .be-add-row { padding: 9px 8px; margin: 0 -8px; width: calc(100% + 16px); }
-  #modal-overlay.be-scroll .be-sub-head { padding: 18px 0 6px; }
-  #modal-overlay.be-scroll .be-add-row { color: var(--accent); font-size: 14.5px; }
-}
 /* The calendar selector's week row (renderCalFilter). */
 .cf-week { display: flex; align-items: center; gap: 6px; }
 .cf-week .wk-icon { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; }
@@ -7515,4 +7455,17 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h) - 24px);
   border: none;
   background: var(--surface-mid);
+}
+
+/* SETTINGS IS A COLUMN (2026-10-05): #modal-overlay carries .dock-panel, so on
+   a wide window it docks at the right like every sheet and the page gives up
+   its width. Inside, it reads the phone's way — index, then one section. */
+@media (min-width: 900px) {
+  #modal-overlay.dock-panel { padding: 0 !important; }
+  #modal-overlay.dock-panel #today-body, #modal-overlay.dock-panel #tracking-body { padding: 0 16px 24px; }
+  #modal-overlay.dock-panel #block-editor-modal {
+    max-width: none;
+    height: 100%;
+    border: none;
+  }
 }

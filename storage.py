@@ -6750,11 +6750,17 @@ def metrics_overview(start, end, include_paused=False):
     by_metric = {}
     for r in rows:
         by_metric.setdefault(r['metric_id'], []).append(dict(r))
+    # `due` is asked of the window's LAST day through the one weekday predicate
+    # (step_due_on), so Settings → Today renders the server's answer to "is
+    # this asked today" rather than re-reading days_of_week (2026-10-05: with
+    # the routines gone, Today is where metrics are answered).
+    last_day = date_cls.fromisoformat(end)
     for m in metrics:
         entries = by_metric.get(m['id'], [])
         m['entries'] = entries
         m['answered'] = len({e['date'] for e in entries})
         m['last'] = entries[-1] if entries else None
+        m['due'] = step_due_on(m, last_day)
     return metrics
 
 
