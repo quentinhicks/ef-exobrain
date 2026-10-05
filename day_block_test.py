@@ -14,6 +14,9 @@ instruction: "do NOT mix the two"):
      route, a weekday or an effective_from on a day-block route.
   4. The assistant may write day blocks (the planning skill's whole job), and
      only through the routes that say they are local.
+  5. A day block takes its hours from any weekly block it overlaps, in the
+     one resolution: the weekly block is in force only around it, and comes
+     back whole when the one-off goes (2026-10-05).
 """
 
 import os
@@ -115,6 +118,29 @@ for bad in ({'days': [1]}, {'day_of_week': 1}, {'effective_from': NEXT}):
 r = client.post('/api/day-blocks', json={'start_min': 600, 'end_min': 660,
                                          'label': 'Y', 'color': '#a3d9a5'})
 check('a day block without a date is refused (a write names its day)', r.status_code == 400)
+
+# ── 5. a day block takes its hours from the week ─────────────
+# The weekly Class now runs 08:00-10:00 on DAY.
+def class_on(ymd):
+    return [(s['start'], s['end']) for s in storage.block_segments_for(ymd)
+            if s['block_id'] == b['id']]
+
+mid = client.post('/api/day-blocks', json={'date': DAY, 'start_min': 540, 'end_min': 570,
+                                           'label': 'Exam', 'color': '#a3d9a5'}).get_json()
+check('a one-off inside a weekly block splits it around itself',
+      class_on(DAY) == [(480, 540), (570, 600)], class_on(DAY))
+check('...and the pieces say they were trimmed',
+      all(s.get('trimmed') for s in storage.block_segments_for(DAY) if s['block_id'] == b['id']))
+whole = client.post('/api/day-blocks', json={'date': DAY, 'start_min': 470, 'end_min': 610,
+                                             'label': 'Push', 'color': '#a3d9a5'}).get_json()
+check('a one-off covering it leaves the weekly block nothing that day', class_on(DAY) == [],
+      class_on(DAY))
+check('...the weekly row itself is untouched', client.get('/api/blocks').get_json()[0]['start_time']
+      == '08:00')
+client.delete(f'/api/day-blocks/{whole["id"]}')
+client.delete(f'/api/day-blocks/{mid["id"]}')
+check('deleting the one-offs gives the hours straight back', class_on(DAY) == [(480, 600)],
+      class_on(DAY))
 
 # ── filing and deletion ──────────────────────────────────────
 area = storage.create_area('COS330', 'project')

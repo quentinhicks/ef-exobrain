@@ -2969,7 +2969,41 @@ def block_segments_for(date_str, with_cancelled=False):
     add_day_blocks(date_str, 0)
     add_day_blocks((day - timedelta(days=1)).isoformat(), -1440)
     conn.close()
+    out = _under_day_blocks(out)
     out.sort(key=lambda r: r['start'])
+    return out
+
+
+# A BLOCK FOR ONE DATE TAKES ITS HOURS FROM THE WEEK (2026-10-05, Quentin's
+# instruction: the one-offs must not intersect the weeklys). A one-off is the
+# day's own statement about those hours, so a weekly block it overlaps is in
+# force only around it — trimmed here, in the one resolution, so the calendar,
+# Engage, the NOW panel and the domain in force all get the same answer. Only
+# the DAY is touched: the weekly row and its overrides are untouched, and
+# deleting the one-off gives the hours straight back. A sliver under 5 minutes
+# is dropped rather than drawn. A trimmed piece keeps its block_id (its
+# menu still acts on that weekly block for the day) and says `trimmed`.
+def _under_day_blocks(segs):
+    cuts = [(s['start'], s['end']) for s in segs if s.get('day_block_id')]
+    if not cuts:
+        return segs
+    out = []
+    for s in segs:
+        if s.get('day_block_id') or s['cancelled']:
+            out.append(s)
+            continue
+        pieces = [(s['start'], s['end'])]
+        for a, b in cuts:
+            nxt = []
+            for x, y in pieces:
+                if b <= x or a >= y:
+                    nxt.append((x, y))
+                    continue
+                nxt += [p for p in ((x, min(y, a)), (max(x, b), y)) if p[1] - p[0] >= 5]
+            pieces = nxt
+        for x, y in pieces:
+            out.append(s if (x, y) == (s['start'], s['end'])
+                       else dict(s, start=x, end=y, trimmed=True))
     return out
 
 
