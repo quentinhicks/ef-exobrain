@@ -1546,6 +1546,8 @@ def init_db():
     # AFTER the ref_list migrations above: this seed WRITES a ref_list, so it
     # must run against the finished table, not the one mid-migration.
     _seed_collect_checklist(conn)
+    # After every routine seed above: this turns what they wrote into lists.
+    _routines_to_lists(conn)
     # Habits v2 (2026-08-11). An EXPERIMENT is an object with an ending: it
     # runs (one at a time), resolves with a note, and is EVALUATED only at the
     # weekly review — extend / habit / drop. A HABIT is a standing commitment
@@ -5868,6 +5870,95 @@ def get_locations():
     rows = conn.execute('SELECT * FROM location ORDER BY name').fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── ROUTINES BECAME LISTS (2026-10-05, Quentin's instruction: "make routines
+# into normal lists and then remove code surrounding dynamic execution") ──
+#
+# The runner, pawning, the routine-as-task seeder and the routine gate are
+# gone. What a routine HELD was a list of things to do, so each one becomes a
+# ref_list of the same name: a step is an item, a `header` step opens a child
+# list (parent_id) that the following steps fall into until the next header,
+# and a checklist step names the list it pointed at. A routine that was also a
+# task becomes an ordinary weekly recurring_task, so the weekly review still
+# shows up on its Sunday; an action it had already seeded is kept and handed to
+# that task (recurring_task_id), so it is neither lost nor seeded twice.
+#
+# flow / flow_step / flow_run / flow_task_seed stay as they are, DORMANT —
+# nothing reads them any more, and the daybook still classifies them.
+#
+# ONCE, and recorded — the crm_steps_retired idiom. The lists are ordinary
+# editable rows; re-running this would grow back a list somebody deleted.
+# Never clear `routines_to_lists`.
+ROUTINE_KIND_LABELS = {
+    'metrics': 'Metrics', 'journal_night': 'Nightly journal',
+    'daily_contexts': 'Today’s contexts', 'social_spec': 'Social spec',
+    'social_dose': 'Social dose', 'study_plan': 'Plan the hours',
+    'study_hours': 'Hours worked', 'checklist': 'Checklist',
+}
+
+
+def _routines_to_lists(conn):
+    if conn.execute(
+            "SELECT value FROM setting WHERE key = 'routines_to_lists'").fetchone():
+        return
+    lists = steps = 0
+    for f in conn.execute('SELECT * FROM flow ORDER BY position, id').fetchall():
+        f = dict(f)
+        pos = conn.execute(
+            'SELECT COALESCE(MAX(position), 0) + 1 AS p FROM ref_list').fetchone()['p']
+        root = conn.execute('INSERT INTO ref_list (name, position) VALUES (?, ?)',
+                            (f['name'] or 'Routine', pos)).lastrowid
+        lists += 1
+        target, item_pos, child_pos = root, 0, 0
+        for st in conn.execute(
+                'SELECT * FROM flow_step WHERE flow_id = ? ORDER BY position, id',
+                (f['id'],)).fetchall():
+            st = dict(st)
+            kind = st.get('kind') or 'text'
+            text = (st.get('content') or '').strip()
+            if kind == 'crm_fill':
+                continue
+            if kind == 'header':
+                child_pos += 1
+                target = conn.execute(
+                    'INSERT INTO ref_list (name, position, parent_id) VALUES (?, ?, ?)',
+                    (text or 'Section', child_pos, root)).lastrowid
+                lists += 1
+                item_pos = 0
+                continue
+            text = text or ROUTINE_KIND_LABELS.get(kind) or kind
+            if st.get('ref_list_id'):
+                named = conn.execute('SELECT name FROM ref_list WHERE id = ?',
+                                     (st['ref_list_id'],)).fetchone()
+                if named:
+                    text = '%s (list: %s)' % (text, named['name'])
+            item_pos += 1
+            conn.execute(
+                'INSERT INTO ref_item (list_id, content, done, position) VALUES (?, ?, 0, ?)',
+                (target, text, item_pos))
+            steps += 1
+        if f.get('as_task'):
+            fl = filing_updates(f.get('area_id'), f.get('domain_id'))
+            task = conn.execute(
+                """INSERT INTO recurring_task (name, area_id, domain_id, kind, days_of_week,
+                                               interval, anchor_date, spawn)
+                   VALUES (?, ?, ?, 'weekly', ?, 1, ?, 'item')""",
+                (f['name'] or 'Routine', fl['area_id'], fl['domain_id'],
+                 f.get('days_of_week') or '0123456',
+                 date_cls.today().isoformat())).lastrowid
+            conn.execute(
+                """UPDATE inbox_item SET recurring_task_id = ?
+                   WHERE flow_id = ? AND recurring_task_id IS NULL""", (task, f['id']))
+    # Every seeded action keeps living as an ordinary row; only the door back
+    # to a runner that no longer exists is taken off it.
+    conn.execute('UPDATE inbox_item SET flow_id = NULL WHERE flow_id IS NOT NULL')
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('routines_to_lists', ?)",
+        (date_cls.today().isoformat(),))
+    conn.commit()
+    if lists:
+        print('routines: %d list(s), %d item(s) - routines are lists now' % (lists, steps))
 
 
 def step_due_on(step, day):
