@@ -890,25 +890,25 @@ function renderGrid() {
   grid.innerHTML = html;
 }
 
+// The day header's ‹ day › is the shared stepper (dateNavHtml, 2026-10-05),
+// so the whole row is drawn here — the bounds and the Today button are a
+// fact about the day being drawn. initTimeline listens on the row, not the
+// buttons, because the buttons are replaced every paint.
 function renderDateLabel() {
-  const el = document.getElementById('tl-date-label');
+  const host = document.getElementById('tl-nav');
+  if (!host) return;
   // The weekday is what you read; the date is what you check. Two weights, the
   // design's — and the date in mono so the digits line up as you page through.
-  if (el) {
-    const d = state.currentDate;
-    el.innerHTML = `<span class="tl-dow">${escHtml(_WEEKDAYS_LONG[d.getDay()])}</span>`
-      + `<span class="tl-dm">${d.getDate()} ${escHtml(_MONTHS_SHORT[d.getMonth()])}</span>`;
-  }
-  updateNavButtons();
-}
-
-function updateNavButtons() {
-  const diff = dayOffset(state.currentDate);
-  const prev = document.getElementById('nav-prev');
-  const next = document.getElementById('nav-next');
+  const d = state.currentDate;
+  const diff = dayOffset(d);
   const bounds = navBounds();
-  if (prev) prev.disabled = diff <= bounds.min;
-  if (next) next.disabled = diff >= bounds.max;
+  host.innerHTML = dateNavHtml({
+    prev: 'id="nav-prev"', next: 'id="nav-next"',
+    today: diff === 0 ? null : 'id="nav-today"',
+    prevDisabled: diff <= bounds.min, nextDisabled: diff >= bounds.max,
+    label: `<span id="tl-date-label"><span class="tl-dow">${escHtml(weekdayOf(d).long)}</span>`
+      + `<span class="tl-dm">${d.getDate()} ${escHtml(_MONTHS_SHORT[d.getMonth()])}</span></span>`,
+  });
 }
 
 
@@ -1922,23 +1922,19 @@ async function refreshExternal() {
 }
 
 function initTimeline() {
-  document.getElementById('nav-prev').addEventListener('click', async () => {
+  document.getElementById('tl-nav').addEventListener('click', async e => {
+    const b = e.target.closest('button');
+    if (!b || b.disabled) return;
+    if (b.id === 'nav-prev') {
+      if (dayOffset(state.currentDate) <= navBounds().min) return;
+      state.currentDate = new Date(state.currentDate.getTime() - 86400000);
+    } else if (b.id === 'nav-next') {
+      if (dayOffset(state.currentDate) >= navBounds().max) return;
+      state.currentDate = new Date(state.currentDate.getTime() + 86400000);
+    } else if (b.id === 'nav-today') {
+      state.currentDate = new Date();
+    } else return;
     state.gateSel = null;   // a selection is about ONE day
-    if (dayOffset(state.currentDate) <= navBounds().min) return;
-    state.currentDate = new Date(state.currentDate.getTime() - 86400000);
-    await fetchOverridesForDate(state.currentDate);
-    renderTimeline();
-  });
-  document.getElementById('nav-next').addEventListener('click', async () => {
-    state.gateSel = null;   // a selection is about ONE day
-    if (dayOffset(state.currentDate) >= navBounds().max) return;
-    state.currentDate = new Date(state.currentDate.getTime() + 86400000);
-    await fetchOverridesForDate(state.currentDate);
-    renderTimeline();
-  });
-  document.getElementById('nav-today').addEventListener('click', async () => {
-    state.gateSel = null;   // a selection is about ONE day
-    state.currentDate = new Date();
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   });
@@ -2409,8 +2405,6 @@ function wkLanes(boxes) {
 }
 
 const WK_SVG = {
-  prev: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>',
-  next: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
   sun: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>',
   moon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
   refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
@@ -2437,7 +2431,6 @@ function renderCalWeek() {
     ? `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()}–${last.getDate()}`
     : `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()} – ${_MONTHS_SHORT[last.getMonth()]} ${last.getDate()}`;
   const rangeLabel = `${wkClock(start)}–${wkClock(end)}`;
-  const DOW = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
   const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
   const legendBlocks = new Map();
@@ -2445,7 +2438,7 @@ function renderCalWeek() {
   const heads = dates.map((d, i) => {
     const on = d === today;
     return `<button class="wk-day${on ? ' wk-today' : ''}" data-wk="day" data-date="${d}">
-      <span class="wk-dow">${DOW[i]}</span>
+      <span class="wk-dow">${WEEKDAYS[i].name.toUpperCase()}</span>
       <span class="wk-num">${new Date(d + 'T12:00:00').getDate()}</span></button>`;
   }).join('');
 
@@ -2776,12 +2769,9 @@ const calFilter = stripMenu({
     const cals = (state.calendars || []).filter(c => c.active !== 0);
     return [
       t && { title: 'Week', html: `
-        <div class="cf-week">
-          <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
-          <span class="wk-title">${escHtml(t.title)}</span>
-          <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
-          ${t.thisWeek ? '' : '<button class="chip" data-wk="today">Today</button>'}
-        </div>
+        ${dateNavHtml({ cls: 'cf-week', unit: 'week', prev: 'data-wk="prev"', next: 'data-wk="next"',
+          today: t.thisWeek ? null : 'data-wk="today"',
+          label: `<span class="wk-title">${escHtml(t.title)}</span>` })}
         <div class="tn-menu-chips cf-tools">
           <button class="chip wk-mono${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
             title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
@@ -3675,9 +3665,8 @@ function renderInbox() {
 
 // ── Utilities ────────────────────────────────────────────────
 
-const _WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// Weekday names live in common.js's WEEKDAYS (Monday-first, with weekdayOf).
 const _MONTHS_SHORT   = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const _WEEKDAYS_LONG  = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const _MONTHS_LONG    = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 
@@ -3720,9 +3709,6 @@ function nowTimeStr() {
   return now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
 }
 
-function jsDateToDayOfWeek(date) {
-  return (date.getDay() + 6) % 7;
-}
 
 function isoToAmPm(isoStr) {
   const d = new Date(isoStr);
@@ -3751,7 +3737,7 @@ function isToday(date) {
 }
 
 function formatDateLabel(date) {
-  return `${_WEEKDAYS_SHORT[date.getDay()]} ${_MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
+  return `${weekdayOf(date).name} ${_MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
 }
 
 
@@ -3781,7 +3767,7 @@ function viewDay() {
 }
 
 function formatTodoDate(date) {
-  return `${_WEEKDAYS_LONG[date.getDay()]}, ${_MONTHS_LONG[date.getMonth()]} ${date.getDate()}`;
+  return `${weekdayOf(date).long}, ${_MONTHS_LONG[date.getMonth()]} ${date.getDate()}`;
 }
 
 function formatTime12(date) {
@@ -3821,13 +3807,7 @@ const BLOCK_COLORS = [
   '#d9a3a8', '#d9b48f', '#d8cb96', '#adc9a0', '#93cbb4',
   '#8fc6cf', '#98b9dd', '#a9a9dd', '#c3a6d8', '#d5a3c8',
 ];
-const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-// MTWRFSU — the scheduling notation, not first initials: R is Thursday and U
-// is Sunday, so all seven stay distinct at one character. Anywhere with room
-// for `DAY_NAMES` should use that instead; this is for pickers that have none.
-const DAY_LETTERS = ['M', 'T', 'W', 'R', 'F', 'S', 'U'];
-// Monday-first, matching DAY_NAMES' indices — recurrence.py's BYDAY tokens.
-const RRULE_DAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
+// Day names and the MTWRFSU letters are common.js's WEEKDAYS (2026-10-05).
 
 // Which section is open; null is the index. The sheet has its own state below.
 const settingsView = { section: null };
@@ -3952,7 +3932,6 @@ function assistantChangeText(r) {
 
 // The block tool's writes, in the same words (2026-09-30). A block deleted
 // since is named by its id, the one thing the log still knows about it.
-const AI_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 function assistantBlockText(r, body) {
   const bm = /^\/api\/blocks(?:\/(\d+)(?:\/scheduled\/(\w+))?)?$/.exec(r.path);
   const ov = /^\/api\/overrides(?:\/(\d+))?$/.exec(r.path);
@@ -3967,7 +3946,7 @@ function assistantBlockText(r, body) {
       : `set ${name} to ${body.start_time}–${body.end_time} on ${body.date}`;
   }
   if (!bm[1]) {
-    return `added "${body.label}" on ${(body.days || []).map(d => AI_DAYS[d]).join(', ')} `
+    return `added "${body.label}" on ${(body.days || []).map(weekdayName).join(', ')} `
       + `${body.start_time}–${body.end_time}`;
   }
   if (bm[2]) return `called off the scheduled ${bm[2]} change on ${name}`;
@@ -3979,9 +3958,9 @@ function assistantBlockText(r, body) {
   // A change made NOW sends the whole row, so it reads as where the block
   // went; a DATED one sends only what moves, so it names each field.
   if (!body.effective_from && body.start_time && body.end_time) {
-    return `changed ${name} to ${AI_DAYS[body.day_of_week] || ''} ${body.start_time}–${body.end_time}`;
+    return `changed ${name} to ${weekdayName(body.day_of_week) || ''} ${body.start_time}–${body.end_time}`;
   }
-  const what = fields.map(k => k === 'day_of_week' ? `day ${AI_DAYS[body[k]]}`
+  const what = fields.map(k => k === 'day_of_week' ? `day ${weekdayName(body[k])}`
     : `${k.replace(/_time$/, '').replace(/_id$/, '')} ${body[k] == null ? 'none' : body[k]}`);
   return `changed ${name}${what.length ? ` (${what.join(', ')})` : ''}${when}`;
 }
@@ -4363,9 +4342,7 @@ function seFieldHtml(f, v) {
       `<button type="button" class="se-swatch${c === val ? ' se-on' : ''}" data-color="${c}" style="background:${c}" title="${c}"></button>`
     )).join('')}</div>`;
   } else if (f.kind === 'days') {
-    control = `<div class="se-days" data-f="${f.key}">${DAY_LETTERS.map((d, i) =>
-      `<button type="button" class="chip se-day${val.includes(i) ? ' on' : ''}" data-day="${i}" title="${DAY_NAMES[i]}">${d}</button>`
-    ).join('')}</div>`;
+    control = weekdayToggles(val, { wrapAttrs: `data-f="${f.key}"` });
   } else if (f.kind === 'check') {
     control = `<button type="button" class="chip se-check${val ? ' on' : ''}" data-f="${f.key}">${
       escHtml(val ? f.on : f.off)}</button>`;
@@ -4375,7 +4352,7 @@ function seFieldHtml(f, v) {
     control = `<div class="se-weekly" data-f="${f.key}">${v.days.slice().sort().map(i => {
       const w = val[i] || { start: v.start, end: v.end, offset: v.offset };
       return `<div class="se-wk-row" data-dow="${i}">
-        <span class="se-wk-day">${DAY_NAMES[i]}</span>
+        <span class="se-wk-day">${weekdayName(i)}</span>
         <input type="time" class="se-input se-wk-start" value="${escHtml(w.start || '')}">
         <span class="se-wk-sep">–</span>
         <input type="time" class="se-input se-wk-end" value="${escHtml(w.end || '')}">
@@ -4552,7 +4529,7 @@ function wireSeSheet(fields) {
       });
     } else if (f.kind === 'days') {
       wrap.addEventListener('click', e => {
-        const btn = e.target.closest('.se-day');
+        const btn = e.target.closest('.wd-toggle');
         if (!btn) return;
         const n = parseInt(btn.dataset.day);
         const at = v[f.key].indexOf(n);
@@ -4714,7 +4691,7 @@ const BLOCK_PRIORITY_OPTIONS = [
 ];
 
 function blockChangeValue(c) {
-  if (c.field === 'day_of_week') return DAY_NAMES[parseInt(c.new_value)] || c.new_value;
+  if (c.field === 'day_of_week') return weekdayName(c.new_value) || c.new_value;
   if (c.field === 'active') return c.new_value ? 'Active' : 'Paused';
   if (c.field === 'priority') return c.new_value ? `P${c.new_value}` : 'none';
   if (c.field === 'area_id') {
@@ -5011,7 +4988,7 @@ const SETTINGS_SHEETS = {
           { key: 'nth', label: 'On the', kind: 'select', half: true,
             options: () => [1, 2, 3, 4, 5].map(n => ({ value: n, name: ordinalNth(n) })) },
           { key: 'weekday', label: 'Weekday', kind: 'select', half: true,
-            options: () => DAY_NAMES.map((d, i) => ({ value: i, name: d })) },
+            options: () => WEEKDAYS.map(w => ({ value: w.i, name: w.name })) },
         ] : []),
         { key: 'interval', label: 'Every', kind: 'number', min: 1, suffix: unit, half: true,
           hint: v.kind === 'monthly_date'
@@ -5736,8 +5713,8 @@ function formatDays(days) {
   if (sorted.length === 7) return 'Every day';
   const isConsecutive = sorted.length >= 3 &&
     sorted.every((d, i) => i === 0 || d === sorted[i - 1] + 1);
-  if (isConsecutive) return `${DAY_NAMES[sorted[0]]}–${DAY_NAMES[sorted[sorted.length - 1]]}`;
-  return sorted.map(d => DAY_NAMES[d]).join(', ');
+  if (isConsecutive) return `${weekdayName(sorted[0])}–${weekdayName(sorted[sorted.length - 1])}`;
+  return sorted.map(weekdayName).join(', ');
 }
 
 function renderBeBlocks() {
@@ -5840,10 +5817,10 @@ function recPeriodLabel(interval) {
 function recurringScheduleLabel(t) {
   const every = (n, unit) => n > 1 ? `every ${n} ${unit}s` : `every ${unit}`;
   if (t.kind === 'weekly') {
-    const days = (t.days_of_week || '').split('').map(d => DAY_NAMES[parseInt(d)]).join(', ');
+    const days = (t.days_of_week || '').split('').map(weekdayName).join(', ');
     return `${days} ${every(t.interval, 'week')}`;
   }
-  if (t.kind === 'monthly_nth') return `${ordinalNth(t.nth)} ${DAY_NAMES[t.weekday]} ${every(t.interval, 'month')}`;
+  if (t.kind === 'monthly_nth') return `${ordinalNth(t.nth)} ${weekdayName(t.weekday)} ${every(t.interval, 'month')}`;
   if (t.kind === 'monthly_date') {
     // A yearly one is a DATE — "1 February, yearly" is what it means, and
     // "day 1 every 12 months" is the same fact said in the least useful way.
@@ -7318,7 +7295,7 @@ function metricShape(m) {
 
 // '0'=Mon…'6'=Sun as letters, the same grammar the picker writes.
 function daysWord(dow) {
-  return [...dow].sort().map(d => DAY_LETTERS[parseInt(d)]).join('');
+  return [...dow].sort().map(d => (WEEKDAYS[parseInt(d)] || {}).letter || '').join('');
 }
 
 async function refreshMetricsSettings() {
@@ -7835,13 +7812,13 @@ function renderEntryWhen(sheet, spec) {
       <button class="modal-close-btn" id="en-close">✕</button>
     </div>
     <div class="enw-picked">${escHtml(picked)}</div>
-    <div class="enw-nav">
-      <button class="cl-pill" data-enw-month="-1" title="Previous month">‹</button>
-      <span class="enw-month">${escHtml(monthName)}</span>
-      <button class="cl-pill" data-enw-month="1" title="Next month">›</button>
-    </div>
+    ${dateNavHtml({ cls: 'enw-nav', unit: 'month', prev: 'data-enw-month="-1"', next: 'data-enw-month="1"',
+      label: `<span class="enw-month">${escHtml(monthName)}</span>` })}
     <div class="enw-grid">
-      ${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => `<span class="enw-dow">${d}</span>`).join('')}
+      ${/* A column header has room for the name, so it takes the name (the
+            WEEKDAYS rule) — 'T' twice and 'S' twice was the one place the
+            week lost its R and U. */''}
+      ${WEEKDAYS.map(w => `<span class="enw-dow">${w.name}</span>`).join('')}
       ${cells.map(d => `<button class="enw-day${d.slice(0, 7) !== w.month ? ' enw-out' : ''}${
         d === today ? ' enw-today' : ''}${d === w.date ? ' enw-on' : ''}" data-enw-day="${d}"
         >${Number(d.slice(8))}</button>`).join('')}
@@ -12252,8 +12229,10 @@ function extentLabel(value) {
   return /^P/.test(String(value)) ? `for ${isoHuman(value)}` : String(value);
 }
 
-const SP_DAYS = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'];
-const SP_DAY_NAMES = { mo: 'Mon', tu: 'Tue', we: 'Wed', th: 'Thu', fr: 'Fri', sa: 'Sat', su: 'Sun' };
+// A schedule source names its days as JSCalendar NDay tokens ('mo'…'su'):
+// WEEKDAYS' `nday`, read back to its row's order and name here.
+const SP_DAYS = WEEKDAYS.map(w => w.nday);
+const spDayName = d => (WEEKDAYS[SP_DAYS.indexOf(d)] || {}).name;
 const DAY_PRESETS = [
   ['mo,tu,we,th,fr', 'Mon – Fri'], ['sa,su', 'Weekends'],
   ['mo,tu,we,th,fr,sa,su', 'Every day'],
@@ -12264,7 +12243,7 @@ const pickerView = { open: false, uid: null, draft: null, error: null, dayMenu: 
 function blankRule() {
   return {
     uid: null, frequency: 'weekly', interval: 1,
-    days: [SP_DAYS[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1]],
+    days: [weekdayOf(new Date()).nday],
     monthMode: 'date', monthDay: new Date().getDate(), nth: 1, nthDay: 'mo',
     skip: 'omit', firstDayOfWeek: 'mo',
     at: '09:00', duration: 'PT1H',
@@ -12375,7 +12354,7 @@ function dayLabel(days) {
   if (preset) return preset[1];
   if (!days.length) return 'no days chosen';
   return days.slice().sort((a, b) => SP_DAYS.indexOf(a) - SP_DAYS.indexOf(b))
-    .map(d => SP_DAY_NAMES[d]).join(', ');
+    .map(spDayName).join(', ');
 }
 
 // The days control is a dropdown like every other input here, not a key grid:
@@ -12392,7 +12371,7 @@ function dayControl(idx, days) {
             DAY_PRESETS still NAMES those sets for the collapsed button. */''}
       ${SP_DAYS.map(d => `<button type="button" class="sp-menu-row${
         days.includes(d) ? ' sp-on' : ''}" data-day="${d}">
-        <span>${SP_DAY_NAMES[d]}</span>${days.includes(d) ? '<span>✓</span>' : ''}</button>`).join('')}
+        <span>${spDayName(d)}</span>${days.includes(d) ? '<span>✓</span>' : ''}</button>`).join('')}
     </div>` : ''}`;
 }
 
@@ -12425,14 +12404,14 @@ function patternRows(rule, idx, compact) {
     } else {
       rows.push(`<div class="sp-row">${label('The')}
         ${spSelect('nth', NTHS, rule.nth, ` data-idx="${idx}"`)}
-        ${spSelect('nthDay', SP_DAYS.map(d => [d, SP_DAY_NAMES[d]]), rule.nthDay, ` data-idx="${idx}"`)}
+        ${spSelect('nthDay', WEEKDAYS.map(w => [w.nday, w.name]), rule.nthDay, ` data-idx="${idx}"`)}
       </div>`);
     }
   }
   // Week start only matters above interval 1, which is the only time it shows.
   if (!compact && rule.frequency === 'weekly' && Number(rule.interval) > 1) {
     rows.push(`<div class="sp-row">${label('Week starts')}${
-      spSelect('firstDayOfWeek', SP_DAYS.map(d => [d, SP_DAY_NAMES[d]]),
+      spSelect('firstDayOfWeek', WEEKDAYS.map(w => [w.nday, w.name]),
         rule.firstDayOfWeek, ` data-idx="${idx}"`)}</div>`);
   }
   rows.push(`<div class="sp-row">${label('At')}
@@ -12617,7 +12596,7 @@ function describeDraft() {
     else if (r.frequency === 'daily' && Number(r.interval) <= 1) bits.push('Every day');
     else if (r.frequency === 'monthly' || r.frequency === 'yearly') {
       bits.push(r.monthMode === 'date' ? `the ${r.monthDay}th`
-        : `the ${(NTHS.find(([v]) => String(v) === String(r.nth)) || [])[1]} ${SP_DAY_NAMES[r.nthDay]}`);
+        : `the ${(NTHS.find(([v]) => String(v) === String(r.nth)) || [])[1]} ${spDayName(r.nthDay)}`);
     }
     bits.push(`at ${r.at}` + (r.duration ? ` for ${isoHuman(r.duration)}` : ''));
     return bits.join(' ');
@@ -12729,7 +12708,7 @@ function wirePicker() {
     if (moved) base.days = base.days.filter(x => x !== moved);
     d.rules.push({ ...blankRule(), ...base, uid: null, days: [day],
       movedDay: moved,
-      note: moved ? `${SP_DAY_NAMES[day]} was removed from rule 1.` : null });
+      note: moved ? `${spDayName(day)} was removed from rule 1.` : null });
     pickerView.wantName = true;
     rerender();
   }));
@@ -13650,17 +13629,16 @@ function renderEngage() {
   // NOW PAGE WIDE, 4b (2026-09-30): on a wide window the day (`.eg-head-day`)
   // and the chip with its agenda (`.eg-side`) stand in a column left of the
   // list. Both wrappers are `display: contents` on a phone.
+  // The arrows and Today are the shared stepper (dateNavHtml, 2026-10-05);
+  // `.eg-head-day` on its row is what the wide column lays out.
   header.innerHTML = `
-    <div class="eg-head-day">
-      <button class="eg-nav" id="eg-prev" title="Previous day">${WK_SVG.prev}</button>
-      <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
+    ${dateNavHtml({ cls: 'eg-head-day', prev: 'id="eg-prev"', next: 'id="eg-next"',
+      today: isToday ? null : 'id="eg-today"',
+      label: `<button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
         title="Open this day in calendar view">
-        <span class="eg-day-name">${viewDate.toLocaleDateString('en-US', { weekday: 'long' })}</span>
-        <span class="eg-day-date">${viewDate.getDate()} ${viewDate.toLocaleDateString('en-US', { month: 'short' })}</span>
-      </button>
-      <button class="eg-nav" id="eg-next" title="Next day">${WK_SVG.next}</button>
-      ${isToday ? '' : '<button id="eg-today" title="Back to today">today</button>'}
-    </div>
+        <span class="eg-day-name">${weekdayOf(viewDate).long}</span>
+        <span class="eg-day-date">${viewDate.getDate()} ${_MONTHS_SHORT[viewDate.getMonth()]}</span>
+      </button>` })}
     <span class="eg-spacer"></span>
   `;
 

@@ -103,7 +103,7 @@ body.gd-sheet-open { overflow: hidden; }
 .gd-body details summary { cursor: pointer; font-size: 13px; color: var(--text-primary); padding: 6px 0; }
 
 /* ── The day ── */
-.gd-daynav { display: flex; align-items: center; gap: 6px; }
+
 .gd-allday-evs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .gd-chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-secondary); }
 
@@ -200,9 +200,7 @@ body.gd-sheet-open { overflow: hidden; }
   border-top: 1px solid var(--border); }
 .gd-sheet-foot .gd-primary { margin-left: auto; }
 .gd-error { color: var(--danger); font-size: 13px; margin-top: 12px; }
-.gd-days { display: flex; gap: 4px; }
-/* A day key is the app's .chip; this is only its shape. */
-.gd-day { flex: 1; min-height: 36px; border-radius: 8px; font-size: 13px; padding: 0; }
+
 .gd-pend-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0;
   font-size: 12px; color: var(--text-primary); }
 .gd-tag { padding: 8px 0; border-top: 1px solid var(--border-soft); color: var(--text-primary); }

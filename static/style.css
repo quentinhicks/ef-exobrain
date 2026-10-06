@@ -188,6 +188,50 @@ select option {
 .chip:disabled { opacity: 0.45; cursor: default; }
 .chip-sm { font: 11px var(--font-mono); padding: 6px 10px; }
 
+/* Seven day keys in one row, always (weekdayToggles in common.js) — a
+   settings sheet's days field and a gate's schedule. MTWRFSU keeps every key
+   one character wide; each key is a .chip, this is only its shape. */
+.wd-toggles {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  flex: 1;
+}
+.wd-toggle {
+  text-align: center;
+  font-size: 13px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 7px;
+}
+
+/* ‹ a day › (dateNavHtml in common.js) — Engage's day, the calendar's day
+   and week, the entry sheet's month, the gates dashboard's day. The arrows
+   are ghost buttons (an edge on a stepper is noise, so none owes 3:1); Today
+   is a .chip in the accent, because it only shows away from the current
+   period and a planning view must never be mistaken for the real one. A
+   site's label class keeps its own type. */
+.date-nav { display: flex; align-items: center; gap: 4px; }
+.date-nav-step {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.date-nav-step:hover:not(:disabled) { background: var(--surface-2); color: var(--text-primary); }
+.date-nav-step:disabled { opacity: 0.3; cursor: default; }
+.date-nav-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.date-nav-today { flex: none; margin-left: 4px; color: var(--accent); border-color: var(--accent); }
+.date-nav-today:hover { color: var(--accent); border-color: var(--accent); background: var(--surface-2); }
+
 .seg {
   display: inline-flex;
   gap: 2px;
@@ -830,21 +874,6 @@ select option {
 .se-openpicker > span:first-child { flex: 1; }
 .se-openpicker:hover { border-color: var(--accent); }
 
-/* Seven keys, one row, always — MTWRFSU keeps every day one character wide. */
-.se-days {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 6px;
-  flex: 1;
-}
-
-/* A day key is a .chip; this is only its shape. */
-.se-day {
-  text-align: center;
-  font-size: 13px;
-  padding: 10px 0;
-  border-radius: 7px;
-}
 
 /* Swatches at row height, not a select of colour names. */
 .se-swatches { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1231,23 +1260,6 @@ select option {
   gap: 6px;
 }
 
-.tl-nav-btn {
-  min-width: 32px;
-  min-height: 34px;
-  padding: 0 4px;
-  font-size: 18px;
-  color: var(--text-secondary);
-  border: none;
-  background: none;
-  line-height: 1;
-}
-
-.tl-nav-btn:hover { color: var(--text-primary); }
-
-.tl-nav-btn:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
 
 #tl-date-label {
   flex: none;
@@ -1304,18 +1316,6 @@ select option {
 .tl-nav { flex: none; }
 #tl-date-label { flex: none; }
 
-.tl-today-btn {
-  font-size: 12px;
-  color: var(--text-secondary);
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-
-.tl-today-btn:hover {
-  background: var(--surface-2);
-  color: var(--text-primary);
-}
 
 .tl-refresh-area {
   margin-left: auto;
@@ -4043,7 +4043,7 @@ body.np-body {
 /* The in-page date picker (renderEntryWhen) — never the browser's own, which
    privacy mode's filter cannot reach. */
 .enw-picked { font-size: 15px; font-weight: 500; color: var(--text-primary); padding: 8px 14px; }
-.enw-nav { display: flex; align-items: center; gap: 8px; padding: 0 14px 6px; }
+.enw-nav { padding: 0 14px 6px; }
 .enw-month { flex: 1; text-align: center; font-size: 13px; color: var(--text-secondary); }
 .enw-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; padding: 0 14px 10px; }
 .enw-dow { text-align: center; font-size: 11px; color: var(--text-secondary); padding: 2px 0; }
@@ -4148,17 +4148,9 @@ body.np-body {
 
 .eg-day-name { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); }
 .eg-day-date { font: 11px var(--font-mono); color: var(--text-secondary); }
-/* Day nav: ghost arrows either side of the day, which is itself the way back
-   to today. Off-today gets the accent so a planning view can never be
-   mistaken for the real day. */
-.eg-nav {
-  flex: none;
-  font-size: 17px;
-  line-height: 1;
-  color: var(--text-secondary);
-  padding: 2px 4px;
-}
-.eg-nav:hover { color: var(--accent); }
+/* Day nav: the shared stepper (.date-nav) either side of the day, which is
+   itself the way to the calendar. Off-today gets the accent so a planning
+   view can never be mistaken for the real day. */
 .eg-day-btn {
   display: inline-flex;
   align-items: baseline;
@@ -4181,14 +4173,6 @@ body.np-body {
 
 .eg-day-btn .eg-day-date { white-space: nowrap; }
 .eg-day-off .eg-day-name, .eg-day-off .eg-day-date { color: var(--accent); }
-#eg-today {
-  font: 10px var(--font-mono);
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 9px;
-  padding: 1px 7px;
-  align-self: center;
-}
 
 /* Deadline chip — borrows each surface's tag/badge shape (eg-tag, .badge,
    gtd-tag), only the colour is its own: red once it's today-or-gone. */
@@ -5868,13 +5852,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border-bottom: none;
   gap: 4px;
 }
-#engage-header .eg-nav {
-  display: flex;
-  padding: 6px;
-  border-radius: 6px;
-  color: var(--text-secondary);
-}
-#engage-header .eg-nav:hover { background: var(--surface-2); color: var(--text-primary); }
 #engage-header .eg-day-btn { align-items: baseline; gap: 6px; }
 #engage-header .eg-day-name { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
 #engage-header .eg-day-date { font: 14px var(--font-mono); color: var(--text-secondary); }
@@ -7155,8 +7132,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 
 /* The calendar selector's week row (calFilter, a stripMenu). */
-.cf-week { display: flex; align-items: center; gap: 6px; }
-.cf-week .wk-icon { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; }
 .cf-week .wk-title { flex: 1; text-align: center; font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
 .cf-tools .chip { display: inline-flex; align-items: center; gap: 5px; }
 @media (min-width: 900px) { .tn-tabs { flex: 0 1 auto; } }

@@ -601,12 +601,9 @@ function renderDay() {
   }).join('');
 
   const nowMin = isToday ? (new Date().getHours() * 60 + new Date().getMinutes()) : null;
-  el.innerHTML = sectionHead('The day', `<div class="gd-daynav">
-      <button class="gd-icon" id="gd-prev" title="Previous day">‹</button>
-      <input type="date" id="gd-date" value="${date}">
-      <button class="gd-icon" id="gd-next" title="Next day">›</button>
-      ${isToday ? '' : '<button class="gd-btn gd-small" id="gd-today">Today</button>'}
-    </div>`)
+  el.innerHTML = sectionHead('The day', dateNavHtml({
+      prev: 'id="gd-prev"', next: 'id="gd-next"', today: isToday ? null : 'id="gd-today"',
+      cls: 'gd-daynav', label: `<input type="date" id="gd-date" value="${date}">` }))
     + `<div class="gd-hint">${escHtml(dayLabel(date))}${isToday ? ' (today)' : ''}. Gates on the right, your
       calendar and blocks behind them for context — the calendar is never judged. Drag a gate's top
       or bottom edge to change THIS DAY only (on a phone, hold it first). Tap a gate to see how the
@@ -889,8 +886,7 @@ function renderGates() {
 }
 
 // ── The editor: one sheet per gate, every setting it has ──────
-const WEEKDAYS = [['mo', 'M'], ['tu', 'T'], ['we', 'W'], ['th', 'T'], ['fr', 'F'], ['sa', 'S'], ['su', 'S']];
-
+// A gate's days are JSCalendar NDay tokens — common.js's WEEKDAYS `nday`.
 function openEditor(id) {
   const n = id == null ? null : G.nodes.find(x => x.id === id);
   if (id != null && !n) { toast('That gate no longer exists'); return; }
@@ -942,8 +938,7 @@ function passesWhen(v, n) {
 }
 
 function schedFields(v) {
-  return `<div class="gd-days">${WEEKDAYS.map(([d, l]) =>
-      `<button type="button" class="chip gd-day${v.days.includes(d) ? ' on' : ''}" data-day="${d}" title="${d}">${l}</button>`).join('')}</div>
+  return `${weekdayToggles(v.days, { value: w => w.nday })}
     <div class="gd-form gd-inline">
       <label>From <input type="time" data-k="from" value="${escHtml(v.from)}"></label>
       <label>To <input type="time" data-k="to" value="${escHtml(v.to)}"></label>
@@ -1252,7 +1247,7 @@ async function createWeeklySource(v, title) {
     start: `${wallDay()}T${clockHHMM(s)}:00`,
     duration: `PT${Math.floor(dur / 60)}H${dur % 60}M`,
     recurrenceRules: [{ '@type': 'RecurrenceRule', frequency: 'weekly',
-      byDay: WEEKDAYS.map(([d]) => d).filter(d => v.days.includes(d)).map(day => ({ '@type': 'NDay', day })) }],
+      byDay: WEEKDAYS.map(w => w.nday).filter(d => v.days.includes(d)).map(day => ({ '@type': 'NDay', day })) }],
   });
   if (!res.ok || !res.data.uid) return { error: refusal(res, 'The schedule was not saved') };
   return { uid: res.data.uid };

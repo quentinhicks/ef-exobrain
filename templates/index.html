@@ -91,12 +91,8 @@
     <!-- A block category lit up on the calendar (initCalBlockPin) -->
     <div id="right-panel">
       <div class="tl-header">
-        <div class="tl-nav">
-          <button class="tl-nav-btn" id="nav-prev">‹</button>
-          <span id="tl-date-label"></span>
-          <button class="tl-nav-btn" id="nav-next">›</button>
-          <button class="tl-today-btn" id="nav-today">Today</button>
-        </div>
+        <!-- ‹ day › Today — drawn by renderDateLabel (dateNavHtml) -->
+        <div class="tl-nav" id="tl-nav"></div>
         <div class="tl-refresh-area">
           <button class="tl-refresh-btn" id="tl-plan-mode" title="Draw the hours you plan to work">✎ Plan</button>
           <button class="tl-refresh-btn" id="tl-add-event">+ Event</button>

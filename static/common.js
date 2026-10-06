@@ -57,6 +57,89 @@ function wallDay() {
   return formatDateYMD(new Date());
 }
 
+// THE WEEK, ONCE (2026-10-05). Monday-first, the app's one weekday grammar:
+// `i` is '0'=Mon … '6'=Sun (what days_of_week, step_due_on and every day
+// picker store), `rrule` the BYDAY token recurrence.py reads, `nday` the
+// lowercase JSCalendar NDay a schedule source carries, `letter` the MTWRFSU
+// notation — R is Thursday and U is Sunday, so all seven stay distinct at one
+// character. Anywhere with room for `name` uses that; `letter` is for a key
+// with none. Eight tables said parts of this (DAY_NAMES, DAY_LETTERS,
+// RRULE_DAYS, AI_DAYS, SP_DAYS, SP_DAY_NAMES, a Sunday-first _WEEKDAYS_SHORT,
+// gates' WEEKDAYS), and two of them had already lost R and U.
+const WEEKDAYS = [
+  { i: 0, rrule: 'MO', nday: 'mo', name: 'Mon', long: 'Monday', letter: 'M' },
+  { i: 1, rrule: 'TU', nday: 'tu', name: 'Tue', long: 'Tuesday', letter: 'T' },
+  { i: 2, rrule: 'WE', nday: 'we', name: 'Wed', long: 'Wednesday', letter: 'W' },
+  { i: 3, rrule: 'TH', nday: 'th', name: 'Thu', long: 'Thursday', letter: 'R' },
+  { i: 4, rrule: 'FR', nday: 'fr', name: 'Fri', long: 'Friday', letter: 'F' },
+  { i: 5, rrule: 'SA', nday: 'sa', name: 'Sat', long: 'Saturday', letter: 'S' },
+  { i: 6, rrule: 'SU', nday: 'su', name: 'Sun', long: 'Sunday', letter: 'U' },
+];
+
+// A JS Date's weekday in the grammar above. getDay() is Sunday-first; nothing
+// may index WEEKDAYS with it directly.
+function jsDateToDayOfWeek(date) {
+  return (date.getDay() + 6) % 7;
+}
+
+// A Date's row of WEEKDAYS.
+function weekdayOf(date) {
+  return WEEKDAYS[jsDateToDayOfWeek(date)];
+}
+
+// The short name for a stored index ('3' or 3), or undefined for anything
+// that is not one — callers fall back to what they were given.
+function weekdayName(i) {
+  const w = WEEKDAYS[parseInt(i, 10)];
+  return w ? w.name : undefined;
+}
+
+// SEVEN DAY KEYS, ONE CONTROL (2026-10-05). A settings sheet's days field and
+// a gate's schedule each drew their own row of seven chips — and the gate's
+// said M T W T F S S. `value(w)` is what the key stands for in the caller's
+// store (the index by default, a gate's NDay token), `selected` the stored
+// values, `attr` the data attribute its handler reads (data-day by default).
+// The key is a `.chip`; `.wd-toggles` is only the row's shape.
+function weekdayToggles(selected, opts) {
+  const o = opts || {};
+  const value = o.value || (w => w.i);
+  const attr = o.attr || 'day';
+  return `<div class="wd-toggles${o.cls ? ' ' + o.cls : ''}"${o.wrapAttrs ? ' ' + o.wrapAttrs : ''}>${
+    WEEKDAYS.map(w => {
+      const v = value(w);
+      return `<button type="button" class="chip wd-toggle${selected.includes(v) ? ' on' : ''}" data-${attr}="${
+        escHtml(String(v))}" title="${w.long}">${w.letter}</button>`;
+    }).join('')}</div>`;
+}
+
+// ‹ A DAY › — ONE STEPPER (2026-10-05). Engage's day, the calendar's day, the
+// calendar's week, the entry sheet's month and the gates dashboard's day each
+// drew their own pair of arrows in four sizes and three glyphs, and two of
+// the "Today" buttons were outlined in --border (1.3:1, not a control's 3:1).
+// `prev` / `next` / `today` are the ATTRIBUTES each site's handler already
+// reads (an id, a data-*), so no handler had to learn a new name; `today`
+// absent means no Today button — every site shows it only away from the
+// current period, where it is the way back. `label` is HTML: a site's label
+// is its own (a date input, a two-weight day name). `cls` lands on the row,
+// so a page that lays the pieces out itself (Engage's wide column) still can.
+const DATE_NAV_SVG = {
+  prev: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>',
+  next: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+};
+
+function dateNavHtml(o) {
+  const unit = o.unit || 'day';
+  return `<div class="date-nav${o.cls ? ' ' + o.cls : ''}">
+    <button type="button" class="date-nav-step" ${o.prev} title="Previous ${unit}" aria-label="Previous ${unit}"${
+      o.prevDisabled ? ' disabled' : ''}>${DATE_NAV_SVG.prev}</button>
+    ${o.label}
+    <button type="button" class="date-nav-step" ${o.next} title="Next ${unit}" aria-label="Next ${unit}"${
+      o.nextDisabled ? ' disabled' : ''}>${DATE_NAV_SVG.next}</button>
+    ${o.today ? `<button type="button" class="chip chip-sm date-nav-today" ${o.today}
+      title="Back to the current ${unit}">Today</button>` : ''}
+  </div>`;
+}
+
 // ── SEMANTIC MINUTES (2026-08-17) ────────────────────────────
 //
 // THE RULE: HH:MM is a BOUNDARY FORMAT. Parse it once, through these, and

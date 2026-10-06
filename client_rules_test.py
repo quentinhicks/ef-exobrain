@@ -77,6 +77,18 @@ BANNED = [
      "setGateSkip() — a gate's day is a fact the judge has to see, not a view "
      'preference',
      None),
+    # ONE WEEK (2026-10-05). Eight weekday tables had grown — three
+    # Monday-first, one Sunday-first, two of them spelling Thursday and Sunday
+    # 'T' and 'S' so the app's MTWRFSU grammar was lost at exactly the places
+    # a day key has one letter. common.js's WEEKDAYS is the one; its rows are
+    # objects, so its own text never matches. getDay() is Sunday-first, and
+    # the one translation into the grammar is jsDateToDayOfWeek.
+    (re.compile(r"""['"](?:Sun|Mon|SUN|MON|M|MO)['"]\s*,\s*['"](?:Mon|Tue|MON|TUE|T|TU)['"]"""),
+     'WEEKDAYS (common.js) — name / long / letter / rrule / nday',
+     None),
+    (re.compile(r'\.getDay\(\)'),
+     'jsDateToDayOfWeek() / weekdayOf() — Monday-first, the app\'s grammar',
+     'function jsDateToDayOfWeek('),
 ]
 
 # ── The day a RUN's work is filed under ──────────────────────
@@ -336,6 +348,7 @@ midnight, a paused row, or a config change.""")
     print('%s use the accessors.' % ', '.join(SCANNED))
     print('  which day     wallDay / viewDay')
     print('  past midnight spanEndMin / windowEndMin / clockHHMM / DAY_MIN')
+    print('  which weekday WEEKDAYS / jsDateToDayOfWeek / weekdayOf')
     print('  a dated write %d function(s) file a dated fact, none from the clock'
           % len(dated))
     print('  money path    no gate is hidden through the view-dismissal store')
