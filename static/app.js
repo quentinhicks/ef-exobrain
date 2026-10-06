@@ -1,7 +1,7 @@
-// Minutes in a day. The one spelling of the wrap — see the semantic
-// minutes block further down for spanEndMin / windowEndMin / clockHHMM.
-// Declared HERE because `const` has no hoisting and state.view uses it.
-const DAY_MIN = 1440;
+// DAY_MIN, the minute and day helpers, the fetch envelope, toast, copy, the
+// undo stack, the theme and privacy setters all live in static/common.js
+// (2026-10-05), loaded before this file and shared with gates.js, panel.js
+// and inbox.js.
 
 // ── Theme ─────────────────────────────────────────────────────
 // The setting table is the source of truth (it lands in state.settings with
@@ -10,52 +10,14 @@ const DAY_MIN = 1440;
 // read synchronously here, before the first paint, with the fetched value
 // reconciling it afterwards. Only the MAIN window has a theme: the NOW panel
 // is its own document and is deliberately light always.
-function applyTheme(theme) {
-  const light = theme === 'light';
-  document.documentElement.classList.toggle('theme-light', light);
-  const label = document.getElementById('theme-label');
-  if (!label) return;  // called before the shell parses on the pre-paint pass
-  label.textContent = light ? 'Light' : 'Dark';
-  document.getElementById('theme-icon-sun').classList.toggle('hidden', !light);
-  document.getElementById('theme-icon-moon').classList.toggle('hidden', light);
-}
-
-applyTheme(localStorage.getItem('theme') || 'dark');
+applyTheme(storedTheme());
 
 // ── Privacy mode ──────────────────────────────────────────────
-// SOMEBODY IS STANDING BEHIND YOU (2026-09-16, Quentin's instruction). The
-// whole app washes out to a quarter of its contrast: still legible to the one
-// person leaning into it, not to a room. Ctrl+Alt+P, and the eye in Engage's
-// header.
-//
-// ONE CLASS ON <html>, the theme's idiom — and a filter on the ROOT element is
-// the one place a filter does NOT make a containing block for fixed
-// descendants, which every sheet, every overlay and the global bar depend on.
-// It is read synchronously here for the theme's reason (a washed screen that
-// paints bright first has failed at the one moment it existed for).
-//
-// sessionStorage, not localStorage: a reload must not drop the guard while the
-// person is still standing there, and a fresh launch must not come up grey
-// with nobody remembering why. Nothing is stored server-side for the same
-// reason — this is a fact about the room, not about the day.
-function privacyOn() {
-  return document.documentElement.classList.contains('priv-mode');
-}
-
-function setPrivacy(on) {
-  document.documentElement.classList.toggle('priv-mode', !!on);
-  try {
-    if (on) sessionStorage.setItem('privacy', '1');
-    else sessionStorage.removeItem('privacy');
-  } catch (e) { /* private mode: the class is still on, which is the feature */ }
-  paintPrivacyEye();
-}
-
-try {
-  if (sessionStorage.getItem('privacy') === '1') {
-    document.documentElement.classList.add('priv-mode');
-  }
-} catch (e) { /* no store, no memory — it starts off */ }
+// The class, its sessionStorage mirror and the pre-paint read are common.js's
+// (setPrivacy / privacyOn); app.py drives `setPrivacy(...)` in this window by
+// name. What is the APP's own is the eye in Engage's header, repainted on the
+// event setPrivacy fires.
+document.addEventListener('privacychange', () => paintPrivacyEye());
 
 // The eye now says PRIVACY, not the panel: struck through means hidden, which
 // is what the mode does, and the panel's own state is read in Settings where
@@ -91,7 +53,7 @@ async function togglePrivacy() {
 }
 
 function initThemeToggle() {
-  applyTheme(localStorage.getItem('theme') || 'dark');  // now that the icons exist
+  applyTheme(storedTheme());  // now that the icons exist
   document.getElementById('theme-toggle').addEventListener('click', async () => {
     const theme = document.documentElement.classList.contains('theme-light') ? 'dark' : 'light';
     applyTheme(theme);
@@ -193,6 +155,52 @@ const objectVerbProviders = new Map();
 // (they close over the day IT is showing), and a list would grow one stale
 // provider per repaint, each answering for a day that has since moved.
 function registerObjectVerbs(name, fn) { objectVerbProviders.set(name, fn); }
+
+// ── ONE SHEET LIFECYCLE (2026-10-05) ──────────────────────────
+// Eight sheets each hand-wrote the same four things: show `#x` and
+// `#x-backdrop`, hide both, wire the backdrop's tap-off, and add a rung to
+// initHub's Esc ladder. Three of them wired the backdrop INSIDE their render,
+// so every repaint stacked one more click listener on it (the entry sheet's
+// date form set `onclick` on top as well), and the schedule picker had no
+// tap-off and no rung at all — Esc went past it and closed the settings sheet
+// it was standing on. Now a sheet is DEFINED once: `defineSheet(id, {rank,
+// isOpen, close})` wires its backdrop once and puts its rung on the ladder;
+// `showSheet` / `hideSheet` are the class toggling. client_rules_test holds
+// that every `.sheet` in index.html is defined here.
+//
+// THE ESC LADDER IS ONE RANKED LIST. A rung is `peel()` → true when it took
+// the key. Sheets register theirs through defineSheet; initHub registers the
+// non-sheet rungs (read-outs, menus, overlays) on the same scale, so the whole
+// peel order reads in one place — the table above initHub. Declared here for
+// objectVerbProviders' reason: the definitions are top-level statements beside
+// their sheets, and run long before initHub.
+const SHEETS = {};
+const ESC_RUNGS = [];
+
+function escRung(rank, peel) {
+  ESC_RUNGS.push({ rank, peel });
+  ESC_RUNGS.sort((a, b) => a.rank - b.rank);   // stable: equal ranks keep their order
+}
+
+function defineSheet(id, spec) {
+  SHEETS[id] = spec;
+  document.getElementById(id + '-backdrop').addEventListener('click', () => spec.close());
+  escRung(spec.rank, () => {
+    if (!spec.isOpen()) return false;
+    spec.close();
+    return true;
+  });
+}
+
+function showSheet(id) {
+  document.getElementById(id).classList.remove('hidden');
+  document.getElementById(id + '-backdrop').classList.remove('hidden');
+}
+
+function hideSheet(id) {
+  document.getElementById(id).classList.add('hidden');
+  document.getElementById(id + '-backdrop').classList.add('hidden');
+}
 
 // THE GATES DASHBOARD IS WHERE A GATE IS CHANGED (2026-09-29, Quentin's
 // instruction). Its configuration, its day-level moves and call-offs, its
@@ -527,6 +535,71 @@ function justPointerDragged() {
   return Date.now() - lastPointerDragAt < 400;
 }
 
+// ── ONE INLINE RENAME, ONE TAP-OR-DOUBLE (2026-10-05) ─────────
+// Six places each built the same field: an input in place of the text,
+// focused and selected, a settled guard so Enter and the blur that follows
+// cannot both save, Enter commits, Esc cancels (stopped, or the same keydown
+// reaches initHub's ladder and peels the page behind the field), blur
+// commits. Now `inlineEdit(span, {value, className, onCommit, onCancel, row,
+// allowBlank})`: onCommit(v) runs when the trimmed text changed (and is not
+// blank unless allowBlank), onCancel() otherwise — each owns the repaint. A
+// row being renamed is not draggable while it is (MAP, the pool), and a
+// click inside the field belongs to the field, not to the row's tap. Returns
+// the input, so a caller can still mark it. The field lets go of focus the
+// moment it settles: the repaint guards (renderEngage's eg-renaming, the plan
+// layer's) stand down for an unfocused field, so the repaint that follows
+// lands.
+function inlineEdit(span, { value, className, onCommit, onCancel, row, allowBlank }) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = className || 's2-rename-input';
+  input.value = value;
+  if (row) row.draggable = false;
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const finish = async save => {
+    if (settled) return;
+    settled = true;
+    input.blur();
+    if (row) row.draggable = true;
+    const v = input.value.trim();
+    if (save && v !== value && (v || allowBlank)) await onCommit(v);
+    else await onCancel();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', e => e.stopPropagation());
+  return input;
+}
+
+// A click that waits out the double-click window before it acts, so a
+// double-click (a rename) is not first taken as a tap (an open) that repaints
+// the text out from under it. Five copies of this timer existed. `within`
+// narrows both gestures to part of the element; a click trailing a long
+// press or a drag is not a tap.
+const DBL_WAIT_MS = 220;
+
+function onTapOrDouble(el, tap, dbl, within) {
+  let t = null;
+  el.addEventListener('click', e => {
+    if (within && !e.target.closest(within)) return;
+    if (justLongPressed() || justPointerDragged()) return;
+    if (e.detail > 1) return;
+    clearTimeout(t);
+    t = setTimeout(() => tap(e), DBL_WAIT_MS);
+  });
+  el.addEventListener('dblclick', e => {
+    if (within && !e.target.closest(within)) return;
+    clearTimeout(t);
+    dbl(e);
+  });
+}
+
 function onLongPress(el, fn) {
   let t = null, sx = 0, sy = 0, fired = false;
   el.addEventListener('pointerdown', e => {
@@ -817,25 +890,25 @@ function renderGrid() {
   grid.innerHTML = html;
 }
 
+// The day header's ‹ day › is the shared stepper (dateNavHtml, 2026-10-05),
+// so the whole row is drawn here — the bounds and the Today button are a
+// fact about the day being drawn. initTimeline listens on the row, not the
+// buttons, because the buttons are replaced every paint.
 function renderDateLabel() {
-  const el = document.getElementById('tl-date-label');
+  const host = document.getElementById('tl-nav');
+  if (!host) return;
   // The weekday is what you read; the date is what you check. Two weights, the
   // design's — and the date in mono so the digits line up as you page through.
-  if (el) {
-    const d = state.currentDate;
-    el.innerHTML = `<span class="tl-dow">${escHtml(_WEEKDAYS_LONG[d.getDay()])}</span>`
-      + `<span class="tl-dm">${d.getDate()} ${escHtml(_MONTHS_SHORT[d.getMonth()])}</span>`;
-  }
-  updateNavButtons();
-}
-
-function updateNavButtons() {
-  const diff = dayOffset(state.currentDate);
-  const prev = document.getElementById('nav-prev');
-  const next = document.getElementById('nav-next');
+  const d = state.currentDate;
+  const diff = dayOffset(d);
   const bounds = navBounds();
-  if (prev) prev.disabled = diff <= bounds.min;
-  if (next) next.disabled = diff >= bounds.max;
+  host.innerHTML = dateNavHtml({
+    prev: 'id="nav-prev"', next: 'id="nav-next"',
+    today: diff === 0 ? null : 'id="nav-today"',
+    prevDisabled: diff <= bounds.min, nextDisabled: diff >= bounds.max,
+    label: `<span id="tl-date-label"><span class="tl-dow">${escHtml(weekdayOf(d).long)}</span>`
+      + `<span class="tl-dm">${d.getDate()} ${escHtml(_MONTHS_SHORT[d.getMonth()])}</span></span>`,
+  });
 }
 
 
@@ -1207,42 +1280,29 @@ function editPlanSpanLocation(id, el) {
   const was = span.location || '';
   const sub = el.querySelector('.tl-plan-sublabel');
   if (sub) sub.remove();
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'tl-plan-loc-input';
-  input.placeholder = 'where?';
-  input.value = was;
-  input.setAttribute('aria-label', 'Where this span happens');
-  el.appendChild(input);
-  input.focus();
-  input.select();
-
-  let done = false;
-  async function finish(save) {
-    if (done) return;
-    done = true;
-    const now = input.value.trim();
-    input.blur();
-    if (!save || now === was) { renderTimeline(); return; }
-    const res = await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: now });
-    if (!res.ok) { toast('Could not save where'); renderTimeline(); return; }
-    pushUndo(now ? `set where to "${now}"` : 'cleared where', async () => {
-      await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: was });
+  // The field takes the second line's place (a slot, since a span with no
+  // location has no line to replace). Blank CLEARS, so it is allowed.
+  const slot = document.createElement('span');
+  el.appendChild(slot);
+  const input = inlineEdit(slot, {
+    value: was,
+    className: 'tl-plan-loc-input',
+    allowBlank: true,
+    onCancel: () => renderTimeline(),
+    onCommit: async now => {
+      const res = await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: now });
+      if (!res.ok) { toast('Could not save where'); renderTimeline(); return; }
+      pushUndo(now ? `set where to "${now}"` : 'cleared where', async () => {
+        await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: was });
+        await refreshPlan(span.date);
+        renderTimeline();
+      });
       await refreshPlan(span.date);
       renderTimeline();
-    });
-    await refreshPlan(span.date);
-    renderTimeline();
-  }
-  input.addEventListener('keydown', e => {
-    // Handled HERE and stopped: Esc on the document would peel the calendar
-    // overlay out from under the box, and Enter means nothing else in it.
-    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+    },
   });
-  input.addEventListener('blur', () => finish(true));
-  // A click in the box belongs to the box, not to the span's menu door.
-  input.addEventListener('click', e => e.stopPropagation());
+  input.placeholder = 'where?';
+  input.setAttribute('aria-label', 'Where this span happens');
 }
 
 registerObjectVerbs('timeline-plan-span', (kind, id) => {
@@ -1862,23 +1922,19 @@ async function refreshExternal() {
 }
 
 function initTimeline() {
-  document.getElementById('nav-prev').addEventListener('click', async () => {
+  document.getElementById('tl-nav').addEventListener('click', async e => {
+    const b = e.target.closest('button');
+    if (!b || b.disabled) return;
+    if (b.id === 'nav-prev') {
+      if (dayOffset(state.currentDate) <= navBounds().min) return;
+      state.currentDate = new Date(state.currentDate.getTime() - 86400000);
+    } else if (b.id === 'nav-next') {
+      if (dayOffset(state.currentDate) >= navBounds().max) return;
+      state.currentDate = new Date(state.currentDate.getTime() + 86400000);
+    } else if (b.id === 'nav-today') {
+      state.currentDate = new Date();
+    } else return;
     state.gateSel = null;   // a selection is about ONE day
-    if (dayOffset(state.currentDate) <= navBounds().min) return;
-    state.currentDate = new Date(state.currentDate.getTime() - 86400000);
-    await fetchOverridesForDate(state.currentDate);
-    renderTimeline();
-  });
-  document.getElementById('nav-next').addEventListener('click', async () => {
-    state.gateSel = null;   // a selection is about ONE day
-    if (dayOffset(state.currentDate) >= navBounds().max) return;
-    state.currentDate = new Date(state.currentDate.getTime() + 86400000);
-    await fetchOverridesForDate(state.currentDate);
-    renderTimeline();
-  });
-  document.getElementById('nav-today').addEventListener('click', async () => {
-    state.gateSel = null;   // a selection is about ONE day
-    state.currentDate = new Date();
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
   });
@@ -2223,7 +2279,7 @@ async function setCalView(week) {
   calWeek.on = on;
   calWeek.pop = null;
   document.getElementById('cal-overlay').classList.toggle('cal-wk', on);
-  renderCalFilter();
+  calFilter.render();
   if (on) {
     // Both are DAY-view states, and neither has a meaning across seven days.
     state.planMode = false;
@@ -2359,8 +2415,6 @@ function wkLanes(boxes) {
 }
 
 const WK_SVG = {
-  prev: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>',
-  next: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
   sun: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>',
   moon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
   refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
@@ -2387,7 +2441,6 @@ function renderCalWeek() {
     ? `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()}–${last.getDate()}`
     : `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()} – ${_MONTHS_SHORT[last.getMonth()]} ${last.getDate()}`;
   const rangeLabel = `${wkClock(start)}–${wkClock(end)}`;
-  const DOW = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
   const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
   const legendBlocks = new Map();
@@ -2395,7 +2448,7 @@ function renderCalWeek() {
   const heads = dates.map((d, i) => {
     const on = d === today;
     return `<button class="wk-day${on ? ' wk-today' : ''}" data-wk="day" data-date="${d}">
-      <span class="wk-dow">${DOW[i]}</span>
+      <span class="wk-dow">${WEEKDAYS[i].name.toUpperCase()}</span>
       <span class="wk-num">${new Date(d + 'T12:00:00').getDate()}</span></button>`;
   }).join('');
 
@@ -2510,7 +2563,7 @@ function renderCalWeek() {
         <div class="wk-role-name"><span>${escHtml(r.label)}</span>
           <span class="wk-role-meta">${r.n}× this week · ${escHtml(when)}${focused && calWeek.focusDate
             ? ` · <a href="#" data-wk="open-gate" data-node="${r.id}" data-date="${calWeek.focusDate}">Open in Gates ›</a>` : ''}</span></div>
-        <div class="wk-seg">${[['none', 'None'], ['wake', 'Wake'], ['sleep', 'Sleep']].map(([v, l]) =>
+        <div class="seg">${[['none', 'None'], ['wake', 'Wake'], ['sleep', 'Sleep']].map(([v, l]) =>
           `<button class="${cur === v ? 'on' : ''}" data-wk="role" data-node="${r.id}" data-role="${v}">${l}</button>`).join('')}</div>
       </div>`;
     }).join('') || '<div class="wk-role-meta">No gates run this week.</div>';
@@ -2555,10 +2608,10 @@ function renderCalWeek() {
   // THE WEEK'S TOOLS LIVE IN THE CALENDAR'S SELECTOR (2026-10-01, Quentin's
   // instruction): its pill names the week, and its menu holds the arrows,
   // Today (only off this week), Day | Week, the hours, Plan and refresh,
-  // above what the calendar draws. renderCalFilter reads this.
+  // above what the calendar draws. calFilter (stripMenu) reads this.
   calWeek.tools = { title, rangeLabel, fetchFailed,
                     thisWeek: calWeek.start === weekStartOf(wallDay()) };
-  renderCalFilter();
+  calFilter.render();
 
   host.innerHTML = `
     ${rangePop}
@@ -2703,81 +2756,68 @@ function paintCalShowClasses() {
 
 const calFilterView = { open: false };
 
-function closeCalFilter() {
-  if (!calFilterView.open) return false;
-  calFilterView.open = false;
-  renderCalFilter();
-  return true;
+function calShowOff() {
+  const cals = (state.calendars || []).filter(c => c.active !== 0);
+  return ['blocks', 'gates', 'events'].filter(k => calShow[k] === false).length
+    + cals.filter(c => (calShow.cals || {})[c.id] === false).length;
 }
 
-function renderCalFilter() {
-  const pill = document.getElementById('cal-filter');
-  const menu = document.getElementById('cal-filter-menu');
-  if (!pill || !menu) return;
-  const cals = (state.calendars || []).filter(c => c.active !== 0);
-  const off = ['blocks', 'gates', 'events'].filter(k => calShow[k] === false).length
-    + cals.filter(c => (calShow.cals || {})[c.id] === false).length;
-  const t = calWeek.on && calWeek.tools;
-  const day = state.currentDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-  pill.textContent = `${t ? t.title : day}${off ? ` · ${off} off` : ''} ▾`;
-  pill.classList.toggle('map-filter-on', !!off);
-  pill.title = 'The week, its hours, and what the calendar draws';
-  paintCalShowClasses();
-  menu.classList.toggle('hidden', !calFilterView.open);
-  if (!calFilterView.open) { menu.innerHTML = ''; return; }
-  const chip = (on, attr, label) => `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" ${attr}>${escHtml(label)}</button>`;
-  menu.innerHTML = `
-    ${t ? `<div class="map-filter-sec">Week</div>
-    <div class="cf-week">
-      <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
-      <span class="wk-title">${escHtml(t.title)}</span>
-      <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
-      ${t.thisWeek ? '' : '<button class="ctx-chip" data-wk="today">Today</button>'}
-    </div>
-    <div class="map-filter-chips cf-tools">
-      <button class="ctx-chip wk-mono${calWeek.pop === 'range' ? ' ctx-req' : ''}" data-wk="range"
-        title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
-      <button class="ctx-chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
-      <button class="ctx-chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
-      ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
-    </div>` : ''}
-    <div class="map-filter-sec">View</div>
-    <div class="map-filter-chips">
-      <button class="ctx-chip ${calWeek.on ? 'ctx-off' : 'ctx-req'}" data-cal-view="day">Day</button>
-      <button class="ctx-chip ${calWeek.on ? 'ctx-req' : 'ctx-off'}" data-cal-view="week">Week</button>
-    </div>
-    <div class="map-filter-sec">Draw</div>
-    <div class="map-filter-chips">
-      ${chip(calShow.blocks !== false, 'data-calshow="blocks"', 'Blocks')}
-      ${chip(calShow.gates !== false, 'data-calshow="gates"', 'Gates')}
-      ${chip(calShow.events !== false, 'data-calshow="events"', 'Events')}
-    </div>
-    ${cals.length ? `<div class="map-filter-sec">Calendars</div>
-    <div class="map-filter-chips">${cals.map(c =>
-      chip((calShow.cals || {})[c.id] !== false, `data-calsrc="${c.id}"`, c.name || 'Calendar')).join('')}</div>` : ''}
-    ${off ? '<div class="map-filter-foot"><button class="ctx-chip" id="cal-filter-clear">⟳ show everything</button></div>' : ''}`;
-  const redraw = () => {
+const calFilter = stripMenu({
+  pill: 'cal-filter',
+  menu: 'cal-filter-menu',
+  title: 'The week, its hours, and what the calendar draws',
+  isOpen: () => calFilterView.open,
+  setOpen: on => { calFilterView.open = on; },
+  pillText: () => {
+    const t = calWeek.on && calWeek.tools;
+    const day = state.currentDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    const off = calShowOff();
+    return { text: `${t ? t.title : day}${off ? ` · ${off} off` : ''}`, narrowed: !!off };
+  },
+  sections: () => {
+    const t = calWeek.on && calWeek.tools;
+    const cals = (state.calendars || []).filter(c => c.active !== 0);
+    return [
+      t && { title: 'Week', html: `
+        ${dateNavHtml({ cls: 'cf-week', unit: 'week', prev: 'data-wk="prev"', next: 'data-wk="next"',
+          today: t.thisWeek ? null : 'data-wk="today"',
+          label: `<span class="wk-title">${escHtml(t.title)}</span>` })}
+        <div class="tn-menu-chips cf-tools">
+          <button class="chip wk-mono${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
+            title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
+          <button class="chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
+          <button class="chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
+          ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
+        </div>` },
+      calWeekAvailable() && { title: 'View', chips: pickChipsHtml([{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }],
+                                            calWeek.on ? 'week' : 'day', 'data-cal-view') },
+      { title: 'Draw', chips: ['blocks', 'gates', 'events'].map(k =>
+          toggleChipHtml(calShow[k] !== false, `data-calshow="${k}"`, k[0].toUpperCase() + k.slice(1))).join('') },
+      cals.length && { title: 'Calendars', chips: cals.map(c =>
+          toggleChipHtml((calShow.cals || {})[c.id] !== false, `data-calsrc="${c.id}"`, c.name || 'Calendar')).join('') },
+    ];
+  },
+  clear: () => { calShow = {}; },
+  // What it draws changed: the layers' classes, the day, and the week.
+  onChange: () => {
     saveCalShow();
-    renderCalFilter();
+    paintCalShowClasses();
+    calFilter.render();
     renderTimeline();
     if (calWeek.on) renderCalWeek();
-  };
-  menu.querySelectorAll('[data-calshow]').forEach(b => b.addEventListener('click', e => {
-    e.stopPropagation();
-    const k = b.dataset.calshow;
-    calShow[k] = calShow[k] === false ? true : false;
-    redraw();
-  }));
-  menu.querySelectorAll('[data-calsrc]').forEach(b => b.addEventListener('click', e => {
-    e.stopPropagation();
-    calShow.cals = calShow.cals || {};
-    const id = b.dataset.calsrc;
-    calShow.cals[id] = calShow.cals[id] === false ? true : false;
-    redraw();
-  }));
-  const clear = menu.querySelector('#cal-filter-clear');
-  if (clear) clear.addEventListener('click', e => { e.stopPropagation(); calShow = {}; redraw(); });
-}
+  },
+  wire: (menu, stay) => {
+    menu.querySelectorAll('[data-calshow]').forEach(b => stay(b, () => {
+      const k = b.dataset.calshow;
+      calShow[k] = calShow[k] === false ? true : false;
+    }));
+    menu.querySelectorAll('[data-calsrc]').forEach(b => stay(b, () => {
+      calShow.cals = calShow.cals || {};
+      const id = b.dataset.calsrc;
+      calShow.cals[id] = calShow.cals[id] === false ? true : false;
+    }));
+  },
+});
 
 function initCalWeek() {
   const host = document.getElementById('cal-week');
@@ -2785,28 +2825,17 @@ function initCalWeek() {
   const strip = document.getElementById('cal-filter-menu');
   if (!host || !overlay) return;
 
-  // The Day | Week switch, in both headers. Delegated on the overlay (and the
-  // selector's menu, where the week's copy stands), since both are rebuilt.
+  // The Day | Week switch. ONE copy, in the calendar's selector (2026-10-05):
+  // the day header drew a second (#tl-view-seg) on a wide window, where the
+  // selector already offers it — and the selector is the one place a phone
+  // reaches. Delegated, since the menu is rebuilt on every pick.
   const viewSwitch = e => {
     const v = e.target.closest('[data-cal-view]');
     if (!v) return;
     calWeek.pref = v.dataset.calView === 'week' ? 'week' : 'day';
     setCalView(calWeek.pref === 'week');
   };
-  overlay.addEventListener('click', viewSwitch);
   strip.addEventListener('click', viewSwitch);
-  document.getElementById('cal-filter').addEventListener('click', e => {
-    e.stopPropagation();
-    calFilterView.open = !calFilterView.open;
-    renderCalFilter();
-  });
-  // composedPath, not closest: a control in the menu repaints the menu, so by
-  // the time the click reaches the document its target is detached.
-  document.addEventListener('click', e => {
-    if (!calFilterView.open) return;
-    const inside = e.composedPath().some(n => n.id === 'cal-filter-menu' || n.id === 'cal-filter');
-    if (!inside) closeCalFilter();
-  });
   paintCalShowClasses();
 
   // Pressing a gate says which DAY its menu is about.
@@ -3035,21 +3064,24 @@ function preserveCaret(id, rerender) {
 // Every button that CHANGES DATA registers how to reverse itself. The rule
 // is in CLAUDE.md: a new mutating handler ships with its inverse or it isn't
 // finished. Inverses are closures, so they capture the exact prior value
-// rather than guessing it later.
-const undoStack = [];
-const UNDO_MAX = 30;
+// rather than guessing it later. The stack itself is common.js's
+// makeUndoStack, shared with the gates dashboard; these three names are the
+// app's API over it.
+const undoStack = makeUndoStack(() => paintUndo());
 
 function pushUndo(label, inverse) {
-  undoStack.push({ label, inverse });
-  if (undoStack.length > UNDO_MAX) undoStack.shift();
-  paintUndo();
+  undoStack.push(label, inverse);
+}
+
+async function runUndo() {
+  await undoStack.run();
 }
 
 function paintUndo() {
   // ↩ lives in the top strip, which is visible from every page — greyed,
   // not hidden, while there is nothing to undo, so the strip never shifts.
   const eg = document.getElementById('eg-undo');
-  if (eg) eg.disabled = !undoStack.length;
+  if (eg) eg.disabled = !undoStack.size;
 }
 
 // ── Capture (one implementation, two entry points) ────────────
@@ -3198,63 +3230,8 @@ function renderBar() {
 }
 
 
-// ── The two shapes every call in this file already had ───────
-//
-// One JSON envelope, written once instead of at 134 call sites. They are
-// deliberately TWO functions, not one, because the file has two different
-// contracts and collapsing them would break one:
-//
-// apiGet SWALLOWS and falls back. That is the rule loadAll is built on — a
-// fetch never blanks the surface it feeds, so a dead endpoint yields the
-// CURRENT value, not []. Promise.all rejects as a unit, and one dead endpoint
-// used to blank the whole day.
-//
-// apiSend returns the RESPONSE, not the parsed body: 39 call sites read res.ok
-// or res.status to decide what to say, and a helper that hid the response
-// would send every one of them back to a raw fetch. Body omitted = no
-// Content-Type header, which is what a bare DELETE always sent.
-function apiGet(path, fallback) {
-  // Written out, not via a helper: this IS the helper. (The sweep that created
-  // the call sites rewrote this body into a call to itself — a good reminder
-  // that a mechanical transform will happily eat its own definition — twice, as
-  // it turned out: once on the sweep, once on the re-sweep after a merge.)
-  return fetch(path).then(r => r.json()).catch(() => fallback);
-}
-
-function apiSend(path, method, body) {
-  return fetch(path, body === undefined ? { method } : {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-let toastTimer = null;
-
-function toast(msg) {
-  let el = document.getElementById('app-toast');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'app-toast';
-    document.body.appendChild(el);
-  }
-  el.textContent = msg;
-  el.classList.add('toast-on');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('toast-on'), 2600);
-}
-
-async function runUndo() {
-  const entry = undoStack.pop();
-  paintUndo();
-  if (!entry) { toast('Nothing to undo'); return; }
-  try {
-    await entry.inverse();
-    toast('Undone: ' + entry.label);
-  } catch (e) {
-    toast("Couldn't undo " + entry.label);
-  }
-}
+// (apiGet / apiSend — the two shapes every call in this file has — and toast
+// are in common.js.)
 
 // Repaint whatever surfaces are open after an undo, without caring which one
 // the original action came from.
@@ -3698,18 +3675,10 @@ function renderInbox() {
 
 // ── Utilities ────────────────────────────────────────────────
 
-const _WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// Weekday names live in common.js's WEEKDAYS (Monday-first, with weekdayOf).
 const _MONTHS_SHORT   = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const _WEEKDAYS_LONG  = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const _MONTHS_LONG    = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-function escHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 // Tiny markdown for project notes (support material is written in prose, so
 // plain <pre> text wasted it). Escape FIRST, then decorate — the input is
@@ -3750,9 +3719,6 @@ function nowTimeStr() {
   return now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
 }
 
-function jsDateToDayOfWeek(date) {
-  return (date.getDay() + 6) % 7;
-}
 
 function isoToAmPm(isoStr) {
   const d = new Date(isoStr);
@@ -3781,12 +3747,9 @@ function isToday(date) {
 }
 
 function formatDateLabel(date) {
-  return `${_WEEKDAYS_SHORT[date.getDay()]} ${_MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
+  return `${weekdayOf(date).name} ${_MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
 }
 
-function formatDateYMD(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
 
 // ── WHICH DAY (2026-08-17) ───────────────────────────────────
 //
@@ -3808,16 +3771,13 @@ function formatDateYMD(date) {
 //
 // The rule: a write picks the day deliberately. If a new write reaches for
 // wallDay(), that has to be because the fact really is about the clock.
-function wallDay() {
-  return formatDateYMD(new Date());
-}
-
+// (wallDay and formatDateYMD are common.js's: every document asks it.)
 function viewDay() {
   return formatDateYMD(state.currentDate);
 }
 
 function formatTodoDate(date) {
-  return `${_WEEKDAYS_LONG[date.getDay()]}, ${_MONTHS_LONG[date.getMonth()]} ${date.getDate()}`;
+  return `${weekdayOf(date).long}, ${_MONTHS_LONG[date.getMonth()]} ${date.getDate()}`;
 }
 
 function formatTime12(date) {
@@ -3857,13 +3817,7 @@ const BLOCK_COLORS = [
   '#d9a3a8', '#d9b48f', '#d8cb96', '#adc9a0', '#93cbb4',
   '#8fc6cf', '#98b9dd', '#a9a9dd', '#c3a6d8', '#d5a3c8',
 ];
-const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-// MTWRFSU — the scheduling notation, not first initials: R is Thursday and U
-// is Sunday, so all seven stay distinct at one character. Anywhere with room
-// for `DAY_NAMES` should use that instead; this is for pickers that have none.
-const DAY_LETTERS = ['M', 'T', 'W', 'R', 'F', 'S', 'U'];
-// Monday-first, matching DAY_NAMES' indices — recurrence.py's BYDAY tokens.
-const RRULE_DAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
+// Day names and the MTWRFSU letters are common.js's WEEKDAYS (2026-10-05).
 
 // Which section is open; null is the index. The sheet has its own state below.
 const settingsView = { section: null };
@@ -3988,7 +3942,6 @@ function assistantChangeText(r) {
 
 // The block tool's writes, in the same words (2026-09-30). A block deleted
 // since is named by its id, the one thing the log still knows about it.
-const AI_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 function assistantBlockText(r, body) {
   const bm = /^\/api\/blocks(?:\/(\d+)(?:\/scheduled\/(\w+))?)?$/.exec(r.path);
   const ov = /^\/api\/overrides(?:\/(\d+))?$/.exec(r.path);
@@ -4003,7 +3956,7 @@ function assistantBlockText(r, body) {
       : `set ${name} to ${body.start_time}–${body.end_time} on ${body.date}`;
   }
   if (!bm[1]) {
-    return `added "${body.label}" on ${(body.days || []).map(d => AI_DAYS[d]).join(', ')} `
+    return `added "${body.label}" on ${(body.days || []).map(weekdayName).join(', ')} `
       + `${body.start_time}–${body.end_time}`;
   }
   if (bm[2]) return `called off the scheduled ${bm[2]} change on ${name}`;
@@ -4015,9 +3968,9 @@ function assistantBlockText(r, body) {
   // A change made NOW sends the whole row, so it reads as where the block
   // went; a DATED one sends only what moves, so it names each field.
   if (!body.effective_from && body.start_time && body.end_time) {
-    return `changed ${name} to ${AI_DAYS[body.day_of_week] || ''} ${body.start_time}–${body.end_time}`;
+    return `changed ${name} to ${weekdayName(body.day_of_week) || ''} ${body.start_time}–${body.end_time}`;
   }
-  const what = fields.map(k => k === 'day_of_week' ? `day ${AI_DAYS[body[k]]}`
+  const what = fields.map(k => k === 'day_of_week' ? `day ${weekdayName(body[k])}`
     : `${k.replace(/_time$/, '').replace(/_id$/, '')} ${body[k] == null ? 'none' : body[k]}`);
   return `changed ${name}${what.length ? ` (${what.join(', ')})` : ''}${when}`;
 }
@@ -4026,9 +3979,9 @@ function renderAssistantChanges() {
   const el = document.getElementById('be-assistant');
   if (!el) return;
   const rows = assistantView.rows;
-  if (rows == null) { el.innerHTML = '<div class="be-empty">Loading…</div>'; return; }
+  if (rows == null) { el.innerHTML = emptyHtml('Loading…'); return; }
   if (!rows.length) {
-    el.innerHTML = '<div class="be-empty">Nothing yet. When an assistant changes a gate deadline'
+    el.innerHTML = '<div class="empty">Nothing yet. When an assistant changes a gate deadline'
       + ' or a block through the Claude Code tools, it is listed here with its reason.</div>';
     return;
   }
@@ -4127,51 +4080,8 @@ async function saveDownload(name, text, type) {
   return null;
 }
 
-// COPY THAT WORKS OFF LOCALHOST. navigator.clipboard is gated on a SECURE
-// CONTEXT, so it is undefined over http://<tailnet-name>:5000 — which is every
-// Windows and Mac client running in PT_SERVER mode. The old code was
-// `navigator.clipboard?.writeText(...)` followed unconditionally by a success
-// toast, so on those machines nothing was copied and the app said it had been.
-// A lying confirmation is worse than a visible failure.
-//
-// The execCommand fallback is the same idiom the markdown editors already rely
-// on. It needs a real selection in the document, so the textarea is attached,
-// selected, copied and removed. Returns whether it actually worked, and every
-// caller must respect that rather than assume.
-async function copyText(text) {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch (e) { /* fall through — a rejected permission is not a reason to give up */ }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    // Off-screen but NOT display:none: an unrendered field cannot be selected.
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.top = '-1000px';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    ta.setSelectionRange(0, text.length);
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return !!ok;
-  } catch (e) {
-    return false;
-  }
-}
-
-// One place decides what a copy SAYS, so a failure can never be reported as a
-// success. On failure the text is shown, because a link you can select by hand
-// beats a button that quietly does nothing.
-async function copyAndSay(text, label) {
-  if (await copyText(text)) { toast(`${label} copied`); return true; }
-  toast(`Could not copy — ${text}`);
-  return false;
-}
+// (copyText — with the execCommand fallback that works off localhost — and
+// copyAndSay are common.js's, shared with the gates dashboard's key sheet.)
 
 // ── Connections (config.json) ────────────────────────────────
 //
@@ -4320,8 +4230,7 @@ function openSeSheet(kind, item, returnTo, seed) {
   // Folded on open: the steps are for the one evening you program a tag, not
   // for every visit to the gate that uses it.
   seSheet.infoOpen = {};
-  document.getElementById('se-sheet').classList.remove('hidden');
-  document.getElementById('se-sheet-backdrop').classList.remove('hidden');
+  showSheet('se-sheet');
   // The LAYER is the sheet, not the instance: a sheet handing over to another
   // sheet (a gate's routine, a gate's tag) is still one thing raised over the
   // index, so it must not stack a second time and need closing twice.
@@ -4350,10 +4259,15 @@ function closeSeSheet() {
   seSheet.item = null;
   seSheet.values = null;
   seSheet.returnTo = null;
-  document.getElementById('se-sheet').classList.add('hidden');
-  document.getElementById('se-sheet-backdrop').classList.add('hidden');
+  hideSheet('se-sheet');
   closeOver('se-sheet');
 }
+
+// A SETTINGS SHEET IS ALWAYS INNERMOST among what opens it. It is z-200
+// against the read-out's 190, and a gate's sheet opens FROM the read-out, so
+// checking the popup first would close the surface the open sheet is standing
+// on. Settings peels the way it navigates (11a): sheet, section, panel.
+defineSheet('se-sheet', { rank: 10, isOpen: () => !!seSheet.kind, close: closeSeSheet });
 
 function seFieldHtml(f, v) {
   // A DISCLOSURE, not a tooltip: there is no hover on a phone, so the ⓘ is a
@@ -4438,11 +4352,9 @@ function seFieldHtml(f, v) {
       `<button type="button" class="se-swatch${c === val ? ' se-on' : ''}" data-color="${c}" style="background:${c}" title="${c}"></button>`
     )).join('')}</div>`;
   } else if (f.kind === 'days') {
-    control = `<div class="se-days" data-f="${f.key}">${DAY_LETTERS.map((d, i) =>
-      `<button type="button" class="se-day${val.includes(i) ? ' se-on' : ''}" data-day="${i}" title="${DAY_NAMES[i]}">${d}</button>`
-    ).join('')}</div>`;
+    control = weekdayToggles(val, { wrapAttrs: `data-f="${f.key}"` });
   } else if (f.kind === 'check') {
-    control = `<button type="button" class="se-check${val ? ' se-on' : ''}" data-f="${f.key}">${
+    control = `<button type="button" class="chip se-check${val ? ' on' : ''}" data-f="${f.key}">${
       escHtml(val ? f.on : f.off)}</button>`;
   } else if (f.kind === 'weekly') {
     // A gate's per-day windows: only the days the gate runs on get a row, and
@@ -4450,11 +4362,11 @@ function seFieldHtml(f, v) {
     control = `<div class="se-weekly" data-f="${f.key}">${v.days.slice().sort().map(i => {
       const w = val[i] || { start: v.start, end: v.end, offset: v.offset };
       return `<div class="se-wk-row" data-dow="${i}">
-        <span class="se-wk-day">${DAY_NAMES[i]}</span>
+        <span class="se-wk-day">${weekdayName(i)}</span>
         <input type="time" class="se-input se-wk-start" value="${escHtml(w.start || '')}">
         <span class="se-wk-sep">–</span>
         <input type="time" class="se-input se-wk-end" value="${escHtml(w.end || '')}">
-        <button type="button" class="se-wk-off${w.offset ? ' se-on' : ''}">+1d</button>
+        <button type="button" class="chip chip-sm se-wk-off${w.offset ? ' on' : ''}">+1d</button>
       </div>`;
     }).join('')}</div>`;
   } else if (f.kind === 'textarea') {
@@ -4627,7 +4539,7 @@ function wireSeSheet(fields) {
       });
     } else if (f.kind === 'days') {
       wrap.addEventListener('click', e => {
-        const btn = e.target.closest('.se-day');
+        const btn = e.target.closest('.wd-toggle');
         if (!btn) return;
         const n = parseInt(btn.dataset.day);
         const at = v[f.key].indexOf(n);
@@ -4636,12 +4548,12 @@ function wireSeSheet(fields) {
         // A re-render is what makes the dependent fields (a gate's per-day
         // windows) follow the day keys; without one, repaint just this key.
         if (f.rerender) renderSeSheet();
-        else btn.classList.toggle('se-on', at === -1);
+        else btn.classList.toggle('on', at === -1);
       });
     } else if (f.kind === 'check') {
       wrap.addEventListener('click', () => {
         v[f.key] = !v[f.key];
-        wrap.classList.toggle('se-on', v[f.key]);
+        wrap.classList.toggle('on', v[f.key]);
         wrap.textContent = v[f.key] ? f.on : f.off;
         if (f.rerender) renderSeSheet();
       });
@@ -4651,12 +4563,12 @@ function wireSeSheet(fields) {
         const read = () => ({
           start: row.querySelector('.se-wk-start').value,
           end: row.querySelector('.se-wk-end').value,
-          offset: row.querySelector('.se-wk-off').classList.contains('se-on') ? 1 : 0,
+          offset: row.querySelector('.se-wk-off').classList.contains('on') ? 1 : 0,
         });
         row.querySelectorAll('input').forEach(inp =>
           inp.addEventListener('change', () => { v[f.key][dow] = read(); }));
         row.querySelector('.se-wk-off').addEventListener('click', e => {
-          e.currentTarget.classList.toggle('se-on');
+          e.currentTarget.classList.toggle('on');
           v[f.key][dow] = read();
         });
       });
@@ -4789,7 +4701,7 @@ const BLOCK_PRIORITY_OPTIONS = [
 ];
 
 function blockChangeValue(c) {
-  if (c.field === 'day_of_week') return DAY_NAMES[parseInt(c.new_value)] || c.new_value;
+  if (c.field === 'day_of_week') return weekdayName(c.new_value) || c.new_value;
   if (c.field === 'active') return c.new_value ? 'Active' : 'Paused';
   if (c.field === 'priority') return c.new_value ? `P${c.new_value}` : 'none';
   if (c.field === 'area_id') {
@@ -5086,7 +4998,7 @@ const SETTINGS_SHEETS = {
           { key: 'nth', label: 'On the', kind: 'select', half: true,
             options: () => [1, 2, 3, 4, 5].map(n => ({ value: n, name: ordinalNth(n) })) },
           { key: 'weekday', label: 'Weekday', kind: 'select', half: true,
-            options: () => DAY_NAMES.map((d, i) => ({ value: i, name: d })) },
+            options: () => WEEKDAYS.map(w => ({ value: w.i, name: w.name })) },
         ] : []),
         { key: 'interval', label: 'Every', kind: 'number', min: 1, suffix: unit, half: true,
           hint: v.kind === 'monthly_date'
@@ -5546,7 +5458,7 @@ function beRow(opts) {
       ${opts.meta ? `<span class="be-row-meta">${escHtml(opts.meta)}</span>` : ''}
       ${opts.sub ? `<span class="be-row-sub${opts.subClass ? ' ' + opts.subClass : ''}">${escHtml(opts.sub)}</span>` : ''}
     </span>
-    ${opts.badge ? `<span class="be-row-badge">${escHtml(opts.badge)}</span>` : ''}
+    ${opts.badge ? `<span class="badge">${escHtml(opts.badge)}</span>` : ''}
     <span class="be-chev">›</span>
   </button>`;
 }
@@ -5582,7 +5494,7 @@ function initBlockEditor() {
   document.getElementById('be-back').addEventListener('click', backToSettingsIndex);
   // No click-outside-to-close: Settings is a column beside the page, and the
   // page stays usable while it is up. The gear, ✕ and Esc are the ways out.
-  document.getElementById('se-sheet-backdrop').addEventListener('click', closeSeSheet);
+
 
   // The block calendar, built by the server from the same resolved days the
   // timeline draws, saved on THIS device through the one download door.
@@ -5739,7 +5651,7 @@ function renderBeOccasions(occs) {
       meta: `“${o.match_text}” · ${plural((o.items || []).length, 'action')}`,
       badge: o.active ? '' : 'paused',
     })).join('')}
-    ${state.occasions.length ? '' : '<div class="be-empty">No occasions yet. '
+    ${state.occasions.length ? '' : '<div class="empty">No occasions yet. '
       + 'Add one here, or tap an event on the day.</div>'}
     ${beAddRow('Add occasion')}`;
   // Not wireBeList: that opens the shared se-sheet, and an occasion's editor is
@@ -5811,8 +5723,8 @@ function formatDays(days) {
   if (sorted.length === 7) return 'Every day';
   const isConsecutive = sorted.length >= 3 &&
     sorted.every((d, i) => i === 0 || d === sorted[i - 1] + 1);
-  if (isConsecutive) return `${DAY_NAMES[sorted[0]]}–${DAY_NAMES[sorted[sorted.length - 1]]}`;
-  return sorted.map(d => DAY_NAMES[d]).join(', ');
+  if (isConsecutive) return `${weekdayName(sorted[0])}–${weekdayName(sorted[sorted.length - 1])}`;
+  return sorted.map(weekdayName).join(', ');
 }
 
 function renderBeBlocks() {
@@ -5915,10 +5827,10 @@ function recPeriodLabel(interval) {
 function recurringScheduleLabel(t) {
   const every = (n, unit) => n > 1 ? `every ${n} ${unit}s` : `every ${unit}`;
   if (t.kind === 'weekly') {
-    const days = (t.days_of_week || '').split('').map(d => DAY_NAMES[parseInt(d)]).join(', ');
+    const days = (t.days_of_week || '').split('').map(weekdayName).join(', ');
     return `${days} ${every(t.interval, 'week')}`;
   }
-  if (t.kind === 'monthly_nth') return `${ordinalNth(t.nth)} ${DAY_NAMES[t.weekday]} ${every(t.interval, 'month')}`;
+  if (t.kind === 'monthly_nth') return `${ordinalNth(t.nth)} ${weekdayName(t.weekday)} ${every(t.interval, 'month')}`;
   if (t.kind === 'monthly_date') {
     // A yearly one is a DATE — "1 February, yearly" is what it means, and
     // "day 1 every 12 months" is the same fact said in the least useful way.
@@ -6492,56 +6404,45 @@ function initHub() {
   document.querySelectorAll('.m-close').forEach(btn => {
     btn.addEventListener('click', () => closeM(btn.dataset.close));
   });
-  document.addEventListener('keydown', e => {
-    if (e.key !== 'Escape') return;
-    // The clarify sheet is the innermost layer wherever it was opened from —
-    // initEngage's handler peels it. This listener is registered first, so
-    // without this bail it would close the overlay out from under it.
-    if (clarifyView.open) return;
-    flushOpenNotes();
-    // A SETTINGS SHEET IS ALWAYS INNERMOST. It is z-200 against the read-out's
-    // 190, and now that a gate's sheet opens FROM the read-out (see
-    // openSeSheetOver), checking the popup first would close the surface the
-    // open sheet is standing on. Settings peels the way it navigates (11a):
-    // sheet, then section, then the panel itself.
-    if (seSheet.kind) { closeSeSheet(); return; }
-    // The gate read-out is the next layer in (a popup beside its pill, over
-    // the calendar), so it peels before anything under it.
-    if (gatePop.nodeId != null) { closeGatePop(); return; }
-    // The event read-out shares the gate read-out's layer, so it peels on the
-    // same rung — before the occasion sheet it can open, which sits above.
-    if (eventPop.key != null) { closeEventPop(); return; }
-    // A menu is always the innermost thing on screen and closing it is free,
-    // so it peels before anything else Esc could reach.
-    if (objMenu.open) { closeObjectMenu(); return; }
-    // A selected gate is transient state over the calendar — it peels after the
-    // read-out it opens and before the overlay it is drawn on.
-    if (clearGateSel()) return;
-    // The week's legend and range panel are transient over the calendar too.
-    if (closeCalWeekPops()) return;
-    // So is a category lit up on it.
-    if (clearCalPin()) return;
-    // (MAP's rows open the clarify sheet, and the bail above lets the sheet
-    // peel first; its filter menu peels just above, before the overlay loop.
-    // The settings sheet itself peels at the TOP of this ladder.)
-    // MAP's filter menu is a transient layer again (23a) — it peels before the
-    // MAP overlay in the loop below, the way every sheet peels before what
-    // opened it.
-    if (closeMapFilter()) return;
-    // A photo fills the screen over the logs overlay, so it peels first — before
-    // that overlay's own filter menu, the way every raised layer does.
-    if (logsView.photo != null) { closeLogPhoto(); return; }
-    if (closeLogsFilter()) return;
-    if (closeCalFilter()) return;
-    // The occasion sheet peels before whatever it was opened from — and that is
-    // Settings as often as it is the day, so it has to sit ABOVE the overlay
-    // loop below or Esc would close Settings out from under an open sheet.
-    if (occasionView.open) { closeOccasionSheet(); return; }
-    // Legacy modal overlays first (they sit above the m-overlays), innermost
-    // wins; the person-detail/bucket/add trio stack over People.
-    // Innermost first, and the order here IS the z-order: Settings (155) sits
-    // above map/logs (150) and the .m-overlay band (140) because it opens over
-    // whatever you already had up, so it peels before them.
+  // THE PEEL ORDER, innermost first. Sheets put their own rungs on this
+  // scale through defineSheet (their ranks are beside them); these are the
+  // rest. A rung returns true when it took the key.
+  //   -10 schedule picker   0 clarify   5 flush notes (never takes the key)
+  //    10 settings sheet   20–29 read-outs, menus, transient calendar state
+  //    30 occasion sheet   40 legacy overlays   50–53 ctx / event / entry /
+  //    ending sheets       60 dangerous writing   70–71 Social, Lists
+  //    80 the .m-overlay band   90 Engage's routine card
+  escRung(5, () => { flushOpenNotes(); return false; });
+  // The gate read-out is the next layer in (a popup beside its pill, over
+  // the calendar), so it peels before anything under it.
+  escRung(20, () => { if (gatePop.nodeId == null) return false; closeGatePop(); return true; });
+  // The event read-out shares the gate read-out's layer, so it peels on the
+  // same rung — before the occasion sheet it can open, which sits above.
+  escRung(21, () => { if (eventPop.key == null) return false; closeEventPop(); return true; });
+  // A menu is always the innermost thing on screen and closing it is free,
+  // so it peels before anything else Esc could reach.
+  escRung(22, () => { if (!objMenu.open) return false; closeObjectMenu(); return true; });
+  // A selected gate is transient state over the calendar — it peels after the
+  // read-out it opens and before the overlay it is drawn on.
+  escRung(23, () => clearGateSel());
+  // The week's legend and range panel are transient over the calendar too.
+  escRung(24, () => closeCalWeekPops());
+  // So is a category lit up on it.
+  escRung(25, () => clearCalPin());
+  // MAP's filter menu is a transient layer again (23a) — it peels before the
+  // MAP overlay in the loop below, the way every sheet peels before what
+  // opened it.
+  escRung(26, () => mapFilter.close());
+  // A photo fills the screen over the logs overlay, so it peels first — before
+  // that overlay's own filter menu, the way every raised layer does.
+  escRung(27, () => { if (logsView.photo == null) return false; closeLogPhoto(); return true; });
+  escRung(28, () => logsFilter.close());
+  escRung(29, () => calFilter.close());
+  // Legacy modal overlays (they sit above the m-overlays), innermost wins; the
+  // person-detail/bucket/add trio stack over People. The order here IS the
+  // z-order: Settings (155) sits above map/logs (150) and the .m-overlay band
+  // (140) because it opens over whatever you already had up.
+  escRung(40, () => {
     for (const id of ['person-add-overlay', 'bucket-mgr-overlay', 'person-detail-overlay',
                       'modal-overlay', 'map-overlay', 'logs-overlay']) {
       const el = document.getElementById(id);
@@ -6553,41 +6454,43 @@ function initHub() {
         else if (id === 'modal-overlay' && settingsView.section) backToSettingsIndex();
         else if (id === 'modal-overlay') closeBlockEditor();
         else el.classList.add('hidden');
-        return;
+        return true;
       }
     }
-    if (ctxSheet.tag) { closeCtxSheet(); return; }
-    // The new-event sheet peels before the Calendar overlay it opened from
-    // (the focused-input case stopPropagates and never reaches here).
-    if (evSheet.open) { closeEvSheet(); return; }
-    // The entry sheet likewise peels before whatever surface opened it.
-    if (entrySheet.open) { closeEntrySheet(); return; }
-    // The ending sheet, the same way — it peels before Tracking under it.
-    if (endSheet.open) { closeEndSheet(); return; }
-    // A dangerous-writing session swallows Esc entirely — its own keydown
-    // handler treats Esc as the abort, and nothing underneath may act on it.
-    if (dwView.open) return;
-    // Social peels an open spec/log form before ANYTHING that closes the
-    // surface under it. (The focused-input case stopPropagates and never
-    // reaches here.)
+    return false;
+  });
+  // A dangerous-writing session swallows Esc entirely — its own keydown
+  // handler treats Esc as the abort, and nothing underneath may act on it.
+  escRung(60, () => dwView.open);
+  // Social peels an open spec/log form before ANYTHING that closes the
+  // surface under it. (The focused-input case stopPropagates and never
+  // reaches here.)
+  escRung(70, () => {
     const soEl = document.getElementById('tab-social');
-    if (soEl && !soEl.classList.contains('hidden') && socialView.form) {
-      socialView.form = null;
-      renderSocial();
-      return;
-    }
-    // Lists peels an open list back one LEVEL first — a nested list goes to
-    // its parent, everything else to the index.
+    if (!soEl || soEl.classList.contains('hidden') || !socialView.form) return false;
+    socialView.form = null;
+    renderSocial();
+    return true;
+  });
+  // Lists peels an open list back one LEVEL first — a nested list goes to
+  // its parent, everything else to the index.
+  escRung(71, () => {
     const refEl = document.getElementById('tab-lists');
-    if (refEl && !refEl.classList.contains('hidden')
-        && refView.open != null) {
-      const openList = refView.lists.find(l => l.id === refView.open);
-      refView.open = (openList && openList.parent_id) || null;
-      renderRef();
-      return;
-    }
+    if (!refEl || refEl.classList.contains('hidden') || refView.open == null) return false;
+    const openList = refView.lists.find(l => l.id === refView.open);
+    refView.open = (openList && openList.parent_id) || null;
+    renderRef();
+    return true;
+  });
+  escRung(80, () => {
     const open = [...document.querySelectorAll('.m-overlay:not(.hidden)')].pop();
-    if (open) closeM(open.id);
+    if (!open) return false;
+    closeM(open.id);
+    return true;
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    for (const rung of ESC_RUNGS) if (rung.peel()) return;
   });
 }
 
@@ -6640,6 +6543,97 @@ function initTopNav() {
   paintTopNav();
 }
 
+// ── THE STRIP'S MENUS: ONE COMPONENT (2026-10-05) ─────────────
+// Projects, Log and Calendar each wrote their selector out in full: the pill's
+// text and ▾ and narrowed state, the menu shown or emptied, section titles over
+// chip rows, the same ∧-required tag chips, the same Order pair, the same
+// "show everything" foot, a close() for the Esc ladder, and a document tap-off.
+// Two of the tap-offs asked `closest()` of the click's target, which a chip's
+// own repaint had already detached — so they leaned on every chip remembering
+// to stopPropagation, and Projects' menu was placed by a stale
+// `#map-filter-menu` rule that outranked `.tn-menu`. One component now: the
+// pill and the document are wired ONCE here, and the tap-off reads
+// composedPath(), which still holds a node that has since been replaced.
+//
+// spec: pill / menu (ids), title, isOpen(), setOpen(on), pillText() →
+// {text, narrowed}, sections() → [{title, chips | html}] (falsy skipped),
+// foot() → html, clear() (offered as "show everything" while narrowed),
+// onChange() after a pick, wire(menu, stay) for the surface's own controls.
+// `stay(el, fn)` runs fn then onChange; the menu stays open across picks.
+function stripMenu(spec) {
+  const pill = document.getElementById(spec.pill);
+  const menu = document.getElementById(spec.menu);
+  // stopPropagation still, though the tap-off no longer needs it: a menu sits
+  // inside a page whose own click handlers have no business with its chips.
+  const stay = (el, fn) => el.addEventListener('click', e => {
+    e.stopPropagation();
+    fn();
+    spec.onChange();
+  });
+  function render() {
+    const p = spec.pillText();
+    pill.textContent = `${p.text} ▾`;
+    pill.classList.toggle('tn-pill-on', !!p.narrowed);
+    pill.title = spec.title;
+    menu.classList.toggle('hidden', !spec.isOpen());
+    if (!spec.isOpen()) { menu.innerHTML = ''; return; }
+    const foot = (p.narrowed && spec.clear
+      ? '<button class="chip" data-tn-clear>⟳ show everything</button>' : '')
+      + (spec.foot ? spec.foot() : '');
+    menu.innerHTML = spec.sections().filter(Boolean).map(s =>
+      `<div class="tn-menu-sec">${escHtml(s.title)}</div>${
+        s.chips != null ? `<div class="tn-menu-chips">${s.chips}</div>` : s.html}`).join('')
+      + (foot ? `<div class="tn-menu-foot">${foot}</div>` : '');
+    const clear = menu.querySelector('[data-tn-clear]');
+    if (clear) stay(clear, spec.clear);
+    spec.wire(menu, stay);
+  }
+  function close() {
+    if (!spec.isOpen()) return false;
+    spec.setOpen(false);
+    render();
+    return true;
+  }
+  pill.addEventListener('click', e => {
+    e.stopPropagation();
+    spec.setOpen(!spec.isOpen());
+    render();
+  });
+  document.addEventListener('click', e => {
+    if (spec.isOpen() && !e.composedPath().some(n => n === menu || n === pill)) close();
+  });
+  return { render, close };
+}
+
+// A menu's tag vocabulary: every selected tag REQUIRED, said the same way
+// wherever tags narrow a list (∧ on the chip, the title saying which).
+function tagChipsHtml(vocab, selected, attr, empty) {
+  if (!vocab.length) return empty ? `<span class="cl-hint">${escHtml(empty)}</span>` : '';
+  return vocab.map(t => {
+    const on = selected.has(t);
+    return `<button class="chip${on ? ' on' : ''}" ${attr}="${escHtml(t)}"
+      title="${on ? 'required — click to clear' : 'click to require'}"
+      >${on ? '∧' : ''}${escHtml(t)}</button>`;
+  }).join('');
+}
+
+// One of several, exactly one lit (a lens, an order, Day | Week).
+function pickChipsHtml(opts, current, attr) {
+  return opts.map(o => `<button class="chip${o.value === current ? ' on' : ''}"
+    ${attr}="${escHtml(o.value)}"${o.title ? ` title="${escHtml(o.title)}"` : ''}
+    >${escHtml(o.label)}</button>`).join('');
+}
+
+// An independent on/off.
+function toggleChipHtml(on, attrs, label) {
+  return `<button class="chip${on ? ' on' : ''}" ${attrs}>${escHtml(label)}</button>`;
+}
+
+function toggleInSet(set, v) {
+  if (set.has(v)) set.delete(v);
+  else set.add(v);
+}
+
 // TEXT FADES AT A BAR'S EDGE (2026-10-02, Quentin's instruction): the strip's
 // tabs and the bars' fields used to stop dead mid-word. Whichever side has
 // more text past it fades (.fade-l / .fade-r), so the cut says "there is
@@ -6666,11 +6660,11 @@ function paintTopNav() {
   document.querySelectorAll('#top-nav [data-nav]').forEach(btn => {
     btn.classList.toggle('on', btn.dataset.nav === lit);
   });
-  renderCalFilter();
+  calFilter.render();
   // Each page's selector and search, shown only while it is that page.
   document.querySelectorAll('#top-nav .tn-tools').forEach(g =>
     g.classList.toggle('hidden', g.dataset.page !== lit));
-  if (lit === 'calendar') renderCalFilter();
+  if (lit === 'calendar') calFilter.render();
   // The page's tools just took (or gave back) the tabs' width.
   document.querySelectorAll('#top-nav .edge-fade').forEach(paintEdgeFade);
 }
@@ -6683,9 +6677,9 @@ async function closeSurfaces() {
     return !!el && !el.classList.contains('hidden');
   };
   flushOpenNotes();
-  closeMapFilter();
-  closeLogsFilter();
-  closeCalFilter();
+  mapFilter.close();
+  logsFilter.close();
+  calFilter.close();
   if (seSheet.kind) closeSeSheet();
   if (occasionView.open) closeOccasionSheet();
   // Not awaited: each hides itself FIRST and then finishes its writes and
@@ -6940,74 +6934,37 @@ function logTagVocab() {
   return [...new Set([...logsView.logs.flatMap(l => l.tags || []), ...logsView.tags])].sort();
 }
 
-function closeLogsFilter() {
-  if (!logsView.menuOpen) return false;
-  logsView.menuOpen = false;
-  renderLogsFilter();
-  return true;
-}
-
-// Mirrors renderMapFilter: the pill NAMES what is showing, the menu is one tap
-// away and shows exactly what is on.
-function renderLogsFilter() {
-  const pill = document.getElementById('logs-filter');
-  const menu = document.getElementById('logs-filter-menu');
-  if (!pill || !menu) return;
-  const on = logsView.tags.size;
-  pill.textContent = `${on ? `${on} tag${on === 1 ? '' : 's'}` : 'All logs'} ▾`;
-  pill.classList.toggle('map-filter-on', !!on);
-  pill.title = 'What the list is showing';
-
-  menu.classList.toggle('hidden', !logsView.menuOpen);
-  if (!logsView.menuOpen) { menu.innerHTML = ''; return; }
-  const vocab = logTagVocab();
-  menu.innerHTML = `
-    <div class="map-filter-sec">Tags — every selected one required</div>
-    <div class="map-filter-chips">
-      ${vocab.length ? vocab.map(t => {
-        const sel = logsView.tags.has(t);
-        return `<button class="ctx-chip ${sel ? 'ctx-req' : 'ctx-off'}" data-logtag="${escHtml(t)}"
-          title="${sel ? 'required — click to clear' : 'click to require'}"
-          >${sel ? '∧' : ''}${escHtml(t)}</button>`;
-      }).join('') : '<span class="cl-hint">no tags on any log yet</span>'}
-    </div>
-    <div class="map-filter-sec">Order</div>
-    <div class="map-filter-chips">
-      <button class="ctx-chip ${logsView.desc ? 'ctx-req' : 'ctx-off'}" data-logdesc="1">newest first</button>
-      <button class="ctx-chip ${logsView.desc ? 'ctx-off' : 'ctx-req'}" data-logdesc="">oldest first</button>
-    </div>
-    ${on ? `<div class="map-filter-foot">
-      <button class="ctx-chip" id="logs-filter-clear">⟳ show everything</button>
-    </div>` : ''}`;
-  // stopPropagation for the same reason MAP's menu does it: these handlers
-  // re-render the menu, so the click would bubble to a target that no longer
-  // exists and the menu would put itself away on its own chips.
-  const stay = (el, fn) => el.addEventListener('click', e => {
-    e.stopPropagation();
-    fn();
-    renderLogs();
-  });
-  menu.querySelectorAll('[data-logtag]').forEach(b => stay(b, () => {
-    const t = b.dataset.logtag;
-    if (logsView.tags.has(t)) logsView.tags.delete(t);
-    else logsView.tags.add(t);
-  }));
-  menu.querySelectorAll('[data-logdesc]').forEach(b =>
-    stay(b, () => { logsView.desc = !!b.dataset.logdesc; }));
-  const clear = menu.querySelector('#logs-filter-clear');
-  if (clear) stay(clear, () => logsView.tags.clear());
-}
+// The pill NAMES what is showing, the menu is one tap away and shows exactly
+// what is on — Projects' selector, on the logs.
+const logsFilter = stripMenu({
+  pill: 'logs-filter',
+  menu: 'logs-filter-menu',
+  title: 'What the list is showing',
+  isOpen: () => logsView.menuOpen,
+  setOpen: on => { logsView.menuOpen = on; },
+  pillText: () => {
+    const on = logsView.tags.size;
+    return { text: on ? `${on} tag${on === 1 ? '' : 's'}` : 'All logs', narrowed: !!on };
+  },
+  sections: () => [
+    { title: 'Tags — every selected one required',
+      chips: tagChipsHtml(logTagVocab(), logsView.tags, 'data-logtag', 'no tags on any log yet') },
+    { title: 'Order', chips: pickChipsHtml([{ value: '1', label: 'newest first' },
+                                            { value: '', label: 'oldest first' }],
+                                           logsView.desc ? '1' : '', 'data-logdesc') },
+  ],
+  clear: () => logsView.tags.clear(),
+  onChange: () => renderLogs(),
+  wire: (menu, stay) => {
+    menu.querySelectorAll('[data-logtag]').forEach(b =>
+      stay(b, () => toggleInSet(logsView.tags, b.dataset.logtag)));
+    menu.querySelectorAll('[data-logdesc]').forEach(b =>
+      stay(b, () => { logsView.desc = !!b.dataset.logdesc; }));
+  },
+});
 
 function initLogsView() {
   document.getElementById('logs-close').addEventListener('click', closeLogsView);
-  document.getElementById('logs-filter').addEventListener('click', e => {
-    e.stopPropagation();
-    logsView.menuOpen = !logsView.menuOpen;
-    renderLogsFilter();
-  });
-  document.addEventListener('click', e => {
-    if (logsView.menuOpen && !e.target.closest('#logs-filter-menu, #logs-filter')) closeLogsFilter();
-  });
   // The search lives in the strip now, so it is wired ONCE and survives every
   // repaint of the list under it.
   const q = document.getElementById('logs-q');
@@ -7079,7 +7036,7 @@ function refPeekHtml() {
     ${subs.map(x => `<div class="ref-peek-row ref-peek-sub"><span>▸ ${escHtml(x.name)}</span></div>`).join('')}
     ${l.items.map(i => `<div class="ref-peek-row${i.done ? ' ref-peek-done' : ''}"><span class="ref-peek-dot"></span><span>${
       escHtml(i.content)}</span></div>`).join('')
-      || (subs.length ? '' : '<div class="ref-peek-empty">Nothing in it yet.</div>')}
+      || (subs.length ? '' : emptyHtml('Nothing in it yet.'))}
   </div>`;
 }
 
@@ -7114,8 +7071,8 @@ function refListRow(l) {
   const subs = refView.lists.filter(x => x.parent_id === l.id).length;
   return `<div class="ref-row" data-id="${l.id}">
     <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}</span>
-    ${subs ? `<span class="map-count" title="${subs} list${subs === 1 ? '' : 's'} inside">▸${subs}</span>` : ''}
-    <span class="map-count">${l.items.filter(i => !i.done).length}</span>
+    ${subs ? `<span class="count" title="${subs} list${subs === 1 ? '' : 's'} inside">▸${subs}</span>` : ''}
+    <span class="count">${l.items.filter(i => !i.done).length}</span>
     <button class="ref-del" data-id="${l.id}" title="Delete list">×</button>
   </div>`;
 }
@@ -7141,7 +7098,7 @@ function renderRef() {
     // ROUTINES ARE LISTS (2026-10-05): what was the Routines section is
     // ordinary lists now, so the index is one section.
     body.innerHTML = mpSection('Lists', '', `<div class="ref-list">${rootLists.map(l => refListRow(l)).join('')
-      || '<div class="gtd-empty">No lists yet.</div>'}
+      || emptyHtml('No lists yet.')}
       <button id="ref-new" class="map-add-btn">+ list</button></div>`)
       + refPeekHtml();
     requestAnimationFrame(() => wireRefPeek(body));
@@ -7160,23 +7117,13 @@ function renderRef() {
         await refreshRef();
       },
     }));
-    body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span => {
-      let t = null;
-      span.addEventListener('click', () => {
-        clearTimeout(t);
-        t = setTimeout(() => {
-          const lid = parseInt(span.closest('.ref-row').dataset.id);
-          if (SETTINGS_WIDE.matches) { refPeekToggle('list', lid); return; }
-          refView.open = lid;
-          renderRef();
-        }, 220);
-      });
-      span.addEventListener('dblclick', () => {
-        clearTimeout(t);
-        refRename(span, id => name =>
-          apiSend(`/api/ref/lists/${id}`, 'PATCH', { name }));
-      });
-    });
+    body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span =>
+      onTapOrDouble(span, () => {
+        const lid = parseInt(span.closest('.ref-row').dataset.id);
+        if (SETTINGS_WIDE.matches) { refPeekToggle('list', lid); return; }
+        refView.open = lid;
+        renderRef();
+      }, () => refListRename(span)));
     body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
       const id = parseInt(b.dataset.id);
       const l = refView.lists.find(x => x.id === id);
@@ -7209,7 +7156,7 @@ function renderRef() {
         <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
         <button class="ref-del" data-item="${i.id}" title="Remove">×</button>
       </div>`).join('')
-      || (children.length ? '' : '<div class="gtd-empty">Empty.</div>')}
+      || (children.length ? '' : emptyHtml('Empty.'))}
     <button id="ref-add-item" class="map-add-btn">+ item</button>
     <button id="ref-add-sub" class="map-add-btn">+ list inside</button></div>`;
 
@@ -7244,21 +7191,11 @@ function renderRef() {
     },
   }));
   // Child-list rows: same gestures as the index rows.
-  body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span => {
-    let t = null;
-    span.addEventListener('click', () => {
-      clearTimeout(t);
-      t = setTimeout(() => {
-        refView.open = parseInt(span.closest('.ref-row').dataset.id);
-        renderRef();
-      }, 220);
-    });
-    span.addEventListener('dblclick', () => {
-      clearTimeout(t);
-      refRename(span, id => name =>
-        apiSend(`/api/ref/lists/${id}`, 'PATCH', { name }));
-    });
-  });
+  body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span =>
+    onTapOrDouble(span, () => {
+      refView.open = parseInt(span.closest('.ref-row').dataset.id);
+      renderRef();
+    }, () => refListRename(span)));
   body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
     const id = parseInt(b.dataset.id);
     const l = refView.lists.find(x => x.id === id);
@@ -7286,9 +7223,13 @@ function renderRef() {
   body.querySelectorAll('.ref-row[data-item] .ref-text').forEach(span => {
     span.addEventListener('dblclick', () => {
       const id = parseInt(span.closest('.ref-row').dataset.item);
-      refRenameEl(span, async content => {
-        await apiSend(`/api/ref/items/${id}`, 'PATCH', { content });
-        await refreshRef();
+      inlineEdit(span, {
+        value: span.textContent,
+        onCancel: refreshRef,
+        onCommit: async content => {
+          await apiSend(`/api/ref/items/${id}`, 'PATCH', { content });
+          await refreshRef();
+        },
       });
     });
   });
@@ -7364,7 +7305,7 @@ function metricShape(m) {
 
 // '0'=Mon…'6'=Sun as letters, the same grammar the picker writes.
 function daysWord(dow) {
-  return [...dow].sort().map(d => DAY_LETTERS[parseInt(d)]).join('');
+  return [...dow].sort().map(d => (WEEKDAYS[parseInt(d)] || {}).letter || '').join('');
 }
 
 async function refreshMetricsSettings() {
@@ -7373,29 +7314,6 @@ async function refreshMetricsSettings() {
   if (settingsView.section == null) renderSettingsIndex();
 }
 
-// Same inline-rename gesture with a plain save callback (flow steps).
-function refRenameEl(span, save) {
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 's2-rename-input';
-  input.value = span.textContent;
-  span.replaceWith(input);
-  input.focus();
-  input.select();
-  let settled = false;
-  const finish = async ok2 => {
-    if (settled) return;
-    settled = true;
-    const v = input.value.trim();
-    if (ok2 && v && v !== span.textContent) await save(v);
-    else await refreshRef();
-  };
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
-  });
-  input.addEventListener('blur', () => finish(true));
-}
 
 // ── New calendar event: the write half of the gcal mirror ─────
 //
@@ -7416,9 +7334,12 @@ function openEvSheet() {
 
 function closeEvSheet() {
   evSheet.open = false;
-  document.getElementById('ev-sheet').classList.add('hidden');
-  document.getElementById('ev-sheet-backdrop').classList.add('hidden');
+  hideSheet('ev-sheet');
 }
+
+// It peels before the Calendar overlay it opened from (the focused-input
+// case stopPropagates and never reaches the ladder).
+defineSheet('ev-sheet', { rank: 51, isOpen: () => evSheet.open, close: closeEvSheet });
 
 // Re-read the local mirror and repaint both surfaces that draw it.
 async function reloadGcal() {
@@ -7430,9 +7351,7 @@ async function reloadGcal() {
 
 function renderEvSheet() {
   const sheet = document.getElementById('ev-sheet');
-  const back = document.getElementById('ev-sheet-backdrop');
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
+  showSheet('ev-sheet');
   sheet.innerHTML = `
     <div class="cl-head">
       <span class="cl-eyebrow">new calendar event</span>
@@ -7453,7 +7372,7 @@ function renderEvSheet() {
     ${recentList('evtime').length ? `<div class="cl-chips">
       ${recentList('evtime').slice(0, 4).map(t => {
         const [s, e] = t.split('|');
-        return `<button class="cl-chip" data-evtime="${escHtml(t)}">${
+        return `<button class="chip chip-sm" data-evtime="${escHtml(t)}">${
           escHtml(s + (e ? '–' + e : ''))}</button>`;
       }).join('')}
     </div>` : ''}
@@ -7497,7 +7416,6 @@ function renderEvSheet() {
     if (e.key === 'Enter') { e.stopPropagation(); save(); }
     else if (e.key === 'Escape') { e.stopPropagation(); closeEvSheet(); }
   }));
-  back.addEventListener('click', closeEvSheet);
   sheet.querySelector('#ev-summary').focus();
 }
 
@@ -7565,8 +7483,7 @@ function closeOccasionSheet() {
   const was = occasionView.open;
   occasionView.open = false;
   occasionView.occ = null;
-  document.getElementById('oc-sheet').classList.add('hidden');
-  document.getElementById('oc-sheet-backdrop').classList.add('hidden');
+  hideSheet('oc-sheet');
   if (!was) return;
   refreshEngage();
   // Settings may be the surface underneath, and its list states the name, the
@@ -7595,11 +7512,14 @@ async function refreshOccasionSheet() {
   await refreshEngage();
 }
 
+// It peels before whatever it was opened from — and that is Settings as often
+// as it is the day, so its rung sits ABOVE the overlay loop, or Esc would
+// close Settings out from under an open sheet.
+defineSheet('oc-sheet', { rank: 30, isOpen: () => occasionView.open, close: closeOccasionSheet });
+
 function renderOccasionSheet() {
   const sheet = document.getElementById('oc-sheet');
-  const back = document.getElementById('oc-sheet-backdrop');
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
+  showSheet('oc-sheet');
   const o = occasionView.occ;
   const areaName = id => (state.areas.find(a => a.id === id) || {}).name || '';
 
@@ -7641,10 +7561,10 @@ function renderOccasionSheet() {
     <div class="cl-sec"><span class="cl-label">State</span>
       <span class="cl-hint">paused: no new actions are minted, and ones already
         on a day stay. Nothing is deleted.</span></div>
-    <div class="cl-row">
-      <button class="cl-pill${o.active ? ' cl-pill-on' : ''}" data-ocstate="1">Active</button>
-      <button class="cl-pill${o.active ? '' : ' cl-pill-on'}" data-ocstate="0">Paused</button>
-    </div>
+    <div class="cl-row"><div class="seg">
+      <button class="${o.active ? 'on' : ''}" data-ocstate="1">Active</button>
+      <button class="${o.active ? '' : 'on'}" data-ocstate="0">Paused</button>
+    </div></div>
     <div class="cl-sec"><span class="cl-label">Every time</span>
       <span class="cl-hint">${o.items.length} action${o.items.length === 1 ? '' : 's'}</span></div>
     ${o.items.map(it => `
@@ -7660,7 +7580,6 @@ function renderOccasionSheet() {
     </div>`}`;
 
   sheet.querySelector('#oc-close').addEventListener('click', closeOccasionSheet);
-  back.onclick = closeOccasionSheet;
 
   const newBtn = sheet.querySelector('#oc-new');
   if (newBtn) newBtn.addEventListener('click', async () => {
@@ -7778,17 +7697,17 @@ function openEntrySheet(spec) {
 function closeEntrySheet() {
   entrySheet.open = false;
   entrySheet.spec = null;
-  document.getElementById('en-sheet').classList.add('hidden');
-  document.getElementById('en-sheet-backdrop').classList.add('hidden');
+  hideSheet('en-sheet');
 }
+
+// It peels before whatever surface opened it.
+defineSheet('en-sheet', { rank: 52, isOpen: () => entrySheet.open, close: closeEntrySheet });
 
 function renderEntrySheet() {
   const sheet = document.getElementById('en-sheet');
-  const back = document.getElementById('en-sheet-backdrop');
   const spec = entrySheet.spec;
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
-  if (spec.when) { renderEntryWhen(sheet, back, spec); return; }
+  showSheet('en-sheet');
+  if (spec.when) { renderEntryWhen(sheet, spec); return; }
   sheet.innerHTML = `
     <div class="cl-head">
       <span class="cl-eyebrow">${escHtml(spec.title)}</span>
@@ -7802,16 +7721,13 @@ function renderEntrySheet() {
     ${spec.hint ? `<div class="cl-donow">${escHtml(spec.hint)}</div>` : ''}
     ${spec.suggest && spec.suggest.length ? `
     <div class="cl-chips">
-      ${spec.suggest.map(t => `<button class="ctx-chip ctx-off" data-ensug="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+      ${spec.suggest.map(t => `<button class="chip" data-ensug="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
     </div>` : ''}
     ${spec.tags ? `
     <div class="cl-sec"><span class="cl-label">Tags</span></div>
     <div class="cl-chips" id="en-tag-chips">
-      ${[...new Set([...(spec.tagVocab || []), ...entrySheet.tags])].sort().map(t => {
-        const on = entrySheet.tags.has(t);
-        return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-entag="${escHtml(t)}"
-          >${on ? '∧' : ''}${escHtml(t)}</button>`;
-      }).join('')}
+      ${tagChipsHtml([...new Set([...(spec.tagVocab || []), ...entrySheet.tags])].sort(),
+                     entrySheet.tags, 'data-entag')}
       <input type="text" class="cl-action en-tag-new" id="en-tag-new"
         placeholder="+ tag" autocomplete="off">
     </div>` : ''}
@@ -7826,9 +7742,7 @@ function renderEntrySheet() {
     // already typed — half-typed text is data (renderBar's rule).
     sheet.querySelectorAll('[data-entag]').forEach(b =>
       b.addEventListener('click', () => {
-        const t = b.dataset.entag;
-        if (entrySheet.tags.has(t)) entrySheet.tags.delete(t);
-        else entrySheet.tags.add(t);
+        toggleInSet(entrySheet.tags, b.dataset.entag);
         const typed = input.value;
         renderEntrySheet();
         const again = document.getElementById('en-input');
@@ -7875,7 +7789,6 @@ function renderEntrySheet() {
       closeEntrySheet();
     }
   });
-  back.addEventListener('click', closeEntrySheet);
   input.focus();
 }
 
@@ -7887,7 +7800,7 @@ function renderEntrySheet() {
 // Arrows move the day (←→ one, ↑↓ a week), Enter saves, Esc closes — each
 // stopped here, or the same key would also reach the surface underneath.
 // `spec.save({ date, minute })`: date '' clears, minute is null without a time.
-function renderEntryWhen(sheet, back, spec) {
+function renderEntryWhen(sheet, spec) {
   const w = entrySheet.when;
   const today = wallDay();
   const first = w.month + '-01';
@@ -7909,13 +7822,13 @@ function renderEntryWhen(sheet, back, spec) {
       <button class="modal-close-btn" id="en-close">✕</button>
     </div>
     <div class="enw-picked">${escHtml(picked)}</div>
-    <div class="enw-nav">
-      <button class="cl-pill" data-enw-month="-1" title="Previous month">‹</button>
-      <span class="enw-month">${escHtml(monthName)}</span>
-      <button class="cl-pill" data-enw-month="1" title="Next month">›</button>
-    </div>
+    ${dateNavHtml({ cls: 'enw-nav', unit: 'month', prev: 'data-enw-month="-1"', next: 'data-enw-month="1"',
+      label: `<span class="enw-month">${escHtml(monthName)}</span>` })}
     <div class="enw-grid">
-      ${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => `<span class="enw-dow">${d}</span>`).join('')}
+      ${/* A column header has room for the name, so it takes the name (the
+            WEEKDAYS rule) — 'T' twice and 'S' twice was the one place the
+            week lost its R and U. */''}
+      ${WEEKDAYS.map(w => `<span class="enw-dow">${w.name}</span>`).join('')}
       ${cells.map(d => `<button class="enw-day${d.slice(0, 7) !== w.month ? ' enw-out' : ''}${
         d === today ? ' enw-today' : ''}${d === w.date ? ' enw-on' : ''}" data-enw-day="${d}"
         >${Number(d.slice(8))}</button>`).join('')}
@@ -7970,7 +7883,6 @@ function renderEntryWhen(sheet, back, spec) {
   sheet.querySelector('#en-close').addEventListener('click', closeEntrySheet);
   sheet.querySelector('#en-done').addEventListener('click', closeEntrySheet);
   sheet.querySelector('#en-add').addEventListener('click', save);
-  back.onclick = closeEntrySheet;
   sheet.tabIndex = -1;
   sheet.focus();
 }
@@ -8043,16 +7955,16 @@ function openEndSheet(spec) {
 function closeEndSheet() {
   endSheet.open = false;
   endSheet.spec = null;
-  document.getElementById('ex-sheet').classList.add('hidden');
-  document.getElementById('ex-sheet-backdrop').classList.add('hidden');
+  hideSheet('ex-sheet');
 }
+
+// It peels before the surface under it.
+defineSheet('ex-sheet', { rank: 53, isOpen: () => endSheet.open, close: closeEndSheet });
 
 function renderEndSheet() {
   const sheet = document.getElementById('ex-sheet');
-  const back = document.getElementById('ex-sheet-backdrop');
   const spec = endSheet.spec;
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
+  showSheet('ex-sheet');
   sheet.innerHTML = `
     <div class="cl-head">
       <span class="cl-eyebrow">${escHtml(spec.title)}</span>
@@ -8091,7 +8003,6 @@ function renderEndSheet() {
     b.addEventListener('click', () => run(parseInt(b.dataset.exdo))));
   sheet.querySelector('#ex-close').addEventListener('click', closeEndSheet);
   sheet.querySelector('#ex-cancel').addEventListener('click', closeEndSheet);
-  back.addEventListener('click', closeEndSheet);
   [note, nextField].forEach(f => {
     if (!f) return;
     f.addEventListener('keydown', e => {
@@ -8167,30 +8078,17 @@ async function endExperiment(ex, day, note, next, drop, after) {
   return true;
 }
 
-// Shared inline rename for ref rows — same gesture as MAP's, same Esc rule
-// (stopPropagation, or the keydown peels the overlay behind the editor).
-function refRename(span, patchFor) {
+// A list's name, renamed in place — the index rows and a list's child rows.
+function refListRename(span) {
   const id = parseInt(span.closest('.ref-row').dataset.id);
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 's2-rename-input';
-  input.value = span.textContent;
-  span.replaceWith(input);
-  input.focus();
-  input.select();
-  let settled = false;
-  const finish = async save => {
-    if (settled) return;
-    settled = true;
-    const v = input.value.trim();
-    if (save && v && v !== span.textContent) await patchFor(id)(v);
-    await refreshRef();
-  };
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  inlineEdit(span, {
+    value: span.textContent,
+    onCancel: refreshRef,
+    onCommit: async name => {
+      await apiSend(`/api/ref/lists/${id}`, 'PATCH', { name });
+      await refreshRef();
+    },
   });
-  input.addEventListener('blur', () => finish(true));
 }
 
 async function flushLogSave() {
@@ -8405,12 +8303,12 @@ function renderDangerous() {
     const PRESETS = [5, 10, 20];
     const WORD_PRESETS = [250, 500, 1000];
     const goalChips = dwView.goalKind === 'time'
-      ? PRESETS.map(m => `<button class="cl-chip${dwView.goalTime === m ? ' cl-chip-on' : ''}"
+      ? PRESETS.map(m => `<button class="chip chip-sm${dwView.goalTime === m ? ' on' : ''}"
           data-time="${m}">${m} min</button>`).join('')
         + `<input type="number" id="dw-time-custom" class="cl-chip-input dw-custom"
              min="1" max="240" placeholder="min"
              value="${PRESETS.includes(dwView.goalTime) ? '' : dwView.goalTime}">`
-      : WORD_PRESETS.map(w => `<button class="cl-chip${dwView.goalWords === w ? ' cl-chip-on' : ''}"
+      : WORD_PRESETS.map(w => `<button class="chip chip-sm${dwView.goalWords === w ? ' on' : ''}"
           data-words="${w}">${w} words</button>`).join('')
         + `<input type="number" id="dw-words-custom" class="cl-chip-input dw-custom"
              min="1" max="10000" placeholder="words"
@@ -8423,14 +8321,14 @@ function renderDangerous() {
 
         <div class="cl-sec"><span class="cl-label">Goal</span></div>
         <div class="cl-chips">
-          <button class="cl-chip${dwView.goalKind === 'time' ? ' cl-chip-on' : ''}" data-kind="time">Time</button>
-          <button class="cl-chip${dwView.goalKind === 'words' ? ' cl-chip-on' : ''}" data-kind="words">Words</button>
+          <button class="chip chip-sm${dwView.goalKind === 'time' ? ' on' : ''}" data-kind="time">Time</button>
+          <button class="chip chip-sm${dwView.goalKind === 'words' ? ' on' : ''}" data-kind="words">Words</button>
         </div>
         <div class="cl-chips">${goalChips}</div>
 
         <div class="cl-sec"><span class="cl-label">Hardcore</span></div>
         <div class="cl-chips">
-          <button class="cl-chip${dwView.hardcore ? ' cl-chip-on' : ''}" data-hard="1">${dwView.hardcore ? 'On' : 'Off'}</button>
+          <button class="chip chip-sm${dwView.hardcore ? ' on' : ''}" data-hard="1">${dwView.hardcore ? 'On' : 'Off'}</button>
           <span class="cl-hint">hides the text and disables backspace</span>
         </div>
 
@@ -8456,7 +8354,7 @@ function renderDangerous() {
       // Repaint the chips by hand rather than re-rendering: a re-render here
       // would take the field you are typing in with it.
       el.querySelectorAll('[data-time]').forEach(c =>
-        c.classList.toggle('cl-chip-on', parseInt(c.dataset.time) === dwView.goalTime));
+        c.classList.toggle('on', parseInt(c.dataset.time) === dwView.goalTime));
     });
     el.querySelectorAll('[data-words]').forEach(b => b.addEventListener('click', () => {
       dwView.goalWords = parseInt(b.dataset.words);
@@ -8468,7 +8366,7 @@ function renderDangerous() {
       if (!n || n < 1) return;
       dwView.goalWords = Math.min(10000, n);
       el.querySelectorAll('[data-words]').forEach(c =>
-        c.classList.toggle('cl-chip-on', parseInt(c.dataset.words) === dwView.goalWords));
+        c.classList.toggle('on', parseInt(c.dataset.words) === dwView.goalWords));
     });
     el.querySelector('[data-hard]').addEventListener('click', () => {
       dwView.hardcore = !dwView.hardcore;
@@ -9232,27 +9130,12 @@ async function logDraftCommit() {
 function logRenameEl(span, name) {
   const meta = logsView.logs.find(l => l.name === name);
   const was = meta ? meta.title : span.textContent;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 's2-rename-input lg-rename';
-  input.value = was;
-  span.replaceWith(input);
-  input.focus();
-  input.select();
-  let settled = false;
-  const finish = async ok => {
-    if (settled) return;
-    settled = true;
-    const v = input.value.trim();
-    if (ok && v && v !== was) await renameLog(name, v, was);
-    else renderLogs();
-  };
-  input.addEventListener('click', e => e.stopPropagation());
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  inlineEdit(span, {
+    value: was,
+    className: 's2-rename-input lg-rename',
+    onCancel: () => renderLogs(),
+    onCommit: v => renameLog(name, v, was),
   });
-  input.addEventListener('blur', () => finish(true));
 }
 
 async function renameLog(name, title, was) {
@@ -9344,9 +9227,9 @@ function renderLogs() {
     <div class="lg-page${logsView.open ? ' lg-has-open' : ''}">
       <aside class="lg-side">
         <div class="lg-tools"><div class="lg-tools-row">
-          <span class="lg-count">${logs.length} ${logs.length === 1 ? 'log' : 'logs'}</span>
+          <span class="count">${logs.length} ${logs.length === 1 ? 'log' : 'logs'}</span>
           <button id="log-new" class="lg-new">+ New</button></div></div>
-        <div class="log-list">${draftRow}${rows || `<div class="log-empty">${
+        <div class="log-list">${draftRow}${rows || `<div class="empty">${
           logsView.q ? `Nothing in the logs says “${escHtml(logsView.q)}”`
           : logsView.logs.length ? 'No log carries every tag you asked for'
           : 'No logs yet'}</div>`}
@@ -9379,35 +9262,29 @@ function renderLogs() {
       </div>
     </div>`;
 
-  renderLogsFilter();
+  logsFilter.render();
 
   body.querySelectorAll('.lg-del[data-del]').forEach(x => x.addEventListener('click', e => {
     e.stopPropagation();
     deleteLog(x.dataset.del);
   }));
-  // A double-click renames. The single click waits out the double-click
-  // window before it opens the log (MAP's and Lists' rule), or the open would
-  // repaint the row out from under the rename.
-  let openTimer = null;
-  body.querySelectorAll('.log-row[data-name] .log-row-name').forEach(span =>
-    span.addEventListener('dblclick', e => {
-      e.stopPropagation();
-      clearTimeout(openTimer);
-      logRenameEl(span, span.closest('.log-row').dataset.name);
-    }));
+  // A double-click on the NAME renames. The single click waits out the
+  // double-click window before it opens the log (MAP's and Lists' rule), or
+  // the open would repaint the row out from under the rename.
   const head = body.querySelector('.lg-title');
   if (head) head.addEventListener('dblclick', () => logRenameEl(head, logsView.open));
   body.querySelectorAll('.log-row').forEach(row => {
-    row.addEventListener('click', async e => {
-      if (e.detail > 1 || row.querySelector('.lg-rename')) return;
-      clearTimeout(openTimer);
-      await new Promise(z => { openTimer = setTimeout(z, 220); });
+    onTapOrDouble(row, async () => {
+      if (row.querySelector('.lg-rename')) return;
       // A log is open BESIDE the list now, so picking another is the moment
       // the open one is put down — its pending save (or the blank log's
       // first write) goes first.
       await logDraftCommit();
       await flushLogSave();
       openLog(row.dataset.name);
+    }, e => {
+      const span = e.target.closest('.log-row-name');
+      if (span && row.dataset.name) logRenameEl(span, row.dataset.name);
     });
   });
   // THE LOG YOU ARE WRITING (2026-10-01, Quentin's instruction): the session
@@ -9613,7 +9490,7 @@ function renderSocial() {
   const f = socialView.form;
 
   const chipRow = (axis, sel) => (byAxis[axis] || []).map(l =>
-    `<button class="cl-chip so-lvl${sel === l.id ? ' cl-chip-on' : ''}" data-axis="${axis}" data-id="${l.id}">
+    `<button class="chip chip-sm so-lvl${sel === l.id ? ' on' : ''}" data-axis="${axis}" data-id="${l.id}">
        ${escHtml(socialShortLabel(l.id))}${l.rating != null ? ` <span class="so-rating">${l.rating}</span>` : ''}
      </button>`).join('');
 
@@ -9665,8 +9542,8 @@ function renderSocial() {
         <div class="so-card so-form">
           <div class="so-card-top"><span class="cl-label">${spec ? "Plan today's rep" : 'Log a rep'}</span></div>
           <div class="cl-chips">
-            <button class="cl-chip so-fam${f.family === 'directed' ? ' cl-chip-on' : ''}" data-fam="directed">directed</button>
-            <button class="cl-chip so-fam${f.family === 'broadcast' ? ' cl-chip-on' : ''}" data-fam="broadcast">broadcast</button>
+            <button class="chip chip-sm so-fam${f.family === 'directed' ? ' on' : ''}" data-fam="directed">directed</button>
+            <button class="chip chip-sm so-fam${f.family === 'broadcast' ? ' on' : ''}" data-fam="broadcast">broadcast</button>
           </div>
           ${(cfg.axes[f.family] || []).map(axis => `
             <div class="so-axis"><span class="cl-hint">${SOCIAL_AXIS_TITLES[axis] || axis}</span>
@@ -9699,10 +9576,10 @@ function renderSocial() {
       <div class="so-axis"><span class="cl-hint">micro — one tap logs it</span>
         <div class="cl-chips">${(byAxis.micro || []).map(l => {
           const n = (day.reps || []).filter(r => r.family === 'micro' && r.levels.micro === l.id).length;
-          return `<button class="cl-chip so-micro" data-id="${l.id}" ${l.rating == null ? 'disabled title="rate this in calibration first"' : ''}>
+          return `<button class="chip chip-sm so-micro" data-id="${l.id}" ${l.rating == null ? 'disabled title="rate this in calibration first"' : ''}>
             ${escHtml(socialShortLabel(l.id))}${l.rating != null ? ` <span class="so-rating">${l.rating}</span>` : ''}${n ? ` ×${n}` : ''}</button>`;
         }).join('')}
-        ${f ? '' : '<button class="cl-chip" id="so-log-open">+ log a rep…</button>'}</div></div>`;
+        ${f ? '' : '<button class="chip chip-sm" id="so-log-open">+ log a rep…</button>'}</div></div>`;
 
     if (socialView.cues) main += `<div class="so-cues cl-hint" title="The evening tally's retrieval cue">walk the day: ${escHtml(socialView.cues)}</div>`;
 
@@ -9713,7 +9590,7 @@ function renderSocial() {
         ${r.planned ? '<span class="so-planned" title="spec’d in advance">◆</span>' : ''}
         ${r.pre_rating != null ? `<span class="cl-hint">felt ${r.pre_rating}</span>` : ''}
         <button class="so-del" data-id="${r.id}" title="Remove">×</button>
-      </div>`).join('') || '<div class="gtd-empty">Nothing logged today.</div>'}</div>`;
+      </div>`).join('') || emptyHtml('Nothing logged today.')}</div>`;
   } else {
     main += `<div class="so-intro">Rate each level below for anticipatory pressure (0–10),
       then pick the <b>anchor</b> — the directed cell whose price becomes D, your daily dose.
@@ -10677,11 +10554,6 @@ function initGateDrag(handle, g, dateStr, geo, place) {
   } });
 }
 
-function timeToMinutes(timeStr) {
-  const [h, m] = timeStr.split(':').map(Number);
-  return h * 60 + m;
-}
-
 // ── SEMANTIC MINUTES (2026-08-17) ────────────────────────────
 //
 // A clock face is 0..1440, but a SPAN can run past midnight and a previous
@@ -10697,29 +10569,9 @@ function timeToMinutes(timeStr) {
 // compare minutes from then on. Do not order or compare HH:MM strings outside
 // this block — lexicographic order is right only within one day, which is
 // exactly the assumption that keeps breaking.
-// (DAY_MIN itself is declared at the TOP of this file: `const` does not hoist,
-// and state's view window uses it long before this point.)
-
-// End of a span that may cross midnight: an end at or before the start IS the
-// wrap. Takes the two clock times, so the comparison happens in one place.
-function spanEndMin(startHHMM, endHHMM) {
-  const s = timeToMinutes(startHHMM);
-  const e = timeToMinutes(endHHMM);
-  return e < s ? e + DAY_MIN : e;
-}
-
-// A window whose end carries an explicit +1 day (a gate's offset_days, and the
-// day-window payload's window_end_offset_days).
-function windowEndMin(endHHMM, offsetDays) {
-  return timeToMinutes(endHHMM) + (offsetDays ? DAY_MIN : 0);
-}
-
-// A semantic minute rendered back to a clock face. NEGATIVE-SAFE, which the
-// bare `m % 1440` was not: a previous-day block continuation starts below zero
-// and rendered as '-2:00'.
-function clockHHMM(minutes) {
-  return minutesToHHMM(((Math.round(minutes) % DAY_MIN) + DAY_MIN) % DAY_MIN);
-}
+// The accessors themselves — DAY_MIN, timeToMinutes, minutesToHHMM,
+// spanEndMin, windowEndMin, clockHHMM, minutesSince — are in static/common.js
+// (2026-10-05), so the gates dashboard and the NOW panel ask the same ones.
 
 // Effective default window for a weekday (0=Mon..6=Sun): the node's
 // weekly_windows entry for that day, else the node-wide defaults.
@@ -10811,11 +10663,6 @@ function localDatePlusDays(dateStr, days) {
   return formatDateYMD(d);
 }
 
-function minutesToHHMM(minutes) {
-  const h = Math.floor(minutes / 60) % 24;
-  const m = minutes % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
 
 // ── Settings → Gates and Locations ───────────────────────────
 //
@@ -10828,7 +10675,7 @@ async function renderQrManager() {
   const panel = document.getElementById('be-qr-section');
   const locPanel = document.getElementById('be-loc-section');
   if (!panel || !locPanel) return;
-  panel.innerHTML = '<div class="be-empty">Loading…</div>';
+  panel.innerHTML = emptyHtml('Loading…');
 
   let nodes = null;
   let locations = null;
@@ -10845,7 +10692,7 @@ async function renderQrManager() {
   // non-array there breaks every later nodes.map/find — renderTimeline's
   // included, which took the whole to-do side of the app down with it.
   if (!Array.isArray(nodes)) {
-    panel.innerHTML = '<div class="be-empty se-error">Failed to load gates.</div>';
+    panel.innerHTML = emptyHtml('Failed to load gates.', 'se-error');
     locPanel.innerHTML = '';
     return;
   }
@@ -11007,7 +10854,7 @@ function todayEntry(m) {
 }
 
 function todayControl(m, e) {
-  const btn = (val, label, on) => `<button class="mx-set${on ? ' mx-set-on' : ''}"`
+  const btn = (val, label, on) => `<button class="chip chip-sm mx-set${on ? ' on' : ''}"`
     + ` data-metric="${m.id}" data-val="${val}">${escHtml(label)}</button>`;
   if (m.kind === 'yesno') {
     return `<span class="mx-yn">${btn('1', 'yes', e && e.value_num === 1)}${
@@ -11043,14 +10890,14 @@ function renderToday() {
         ${m.prompt ? `<span class="mx-meta">${escHtml(m.prompt)}</span>` : ''}
         ${todayControl(m, todayEntry(m))}
       </div>`).join('')
-      || '<div class="gtd-empty">Nothing is asked today. The questions are written in Settings → Metrics.</div>'}
+      || emptyHtml('Nothing is asked today. The questions are written in Settings → Metrics.')}
     </div>
     ${asked.length ? `<div class="mx-sec">Today's contexts</div>
       <div class="mx-list">${asked.map(t => `
         <div class="mx-today">
           <span class="mx-name">${escHtml(t)}</span>
           <span class="mx-yn">${[[true, 'today'], [false, 'not today']].map(([v, label]) =>
-            `<button class="mx-set${ans[t] === v ? ' mx-set-on' : ''}" data-tag="${escHtml(t)}"`
+            `<button class="chip chip-sm mx-set${ans[t] === v ? ' on' : ''}" data-tag="${escHtml(t)}"`
             + ` data-val="${v ? 1 : 0}">${label}</button>`).join('')}</span>
         </div>`).join('')}</div>` : ''}`;
 
@@ -11063,13 +10910,13 @@ function renderToday() {
     await refreshTracking();
   };
   body.querySelectorAll('.mx-set[data-metric]').forEach(b => b.addEventListener('click', () =>
-    save(parseInt(b.dataset.metric), b.classList.contains('mx-set-on') ? null : b.dataset.val)));
+    save(parseInt(b.dataset.metric), b.classList.contains('on') ? null : b.dataset.val)));
   body.querySelectorAll('.mx-today-in').forEach(el => el.addEventListener('change', () => {
     el.blur();
     save(parseInt(el.dataset.metric), el.value);
   }));
   body.querySelectorAll('.mx-set[data-tag]').forEach(b => b.addEventListener('click', async () => {
-    const applies = b.classList.contains('mx-set-on') ? null : b.dataset.val === '1';
+    const applies = b.classList.contains('on') ? null : b.dataset.val === '1';
     const res = await apiSend('/api/tag-daily/answer', 'POST',
       { tag: b.dataset.tag, date: trackingView.day, applies });
     if (!res.ok) { toast('Could not save that answer'); return; }
@@ -11139,7 +10986,7 @@ function renderTracking() {
   }).join('');
 
   body.innerHTML = `
-    <div class="mx-list">${rows || `<div class="gtd-empty">No metrics yet — Settings → `
+    <div class="mx-list">${rows || `<div class="empty">No metrics yet — Settings → `
       + `Metrics is where the questions are written.</div>`}</div>
     <div class="mx-sec">Habits and experiments</div>
     <div id="tracking-habit"></div>`;
@@ -11173,7 +11020,7 @@ function renderMetricDetail(body) {
     }
     if (m.kind === 'yesno') {
       return `<span class="mx-yn">${['1', '0'].map(v =>
-        `<button class="mx-set${String(e.value_num) === v ? ' mx-set-on' : ''}"`
+        `<button class="chip chip-sm mx-set${String(e.value_num) === v ? ' on' : ''}"`
         + ` data-date="${e.date}" data-step="${e.step_id}" data-val="${v}">`
         + `${v === '1' ? 'yes' : 'no'}</button>`).join('')}</span>`;
     }
@@ -11193,7 +11040,7 @@ function renderMetricDetail(body) {
         ${control(e)}
         <span class="mx-day-step">${escHtml(stepName(e.step_id))}</span>
       </div>`).join('')
-      || '<div class="gtd-empty">Nothing answered in this window yet.</div>'}`;
+      || emptyHtml('Nothing answered in this window yet.')}`;
 
   document.getElementById('mx-back').addEventListener('click', () => {
     trackingView.open = null;
@@ -11214,7 +11061,7 @@ function renderMetricDetail(body) {
 function renderHabitPanel(hb) {
   const el = document.getElementById('tracking-habit');
   if (!el) return;
-  if (!hb) { el.innerHTML = '<span class="jh-empty">Habits unavailable.</span>'; return; }
+  if (!hb) { el.innerHTML = emptyHtml('Habits unavailable.'); return; }
   trackingView.habits = hb;
   const ex = hb.experiments || {};
   const rows = [];
@@ -11350,16 +11197,6 @@ async function openMap() {
       mapView.sel = parseInt(row.dataset.id);
       mapSelSync();
     });
-    document.getElementById('map-filter').addEventListener('click', e => {
-      e.stopPropagation();
-      mapView.menuOpen = !mapView.menuOpen;
-      renderMapFilter();
-    });
-    // Tapping anywhere else puts the menu away — it is transient chrome, which
-    // is the whole point of 23a over a permanent rail.
-    document.addEventListener('click', e => {
-      if (mapView.menuOpen && !e.target.closest('#map-filter-menu, #map-filter')) closeMapFilter();
-    });
     // The index follows the scroll, the way Settings' does.
     const mapBody = document.getElementById('map-body');
     let spy = 0;
@@ -11394,83 +11231,52 @@ async function openMap() {
 // The pill NAMES the lens, and counts the domain/tag terms rather than listing
 // them — unlike Engage's context button, which is the receipt for items the
 // POOL is hiding and must name every term. MAP hides nothing permanently: the
-// menu is one tap away and shows exactly what is on.
-function renderMapFilter() {
-  const pill = document.getElementById('map-filter');
-  const menu = document.getElementById('map-filter-menu');
-  if (!pill || !menu) return;
-  const extras = mapFilterExtras();
-  pill.textContent = `${mapLens().name}${extras ? ` · ${extras}` : ''} ▾`;
-  pill.classList.toggle('map-filter-on', mapView.lens !== 'all' || !!extras);
-  pill.title = 'What the list is showing — lens and tags';
-
-  menu.classList.toggle('hidden', !mapView.menuOpen);
-  if (!mapView.menuOpen) { menu.innerHTML = ''; return; }
-
+// menu is one tap away and shows exactly what is on. The menu stays open
+// across a pick on purpose: narrowing is usually several taps (a lens, then a
+// tag).
+const mapFilter = stripMenu({
+  pill: 'map-filter',
+  menu: 'map-filter-menu',
+  title: 'What the list is showing — lens and tags',
+  isOpen: () => mapView.menuOpen,
+  setOpen: on => { mapView.menuOpen = on; },
+  pillText: () => {
+    const extras = mapFilterExtras();
+    return { text: `${mapLens().name}${extras ? ` · ${extras}` : ''}`,
+             narrowed: mapView.lens !== 'all' || !!extras };
+  },
   // Tags offered are the ones the inventory actually carries, plus any already
   // required — narrowing to a tag must never make its own chip disappear.
-  const vocab = [...new Set([
-    ...(state.mapItems || []).flatMap(itemTags), ...mapView.tags,
-  ])].sort();
-  menu.innerHTML = `
-    <div class="map-filter-sec">List — showing</div>
-    <div class="map-filter-chips">
-      ${MAP_LENSES.map(l => `<button class="ctx-chip ${
-        l.key === mapView.lens ? 'ctx-req' : 'ctx-off'}" data-lens="${l.key}"
-        >${escHtml(l.name)}</button>`).join('')}
-    </div>
-    <div class="map-filter-sec">Tags — every selected one required</div>
-    <div class="map-filter-chips">
-      ${vocab.length ? vocab.map(t => {
-        const on = mapView.tags.has(t);
-        return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-maptag="${escHtml(t)}"
-          title="${on ? 'required — click to clear' : 'click to require'}"
-          >${on ? '∧' : ''}${escHtml(t)}</button>`;
-      }).join('') : '<span class="cl-hint">no tags in the inventory yet</span>'}
-    </div>
-    <div class="map-filter-sec">Order</div>
-    <div class="map-filter-chips">
-      <button class="ctx-chip ${mapSortOn() ? 'ctx-req' : 'ctx-off'}" data-mapsort="on"
-        title="Due dates first, then deferred by how soon they return">due first</button>
-      <button class="ctx-chip ${mapSortOn() ? 'ctx-off' : 'ctx-req'}" data-mapsort="off">tree order</button>
-    </div>
-    <div class="map-filter-foot">
-      ${mapView.lens !== 'all' || mapFilterExtras()
-        ? '<button class="ctx-chip" id="map-filter-clear">⟳ show everything</button>' : ''}
-      <button class="ctx-chip" id="map-export" title="Downloads it and copies it">⤓ Download Markdown</button>
-    </div>`;
-
-  // stopPropagation on every one of these: the handler RE-RENDERS the menu, so
-  // by the time the click bubbles to the modal's tap-off handler its target has
-  // been replaced and `closest('#map-filter-menu')` no longer finds it — the
-  // menu would put itself away on its own chips. The menu stays open across a
-  // pick on purpose: narrowing is usually several taps (a lens, then a tag).
-  const stay = (el, fn) => el.addEventListener('click', e => {
-    e.stopPropagation();
-    fn();
-    renderMap();
-  });
-  menu.querySelectorAll('[data-lens]').forEach(b =>
-    stay(b, () => { mapView.lens = b.dataset.lens; }));
-  menu.querySelectorAll('[data-maptag]').forEach(b => stay(b, () => {
-    const t = b.dataset.maptag;
-    if (mapView.tags.has(t)) mapView.tags.delete(t);
-    else mapView.tags.add(t);
-  }));
-  menu.querySelectorAll('[data-mapsort]').forEach(b => stay(b, () => {
-    if (b.dataset.mapsort === 'off') localStorage.setItem('mapSort', 'off');
-    else localStorage.removeItem('mapSort');   // absent = on, one default
-  }));
-  const clear = menu.querySelector('#map-filter-clear');
-  if (clear) stay(clear, () => {
-    mapView.lens = 'all';
-    mapView.tags.clear();
-  });
-  menu.querySelector('#map-export').addEventListener('click', e => {
-    e.stopPropagation();
-    exportMap();
-  });
-}
+  sections: () => [
+    { title: 'List — showing',
+      chips: pickChipsHtml(MAP_LENSES.map(l => ({ value: l.key, label: l.name })),
+                           mapView.lens, 'data-lens') },
+    { title: 'Tags — every selected one required',
+      chips: tagChipsHtml([...new Set([...(state.mapItems || []).flatMap(itemTags), ...mapView.tags])].sort(),
+                          mapView.tags, 'data-maptag', 'no tags in the inventory yet') },
+    { title: 'Order',
+      chips: pickChipsHtml([
+        { value: 'on', label: 'due first', title: 'Due dates first, then deferred by how soon they return' },
+        { value: 'off', label: 'tree order' }], mapSortOn() ? 'on' : 'off', 'data-mapsort') },
+  ],
+  foot: () => '<button class="chip" id="map-export" title="Downloads it and copies it">⤓ Download Markdown</button>',
+  clear: () => { mapView.lens = 'all'; mapView.tags.clear(); },
+  onChange: () => renderMap(),
+  wire: (menu, stay) => {
+    menu.querySelectorAll('[data-lens]').forEach(b =>
+      stay(b, () => { mapView.lens = b.dataset.lens; }));
+    menu.querySelectorAll('[data-maptag]').forEach(b =>
+      stay(b, () => toggleInSet(mapView.tags, b.dataset.maptag)));
+    menu.querySelectorAll('[data-mapsort]').forEach(b => stay(b, () => {
+      if (b.dataset.mapsort === 'off') localStorage.setItem('mapSort', 'off');
+      else localStorage.removeItem('mapSort');   // absent = on, one default
+    }));
+    menu.querySelector('#map-export').addEventListener('click', e => {
+      e.stopPropagation();
+      exportMap();
+    });
+  },
+});
 
 // MAP PAGE, 9a (2026-10-01, Quentin's design): the Now page's shell — the
 // area's name in the left column where the date sits on Now, pinned while its
@@ -11533,12 +11339,6 @@ function wireMapIndex(body) {
   mapIndexSpy(body);
 }
 
-function closeMapFilter() {
-  if (!mapView.menuOpen) return false;
-  mapView.menuOpen = false;
-  renderMapFilter();
-  return true;
-}
 
 async function refreshMap() {
   // Areas and domains come along because MAP now RENDERS them (the roster at
@@ -11660,46 +11460,24 @@ function wireMapRows(body, byId, afterFn) {
   // dblclick always fires a click first, so the single-click action waits out
   // the double-click window before committing.
   body.querySelectorAll('.map-text').forEach(span => {
-    let clickTimer = null;
-    span.addEventListener('click', () => {
-      clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        const item = byId[parseInt(span.closest('.map-row').dataset.id)];
-        if (item) openClarifyForItem(item, after);
-      }, 220);
-    });
-    span.addEventListener('dblclick', () => {
-      clearTimeout(clickTimer);
+    onTapOrDouble(span, () => {
+      const item = byId[parseInt(span.closest('.map-row').dataset.id)];
+      if (item) openClarifyForItem(item, after);
+    }, () => {
       const row = span.closest('.map-row');
       const id = parseInt(row.dataset.id);
       const item = byId[id];
       if (!item) return;
-      row.draggable = false;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 's2-rename-input';
-      input.value = item.content;
-      span.replaceWith(input);
-      input.focus();
-      input.select();
-      let settled = false;
-      const finish = async save => {
-        if (settled) return;
-        settled = true;
-        const content = input.value.trim();
-        row.draggable = true;
-        if (!save || !content || content === item.content) { await after(); return; }
-        undoablePatch(item, ['content'], `renamed "${item.content}"`);
-        await apiSend(`/api/inbox/${id}`, 'PATCH', { content });
-        await after();
-      };
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-        // stopPropagation, or this same keydown also reaches initHub's handler
-        // and closes the overlay behind the editor — Esc peels innermost-first.
-        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      inlineEdit(span, {
+        value: item.content,
+        row,
+        onCancel: after,
+        onCommit: async content => {
+          undoablePatch(item, ['content'], `renamed "${item.content}"`);
+          await apiSend(`/api/inbox/${id}`, 'PATCH', { content });
+          await after();
+        },
       });
-      input.addEventListener('blur', () => finish(true));
     });
   });
 
@@ -11721,7 +11499,7 @@ function renderMap() {
   const body = document.getElementById('map-body');
   if (!body) return;
   const todayStr = wallDay();
-  renderMapFilter();
+  mapFilter.render();
   // Everything below reads the NARROWED set, search included — a search inside
   // "Waiting & deferred" must not turn up an action you are not asking about.
   const items = mapVisibleItems(state.mapItems || [], todayStr);
@@ -11862,7 +11640,7 @@ function renderMap() {
         <span class="mp-meta">${[badge(i), `<span class="map-crumb">${escHtml(crumb(i)) || 'in'}</span>`]
           .filter(Boolean).join(' · ')}</span>
       </div>`;
-    }).join('') : `<div class="pm-empty">Nothing matches "${escHtml(q)}".</div>`}</section></div></div>`;
+    }).join('') : `<div class="empty">Nothing matches "${escHtml(q)}".</div>`}</section></div></div>`;
     wireMapRows(body, byId);
     mapSelSync();
     return;
@@ -11880,16 +11658,16 @@ function renderMap() {
       const live = areaTreeHtml(sec.items, false);
       const later = areaTreeHtml(sec.items, true);
       const nLater = sec.items.filter(i => i.status === 'on_hold').length;
-      rows = live + (later ? `<div class="map-someday-head">Someday / maybe<span class="map-count">${nLater}</span></div>${later}` : '');
+      rows = live + (later ? `<div class="map-someday-head">Someday / maybe<span class="count">${nLater}</span></div>${later}` : '');
     }
     return `<section class="mp-sec" data-sec="${sec.key}">
       <h2 class="mp-sec-title"${sec.obj ? ` data-obj="${sec.obj}"` : ''}>${escHtml(sec.name)}${
         sec.paused ? '<span class="mp-sub">paused</span>' : ''}${
         sec.sub ? `<span class="mp-sub">${escHtml(sec.sub)}</span>` : ''}</h2>
-      ${rows || '<div class="mp-empty">Nothing filed here.</div>'}
+      ${rows || emptyHtml('Nothing filed here.')}
     </section>`;
   };
-  const empty = `<div class="pm-empty mp-none">${
+  const empty = `<div class="empty mp-none">${
     mapLens().key !== 'all' || mapFilterExtras()
       // An empty list under a filter is a fact about the QUESTION, not about
       // the inventory — say which, or it reads as "you have nothing".
@@ -12461,8 +12239,10 @@ function extentLabel(value) {
   return /^P/.test(String(value)) ? `for ${isoHuman(value)}` : String(value);
 }
 
-const SP_DAYS = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su'];
-const SP_DAY_NAMES = { mo: 'Mon', tu: 'Tue', we: 'Wed', th: 'Thu', fr: 'Fri', sa: 'Sat', su: 'Sun' };
+// A schedule source names its days as JSCalendar NDay tokens ('mo'…'su'):
+// WEEKDAYS' `nday`, read back to its row's order and name here.
+const SP_DAYS = WEEKDAYS.map(w => w.nday);
+const spDayName = d => (WEEKDAYS[SP_DAYS.indexOf(d)] || {}).name;
 const DAY_PRESETS = [
   ['mo,tu,we,th,fr', 'Mon – Fri'], ['sa,su', 'Weekends'],
   ['mo,tu,we,th,fr,sa,su', 'Every day'],
@@ -12473,7 +12253,7 @@ const pickerView = { open: false, uid: null, draft: null, error: null, dayMenu: 
 function blankRule() {
   return {
     uid: null, frequency: 'weekly', interval: 1,
-    days: [SP_DAYS[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1]],
+    days: [weekdayOf(new Date()).nday],
     monthMode: 'date', monthDay: new Date().getDate(), nth: 1, nthDay: 'mo',
     skip: 'omit', firstDayOfWeek: 'mo',
     at: '09:00', duration: 'PT1H',
@@ -12550,17 +12330,21 @@ async function openPicker(opts) {
   pickerView.wantName = !opts.onSaved
     && (!!opts.wantName || !!opts.wantSchedule
         || !!(src && (src.kind !== 'rule' || src.title)));
-  document.getElementById('sp-sheet').classList.remove('hidden');
-  document.getElementById('sp-sheet-backdrop').classList.remove('hidden');
+  showSheet('sp-sheet');
   renderPicker();
 }
 
 function closePicker() {
   pickerView.open = false;
   pickerView.draft = null;
-  document.getElementById('sp-sheet').classList.add('hidden');
-  document.getElementById('sp-sheet-backdrop').classList.add('hidden');
+  hideSheet('sp-sheet');
 }
+
+// THE INNERMOST RUNG. The picker opens OVER the sheet that asked for a
+// schedule, and it had no rung and no tap-off until it was defined here: Esc
+// reached past it and closed the settings sheet it was standing on, leaving
+// the picker floating over nothing.
+defineSheet('sp-sheet', { rank: -10, isOpen: () => pickerView.open, close: closePicker });
 
 function pickerKind() {
   const d = pickerView.draft;
@@ -12580,7 +12364,7 @@ function dayLabel(days) {
   if (preset) return preset[1];
   if (!days.length) return 'no days chosen';
   return days.slice().sort((a, b) => SP_DAYS.indexOf(a) - SP_DAYS.indexOf(b))
-    .map(d => SP_DAY_NAMES[d]).join(', ');
+    .map(spDayName).join(', ');
 }
 
 // The days control is a dropdown like every other input here, not a key grid:
@@ -12597,7 +12381,7 @@ function dayControl(idx, days) {
             DAY_PRESETS still NAMES those sets for the collapsed button. */''}
       ${SP_DAYS.map(d => `<button type="button" class="sp-menu-row${
         days.includes(d) ? ' sp-on' : ''}" data-day="${d}">
-        <span>${SP_DAY_NAMES[d]}</span>${days.includes(d) ? '<span>✓</span>' : ''}</button>`).join('')}
+        <span>${spDayName(d)}</span>${days.includes(d) ? '<span>✓</span>' : ''}</button>`).join('')}
     </div>` : ''}`;
 }
 
@@ -12630,14 +12414,14 @@ function patternRows(rule, idx, compact) {
     } else {
       rows.push(`<div class="sp-row">${label('The')}
         ${spSelect('nth', NTHS, rule.nth, ` data-idx="${idx}"`)}
-        ${spSelect('nthDay', SP_DAYS.map(d => [d, SP_DAY_NAMES[d]]), rule.nthDay, ` data-idx="${idx}"`)}
+        ${spSelect('nthDay', WEEKDAYS.map(w => [w.nday, w.name]), rule.nthDay, ` data-idx="${idx}"`)}
       </div>`);
     }
   }
   // Week start only matters above interval 1, which is the only time it shows.
   if (!compact && rule.frequency === 'weekly' && Number(rule.interval) > 1) {
     rows.push(`<div class="sp-row">${label('Week starts')}${
-      spSelect('firstDayOfWeek', SP_DAYS.map(d => [d, SP_DAY_NAMES[d]]),
+      spSelect('firstDayOfWeek', WEEKDAYS.map(w => [w.nday, w.name]),
         rule.firstDayOfWeek, ` data-idx="${idx}"`)}</div>`);
   }
   rows.push(`<div class="sp-row">${label('At')}
@@ -12822,7 +12606,7 @@ function describeDraft() {
     else if (r.frequency === 'daily' && Number(r.interval) <= 1) bits.push('Every day');
     else if (r.frequency === 'monthly' || r.frequency === 'yearly') {
       bits.push(r.monthMode === 'date' ? `the ${r.monthDay}th`
-        : `the ${(NTHS.find(([v]) => String(v) === String(r.nth)) || [])[1]} ${SP_DAY_NAMES[r.nthDay]}`);
+        : `the ${(NTHS.find(([v]) => String(v) === String(r.nth)) || [])[1]} ${spDayName(r.nthDay)}`);
     }
     bits.push(`at ${r.at}` + (r.duration ? ` for ${isoHuman(r.duration)}` : ''));
     return bits.join(' ');
@@ -12934,7 +12718,7 @@ function wirePicker() {
     if (moved) base.days = base.days.filter(x => x !== moved);
     d.rules.push({ ...blankRule(), ...base, uid: null, days: [day],
       movedDay: moved,
-      note: moved ? `${SP_DAY_NAMES[day]} was removed from rule 1.` : null });
+      note: moved ? `${spDayName(day)} was removed from rule 1.` : null });
     pickerView.wantName = true;
     rerender();
   }));
@@ -13133,9 +12917,10 @@ function openCtxSheet(tag) {
 
 function closeCtxSheet() {
   ctxSheet.tag = null;
-  document.getElementById('ctx-sheet').classList.add('hidden');
-  document.getElementById('ctx-sheet-backdrop').classList.add('hidden');
+  hideSheet('ctx-sheet');
 }
+
+defineSheet('ctx-sheet', { rank: 50, isOpen: () => !!ctxSheet.tag, close: closeCtxSheet });
 
 async function ctxSheetRefresh() {
   const [devs, times, sources, daily] = await Promise.all([
@@ -13154,12 +12939,10 @@ async function ctxSheetRefresh() {
 
 function renderCtxSheet() {
   const sheet = document.getElementById('ctx-sheet');
-  const back = document.getElementById('ctx-sheet-backdrop');
   if (!sheet) return;
   const tag = ctxSheet.tag;
   if (!tag) { closeCtxSheet(); return; }
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
+  showSheet('ctx-sheet');
 
   const boundDev = (state.tagDevices || []).find(b => b.tag === tag);
   const dev = boundDev ? boundDev.device : (DEVICE_TAGS.includes(tag) ? tag : null);
@@ -13184,32 +12967,32 @@ function renderCtxSheet() {
     <div class="cl-sec"><span class="cl-label">▭ Device</span>
       ${implicit ? '<span class="cl-hint">implied by the tag name</span>' : ''}</div>
     <div class="cl-chips">
-      ${['pc', 'phone'].map(d => `<button class="cl-chip${dev === d ? ' cl-chip-on' : ''}"
+      ${['pc', 'phone'].map(d => `<button class="chip chip-sm${dev === d ? ' on' : ''}"
         data-dev="${d}">${d}</button>`).join('')}
-      ${boundDev ? '<button class="cl-chip" data-dev="none">✕ any device</button>' : ''}
+      ${boundDev ? '<button class="chip chip-sm" data-dev="none">✕ any device</button>' : ''}
     </div>
 
     <div class="cl-sec"><span class="cl-label">⌖ Location</span>
       <span class="cl-hint">${state.geo.ok ? 'located' : 'no fix — nothing is hidden'}</span></div>
     <div class="cl-chips">
       ${(state.locations || []).filter(l => l.active !== 0
-        || (boundLoc && boundLoc.location_id === l.id)).map(l => `<button class="cl-chip${
-        boundLoc && boundLoc.location_id === l.id ? ' cl-chip-on' : ''}"
+        || (boundLoc && boundLoc.location_id === l.id)).map(l => `<button class="chip chip-sm${
+        boundLoc && boundLoc.location_id === l.id ? ' on' : ''}"
         data-loc="${l.id}">${escHtml(l.name)}</button>`).join('')
         || '<span class="cl-hint">no presets — add one in Settings → Locations</span>'}
-      ${boundLoc ? '<button class="cl-chip" data-loc="none">✕ anywhere</button>' : ''}
+      ${boundLoc ? '<button class="chip chip-sm" data-loc="none">✕ anywhere</button>' : ''}
     </div>
 
     <div class="cl-sec"><span class="cl-label">◷ Time</span></div>
     <div class="cl-chips">
       ${(state.schedules || [])
         .filter(p => p.title || (boundTime && boundTime.source_uid === p.uid))
-        .map(p => `<button class="cl-chip${
-        boundTime && boundTime.source_uid === p.uid ? ' cl-chip-on' : ''}"
+        .map(p => `<button class="chip chip-sm${
+        boundTime && boundTime.source_uid === p.uid ? ' on' : ''}"
         data-time="${p.uid}" title="${escHtml(p.label || '')}">${
         escHtml(p.title || 'its own hours')}</button>`).join('')
         || '<span class="cl-hint">no schedules — add one in Settings → Times</span>'}
-      ${boundTime ? '<button class="cl-chip" data-time="none">✕ any time</button>' : ''}
+      ${boundTime ? '<button class="chip chip-sm" data-time="none">✕ any time</button>' : ''}
     </div>
     ${boundTime ? (() => {
       const p = (state.schedules || []).find(x => x.uid === boundTime.source_uid);
@@ -13225,9 +13008,9 @@ function renderCtxSheet() {
       <span class="cl-hint">${dailyOn ? (todayAns === false ? 'not today'
         : todayAns === true ? 'applies today' : 'unanswered — nothing hidden') : 'never asked'}</span></div>
     <div class="cl-chips">
-      <button class="cl-chip${dailyOn ? ' cl-chip-on' : ''}" data-daily="on"
+      <button class="chip chip-sm${dailyOn ? ' on' : ''}" data-daily="on"
         title="The morning routine's contexts step will ask about this tag">ask</button>
-      ${dailyOn ? '<button class="cl-chip" data-daily="off">✕ stop asking</button>' : ''}
+      ${dailyOn ? '<button class="chip chip-sm" data-daily="off">✕ stop asking</button>' : ''}
     </div>
 
     <div class="cl-row">
@@ -13240,7 +13023,6 @@ function renderCtxSheet() {
   }));
   sheet.querySelector('#ctx-sheet-close').addEventListener('click', closeCtxSheet);
   sheet.querySelector('#ctx-sheet-done').addEventListener('click', closeCtxSheet);
-  back.onclick = closeCtxSheet;
 
   sheet.querySelectorAll('[data-dev]').forEach(b => b.addEventListener('click', async () => {
     if (b.dataset.dev === 'none') {
@@ -13308,8 +13090,7 @@ function initUndo() {
 // because typing is when somebody walks up behind you.
 function initPrivacyHotkey() {
   document.addEventListener('keydown', e => {
-    if (!e.altKey || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
-    if (e.key !== 'p' && e.key !== 'P') return;
+    if (!isPrivacyChord(e)) return;
     e.preventDefault();
     togglePrivacy();
   });
@@ -13331,16 +13112,19 @@ function initEngage() {
       closeClarify();
     }
   };
-  document.addEventListener('keydown', e => {
-    if (e.key !== 'Escape') return;
-    if (clarifyView.open) { peelClarify(); return; }
-    if (engageView.routinePop != null) {
-      engageView.routinePop = null;
-      renderEngage();
-    }
+  // The clarify sheet is the innermost layer wherever it was opened from (only
+  // the picker it can raise sits over it), and tapping off it is the touch Esc
+  // — the same peel, innermost first.
+  defineSheet('clarify-sheet', { rank: 0, isOpen: () => clarifyView.open, close: peelClarify });
+  // The routine card is the LAST rung: it is drawn on the day itself, under
+  // every overlay. (It used to close on its own listener, in the same keypress
+  // as whatever layer the ladder peeled above it.)
+  escRung(90, () => {
+    if (engageView.routinePop == null) return false;
+    engageView.routinePop = null;
+    renderEngage();
+    return true;
   });
-  // Tapping off the sheet is the touch Esc — same ladder, innermost first.
-  document.getElementById('clarify-backdrop').addEventListener('click', peelClarify);
 }
 
 async function openEngage() {
@@ -13740,7 +13524,7 @@ function renderEngage() {
   const returning = isToday ? []
     : (engageView.deferred || []).filter(i => i.defer_until === dateStr);
   const deferHtml = returning.length ? `
-    <div class="eg-pool-head">Returning this day<span class="map-count">${returning.length}</span></div>
+    <div class="eg-pool-head">Returning this day<span class="count">${returning.length}</span></div>
     <div class="eg-pool">
       ${returning.map(i => `
         <div class="eg-row eg-pool-item eg-defer-row" data-id="${i.id}">
@@ -13835,7 +13619,7 @@ function renderEngage() {
   const parts = [];
   if (!rows.length) {
     parts.push(gapHtml(540));
-    parts.push(`<div class="eg-empty">Nothing fixed ${isToday ? 'today' : 'this day'} — drag an action up from the pool.</div>`);
+    parts.push(`<div class="empty">Nothing fixed ${isToday ? 'today' : 'this day'} — drag an action up from the pool.</div>`);
   } else {
     parts.push(gapHtml(Math.max(0, rows[0].minute - 30)));
     rows.forEach((r, i) => {
@@ -13855,17 +13639,16 @@ function renderEngage() {
   // NOW PAGE WIDE, 4b (2026-09-30): on a wide window the day (`.eg-head-day`)
   // and the chip with its agenda (`.eg-side`) stand in a column left of the
   // list. Both wrappers are `display: contents` on a phone.
+  // The arrows and Today are the shared stepper (dateNavHtml, 2026-10-05);
+  // `.eg-head-day` on its row is what the wide column lays out.
   header.innerHTML = `
-    <div class="eg-head-day">
-      <button class="eg-nav" id="eg-prev" title="Previous day">${WK_SVG.prev}</button>
-      <button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
+    ${dateNavHtml({ cls: 'eg-head-day', prev: 'id="eg-prev"', next: 'id="eg-next"',
+      today: isToday ? null : 'id="eg-today"',
+      label: `<button class="eg-day-btn${isToday ? '' : ' eg-day-off'}" id="eg-day-btn"
         title="Open this day in calendar view">
-        <span class="eg-day-name">${viewDate.toLocaleDateString('en-US', { weekday: 'long' })}</span>
-        <span class="eg-day-date">${viewDate.getDate()} ${viewDate.toLocaleDateString('en-US', { month: 'short' })}</span>
-      </button>
-      <button class="eg-nav" id="eg-next" title="Next day">${WK_SVG.next}</button>
-      ${isToday ? '' : '<button id="eg-today" title="Back to today">today</button>'}
-    </div>
+        <span class="eg-day-name">${weekdayOf(viewDate).long}</span>
+        <span class="eg-day-date">${viewDate.getDate()} ${_MONTHS_SHORT[viewDate.getMonth()]}</span>
+      </button>` })}
     <span class="eg-spacer"></span>
   `;
 
@@ -13899,7 +13682,7 @@ function renderEngage() {
               title="Double-click to rewrite">${escHtml(i.content)}</span>
             <button class="eg-rt-del" data-rt="${i.id}" title="Remove from the routine">×</button>
           </div>`;
-        }).join('') || '<div class="eg-empty">No checklist yet — add the first line below.</div>'}
+        }).join('') || emptyHtml('No checklist yet — add the first line below.')}
       </div>
       <input type="text" class="eg-rt-add" placeholder="+ add to the routine…" autocomplete="off">
     </div>`;
@@ -13951,7 +13734,7 @@ function renderEngage() {
             : 'Tap to start · tap again to complete')}
           <span class="eg-text">${escHtml(i.content)}</span>
           <span class="eg-tags">${dueChip(i, 'eg-tag')}</span>
-        </div>`).join('') || '<div class="eg-empty">Nothing available — done, parked, or handed off.</div>'}
+        </div>`).join('') || emptyHtml('Nothing available — done, parked, or handed off.')}
     </div>
     ${popHtml}
     </div>
@@ -14114,27 +13897,14 @@ function renderEngage() {
         const id = parseInt(span.dataset.rt);
         const item = engageView.routineItems.find(i => i.id === id);
         if (!item) return;
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 's2-rename-input';
-        input.value = item.content;
-        span.replaceWith(input);
-        input.focus();
-        input.select();
-        let settled = false;
-        const finish = async save => {
-          if (settled) return;
-          settled = true;
-          const content = input.value.trim();
-          if (!save || !content || content === item.content) { renderEngage(); return; }
-          await apiSend(`/api/routine-items/${id}`, 'PATCH', { content });
-          await refreshEngage();
-        };
-        input.addEventListener('keydown', e => {
-          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        inlineEdit(span, {
+          value: item.content,
+          onCancel: () => renderEngage(),
+          onCommit: async content => {
+            await apiSend(`/api/routine-items/${id}`, 'PATCH', { content });
+            await refreshEngage();
+          },
         });
-        input.addEventListener('blur', () => finish(true));
       });
     });
     const rtAdd = pop.querySelector('.eg-rt-add');
@@ -14266,55 +14036,33 @@ function renderEngage() {
     // A DOUBLE-CLICK RENAMES (2026-10-02, Quentin's instruction) — MAP's
     // gesture, so the single click waits out the double-click window first.
     // The pool may write wording; it is the one structural thing it may not.
-    let clickTimer = null;
-    row.addEventListener('click', e => {
-      if (!e.target.classList.contains('eg-text')) return;
-      // Same race as the checkbox: a long press on the row re-renders, taking
-      // its own click guard with it, and the synthesized click would then open
-      // clarify on top of the ◐ you just set.
-      if (justLongPressed()) return;
-      if (e.detail > 1) return;
-      clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        const id = parseInt(row.dataset.id);
-        const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
-        if (item) openClarifyForItem(item, after);
-      }, 220);
-    });
-    row.addEventListener('dblclick', e => {
-      const span = e.target.closest('.eg-text');
-      if (!span) return;
-      clearTimeout(clickTimer);
+    // (onTapOrDouble turns away the click a long press synthesizes — the same
+    // race as the checkbox: the press re-renders, taking its own click guard
+    // with it, and clarify would open on top of the ◐ you just set.)
+    const poolItem = () => {
       const id = parseInt(row.dataset.id);
-      const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+      return [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+    };
+    onTapOrDouble(row, () => {
+      const item = poolItem();
+      if (item) openClarifyForItem(item, after);
+    }, e => {
+      const item = poolItem();
       if (!item) return;
-      row.draggable = false;
-      const input = document.createElement('input');
-      input.type = 'text';
-      // eg-renaming is what renderEngage's guard looks for.
-      input.className = 's2-rename-input eg-renaming';
-      input.value = item.content;
-      span.replaceWith(input);
-      input.focus();
-      input.select();
-      let settled = false;
-      const finish = async save => {
-        if (settled) return;
-        settled = true;
-        input.classList.remove('eg-renaming');
-        const content = input.value.trim();
-        if (!save || !content || content === item.content) { renderEngage(); return; }
-        undoablePatch(item, ['content'], `renamed "${item.content}"`);
-        await patchInboxItem(id, { content });
-        await after();
-      };
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-        // stopPropagation, or initHub's Esc peels the page behind the field.
-        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      // eg-renaming is what renderEngage's guard looks for while the field
+      // holds focus (inlineEdit lets go before either end repaints).
+      inlineEdit(e.target.closest('.eg-text'), {
+        value: item.content,
+        className: 's2-rename-input eg-renaming',
+        row,
+        onCancel: () => renderEngage(),
+        onCommit: async content => {
+          undoablePatch(item, ['content'], `renamed "${item.content}"`);
+          await patchInboxItem(item.id, { content });
+          await after();
+        },
       });
-      input.addEventListener('blur', () => finish(true));
-    });
+    }, '.eg-text');
   });
 
   dragEdgeScroll(body);   // a drag can reach gaps above/below the fold
@@ -14343,7 +14091,7 @@ async function renderNowFull() {
   const body = document.getElementById('now-full-body');
   if (!body) return;
   const day = await apiGet('/api/engage/day', null);
-  if (!day) { body.innerHTML = '<div class="gtd-empty">Could not load the day.</div>'; return; }
+  if (!day) { body.innerHTML = emptyHtml('Could not load the day.'); return; }
   const d = new Date();
   const m = d.getHours() * 60 + d.getMinutes();
   const PRIO = { event: 3, routine: 2, block: 1 };
@@ -14933,8 +14681,7 @@ function closeClarify() {
   clarifyView.forOccasion = null;
   clarifyView.forRecurring = null;
   clarifyView.after = null;
-  document.getElementById('clarify-sheet').classList.add('hidden');
-  document.getElementById('clarify-backdrop').classList.add('hidden');
+  hideSheet('clarify-sheet');
   document.getElementById('engage-body').classList.remove('eg-dimmed');
   renderInbox();
   if (after) after();
@@ -15254,8 +15001,7 @@ function renderClarify() {
     closeClarify(); return;
   }
   document.getElementById('engage-body').classList.add('eg-dimmed');
-  document.getElementById('clarify-backdrop').classList.remove('hidden');
-  sheet.classList.remove('hidden');
+  showSheet('clarify-sheet');
   if (clarifyView.compose) { renderClarifyCompose(sheet); return; }
   if (clarifyView.projSearch != null) { renderClarifyProjSearch(sheet, item); return; }
 
@@ -15276,9 +15022,9 @@ function renderClarify() {
   const doProgress = verb === 'do' && clarifyView.doVariant === 'progress';
   const doVariantChips = () => `
     <div class="cl-chips">
-      <button class="cl-chip${clarifyView.doVariant === 'done' ? ' cl-chip-on' : ''}"
+      <button class="chip chip-sm${clarifyView.doVariant === 'done' ? ' on' : ''}"
         data-dovar="done" title="Two-minute rule — filing marks it done">finish it now</button>
-      <button class="cl-chip${doProgress ? ' cl-chip-on' : ''}"
+      <button class="chip chip-sm${doProgress ? ' on' : ''}"
         data-dovar="progress" title="Starting it — it stays in the pool, marked ◐">start it now <span class="cl-key">I</span></button>
     </div>`;
   const verbBtn = (v, label, key) =>
@@ -15295,8 +15041,8 @@ function renderClarify() {
       <div class="cl-sec"><span class="cl-label">Comes back</span>
         <span class="cl-hint">a new one appears, this often</span></div>
       <div class="cl-chips">
-        ${REC_PERIODS.map(p => `<button class="cl-chip${
-          rec.interval === p.n ? ' cl-chip-on' : ''}" data-recper="${p.n}">${p.label}</button>`).join('')}
+        ${REC_PERIODS.map(p => `<button class="chip chip-sm${
+          rec.interval === p.n ? ' on' : ''}" data-recper="${p.n}">${p.label}</button>`).join('')}
       </div>
       <div class="cl-row">
         <span class="cl-label">First one</span>
@@ -15316,10 +15062,10 @@ function renderClarify() {
       </div>
       <div class="cl-sec"><span class="cl-label">State</span>
         <span class="cl-hint">paused: nothing new is seeded</span></div>
-      <div class="cl-chips">
-        <button class="cl-chip${rec.active ? ' cl-chip-on' : ''}" data-recact="1">Active</button>
-        <button class="cl-chip${rec.active ? '' : ' cl-chip-on'}" data-recact="0">Paused</button>
-      </div>
+      <div class="cl-row"><div class="seg">
+        <button class="${rec.active ? 'on' : ''}" data-recact="1">Active</button>
+        <button class="${rec.active ? '' : 'on'}" data-recact="0">Paused</button>
+      </div></div>
       <div class="cl-row"><span class="cl-hint">Paused stops new ones being seeded.
         Any already filed stay exactly where they are.</span></div>`;
   } else if (isProj) {
@@ -15337,7 +15083,7 @@ function renderClarify() {
         <span class="cl-hint">every action under it inherits these</span></div>
       <div class="cl-chips">
         ${clarifyView.tagVocab.filter(t => !EST_TAGS.includes(t)).map(t =>
-          `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+          `<button class="chip chip-sm${clarifyView.tags.has(t) ? ' on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
         <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
       </div>
       <div class="cl-row">
@@ -15353,7 +15099,7 @@ function renderClarify() {
       <div class="cl-sec"><span class="cl-label">Waiting on</span><span class="cl-hint">who owns it now</span></div>
       <div class="cl-chips">
         ${clarifyView.peopleNames.map(nm =>
-          `<button class="cl-chip${clarifyView.who === nm ? ' cl-chip-on' : ''}" data-who="${escHtml(nm)}">${escHtml(nm)}</button>`).join('')}
+          `<button class="chip chip-sm${clarifyView.who === nm ? ' on' : ''}" data-who="${escHtml(nm)}">${escHtml(nm)}</button>`).join('')}
         <input type="text" id="cl-who-custom" class="cl-chip-input" placeholder="+ someone" value="${escHtml(custom)}">
       </div>
       <div class="cl-row">
@@ -15370,7 +15116,7 @@ function renderClarify() {
         handOffAvailable() ? ' · hold pc/phone to send it there' : ''}</span></div>
       <div class="cl-chips">
         ${clarifyView.tagVocab.map(t =>
-          `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+          `<button class="chip chip-sm${clarifyView.tags.has(t) ? ' on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
         <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
       </div>
       ${clarifyInherited().length ? `<div class="cl-row"><span class="cl-hint">from the project:
@@ -15415,7 +15161,7 @@ function renderClarify() {
       <div class="cl-sec"><span class="cl-label">Filing to</span>
         <span class="cl-hint">${clarifyView.areaId ? 'tap again to clear' : 'nothing in particular'}</span></div>
       ${shown.length ? `<div class="cl-chips">
-        ${shown.map(a => `<button class="cl-chip${a.id === clarifyView.areaId ? ' cl-chip-on' : ''}"
+        ${shown.map(a => `<button class="chip chip-sm${a.id === clarifyView.areaId ? ' on' : ''}"
            data-area="${a.id}">${escHtml(a.name)}</button>`).join('')}
       </div>` : ''}`;
   }
@@ -15490,7 +15236,7 @@ function renderClarify() {
       <button class="cl-pill${clarifyView.refOpen ? ' cl-pill-on' : ''}" id="cl-reference">Reference <span class="cl-key">R</span></button>
     </div>`}
     ${clarifyView.refOpen && !tpl && !rec ? `<div class="cl-chips cl-ref-row">
-      ${clarifyView.refLists.map(l => `<button class="cl-chip" data-reflist="${l.id}">${escHtml(l.name)}</button>`).join('')}
+      ${clarifyView.refLists.map(l => `<button class="chip chip-sm" data-reflist="${l.id}">${escHtml(l.name)}</button>`).join('')}
       <input type="text" id="cl-ref-new" class="cl-chip-input" placeholder="+ new list">
     </div>` : ''}
     <div class="cl-foot">
@@ -15551,7 +15297,7 @@ function renderClarify() {
     toast('Deleted');
     closeClarify();
   });
-  sheet.querySelectorAll('.cl-chip[data-tag]').forEach(b => {
+  sheet.querySelectorAll('.chip[data-tag]').forEach(b => {
     b.addEventListener('click', () => {
       const t = b.dataset.tag;
       if (clarifyView.tags.has(t)) clarifyView.tags.delete(t);
@@ -15574,11 +15320,11 @@ function renderClarify() {
       onLongPress(b, () => handOffToDevice(b.dataset.tag));
     }
   });
-  sheet.querySelectorAll('.cl-chip[data-who]').forEach(b => b.addEventListener('click', () => {
+  sheet.querySelectorAll('.chip[data-who]').forEach(b => b.addEventListener('click', () => {
     clarifyView.who = clarifyView.who === b.dataset.who ? '' : b.dataset.who;
     renderClarify();
   }));
-  sheet.querySelectorAll('.cl-chip[data-area]').forEach(b => {
+  sheet.querySelectorAll('.chip[data-area]').forEach(b => {
     b.addEventListener('click', () => {
       // Letting go of an area files under nothing (domains are gone).
       const aid = parseInt(b.dataset.area);
@@ -15740,7 +15486,7 @@ function renderClarify() {
     closeClarify();
     if (back) back();
   });
-  sheet.querySelectorAll('.cl-chip[data-reflist]').forEach(b => b.addEventListener('click', () => {
+  sheet.querySelectorAll('.chip[data-reflist]').forEach(b => b.addEventListener('click', () => {
     fileClarify('reference', parseInt(b.dataset.reflist));
   }));
   const refNew = sheet.querySelector('#cl-ref-new');
@@ -16012,13 +15758,13 @@ function renderClarifyCompose(sheet) {
           <span class="cl-chain-text">${escHtml(a.content)}</span>
           <span class="cl-chain-tags">${(a.tags || '').split(' ').filter(Boolean)
             .map(t => `<span class="map-tag">${escHtml(t)}</span>`).join('')}${
-            dueOf(a) ? dueChip(a, 'map-badge') : ''}</span>
+            dueOf(a) ? dueChip(a, 'badge') : ''}</span>
           ${a.after_id ? `<button class="cl-chain-x" data-id="${a.id}"
             title="Unchain — it stops waiting on ${escHtml((byId[a.after_id] || {}).content || 'that')}">✕</button>` : ''}
           <button class="cl-chain-go" data-go="${a.id}"
             title="Clarify this action — contexts, due, show-on, notes">›</button>
         </div>`).join('')
-        || '<div class="gtd-empty">No actions yet — type the first one below.</div>'}
+        || emptyHtml('No actions yet — type the first one below.')}
     </div>
     <div class="cl-action-wrap">
       <input type="text" id="cl-compose-add" class="cl-action"
@@ -16046,8 +15792,7 @@ function renderClarifyCompose(sheet) {
         clarifyView.compose = { ...saved, actions: [], arm: null };
         clarifyView.open = true;
         clarifyView.single = false;
-        document.getElementById('clarify-sheet').classList.remove('hidden');
-        document.getElementById('clarify-backdrop').classList.remove('hidden');
+        showSheet('clarify-sheet');
         document.getElementById('engage-body').classList.add('eg-dimmed');
         await refreshCompose();
       });

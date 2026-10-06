@@ -13,9 +13,8 @@ const DRAFT_KEY = 'inboxPageDraft';
 const RECEIPT_MS = 6000;
 let noteTimer = null;
 
+applyTheme(storedTheme());
 try {
-  const t = localStorage.getItem('theme');
-  document.documentElement.classList.toggle('theme-light', t === 'light');
   field.value = localStorage.getItem(DRAFT_KEY) || '';
 } catch (e) { /* private mode: no draft to restore */ }
 
@@ -31,18 +30,13 @@ function say(html, bad) {
   if (!bad) noteTimer = setTimeout(() => { note.innerHTML = ''; }, RECEIPT_MS);
 }
 
-const esc = s => String(s).replace(/[&<>"']/g,
-  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 async function capture() {
   const content = field.value.trim();
   if (!content) return;
   let res = null;
   try {
-    res = await fetch('/api/inbox', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    });
+    res = await apiSend('/api/inbox', 'POST', { content });
   } catch (e) { res = null; }
   if (!res || !res.ok) {
     say('Not saved — ' + (res ? `the server said ${res.status}` : 'no connection')
@@ -54,11 +48,11 @@ async function capture() {
   // stays.
   if (field.value.trim() === content) field.value = '';
   saveDraft();
-  say(`Added “${esc(content)}” <button type="button" id="ib-undo">Undo</button>`);
+  say(`Added “${escHtml(content)}” <button type="button" id="ib-undo">Undo</button>`);
   const undo = document.getElementById('ib-undo');
   if (undo && item.id != null) undo.addEventListener('click', async () => {
-    const r = await fetch(`/api/inbox/${item.id}`, { method: 'DELETE' }).catch(() => null);
-    say(r && r.ok ? `Removed “${esc(content)}”` : 'Could not undo — it is still in the inbox.', !(r && r.ok));
+    const r = await apiSend(`/api/inbox/${item.id}`, 'DELETE').catch(() => null);
+    say(r && r.ok ? `Removed “${escHtml(content)}”` : 'Could not undo — it is still in the inbox.', !(r && r.ok));
     field.focus();
   });
 }

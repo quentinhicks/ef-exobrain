@@ -44,7 +44,7 @@
       <button id="map-filter" class="tn-pill"></button>
       <label class="tn-search" title="Search the projects"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input type="text" id="map-q" placeholder="Search" autocomplete="off"></label>
-      <span id="map-q-count" class="tn-count"></span>
+      <span id="map-q-count" class="count tn-count"></span>
     </div>
     <div class="tn-tools hidden" data-page="logs">
       <button id="logs-filter" class="tn-pill"></button>
@@ -73,8 +73,8 @@
       <!-- Catches taps outside the sheet so clicking off closes it (through the
            same closeClarify that now flushes notes) instead of hitting whatever
            surface is behind. -->
-      <div id="clarify-backdrop" class="hidden"></div>
-      <div id="clarify-sheet" class="dock-panel hidden"></div>
+      <div id="clarify-sheet-backdrop" class="sheet-backdrop hidden"></div>
+      <div id="clarify-sheet" class="sheet dock-panel hidden"></div>
     </div>
   </div>
 
@@ -91,14 +91,8 @@
     <!-- A block category lit up on the calendar (initCalBlockPin) -->
     <div id="right-panel">
       <div class="tl-header">
-        <div class="tl-nav">
-          <button class="tl-nav-btn" id="nav-prev">‹</button>
-          <span id="tl-date-label"></span>
-          <button class="tl-nav-btn" id="nav-next">›</button>
-          <button class="tl-today-btn" id="nav-today">Today</button>
-          <!-- Day | Week: drawn on a wide screen only (the week needs the room) -->
-          <div class="wk-seg" id="tl-view-seg"><button class="on" data-cal-view="day">Day</button><button data-cal-view="week">Week</button></div>
-        </div>
+        <!-- ‹ day › Today — drawn by renderDateLabel (dateNavHtml) -->
+        <div class="tl-nav" id="tl-nav"></div>
         <div class="tl-refresh-area">
           <button class="tl-refresh-btn" id="tl-plan-mode" title="Draw the hours you plan to work">✎ Plan</button>
           <button class="tl-refresh-btn" id="tl-add-event">+ Event</button>
@@ -133,20 +127,20 @@
 
   <!-- One context tag's configuration: device, location, time period.
        Opened by right-click / long-press on a tag chip in the ctx picker. -->
-  <div id="ctx-sheet-backdrop" class="hidden"></div>
-  <div id="ctx-sheet" class="dock-panel hidden"></div>
+  <div id="ctx-sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="ctx-sheet" class="sheet dock-panel hidden"></div>
 
-  <div id="ev-sheet-backdrop" class="hidden"></div>
-  <div id="ev-sheet" class="dock-panel hidden"></div>
-  <div id="en-sheet-backdrop" class="hidden"></div>
-  <div id="en-sheet" class="dock-panel hidden"></div>
+  <div id="ev-sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="ev-sheet" class="sheet dock-panel hidden"></div>
+  <div id="en-sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="en-sheet" class="sheet dock-panel hidden"></div>
 
   <!-- ENDING one thing: an experiment (and, in the same breath, tomorrow's) or
        a habit. One sheet behind three doors — the nightly routine, Tracking and
        the weekly review — because the line it asks for is the evidence the
        review judges, and a prompt() is not a gesture a phone has. -->
-  <div id="ex-sheet-backdrop" class="hidden"></div>
-  <div id="ex-sheet" class="dock-panel hidden"></div>
+  <div id="ex-sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="ex-sheet" class="sheet dock-panel hidden"></div>
 
   <!-- WHAT THE JUDGE KNOWS about one gate on the day being looked at. A POPUP,
        not a sheet: it is a read-out you open next to the pill you are asking
@@ -163,8 +157,8 @@
 
   <!-- One OCCASION: the actions a kind of event always brings with it.
        Opened by tapping an event on the day. -->
-  <div id="oc-sheet-backdrop" class="hidden"></div>
-  <div id="oc-sheet" class="dock-panel hidden"></div>
+  <div id="oc-sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="oc-sheet" class="sheet dock-panel hidden"></div>
 
   <!-- Reference lists: GTD's non-actionable keeps (books, movies, gifts…).
        Deliberately outside the action inventory — no MAP row, no predicate. -->
@@ -372,8 +366,8 @@
   <!-- 3 · sheet. Every settings datatype adds and edits in THIS object, with
        its own Save; it shares #clarify-sheet's geometry and z-layer, and the
        section behind it dims rather than scrolls. -->
-  <div id="se-sheet-backdrop" class="hidden"></div>
-  <div id="se-sheet" class="dock-panel hidden"></div>
+  <div id="se-sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="se-sheet" class="sheet dock-panel hidden"></div>
 
   <!-- The SCHEDULE PICKER: one dialog, three sources. It opens as a single rule
        and the type is a consequence of what gets answered — the Follows row at
@@ -383,8 +377,8 @@
        82343144-9c74-405a-8a03-5d1a2c5b82c7, file Schedule Picker.dc.html).
        Same geometry as #clarify-sheet, one layer above the settings sheet:
        Settings → Times is the only surface it opens from today. -->
-  <div id="sp-sheet-backdrop" class="hidden"></div>
-  <div id="sp-sheet" class="dock-panel hidden"></div>
+  <div id="sp-sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="sp-sheet" class="sheet dock-panel hidden"></div>
 
   <!-- THE global bar: one context-sensitive bottom bar for the whole app.
        Every overlay opens ABOVE it (bottom: var(--gbar-h)), so capture, undo,
@@ -401,6 +395,7 @@
   <div id="log-photo-view" class="hidden"></div>
 
 
+  <script src="/static/common.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

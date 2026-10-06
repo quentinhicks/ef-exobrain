@@ -159,6 +159,132 @@ select option {
   display: none !important;
 }
 
+/* ── ONE CHIP, ONE SWITCH, ONE BADGE, ONE COUNT, ONE EMPTY (2026-10-05,
+   Quentin's instruction: "enforce DRY abstractions as much as possible") ──
+   Eight toggle looks had grown — .ctx-chip lit GOLD, .cl-chip lit accent and
+   had no edge, .se-day lit grey, .se-check and .se-wk-off lit as an accent
+   outline, .mx-set, the gates dashboard's .gd-day, and two segmented
+   switches (.wk-seg, .gd-seg) with nothing in common. A pick read differently
+   on every surface, and three of them outlined a CONTROL in --border, which
+   measured 1.1–1.4:1 against the sheet: a chip you could not see the edge of.
+   Now: .chip is anything you tap to pick or toggle, .on is the ONE selected
+   look, .chip-sm the mono size the clarify sheet's vocabulary uses, and .seg
+   is a row of exclusive choices. A site keeps its own class only for LAYOUT
+   (a day key's width, a check row's flex) or for a meaning beyond on/off.
+   They sit up here, before every surface, so a site's layout class always
+   wins the cascade over the shared look rather than racing it. */
+.chip {
+  font: 12px var(--font-ui);
+  padding: 5px 11px;
+  border-radius: 20px;
+  /* A control's outline owes 3:1: --text-secondary, never --border. */
+  border: 1px solid var(--text-secondary);
+  background: transparent;
+  color: var(--text-secondary);
+  transition: border-color 0.1s ease, color 0.1s ease;
+}
+.chip:hover { border-color: var(--text-primary); color: var(--text-primary); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.chip:disabled { opacity: 0.45; cursor: default; }
+.chip-sm { font: 11px var(--font-mono); padding: 6px 10px; }
+
+/* Seven day keys in one row, always (weekdayToggles in common.js) — a
+   settings sheet's days field and a gate's schedule. MTWRFSU keeps every key
+   one character wide; each key is a .chip, this is only its shape. */
+.wd-toggles {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  flex: 1;
+}
+.wd-toggle {
+  text-align: center;
+  font-size: 13px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 7px;
+}
+
+/* ‹ a day › (dateNavHtml in common.js) — Engage's day, the calendar's day
+   and week, the entry sheet's month, the gates dashboard's day. The arrows
+   are ghost buttons (an edge on a stepper is noise, so none owes 3:1); Today
+   is a .chip in the accent, because it only shows away from the current
+   period and a planning view must never be mistaken for the real one. A
+   site's label class keeps its own type. */
+.date-nav { display: flex; align-items: center; gap: 4px; }
+.date-nav-step {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.date-nav-step:hover:not(:disabled) { background: var(--surface-2); color: var(--text-primary); }
+.date-nav-step:disabled { opacity: 0.3; cursor: default; }
+.date-nav-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.date-nav-today { flex: none; margin-left: 4px; color: var(--accent); border-color: var(--accent); }
+.date-nav-today:hover { color: var(--accent); border-color: var(--accent); background: var(--surface-2); }
+
+.seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 8px;
+  flex: none;
+}
+.seg > button {
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.seg > button:hover { color: var(--text-primary); }
+.seg > button.on { background: var(--accent); color: var(--on-accent); }
+.seg > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* A badge SAYS a state; nobody taps it, so its edge is decoration and keeps
+   --border. Only a non-default state earns one. */
+.badge {
+  flex: none;
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.badge-ok { color: var(--success); border-color: var(--success); }
+.badge-bad { color: var(--danger); border-color: var(--danger); }
+.badge-wait { color: var(--accent); border-color: var(--accent); }
+.badge-warn { color: var(--gold); border-color: var(--gold); }
+
+/* How many: a number beside what it counts. Empty means nothing to say. */
+.count {
+  font: 11px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.count:empty { display: none; }
+
+/* What an empty list says instead (emptyHtml in common.js). A list whose rows
+   are inset sets --empty-x, so the sentence starts where its rows would. */
+.empty {
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 8px var(--empty-x, 0);
+}
+
 /* ── App shell ─────────────────────────────────────────────── */
 
 /* ── Mobile shell (9c) ──────────────────────────────────────── */
@@ -469,16 +595,6 @@ select option {
 .be-row-sub.be-row-sub-wrap { white-space: normal; line-height: 1.45; }
 
 /* Only a non-default state earns a badge — a default is not information. */
-.be-row-badge {
-  font: 10px var(--font-mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 6px;
-  flex: none;
-}
 
 .be-list-row.be-dim .be-row-name,
 .be-list-row.be-dim .be-row-meta,
@@ -501,11 +617,7 @@ select option {
 
 .be-set-ctl { flex: none; }
 
-.be-empty {
-  color: var(--text-secondary);
-  font-size: 13px;
-  padding: 13px 20px;
-}
+.be-list, #be-qr-section { --empty-x: 20px; }
 
 /* WHERE THE REST OF THEM ARE. A list that holds fewer things than you have has
    to say so and say where — the same bargain the pool's gates struck, in one
@@ -762,28 +874,6 @@ select option {
 .se-openpicker > span:first-child { flex: 1; }
 .se-openpicker:hover { border-color: var(--accent); }
 
-/* Seven keys, one row, always — MTWRFSU keeps every day one character wide. */
-.se-days {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 6px;
-  flex: 1;
-}
-
-.se-day {
-  text-align: center;
-  font-size: 13px;
-  padding: 10px 0;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  color: var(--text-secondary);
-}
-
-.se-day.se-on {
-  background: var(--surface-2);
-  border-color: var(--text-primary);
-  color: var(--text-primary);
-}
 
 /* Swatches at row height, not a select of colour names. */
 .se-swatches { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -810,17 +900,14 @@ select option {
   line-height: 1;
 }
 
+/* A check row is a .chip the width of the field. */
 .se-check {
   flex: 1;
   text-align: left;
-  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 11px 12px;
   font-size: 14px;
-  color: var(--text-secondary);
 }
-
-.se-check.se-on { border-color: var(--accent); color: var(--accent); }
 
 .se-weekly {
   flex: 1;
@@ -847,14 +934,9 @@ select option {
 
 .se-wk-off {
   flex: none;
-  font: 11px var(--font-mono);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 7px;
 }
-
-.se-wk-off.se-on { border-color: var(--accent); color: var(--accent); }
 
 /* One primary action per surface, at the bottom of the sheet and nowhere
    else — the section behind it has no Save of its own. */
@@ -1178,23 +1260,6 @@ select option {
   gap: 6px;
 }
 
-.tl-nav-btn {
-  min-width: 32px;
-  min-height: 34px;
-  padding: 0 4px;
-  font-size: 18px;
-  color: var(--text-secondary);
-  border: none;
-  background: none;
-  line-height: 1;
-}
-
-.tl-nav-btn:hover { color: var(--text-primary); }
-
-.tl-nav-btn:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
 
 #tl-date-label {
   flex: none;
@@ -1251,18 +1316,6 @@ select option {
 .tl-nav { flex: none; }
 #tl-date-label { flex: none; }
 
-.tl-today-btn {
-  font-size: 12px;
-  color: var(--text-secondary);
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-
-.tl-today-btn:hover {
-  background: var(--surface-2);
-  color: var(--text-primary);
-}
 
 .tl-refresh-area {
   margin-left: auto;
@@ -1695,12 +1748,6 @@ body.calendar-minimized #review-modal {
   overflow-y: auto;
 }
 
-.tl-deadlines-empty {
-  padding: 14px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
 
 .tl-deadline-group {
   padding: 8px 12px 4px;
@@ -1974,11 +2021,6 @@ body.calendar-minimized #review-modal {
   display: inline-block;
 }
 
-.inbox-returned-badge {
-  color: var(--accent);
-  font-size: 11px;
-  margin-right: 4px;
-}
 
 /* -- Section 2: Active project items ---------------------- */
 
@@ -2010,10 +2052,6 @@ body.calendar-minimized #review-modal {
   border-bottom: none;
 }
 
-.s2-empty {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
 
 .inbox-area-suggested {
   opacity: 0.45;
@@ -2105,12 +2143,6 @@ body.calendar-minimized #review-modal {
   font-size: 12px;
 }
 
-.inbox-empty {
-  font-size: 12px;
-  color: var(--text-secondary);
-  padding: 8px 0;
-  text-align: center;
-}
 
 /* -- Section 2 interactive items -------------------------- */
 
@@ -2463,11 +2495,6 @@ body.calendar-minimized #review-modal {
 /* The area of the block you are actually in. */
 .s2-area-head.s2-area-current .s2-area-name { color: var(--accent); }
 
-.s2-area-count {
-  font: 11px var(--font-mono);
-  color: var(--text-secondary);
-  flex: none;
-}
 
 .s2-area-body {
   padding: 0 0 4px 14px;
@@ -2610,11 +2637,6 @@ body.calendar-minimized #review-modal {
   font-size: 11px;
 }
 
-.log-empty {
-  color: var(--text-secondary);
-  font-size: 13px;
-  padding: 10px 2px;
-}
 
 .log-editor-bar {
   display: flex;
@@ -3551,7 +3573,7 @@ body.np-body {
 }
 
 #tracking-habit .jh-since { color: var(--text-secondary); font-size: 12px; }
-#tracking-habit .jh-empty { color: var(--text-secondary); }
+
 
 /* Tabulator dark-theme overrides */
 
@@ -3688,68 +3710,28 @@ body.np-body {
    mode (the ladder inverts there — see the theme section of CLAUDE.md). */
 #map-modal { background: var(--surface-mid); }
 
-/* ── MAP's one filter menu (23a) ─────────────────────────────
-   The lens joins domain and tags in the header's menu, so there is ONE place
-   that narrows the list and no permanent band of chrome. The pill names what
-   you are looking at; the menu is transient and hangs under the header.
-   Chips reuse .ctx-chip / .ctx-req / .ctx-off — the same grammar the Engage
-   context picker uses, so "required" looks the same everywhere it is said. */
-.map-filter-pill {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font: 13px var(--font-ui);
-  color: var(--text-primary);
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 7px;
-  padding: 5px 10px;
-  margin-left: auto;
-  margin-right: 10px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.map-filter-pill:hover { border-color: var(--accent); }
-/* Non-default only: a pill that is always accented says nothing. */
-.map-filter-pill.map-filter-on {
-  background: var(--gold);
-  border-color: var(--gold);
-  color: var(--on-accent);
-  font-weight: 500;
-}
-#map-filter-menu {
-  position: absolute;
-  top: 50px;
-  right: 12px;
-  z-index: 3;
-  width: 300px;
-  max-width: calc(100% - 24px);
-  max-height: 70%;
-  overflow-y: auto;
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.map-filter-sec {
+/* ── The strip's selector menus (23a, one component since 2026-10-05) ───
+   The lens joins domain and tags in one menu, so there is ONE place that
+   narrows a list and no permanent band of chrome. The pill (.tn-pill) names
+   what you are looking at; the menu is transient and hangs under the strip.
+   Chips are the one .chip (.on = picked; a required tag also says ∧) — the
+   same grammar everywhere "required" is said. */
+/* The strip menus' inside (stripMenu): section titles over chip rows, and a
+   foot. Placed by .tn-menu, the one rule for all three. */
+.tn-menu-sec {
   font: 10px var(--font-mono);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-secondary);
   font-weight: 600;
 }
-.map-filter-sec:not(:first-child) { margin-top: 4px; }
-.map-filter-chips { display: flex; flex-wrap: wrap; gap: 7px; }
-.map-filter-foot {
+.tn-menu-sec:not(:first-child) { margin-top: 4px; }
+.tn-menu-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.tn-menu-foot {
   margin-top: 6px;
   padding-top: 9px;
   border-top: 1px solid var(--border-soft);
 }
-/* The menu is positioned against the modal, not the viewport. */
 #map-modal { position: relative; }
 
 /* MAP search: fixed above the scrolling body, so the query stays put while
@@ -3799,13 +3781,6 @@ body.np-body {
 
 .pm-name { flex: 1; }
 
-.pm-count {
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.pm-row-stalled .pm-count { color: var(--danger); }
 
 .pm-delete {
   color: var(--text-secondary);
@@ -3816,10 +3791,6 @@ body.np-body {
 
 .pm-delete:hover { color: var(--danger); }
 
-.pm-empty {
-  color: var(--text-secondary);
-  font-size: 13px;
-}
 
 /* ── NOW — the next-actions lens ─────────────────────────────
    Flat by construction: no group containers, no indentation. The parent chain
@@ -3921,7 +3892,7 @@ body.np-body {
 .now-add-area { flex: none; max-width: 38%; }
 
 .s2-header { display: flex; align-items: center; gap: 4px; }
-.now-count { font-size: 11px; color: var(--text-secondary); }
+
 .s2-header .s2-domain-select { margin-left: auto; }
 
 /* ── MAP — the inventory lens ────────────────────────────────
@@ -3955,7 +3926,8 @@ body.np-body {
   margin: 6px 0 2px;
 }
 
-.map-count { font-size: 10px; color: var(--text-secondary); margin-left: 6px; }
+/* A count riding in a heading has no gap to sit in. */
+.map-someday-head .count, .eg-pool-head .count { margin-left: 6px; }
 
 /* -- Areas of focus, the roster at the foot of MAP --------------------------
    The standing structure, below the inventory it files. Visually quieter than
@@ -4071,7 +4043,7 @@ body.np-body {
 /* The in-page date picker (renderEntryWhen) — never the browser's own, which
    privacy mode's filter cannot reach. */
 .enw-picked { font-size: 15px; font-weight: 500; color: var(--text-primary); padding: 8px 14px; }
-.enw-nav { display: flex; align-items: center; gap: 8px; padding: 0 14px 6px; }
+.enw-nav { padding: 0 14px 6px; }
 .enw-month { flex: 1; text-align: center; font-size: 13px; color: var(--text-secondary); }
 .enw-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; padding: 0 14px 10px; }
 .enw-dow { text-align: center; font-size: 11px; color: var(--text-secondary); padding: 2px 0; }
@@ -4095,24 +4067,6 @@ body.np-body {
   padding-left: 10px;
 }
 
-.map-badge {
-  flex: none;
-  font-size: 10px;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 0 4px;
-  white-space: nowrap;
-}
-
-/* Tags ride on ACTION rows only — a project's state is the row, its contexts
-   belong to the actions under it. Quieter than a state badge: they are what
-   you filter by, not what you act on. */
-.map-badge-tag { border-color: var(--border-soft); opacity: 0.8; }
-
-.map-badge-wait { color: var(--accent); border-color: var(--accent); }
-.map-badge-push { color: #d9cd80; border-color: #d9cd80; }
-.map-badge-bad { color: var(--danger); border-color: var(--danger); }
 
 .map-acts { display: flex; align-items: center; gap: 3px; flex: none; }
 
@@ -4194,17 +4148,9 @@ body.np-body {
 
 .eg-day-name { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); }
 .eg-day-date { font: 11px var(--font-mono); color: var(--text-secondary); }
-/* Day nav: ghost arrows either side of the day, which is itself the way back
-   to today. Off-today gets the accent so a planning view can never be
-   mistaken for the real day. */
-.eg-nav {
-  flex: none;
-  font-size: 17px;
-  line-height: 1;
-  color: var(--text-secondary);
-  padding: 2px 4px;
-}
-.eg-nav:hover { color: var(--accent); }
+/* Day nav: the shared stepper (.date-nav) either side of the day, which is
+   itself the way to the calendar. Off-today gets the accent so a planning
+   view can never be mistaken for the real day. */
 .eg-day-btn {
   display: inline-flex;
   align-items: baseline;
@@ -4227,16 +4173,8 @@ body.np-body {
 
 .eg-day-btn .eg-day-date { white-space: nowrap; }
 .eg-day-off .eg-day-name, .eg-day-off .eg-day-date { color: var(--accent); }
-#eg-today {
-  font: 10px var(--font-mono);
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 9px;
-  padding: 1px 7px;
-  align-self: center;
-}
 
-/* Deadline chip — borrows each surface's tag/badge shape (eg-tag, map-badge,
+/* Deadline chip — borrows each surface's tag/badge shape (eg-tag, .badge,
    gtd-tag), only the colour is its own: red once it's today-or-gone. */
 .due-chip-hot { color: var(--danger); border-color: var(--danger); }
 /* Inherited from the project above, not typed on this row — a real
@@ -4543,7 +4481,7 @@ body.np-body {
   min-width: 0;
 }
 
-.eg-empty { font-size: 12px; color: var(--text-secondary); padding: 8px 14px; }
+#eg-main { --empty-x: 14px; }
 /* Items hidden by a location-bound tag — counted, never silent. */
 
 /* THE global bar — one context bar for the whole app, fixed under everything.
@@ -4694,18 +4632,7 @@ body.np-body {
 /* Undo in the top strip (10c): greyed while there is nothing to undo. */
 #eg-undo:disabled { opacity: 0.35; cursor: default; background: none; }
 
-/* The context chips — still drawn by the clarify sheet and the tag sheet. */
-.ctx-chip {
-  font: 12px var(--font-ui);
-  padding: 5px 11px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-secondary);
-  transition: border-color 0.1s ease, color 0.1s ease;
-}
-.ctx-chip:hover { border-color: var(--accent); color: var(--text-primary); }
-.ctx-req { background: var(--gold); border-color: var(--gold); color: var(--on-accent); font-weight: 500; }
+
 /* Every gap opens while a drag is in flight. Tap-to-arm-then-tap-a-gap went
    2026-08-11: a two-step gesture whose second target was invisible until the
    first step, on a surface where Show-on date+time already places an action. */
@@ -4739,7 +4666,7 @@ body.np-body {
 }
 
 .gtd-section-head:hover { color: var(--text-primary); }
-.gtd-empty { font-size: 12px; color: var(--text-secondary); padding: 6px 0; }
+
 
 /* ── Reference lists (tab-lists) — GTD's non-actionable keeps ── */
 #ref-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
@@ -4922,16 +4849,8 @@ body.np-body {
 .mx-today { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
 .mx-today .mx-yn { flex-wrap: wrap; }
 .mx-today .mx-edit { width: 100%; box-sizing: border-box; }
-.mx-set {
-  font: 11px var(--font-mono);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 6px 12px;
-  min-height: 32px;
-  cursor: pointer;
-}
-.mx-set-on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* An answer is a .chip.chip-sm; this is only its finger-sized height. */
+.mx-set { padding: 6px 12px; min-height: 32px; }
 
 /* Full-screen NOW view (phone) */
 #now-full-body {
@@ -5069,14 +4988,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    closes it (via the flush-on-close path) rather than reaching the surface
    behind. No scrim — the day already dims via .eg-dimmed; this is behaviour,
    not look. */
-#clarify-backdrop,
-#ctx-sheet-backdrop,
-#se-sheet-backdrop,
-#sp-sheet-backdrop,
-#ev-sheet-backdrop,
-#en-sheet-backdrop,
-#ex-sheet-backdrop,
-#oc-sheet-backdrop {
+/* ONE CLASS, not a list of ids (2026-10-05): a sheet carries `.sheet` and its
+   catcher `.sheet-backdrop` in index.html, and defineSheet in app.js wires
+   both — client_rules_test holds that every .sheet is defined. */
+.sheet-backdrop {
   position: fixed;
   inset: 0;
     z-index: 199;
@@ -5086,14 +5001,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* The routine-step settings sheet is the same object as the clarify sheet,
    one datatype over: a list row decides nothing, the sheet decides everything.
    Same geometry, same layer — they are never open at once. */
-#clarify-sheet,
-#ctx-sheet,
-#se-sheet,
-#sp-sheet,
-#ev-sheet,
-#en-sheet,
-#ex-sheet,
-#oc-sheet {
+.sheet {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -5193,19 +5101,13 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .cl-key { font: 10px var(--font-mono); opacity: 0.65; }
 
 .cl-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px; }
-.cl-chip {
-  font: 11px var(--font-mono);
-  padding: 6px 10px;
-  border-radius: 20px;
-  background: var(--surface-2);
-  color: var(--text-secondary);
-}
-.cl-chip-on { background: var(--accent); color: var(--on-accent); }
+/* The chips are .chip.chip-sm; the field that adds one is shaped like them,
+   and is a control too, so its outline takes --text-secondary. */
 .cl-chip-input {
   font: 11px var(--font-mono);
   padding: 6px 10px;
   border-radius: 20px;
-  border: 1px dashed var(--border);
+  border: 1px dashed var(--text-secondary);
   background: transparent;
   color: var(--text-primary);
   width: 92px;
@@ -5221,6 +5123,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: var(--text-secondary);
 }
 .cl-pill:hover { color: var(--text-primary); }
+/* LIT, not picked: a disclosure that is open, a project chosen, the primary
+   button of a sheet. A pick between options is a .seg or a .chip. */
 .cl-pill-on { border: 1px solid var(--accent); color: var(--accent); }
 .cl-pill-static { border: 1px solid var(--border); background: transparent; }
 .cl-date {
@@ -5491,14 +5395,11 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   --wk-hatch: 15%;
   --wk-hatch-on: 30%;              /* a hovered or lit-up block's stripes */
   --wk-bar: 30%;
-  --wk-seg-on: var(--surface-2);   /* the pressed half of a segmented switch */
 }
 
-#tl-view-seg { display: none; }
 /* 800px: the same number as WEEK_MQ in app.js. The week fills the window,
    less a margin, up to 1600px — a laptop's width is what it is for. */
 @media (min-width: 800px) {
-  #tl-view-seg { display: inline-flex; }
   #cal-overlay.cal-wk { max-width: min(1600px, calc(100vw - 32px)); }
 }
 #cal-overlay:not(.cal-wk) #cal-week { display: none; }
@@ -5532,7 +5433,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   min-width: 150px;
   text-align: center;
 }
-.wk-icon, .wk-btn {
+.wk-icon {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -5544,10 +5445,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   white-space: nowrap;
 }
 .wk-icon { padding: 6px; }
-.wk-btn { padding: 5px 9px; font-size: 13px; }
-.wk-btn.wk-icon { padding: 5px 7px; }
-.wk-icon:hover, .wk-btn:hover, .wk-btn.on { background: var(--surface-2); color: var(--text-primary); }
-.wk-icon:focus-visible, .wk-btn:focus-visible, .wk-seg button:focus-visible,
+.wk-icon:hover { background: var(--surface-2); color: var(--text-primary); }
+.wk-icon:focus-visible,
 .wk-day:focus-visible, .wk-gate:focus-visible, .wk-legend-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -5555,29 +5454,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .wk-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .wk-fetch { font-size: 12px; }
 
-.wk-seg {
-  display: inline-flex;
-  gap: 2px;
-  background: var(--tint);
-  border-radius: 8px;
-  padding: 2px;
-  flex: none;
-}
-.wk-seg button {
-  border: none;
-  background: none;
-  border-radius: 6px;
-  padding: 5px 12px;
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.wk-seg button.on {
-  background: var(--wk-seg-on);
-  color: var(--text-primary);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-}
-.wk-roles .wk-seg button { padding: 4px 9px; font-size: 12px; }
+.wk-roles .seg > button { padding: 4px 9px; font-size: 12px; }
 
 .wk-grid {
   display: grid;
@@ -5975,13 +5852,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border-bottom: none;
   gap: 4px;
 }
-#engage-header .eg-nav {
-  display: flex;
-  padding: 6px;
-  border-radius: 6px;
-  color: var(--text-secondary);
-}
-#engage-header .eg-nav:hover { background: var(--surface-2); color: var(--text-primary); }
 #engage-header .eg-day-btn { align-items: baseline; gap: 6px; }
 #engage-header .eg-day-name { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
 #engage-header .eg-day-date { font: 14px var(--font-mono); color: var(--text-secondary); }
@@ -6248,7 +6118,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   --prio-2: rgba(214, 170, 0, 0.17);
   --prio-3: rgba(28, 122, 74, 0.11);
 
-  --gold: #8a6a12;
+  /* 4.4:1 on the light cards as #8a6a12 — a weak gate's proof badge failed
+     its 4.5 (measured 2026-10-05); one step darker clears it everywhere. */
+  --gold: #7a5c0e;
 
   --overlay: rgba(246, 247, 249, 0.94);
   --block-label: #5c6672;
@@ -6294,11 +6166,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 :root.theme-light {
   --eg-ev-swatch: 30%;
   /* The week: block pastels need more of themselves to show as stripes on
-     white, and the pressed half of a switch is the white card, not a grey. */
+     white. */
   --wk-hatch: 28%;
   --wk-hatch-on: 50%;
   --wk-bar: 55%;
-  --wk-seg-on: #ffffff;
   --on-gate: #ffffff;
   --gate-dismissed: #c4c9cf;
   --on-gate-dismissed: #1f2328;
@@ -6311,7 +6182,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 :root.theme-light .now-row:focus { background: rgba(47, 111, 181, 0.08); }
 :root.theme-light .s2-item-recurring { background: rgba(186, 160, 40, 0.16); }
 
-:root.theme-light .map-badge-push { color: #8a6a12; border-color: #c9b978; }
+
 :root.theme-light .now-chip-on { background: rgba(47, 111, 181, 0.10); }
 
 /* ── The global bar's layout contract with every overlay ──────────────────
@@ -6319,10 +6190,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    (plus the bar being fixed at z 170) is the entire replacement for the old
    floating capture/undo chips. Same specificity as each block's own
    inset/bottom declaration, so position in the cascade is what makes it win —
-   #clarify-sheet's bottom: 0 sits late in the file. Listed by id because a
+   .sheet's bottom: 0 sits earlier in the file. Listed by name because a
    few non-overlay fixed elements (toast, stale banner) legitimately keep
    inset: 0. Theme-independent, hence after the light appendix. */
-.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, #clarify-backdrop, #clarify-sheet, #ctx-sheet-backdrop, #ctx-sheet, #se-sheet-backdrop, #se-sheet, #sp-sheet-backdrop, #sp-sheet, #ev-sheet-backdrop, #ev-sheet, #en-sheet-backdrop, #en-sheet, #ex-sheet-backdrop, #ex-sheet, #oc-sheet-backdrop, #oc-sheet {
+.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, .sheet-backdrop, .sheet {
   /* Above the bar, AND above whatever the browser chrome or the keyboard is
      covering: 100% is the viewport, --vvh is what you can see, so the
      difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
@@ -6488,16 +6359,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .ctx-sheet-tag { font: 12px var(--font-mono); color: var(--accent); }
 .ctx-live { color: var(--success); }
 .ctx-dead { color: var(--text-secondary); }
-#map-sort {
-  flex: none;
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 7px;
-  cursor: pointer;
-}
-#map-sort.map-sort-on { color: var(--accent); border-color: var(--accent); }
+
 /* Someday, held apart from live work: same rows, visibly a different pile.
    MAP badges no 'someday' marker, so without this a parked row and an active
    one look identical and the tree can't be read without re-deciding each. */
@@ -6855,16 +6717,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .tl-plan-sum { color: var(--text-primary); font-weight: 600; }
 .tl-plan-hint { color: var(--text-secondary); font-size: 11px; }
 
-/* What the next drawn span is FOR. Wraps to its own line on a phone-width
-   banner rather than squeezing the summary, and the chips are the app's own
-   ctx-chip so a pick reads the same here as it does in MAP's filter menu. */
-.tl-plan-domains {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  flex-basis: 100%;
-}
+
 .tl-plan-dlabel { color: var(--text-secondary); font-size: 11px; margin-right: 2px; }
 
 /* The chip wears the colour its spans will draw in, so the pick and the result
@@ -6988,12 +6841,11 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   font-weight: 700;
   color: var(--text-primary);
 }
-.mp-empty { padding: 8px 0; font-size: 13.5px; color: var(--text-secondary); }
 .mp-none { padding: 24px 0; }
 .mp-add-area { color: var(--accent); font-size: 14px; padding: 6px 8px; margin: 0 -8px; border-radius: 6px; }
 .mp-add-area:hover { background: var(--surface-2); }
 .mp-add-foot { margin-top: 14px; }
-#map-body .pm-empty { padding: 12px 0; }
+
 #map-body .map-row {
   align-items: flex-start;
   gap: 10px;
@@ -7081,7 +6933,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   white-space: nowrap;
 }
 .tn-pill:hover { background: var(--surface-2); color: var(--text-primary); }
-.tn-pill.map-filter-on { color: var(--gold); font-weight: 600; }
+.tn-pill.tn-pill-on { color: var(--gold); font-weight: 600; }
 .tn-search {
   display: flex;
   align-items: center;
@@ -7117,8 +6969,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 @media (max-width: 899px) {
   .tn-search:focus-within input, .tn-search input:not(:placeholder-shown) { width: min(150px, 24vw); }
 }
-.tn-count { font: 11px var(--font-mono); color: var(--text-secondary); white-space: nowrap; }
-.tn-count:empty { display: none; }
+
 @media (min-width: 900px) {
   .tn-search { border-color: var(--text-secondary); }
   .tn-search input { width: 180px; }
@@ -7142,9 +6993,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   gap: 7px;
 }
 .tn-menu.hidden { display: none; }
-.lg-count { font: 12px var(--font-mono); color: var(--text-secondary); }
 
-/* The calendar's selector switching a layer off (renderCalFilter). */
+
+/* The calendar's selector switching a layer off (calFilter, a stripMenu). */
 #cal-overlay.cal-hide-blocks .tl-block,
 #cal-overlay.cal-hide-blocks #tl-blocks-layer { display: none; }
 #cal-overlay.cal-hide-gates .wk-gate,
@@ -7166,7 +7017,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 #tab-lists.ref-index .ref-row:hover { background: var(--surface-2); }
 #tab-lists.ref-index .ref-name { font-size: 15.5px; }
-#tab-lists.ref-index .map-count { font: 12px var(--font-mono); color: var(--text-secondary); }
+
 #tab-lists.ref-index .ref-del { width: 18px; padding: 0; font-size: 15px; opacity: 0; }
 #tab-lists.ref-index .ref-row:hover .ref-del, #tab-lists.ref-index .ref-del:focus-visible { opacity: 1; }
 @media (hover: none) { #tab-lists.ref-index .ref-del { opacity: 0.55; } }
@@ -7280,11 +7131,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
 }
 
-/* The calendar selector's week row (renderCalFilter). */
-.cf-week { display: flex; align-items: center; gap: 6px; }
-.cf-week .wk-icon { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; }
+/* The calendar selector's week row (calFilter, a stripMenu). */
 .cf-week .wk-title { flex: 1; text-align: center; font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
-.cf-tools .ctx-chip { display: inline-flex; align-items: center; gap: 5px; }
+.cf-tools .chip { display: inline-flex; align-items: center; gap: 5px; }
 @media (min-width: 900px) { .tn-tabs { flex: 0 1 auto; } }
 #top-nav #eg-undo { margin-left: auto; }
 /* The range button is in the selector's menu; its panel opens at the right. */
@@ -7317,7 +7166,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   .ref-peek-done { color: var(--text-secondary); text-decoration: line-through; }
   .ref-peek-sub { color: var(--text-secondary); }
   
-  .ref-peek-empty { padding: 6px 0; font-size: 13.5px; color: var(--text-secondary); }
+
 }
 
 /* The Log page's blank log: its Title is the field the heading becomes. */
