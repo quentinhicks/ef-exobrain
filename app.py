@@ -33,7 +33,7 @@ from aggregator import (fetch_gcal, fetch_sheets, fetch_sheets_tab,
                         sheets_set_done)
 
 # THE DATA DIR. Everything the user owns — config.json, tracker.db, backups/,
-# logs/ — is cwd-relative (storage.py's DB_PATH / LOGS_DIR / BACKUPS_DIR), so
+# logs/ — is cwd-relative (storage.py's DB_PATH / BACKUPS_DIR), so
 # the data dir IS the working directory and PT_DATA_DIR is how you move it.
 #
 # It applies in every mode, not just frozen, and that is what lets the code
@@ -249,10 +249,10 @@ def index():
 
 
 # EVERY PAGE HAS A PATH (2026-10-01, Quentin's instruction): /calendar,
-# /projects, /lists/12, /log/<name>, /settings/areas, /run/3 … are the same
-# static shell; app.js reads the path and opens that page. Still no data in
-# the template — the path is only an address.
-APP_PAGES = ('now', 'calendar', 'projects', 'lists', 'log', 'tracking', 'social',
+# /projects, /lists/12, /settings/areas, /run/3 … are the same static shell;
+# app.js reads the path and opens that page. Still no data in the template —
+# the path is only an address.
+APP_PAGES = ('now', 'calendar', 'projects', 'lists', 'tracking', 'social',
              'settings', 'run')
 
 
@@ -260,6 +260,14 @@ APP_PAGES = ('now', 'calendar', 'projects', 'lists', 'log', 'tracking', 'social'
 @app.route('/<any(%s):page>/<path:rest>' % ', '.join(APP_PAGES))
 def app_page(page, rest=None):
     return render_template('index.html')
+
+
+# THE LOG LEFT THIS APP (2026-10-06, Quentin's instruction): logs and
+# dangerous writing live in ef-writing now. An old /log address lands on Now.
+@app.route('/log')
+@app.route('/log/<path:rest>')
+def old_log_page(rest=None):
+    return redirect('/now')
 
 
 @app.route('/panel')
@@ -1550,80 +1558,6 @@ def _daily_backup():
 
 if not os.environ.get('PT_SERVER'):
     threading.Thread(target=_daily_backup, daemon=True).start()
-
-
-@app.route('/api/logs')
-def get_logs():
-    # ?q= adds the matching lines per log. A query PARAMETER rather than a
-    # /api/logs/search route, which would be shadowed by a log actually named
-    # "search" — /api/logs/<name> is already that shape.
-    q = request.args.get('q')
-    if not q:
-        return jsonify(storage.list_logs())
-    hits = storage.search_logs(q)
-    return jsonify([dict(l, hits=hits[l['name']])
-                    for l in storage.list_logs() if l['name'] in hits])
-
-
-@app.route('/api/logs', methods=['POST'])
-def post_log():
-    data = request.get_json()
-    return jsonify(storage.create_log(data['name'], data.get('tags'),
-                                      fresh=bool(data.get('fresh')))), 201
-
-
-@app.route('/api/logs/<name>')
-def get_log(name):
-    return jsonify(storage.read_log(name))
-
-
-@app.route('/api/logs/<name>', methods=['PUT'])
-def put_log(name):
-    storage.write_log(name, request.get_json()['content'])
-    return '', 204
-
-
-@app.route('/api/logs/<name>', methods=['PATCH'])
-def patch_log(name):
-    new = storage.rename_log(name, (request.get_json() or {}).get('title'))
-    if new is None:
-        return jsonify({'error': 'A log needs a title, and that one is taken'}), 409
-    return jsonify({'name': new})
-
-
-@app.route('/api/logs/<name>', methods=['DELETE'])
-def delete_log(name):
-    storage.delete_log(name)
-    return '', 204
-
-
-# Multipart, not JSON: base64 in a JSON body would be a third of the phone's
-# photo again, held whole in memory on both ends, for nothing. The cap is here
-# rather than app.MAX_CONTENT_LENGTH so it applies to THIS route only — every
-# other write is small and a global cap would silently police them too.
-LOG_PHOTO_MAX = 25 * 1024 * 1024
-
-
-@app.route('/api/logs/<name>/photo', methods=['POST'])
-def post_log_photo(name):
-    f = request.files.get('photo')
-    if not f:
-        return jsonify({'error': 'no file'}), 400
-    data = f.read(LOG_PHOTO_MAX + 1)
-    if len(data) > LOG_PHOTO_MAX:
-        return jsonify({'error': 'too big'}), 413
-    rel = storage.save_log_photo(name, f.filename, data, f.mimetype)
-    if not rel:
-        return jsonify({'error': 'not an image'}), 415
-    return jsonify({'path': rel}), 201
-
-
-# Serves what the link points at. The markdown link is RELATIVE, so any viewer
-# reading logs/ off disk resolves it without this; the route exists so the same
-# photo is reachable over HTTP from the phone that took it.
-@app.route('/api/logs/media/<path:fname>')
-def get_log_media(fname):
-    return send_from_directory(os.path.abspath(storage.LOGS_MEDIA_DIR), fname)
 
 
 @app.route('/api/settings', methods=['GET'])

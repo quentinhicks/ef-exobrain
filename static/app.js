@@ -3123,10 +3123,6 @@ async function refreshInboxCount() {
 //                         + affordances on GTD/MAP project rows; persists for
 //                         rapid entry until the chip is tapped or Esc'd)
 //   · ◉ <area>          → active item straight into that area (MAP's + item)
-//   · ✎ log             → derived, not selected: the Logs LIST names a new
-//                         log; with the editor open the bar reverts to inbox
-//                         capture on purpose — a stray task mid-writing goes
-//                         to the inbox, not into the log.
 // Capture stays SILENT everywhere: the Clarify count ticking up is now always
 // on screen, so it is the receipt (the old chip's toast existed only because
 // that count used to be covered). MAP's ◉ filing target is untouched — it
@@ -6410,7 +6406,7 @@ function initHub() {
   //   -10 schedule picker   0 clarify   5 flush notes (never takes the key)
   //    10 settings sheet   20–29 read-outs, menus, transient calendar state
   //    30 occasion sheet   40 legacy overlays   50–53 ctx / event / entry /
-  //    ending sheets       60 dangerous writing   70–71 Social, Lists
+  //    ending sheets       70–71 Social, Lists
   //    80 the .m-overlay band   90 Engage's routine card
   escRung(5, () => { flushOpenNotes(); return false; });
   // The gate read-out is the next layer in (a popup beside its pill, over
@@ -6433,24 +6429,19 @@ function initHub() {
   // MAP overlay in the loop below, the way every sheet peels before what
   // opened it.
   escRung(26, () => mapFilter.close());
-  // A photo fills the screen over the logs overlay, so it peels first — before
-  // that overlay's own filter menu, the way every raised layer does.
-  escRung(27, () => { if (logsView.photo == null) return false; closeLogPhoto(); return true; });
-  escRung(28, () => logsFilter.close());
   escRung(29, () => calFilter.close());
   // Legacy modal overlays (they sit above the m-overlays), innermost wins; the
   // person-detail/bucket/add trio stack over People. The order here IS the
-  // z-order: Settings (155) sits above map/logs (150) and the .m-overlay band
+  // z-order: Settings (155) sits above map (150) and the .m-overlay band
   // (140) because it opens over whatever you already had up.
   escRung(40, () => {
     for (const id of ['person-add-overlay', 'bucket-mgr-overlay', 'person-detail-overlay',
-                      'modal-overlay', 'map-overlay', 'logs-overlay']) {
+                      'modal-overlay', 'map-overlay']) {
       const el = document.getElementById(id);
       if (el && !el.classList.contains('hidden')) {
-        if (id === 'logs-overlay') closeLogsView();
         // MAP's close does more than hide it (notes flush), so Esc goes
         // through the button rather than past it.
-        else if (id === 'map-overlay') document.getElementById('map-close').click();
+        if (id === 'map-overlay') document.getElementById('map-close').click();
         else if (id === 'modal-overlay' && settingsView.section) backToSettingsIndex();
         else if (id === 'modal-overlay') closeBlockEditor();
         else el.classList.add('hidden');
@@ -6459,9 +6450,6 @@ function initHub() {
     }
     return false;
   });
-  // A dangerous-writing session swallows Esc entirely — its own keydown
-  // handler treats Esc as the abort, and nothing underneath may act on it.
-  escRung(60, () => dwView.open);
   // Social peels an open spec/log form before ANYTHING that closes the
   // surface under it. (The focused-input case stopPropagates and never
   // reaches here.)
@@ -6678,15 +6666,13 @@ async function closeSurfaces() {
   };
   flushOpenNotes();
   mapFilter.close();
-  logsFilter.close();
   calFilter.close();
   if (seSheet.kind) closeSeSheet();
   if (occasionView.open) closeOccasionSheet();
   // Not awaited: each hides itself FIRST and then finishes its writes and
-  // re-reads (a log's save, Settings' feed + day refresh) in the background.
+  // re-reads (Settings' feed + day refresh) in the background.
   // Waiting on them is what made the next page lag behind the click.
   if (shown('modal-overlay')) closeBlockEditor();
-  if (shown('logs-overlay')) closeLogsView();
   if (shown('map-overlay')) document.getElementById('map-close').click();
   document.querySelectorAll('.m-overlay:not(.hidden)').forEach(o => closeM(o.id));
 }
@@ -6762,15 +6748,6 @@ async function openSurface(dest, sub) {
     if (!socialEnabled()) return;
     socialView.form = null; openM('tab-social'); refreshSocial();
   }
-  else if (dest === 'logs') {
-    logsView.open = null;
-    // Up at once from what was last read, then repainted from the server.
-    document.getElementById('logs-overlay').classList.remove('hidden');
-    renderLogs();
-    logsView.logs = await apiGet('/api/logs', logsView.logs);
-    renderLogs();
-    if (sub.log && logsView.logs.some(l => l.name === sub.log)) await openLog(sub.log);
-  }
   else if (dest === 'settings') {
     await openBlockEditor();
     if (sub.section && SETTINGS_SECTIONS.some(s => s.key === sub.section)) {
@@ -6801,7 +6778,6 @@ function currentRoute() {
     return !!el && !el.classList.contains('hidden');
   };
   if (shown('modal-overlay')) return settingsView.section ? `settings/${settingsView.section}` : 'settings';
-  if (shown('logs-overlay')) return logsView.open ? `logs/${encodeURIComponent(logsView.open)}` : 'logs';
   if (shown('map-overlay')) return 'map';
   if (shown('tab-lists')) {
     return refView.open != null ? `lists/${refView.open}` : 'lists';
@@ -6815,11 +6791,12 @@ function currentRoute() {
 
 const routeView = { ready: false, saved: null, timer: null, moving: false, target: '' };
 
-// A route is the app's own name for a page (`map`, `logs/x`, `run/3`); the
-// PATH is what the address bar shows (`/projects`, `/log/x`, `/run/3`). Two
-// pages are named differently out there, after their tabs. Flask serves the
-// shell at every one of these (APP_PAGES in app.py).
-const ROUTE_PATHS = { map: 'projects', logs: 'log' };
+// A route is the app's own name for a page (`map`, `lists/12`); the PATH is
+// what the address bar shows (`/projects`, `/lists/12`). One page is named
+// differently out there, after its tab. Flask serves the shell at every one
+// of these (APP_PAGES in app.py). The Log left for ef-writing (2026-10-06):
+// an old `logs` route or `/log` path opens nothing, which lands on Now.
+const ROUTE_PATHS = { map: 'projects' };
 
 function routePath(route) {
   if (!route) return '/';
@@ -6860,7 +6837,6 @@ async function openRoute(route) {
   else if (top === 'lists') {
     await openSurface('lists', a === 'routine' ? {} : { list: num(a) });
   }
-  else if (top === 'logs') await openSurface('logs', { log: a ? decodeURIComponent(a) : null });
   else if (top === 'settings') await openSurface('settings', { section: a });
   else if (top === 'calendar') {
     // Said out loud only when the ADDRESS BAR asked; a remembered route
@@ -6883,7 +6859,7 @@ async function initRoutes() {
   routeView.fromAddress = false;
   routeView.ready = true;
   const watch = new MutationObserver(syncRoute);
-  ['modal-overlay', 'logs-overlay', 'map-overlay', 'cal-overlay', 'tab-lists',
+  ['modal-overlay', 'map-overlay', 'cal-overlay', 'tab-lists',
    'tab-social'].forEach(id => {
     const el = document.getElementById(id);
     if (el) watch.observe(el, { attributes: true, attributeFilter: ['class'] });
@@ -6898,115 +6874,6 @@ async function initRoutes() {
 }
 
 
-// ── Logs ─────────────────────────────────────────────────────
-
-const logsView = { logs: [], open: null, content: '', dirty: false, saveTimer: null,
-                   // Newest first: a log list is read from the top, and the
-                   // one you want is nearly always the one you just wrote.
-                   desc: true, tags: new Set(), menuOpen: false,
-                   q: '', hits: null, qTimer: null,
-                   // The open log's photos, in the order the markdown links
-                   // them, and which one is being LOOKED at (null = none).
-                   photos: [], photo: null };
-
-// CHRONOLOGICAL, by the date parsed out of the filename — not by the filename.
-// Sorting the name as text put November before August and 26-8-11 before
-// 26-8-2, because the old names are unpadded, and the comment here used to
-// claim name order WAS date order. It never was.
-//
-// An undated file (hand-made, or named something else entirely) sorts by when
-// it was last touched, which is the only date it has.
-function logDate(l) {
-  return l.created || (l.updated_at || '').slice(0, 10);
-}
-
-function sortedLogs() {
-  const rows = (logsView.hits || logsView.logs).filter(l =>
-    [...logsView.tags].every(t => (l.tags || []).includes(t)));
-  rows.sort((a, b) => logDate(a).localeCompare(logDate(b))
-    || a.title.localeCompare(b.title));
-  return logsView.desc ? rows.reverse() : rows;
-}
-
-// The vocabulary is whatever the corpus actually carries, plus anything already
-// required — narrowing to a tag must never make its own chip vanish.
-function logTagVocab() {
-  return [...new Set([...logsView.logs.flatMap(l => l.tags || []), ...logsView.tags])].sort();
-}
-
-// The pill NAMES what is showing, the menu is one tap away and shows exactly
-// what is on — Projects' selector, on the logs.
-const logsFilter = stripMenu({
-  pill: 'logs-filter',
-  menu: 'logs-filter-menu',
-  title: 'What the list is showing',
-  isOpen: () => logsView.menuOpen,
-  setOpen: on => { logsView.menuOpen = on; },
-  pillText: () => {
-    const on = logsView.tags.size;
-    return { text: on ? `${on} tag${on === 1 ? '' : 's'}` : 'All logs', narrowed: !!on };
-  },
-  sections: () => [
-    { title: 'Tags — every selected one required',
-      chips: tagChipsHtml(logTagVocab(), logsView.tags, 'data-logtag', 'no tags on any log yet') },
-    { title: 'Order', chips: pickChipsHtml([{ value: '1', label: 'newest first' },
-                                            { value: '', label: 'oldest first' }],
-                                           logsView.desc ? '1' : '', 'data-logdesc') },
-  ],
-  clear: () => logsView.tags.clear(),
-  onChange: () => renderLogs(),
-  wire: (menu, stay) => {
-    menu.querySelectorAll('[data-logtag]').forEach(b =>
-      stay(b, () => toggleInSet(logsView.tags, b.dataset.logtag)));
-    menu.querySelectorAll('[data-logdesc]').forEach(b =>
-      stay(b, () => { logsView.desc = !!b.dataset.logdesc; }));
-  },
-});
-
-function initLogsView() {
-  document.getElementById('logs-close').addEventListener('click', closeLogsView);
-  // The search lives in the strip now, so it is wired ONCE and survives every
-  // repaint of the list under it.
-  const q = document.getElementById('logs-q');
-  q.addEventListener('input', e => {
-    logsView.q = e.target.value;
-    clearTimeout(logsView.qTimer);
-    // Debounced: each keystroke would otherwise read every file on the box.
-    logsView.qTimer = setTimeout(runLogSearch, 180);
-  });
-  q.addEventListener('keydown', e => {
-    if (e.key !== 'Escape' || !logsView.q) return;
-    e.stopPropagation();                     // peel the query, not the page
-    logsView.q = '';
-    q.value = '';
-    logsView.hits = null;
-    renderLogs();
-  });
-  // A rotation or window resize changes the textarea's content width, which
-  // would desync the highlight until the next keystroke. Registered once —
-  // updateLogHighlight no-ops when the editor isn't open.
-  window.addEventListener('resize', updateLogHighlight);
-}
-
-async function closeLogsView() {
-  await logDraftCommit();
-  await flushLogSave();
-  document.getElementById('logs-overlay').classList.add('hidden');
-  logsView.open = null;
-  renderBar();
-  // No sync call on close: the PUT already wrote the file on the server, which
-  // is the single copy every device reads. Logs used to be git-pushed from
-  // here, which is what put personal writing under version control.
-}
-
-// ── Reference lists — GTD's non-actionable keeps ──────────────
-//
-// Books, movies, gifts, places: kept because they might matter, never
-// actionable, so they live OUTSIDE the inbox_item inventory — no MAP row, no
-// availability predicate, no review count. Two levels (index → one list),
-// both written through the global bar's derived modes; the clarify sheet's
-// Reference exit files an inbox item's text here (the missing half of GTD's
-// non-actionable keep, next to Someday/Maybe).
 const refView = { lists: [], open: null,
                   // The row whose contents stand in the right column (wide
                   // only): { kind: 'list', id } or null. ROUTINES ARE LISTS
@@ -8091,428 +7958,15 @@ function refListRename(span) {
   });
 }
 
-async function flushLogSave() {
-  clearTimeout(logsView.saveTimer);
-  if (!logsView.open || !logsView.dirty) return;
-  const ta = document.getElementById('log-editor');
-  if (!ta) return;
-  logsView.dirty = false;
-  await apiSend(`/api/logs/${encodeURIComponent(logsView.open)}`, 'PUT', { content: ta.value });
-  const status = document.getElementById('log-save-status');
-  if (status) status.textContent = 'Saved';
-}
-
-// ── Dangerous writing ────────────────────────────────────────
-//
-// A timed session where pausing DESTROYS the draft. Three things in this app
-// would each have neutralised that, and all three fixes invert a rule the
-// codebase otherwise enforces — see design-specs/spec-dangerous-writing.md:
-//
-//   1. The log editor autosaves 1s after input, so a 5s wipe would delete
-//      text that reached the server four seconds earlier. So a session NEVER
-//      touches /api/logs: the draft lives in dwView.text and nowhere else,
-//      and the first write happens on success. Failure is honest because
-//      nothing was ever stored.
-//   2. The markdown suite routes every mutation through execCommand so the
-//      browser's Ctrl+Z survives. Obey that here and Ctrl+Z resurrects the
-//      draft. The wipe is therefore the one sanctioned `ta.value = ''` —
-//      killing the native undo stack is the FEATURE here, not the bug that
-//      rule exists to prevent. Do not "fix" it.
-//   3. The global bar is reachable everywhere and its Esc stops typing for
-//      free. So this overlay sits ABOVE the bar (z 240), the only surface
-//      that takes capture away.
-//
-// The threat is total on purpose: a partial penalty is a cost you negotiate
-// with, which is the thing being designed against.
-// `let`, not `const`: the headless test hook, same as panel.js's
-// ACK_GRACE_MIN — a suite cannot spend 5 real seconds per assertion.
-let DW_IDLE_MS = 5000;
-
-const dwView = {
-  open: false, phase: 'setup',       // setup | writing | releasing
-  goalKind: 'time', goalTime: 10, goalWords: 500,
-  hardcore: false,
-  text: '', startedAt: 0, logName: null,
-  // The log a session WRITES INTO (its name), or null for a new log. Set by
-  // the Logs page, whose button means "the log I am writing" (2026-10-01,
-  // Quentin's instruction); every other door makes a log of its own.
-  appendTo: null,
-  idleTimer: null, warnTimer: null, tick: null,
-};
-
-function dwWordCount(s) {
-  return (s.trim().match(/\S+/g) || []).length;
-}
-
-// opts lets another surface prescribe the session — the weekly review's mind
-// sweep is "five minutes, no stopping", not a form to fill in. `logName` fixes
-// the resulting log's name instead of deriving it from the first line, so the
-// sweep is findable next week as `YYYY-MM-DD emptied`.
-function openDangerousWriting(opts) {
-  const o = opts || {};
-  dwView.open = true;
-  // Docked in the right column on a wide window, the rest of the app stays in
-  // view but goes inert (style.css, body.dw-open): capture mid-session is the
-  // task-switch the mechanic exists to punish.
-  document.body.classList.add('dw-open');
-  dwView.phase = 'setup';
-  dwView.text = '';
-  dwView.logName = o.logName || null;
-  dwView.appendTo = o.appendTo || null;
-  if (o.goalKind) dwView.goalKind = o.goalKind;
-  if (o.goalTime) dwView.goalTime = o.goalTime;
-  if (o.goalWords) dwView.goalWords = o.goalWords;
-  if (o.hardcore != null) dwView.hardcore = o.hardcore;
-  renderDangerous();
-  // Prescribed sessions skip the setup card: the point is to start writing,
-  // and a confirmation step is a place to not start.
-  if (o.autostart) dwBegin();
-}
-
-function closeDangerousWriting() {
-  dwStopTimers();
-  dwView.open = false;
-  document.body.classList.remove('dw-open');
-  dwView.phase = 'setup';
-  dwView.text = '';
-  dwView.logName = null;
-  dwView.appendTo = null;
-  document.getElementById('dw-session').classList.add('hidden');
-}
-
-function dwStopTimers() {
-  clearTimeout(dwView.idleTimer);
-  clearTimeout(dwView.warnTimer);
-  clearInterval(dwView.tick);
-  dwView.idleTimer = null;
-  dwView.warnTimer = null;
-  dwView.tick = null;
-}
-
-// Failure. The buffer is dropped and nothing is written — there is no
-// recovery path by construction, not by policy.
-function dwFail() {
-  dwStopTimers();
-  dwView.text = '';
-  dwView.phase = 'setup';
-  renderDangerous();
-}
-
-// Success: hand the text to the ordinary Logs machinery and get out of the
-// way. Everything after this line is the app that already exists.
-async function dwSucceed() {
-  // Synchronous re-entry guard, set BEFORE the first await. The word goal is
-  // tested on every keystroke, so without this each key past the goal starts
-  // another release — it wrote one log per character.
-  if (dwView.phase !== 'writing') return;
-  dwView.phase = 'releasing';
-  dwStopTimers();
-  const text = dwView.text;
-  let log;
-  if (dwView.appendTo) {
-    // INTO THE LOG ON SCREEN: what it already says, then the session. Read
-    // back from the server rather than the editor, which the page flushed
-    // before the session opened and nothing has touched since.
-    log = await fetch(`/api/logs/${encodeURIComponent(dwView.appendTo)}`).then(r => r.json());
-    const had = log.content || '';
-    const sep = !had.trim() ? '' : had.endsWith('\n\n') ? '' : had.endsWith('\n') ? '\n' : '\n\n';
-    await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT',
-      { content: (had.trim() ? had : '') + sep + text });
-  } else {
-    const d = new Date();
-    const stamp = `${d.getFullYear() % 100}-${d.getMonth() + 1}-${d.getDate()}`;
-    const first = text.replace(/\s+/g, ' ').trim().slice(0, 48).replace(/[\\/:*?"<>|]/g, '');
-    const name = dwView.logName || `${stamp} ${first || 'writing'}`;
-    // `fresh`: a NEW log whatever the name. Without it a name already taken
-    // today (a second sweep, a title used twice) reopened that file and the
-    // PUT below overwrote it.
-    log = await apiSend('/api/logs', 'POST', { name, fresh: true }).then(r => r.json());
-    await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT', { content: text });
-    // The blank log's title became this log's name, so the blank log is spent.
-    if (dwView.logName && dwView.logName === (logsView.draftTitle || '').trim()) logsView.draftTitle = '';
-  }
-  closeDangerousWriting();
-  openM('logs-overlay');
-  logsView.logs = await fetch('/api/logs').then(r => r.json());
-  await openLog(log.name);
-  toast('Released — it is yours to edit now');
-}
-
-function dwArm() {
-  clearTimeout(dwView.idleTimer);
-  clearTimeout(dwView.warnTimer);
-  const el = document.getElementById('dw-session');
-  if (el) el.classList.remove('dw-danger');
-  // At 2/3 of the window the surface goes red. This is a WARNING, not a
-  // countdown — a number to watch is a thing to do instead of writing, but
-  // silent deletion with no tell reads as a bug rather than a rule.
-  dwView.warnTimer = setTimeout(() => {
-    const e = document.getElementById('dw-session');
-    if (e) e.classList.add('dw-danger');
-  }, Math.round(DW_IDLE_MS * 2 / 3));
-  dwView.idleTimer = setTimeout(dwFail, DW_IDLE_MS);
-}
-
-function dwBegin() {
-  dwView.phase = 'writing';
-  dwView.text = '';
-  dwView.startedAt = Date.now();
-  renderDangerous();
-  dwArm();
-  // The clock is checked on a tick rather than a single timeout so the
-  // progress readout and the time goal share one source of truth.
-  dwView.tick = setInterval(() => {
-    if (dwView.phase !== 'writing') return;
-    if (dwView.goalKind === 'time'
-        && Date.now() - dwView.startedAt >= dwView.goalTime * 60000) {
-      dwSucceed();
-      return;
-    }
-    dwPaintProgress();
-  }, 1000);
-}
-
-function dwPaintProgress() {
-  const el = document.getElementById('dw-progress');
-  if (!el) return;
-  if (dwView.goalKind === 'time') {
-    const left = Math.max(0, dwView.goalTime * 60000 - (Date.now() - dwView.startedAt));
-    el.textContent = `${Math.floor(left / 60000)}:${String(Math.floor(left / 1000) % 60).padStart(2, '0')} left`;
-  } else {
-    el.textContent = `${dwWordCount(dwView.text)} / ${dwView.goalWords} words`;
-  }
-}
-
-// Where a finished session lands, said before it starts.
-function dwTargetLine() {
-  if (dwView.appendTo) {
-    const meta = logsView.logs.find(l => l.name === dwView.appendTo);
-    return `<div class="dw-target">Adds to <b>${escHtml((meta && meta.title) || dwView.appendTo)}</b>, after what is already there.</div>`;
-  }
-  if (dwView.logName) return `<div class="dw-target">Becomes a new log, <b>${escHtml(dwView.logName)}</b>.</div>`;
-  return '';
-}
-
-function renderDangerous() {
-  const el = document.getElementById('dw-session');
-  if (!el) return;
-  el.classList.toggle('hidden', !dwView.open);
-  if (!dwView.open) return;
-
-  if (dwView.phase === 'setup') {
-    const PRESETS = [5, 10, 20];
-    const WORD_PRESETS = [250, 500, 1000];
-    const goalChips = dwView.goalKind === 'time'
-      ? PRESETS.map(m => `<button class="chip chip-sm${dwView.goalTime === m ? ' on' : ''}"
-          data-time="${m}">${m} min</button>`).join('')
-        + `<input type="number" id="dw-time-custom" class="cl-chip-input dw-custom"
-             min="1" max="240" placeholder="min"
-             value="${PRESETS.includes(dwView.goalTime) ? '' : dwView.goalTime}">`
-      : WORD_PRESETS.map(w => `<button class="chip chip-sm${dwView.goalWords === w ? ' on' : ''}"
-          data-words="${w}">${w} words</button>`).join('')
-        + `<input type="number" id="dw-words-custom" class="cl-chip-input dw-custom"
-             min="1" max="10000" placeholder="words"
-             value="${WORD_PRESETS.includes(dwView.goalWords) ? '' : dwView.goalWords}">`;
-    el.innerHTML = `
-      <div class="dw-wrap">
-        <div class="dw-title">Dangerous writing</div>
-        ${dwTargetLine()}
-        <div class="dw-warn">Stop typing for ${DW_IDLE_MS / 1000} seconds and everything you have written is destroyed. There is no recovery. Finish the goal and it is yours.</div>
-
-        <div class="cl-sec"><span class="cl-label">Goal</span></div>
-        <div class="cl-chips">
-          <button class="chip chip-sm${dwView.goalKind === 'time' ? ' on' : ''}" data-kind="time">Time</button>
-          <button class="chip chip-sm${dwView.goalKind === 'words' ? ' on' : ''}" data-kind="words">Words</button>
-        </div>
-        <div class="cl-chips">${goalChips}</div>
-
-        <div class="cl-sec"><span class="cl-label">Hardcore</span></div>
-        <div class="cl-chips">
-          <button class="chip chip-sm${dwView.hardcore ? ' on' : ''}" data-hard="1">${dwView.hardcore ? 'On' : 'Off'}</button>
-          <span class="cl-hint">hides the text and disables backspace</span>
-        </div>
-
-        <div class="dw-actions">
-          <button id="dw-begin" class="dw-begin">Begin</button>
-          <button id="dw-quit" class="cl-pill">Not now</button>
-        </div>
-      </div>`;
-
-    el.querySelectorAll('[data-kind]').forEach(b => b.addEventListener('click', () => {
-      dwView.goalKind = b.dataset.kind;
-      renderDangerous();
-    }));
-    el.querySelectorAll('[data-time]').forEach(b => b.addEventListener('click', () => {
-      dwView.goalTime = parseInt(b.dataset.time);
-      renderDangerous();
-    }));
-    const custom = el.querySelector('#dw-time-custom');
-    if (custom) custom.addEventListener('input', () => {
-      const n = parseInt(custom.value);
-      if (!n || n < 1) return;
-      dwView.goalTime = Math.min(240, n);
-      // Repaint the chips by hand rather than re-rendering: a re-render here
-      // would take the field you are typing in with it.
-      el.querySelectorAll('[data-time]').forEach(c =>
-        c.classList.toggle('on', parseInt(c.dataset.time) === dwView.goalTime));
-    });
-    el.querySelectorAll('[data-words]').forEach(b => b.addEventListener('click', () => {
-      dwView.goalWords = parseInt(b.dataset.words);
-      renderDangerous();
-    }));
-    const customW = el.querySelector('#dw-words-custom');
-    if (customW) customW.addEventListener('input', () => {
-      const n = parseInt(customW.value);
-      if (!n || n < 1) return;
-      dwView.goalWords = Math.min(10000, n);
-      el.querySelectorAll('[data-words]').forEach(c =>
-        c.classList.toggle('on', parseInt(c.dataset.words) === dwView.goalWords));
-    });
-    el.querySelector('[data-hard]').addEventListener('click', () => {
-      dwView.hardcore = !dwView.hardcore;
-      renderDangerous();
-    });
-    el.querySelector('#dw-begin').addEventListener('click', dwBegin);
-    el.querySelector('#dw-quit').addEventListener('click', closeDangerousWriting);
-    return;
-  }
-
-  // Writing. No idle countdown is shown on purpose — a visible timer is
-  // something to watch instead of write, and the threat reads stronger
-  // unquantified. Only progress toward the GOAL is displayed.
-  el.innerHTML = `
-    <div class="dw-wrap dw-writing">
-      <textarea id="dw-editor" class="dw-editor${dwView.hardcore ? ' dw-blind' : ''}"
-        spellcheck="false" placeholder="Start. Don't stop."></textarea>
-      <div class="dw-foot">
-        <span id="dw-progress" class="dw-progress"></span>
-        <span class="cl-hint">${dwView.hardcore ? 'hardcore — no backspace, no reading back' : 'esc abandons it'}</span>
-      </div>
-    </div>`;
-
-  const ta = el.querySelector('#dw-editor');
-  ta.value = dwView.text;
-  ta.focus();
-  dwPaintProgress();
-
-  ta.addEventListener('input', () => {
-    dwView.text = ta.value;
-    dwArm();
-    if (dwView.goalKind === 'words' && dwWordCount(dwView.text) >= dwView.goalWords) {
-      dwSucceed();
-      return;
-    }
-    dwPaintProgress();
-  });
-  ta.addEventListener('keydown', e => {
-    // Hardcore: no going back. Cut/undo are the same escape by another name.
-    if (dwView.hardcore
-        && (e.key === 'Backspace' || e.key === 'Delete'
-            || ((e.metaKey || e.ctrlKey) && ['z', 'y', 'x'].includes(e.key.toLowerCase())))) {
-      e.preventDefault();
-      return;
-    }
-    // Esc is the ABORT, not a peel — and it costs exactly what pausing costs.
-    // stopPropagation so initHub's handler doesn't also close the overlay
-    // underneath.
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      dwFail();
-    }
-  });
-  // Leaving counts as stopping. wireNotesAutosave uses these same hooks to
-  // SAVE; here they do the opposite, which is the point and not a bug.
-  ta.addEventListener('blur', () => { if (dwView.phase === 'writing') dwArm(); });
-}
-
-async function openLog(name) {
-  const log = await fetch(`/api/logs/${encodeURIComponent(name)}`).then(r => r.json());
-  logsView.open = log.name;
-  logsView.content = log.content;
-  logsView.dirty = false;
-  renderLogs();
-}
-
-// Markdown source highlighting (VS Code style): raw text stays visible,
-// tokens get color/weight via a highlight layer under a transparent textarea.
-// Mono font only — bold/italic keep advance width so the layers stay aligned.
-
-function mdInline(esc) {
-  return esc.split(/(`[^`\n]+`)/g).map(seg => {
-    if (/^`[^`\n]+`$/.test(seg)) return `<span class="md-code">${seg}</span>`;
-    return seg.replace(
-      /(\*\*[^*\n]+\*\*)|(~~[^~\n]+~~)|(\*[^*\n]+\*)|(\b_[^_\n]+_\b)|(\[[^\]\n]*\]\([^)\n]*\))/g,
-      (m, bold, strike, star, under, link) => {
-        if (bold) return `<span class="md-bold">${bold}</span>`;
-        if (strike) return `<span class="md-strike">${strike}</span>`;
-        if (star || under) return `<span class="md-italic">${star || under}</span>`;
-        return `<span class="md-link">${link}</span>`;
-      }
-    );
-  }).join('');
-}
-
-function mdHighlight(text) {
-  if (text.endsWith('\n')) text += ' ';
-  const out = [];
-  let inFence = false;
-  for (const line of text.split('\n')) {
-    const esc = escHtml(line);
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      out.push(`<span class="md-codeblock">${esc}</span>`);
-    } else if (inFence) {
-      out.push(`<span class="md-codeblock">${esc}</span>`);
-    } else if (/^#{1,6}(\s|$)/.test(line)) {
-      out.push(`<span class="md-heading">${mdInline(esc)}</span>`);
-    } else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-      out.push(`<span class="md-hr">${esc}</span>`);
-    } else if (/^\s*>/.test(line)) {
-      out.push(`<span class="md-quote">${mdInline(esc)}</span>`);
-    } else {
-      const m = line.match(/^(\s*)([-*+]|\d+\.)( \[[ xX]\])?(\s)/);
-      if (m) {
-        out.push(`<span class="md-marker">${escHtml(m[0])}</span>` + mdInline(escHtml(line.slice(m[0].length))));
-      } else {
-        out.push(mdInline(esc));
-      }
-    }
-  }
-  return out.join('\n');
-}
-
-// The two layers must wrap IDENTICALLY or the caret stops matching the text
-// you see: the textarea lays out the real lines, the highlight paints the
-// visible ones, and one row of divergence anywhere above the click point
-// shifts everything below it. CSS alone can't guarantee equal width —
-// scrollbar-gutter is honored on the textarea but not on the overflow:hidden
-// highlight in WebKit — so pin the highlight to the textarea's own content
-// width. Cheap, and it re-runs on every input, when the scrollbar's
-// appearance could change that width.
-function syncLogHighlightWidth(ta, hl) {
-  hl.style.width = ta.clientWidth + 'px';
-}
-
-function updateLogHighlight() {
-  const ta = document.getElementById('log-editor');
-  const hl = document.getElementById('log-highlight');
-  if (!ta || !hl) return;
-  syncLogHighlightWidth(ta, hl);
-  hl.innerHTML = mdHighlight(ta.value);
-  hl.scrollTop = ta.scrollTop;
-  hl.scrollLeft = ta.scrollLeft;
-}
-
-// ── Log editor: markdown shortcuts + editing gestures ────────
+// ── Markdown editing: shortcuts + editing gestures (notes fields) ─
 //
 // Every mutation goes through document.execCommand('insertText') instead of
 // assigning ta.value. Assigning wipes the textarea's native undo stack, and
 // inside a text field the BROWSER's Ctrl+Z is deliberately the one that wins
 // (see Undo: the app stack ignores keystrokes in text fields). Selecting the
-// range first and letting insertText do the write is the whole reason a log
+// range first and letting insertText do the write is the whole reason a note
 // stays undoable one step at a time. insertText also fires `input`, so the
-// highlight repaint and the autosave timer come along for free — no handler
+// autosave timer comes along for free — no handler
 // below has to remember to trigger them.
 
 // Typing one of these over a SELECTION wraps it instead of replacing it.
@@ -8776,13 +8230,14 @@ function logKeydown(e) {
     case 'e': e.preventDefault(); logWrap(ta, '`', '`'); break;
     case 'k': e.preventDefault(); logLink(ta); break;
     // Save-now saves THIS field: a notes textarea flushes its own autosave
-    // (wireNotesAutosave stamps __flushNotes); the log editor keeps its path.
-    case 's': e.preventDefault(); if (ta.__flushNotes) ta.__flushNotes(); else flushLogSave(); break;
+    // (wireNotesAutosave stamps __flushNotes).
+    case 's': e.preventDefault(); if (ta.__flushNotes) ta.__flushNotes(); break;
   }
 }
 
-// The whole suite for any markdown-capable textarea. The log editor's engine
-// (logKeydown/logPaste and every log* helper above) is textarea-agnostic —
+// The whole suite for any markdown-capable textarea. The engine (logKeydown/
+// logPaste and every log* helper above — named for the log editor it was
+// written for, which left with ef-writing) is textarea-agnostic —
 // handlers read e.currentTarget — so notes fields get bold/italic/code/strike,
 // links, headings, list/quote/task toggles, Enter continuation, Tab indent,
 // line move/duplicate/delete and wrap-on-typing for free. Everything still
@@ -8794,47 +8249,11 @@ function wireMdShortcuts(ta) {
   ta.addEventListener('paste', logPaste);
 }
 
-// AN IMAGE ON THE CLIPBOARD IS A PHOTO (2026-09-02, Quentin's instruction).
-// A screenshot pasted into a log used to do nothing at all and say nothing
-// about it: an image is not text, so it fell straight through the URL branch
-// below and the textarea had nothing to insert. It takes the SAME road the
-// `+ photo` button takes — uploadLogPhoto writes the file beside the log,
-// inserts the markdown link through logEdit (so the native Ctrl+Z still takes
-// the link back) and the strip picks it up on the `input` that fires.
-//
-// Only in the LOG EDITOR, and only with a log open: wireMdShortcuts puts this
-// handler on every markdown textarea in the app — clarify's notes, a project's
-// notes — and none of those has a log to store a file against. Everywhere else
-// an image paste is left alone rather than swallowed by a preventDefault.
-function clipboardImage(dt) {
-  for (const f of dt.files || []) {
-    if (String(f.type || '').startsWith('image/')) return f;
-  }
-  // Safari and older WebKit expose the bitmap only through `items`.
-  for (const it of dt.items || []) {
-    if (it.kind === 'file' && String(it.type || '').startsWith('image/')) {
-      const f = it.getAsFile();
-      if (f) return f;
-    }
-  }
-  return null;
-}
-
 // Pasting a bare URL over a selection links it — the one paste worth
-// intercepting, and the gesture that makes citing a source in a log free.
+// intercepting, and the gesture that makes citing a source in a note free.
 function logPaste(e) {
   const ta = e.currentTarget;
   if (!e.clipboardData) return;
-  if (ta.id === 'log-editor' && logsView.open) {
-    const img = clipboardImage(e.clipboardData);
-    if (img) {
-      // Before the await: the default paste would otherwise land whatever text
-      // the clipboard also carries (a screenshot tool's file path) beside it.
-      e.preventDefault();
-      uploadLogPhoto(img);
-      return;
-    }
-  }
   if (ta.selectionStart === ta.selectionEnd) return;
   const url = (e.clipboardData.getData('text') || '').trim();
   if (!/^(https?:\/\/|mailto:)\S+$/.test(url)) return;
@@ -8842,534 +8261,6 @@ function logPaste(e) {
   const s = ta.selectionStart, en = ta.selectionEnd;
   const out = `[${ta.value.slice(s, en)}](${url})`;
   logEdit(ta, s, en, out, s + out.length);
-}
-
-// A photo is stored BESIDE the log and referenced from it — the file lands in
-// logs/media/ and the markdown link is the whole feature. The app never renders
-// it: the editor is raw markdown, and the log is meant to be read by anything
-// that can read markdown, which is where the picture shows up.
-//
-// The insertion goes through logEdit like every other mutation, so the
-// browser's Ctrl+Z takes the link back. That undoes the TEXT only; the file
-// stays in media/. An unreferenced photo on disk is cheaper than a link with
-// no file behind it, and cheaper than breaking the native undo stack.
-async function uploadLogPhoto(file) {
-  const ta = document.getElementById('log-editor');
-  if (!file || !ta || !logsView.open) return;
-  const status = document.getElementById('log-save-status');
-  if (status) status.textContent = 'Uploading…';
-  let path = null;
-  try {
-    const fd = new FormData();
-    // A NAME, ALWAYS. A clipboard image is a File with an empty name, and a
-    // multipart part with no filename is not a file to Werkzeug at all —
-    // request.files comes back empty and the route answers 400. The server
-    // reads the extension off the content type when the name has none, so
-    // what matters here is only that the name is not blank.
-    fd.append('photo', file, file.name
-      || `pasted.${(String(file.type).split('/')[1] || 'png').replace('jpeg', 'jpg')}`);
-    const r = await fetch(`/api/logs/${encodeURIComponent(logsView.open)}/photo`,
-                          { method: 'POST', body: fd });
-    if (r.ok) path = (await r.json()).path;
-  } catch (e) { /* offline: mutations are deliberately not queued, so it fails */ }
-  if (!path) {
-    if (status) status.textContent = '';
-    // A refusal has to be visible on a phone — the bar's status line is a
-    // whisper next to the keyboard covering half the screen.
-    toast('Photo did not upload');
-    return;
-  }
-  ta.focus();
-  const s = ta.selectionStart, e = ta.selectionEnd;
-  const out = (s === logLineStart(ta.value, s) ? '' : '\n') + `![](${path})\n`;
-  logEdit(ta, s, e, out, s + out.length);
-  await flushLogSave();
-}
-
-// ── Seeing them (2026-08-19) ──────────────────────────────────
-//
-// Uploading a photo and never being able to look at it was half a feature: the
-// markdown link is the durable record, and it renders in any markdown viewer,
-// but the app is what is in your hand when you want to see what you wrote down.
-// So the LINKS are the gallery — parsed out of the text, never a second list to
-// keep in step — and the file is fetched through the route that already serves
-// media to the phone.
-//
-// Only `media/` paths, deliberately: those are the photos this app stored, so
-// the strip never fires a request at a host the log happens to mention, and an
-// offline log shows its own pictures.
-const LOG_PHOTO_RE = /!\[[^\]]*\]\((media\/[^)\s]+)\)/g;
-
-function logPhotoPaths(text) {
-  const out = [];
-  for (const m of String(text || '').matchAll(LOG_PHOTO_RE)) {
-    if (!out.includes(m[1])) out.push(m[1]);   // linked twice, shown once
-  }
-  return out;
-}
-
-function logPhotoUrl(rel) {
-  return '/api/logs/media/' + encodeURIComponent(rel.replace(/^media\//, ''));
-}
-
-// The strip under the editor bar. Rebuilt only when the SET of links changes:
-// re-rendering on every keystroke would restart every image load, which on a
-// phone is a flicker and a bill.
-function renderLogPhotos() {
-  const strip = document.getElementById('log-photos');
-  if (!strip) return;
-  const ta = document.getElementById('log-editor');
-  const paths = logPhotoPaths(ta ? ta.value : logsView.content);
-  logsView.photos = paths;
-  const key = paths.join('|');
-  if (strip.dataset.paths === key) return;
-  strip.dataset.paths = key;
-  strip.classList.toggle('hidden', !paths.length);
-  strip.innerHTML = paths.map((rel, i) => `
-    <button class="log-thumb" data-i="${i}" title="${escHtml(rel)}">
-      <img src="${escHtml(logPhotoUrl(rel))}" alt="${escHtml(rel)}" loading="lazy">
-      <span class="log-thumb-fallback hidden">${escHtml(
-        rel.split('.').pop().toLowerCase())}</span>
-    </button>`).join('');
-  strip.querySelectorAll('.log-thumb').forEach(b => {
-    // A HEIC straight off an iPhone is a real file this browser cannot draw, so
-    // the tile says which kind it is instead of going quietly blank.
-    const img = b.querySelector('img');
-    img.addEventListener('error', () => {
-      img.classList.add('hidden');
-      b.querySelector('.log-thumb-fallback').classList.remove('hidden');
-    });
-    b.addEventListener('click', () => openLogPhoto(parseInt(b.dataset.i)));
-  });
-}
-
-function openLogPhoto(i) {
-  if (!logsView.photos.length) return;
-  logsView.photo = Math.max(0, Math.min(logsView.photos.length - 1, i));
-  paintLogPhoto();
-}
-
-function closeLogPhoto() {
-  logsView.photo = null;
-  const el = document.getElementById('log-photo-view');
-  if (!el) return;
-  el.classList.add('hidden');
-  el.innerHTML = '';                 // stop decoding a picture nobody is on
-}
-
-// Clamped, not wrapping: the strip is short and in view, so running off the end
-// silently landing you at the other end is a worse answer than nothing moving.
-function stepLogPhoto(d) {
-  if (logsView.photo == null) return;
-  const next = logsView.photo + d;
-  if (next < 0 || next >= logsView.photos.length) return;
-  logsView.photo = next;
-  paintLogPhoto();
-}
-
-function paintLogPhoto() {
-  const el = document.getElementById('log-photo-view');
-  if (!el || logsView.photo == null) return;
-  const rel = logsView.photos[logsView.photo];
-  const n = logsView.photos.length;
-  el.innerHTML = `
-    <div class="lpv-bar">
-      <button class="lpv-close" id="lpv-close">‹ Back</button>
-      <span class="lpv-name">${escHtml(rel.replace(/^media\//, ''))}</span>
-      <span class="lpv-count">${logsView.photo + 1} / ${n}</span>
-    </div>
-    <div class="lpv-stage" id="lpv-stage">
-      <img src="${escHtml(logPhotoUrl(rel))}" alt="${escHtml(rel)}">
-      <div class="lpv-fallback hidden" id="lpv-fallback">This browser cannot
-        display a ${escHtml(rel.split('.').pop().toLowerCase())} — the file is
-        in logs/media, and any viewer that reads the log will show it.</div>
-    </div>
-    ${n > 1 ? `<div class="lpv-nav">
-      <button class="lpv-step" id="lpv-prev"${logsView.photo ? '' : ' disabled'}>‹</button>
-      <button class="lpv-step" id="lpv-next"${
-        logsView.photo < n - 1 ? '' : ' disabled'}>›</button>
-    </div>` : ''}`;
-  el.classList.remove('hidden');
-  const img = el.querySelector('.lpv-stage img');
-  img.addEventListener('error', () => {
-    img.classList.add('hidden');
-    el.querySelector('#lpv-fallback').classList.remove('hidden');
-  });
-  el.querySelector('#lpv-close').addEventListener('click', closeLogPhoto);
-  // The STAGE closes on a tap, not the whole surface: the bar and the arrows are
-  // in the way of a finger otherwise, which is how a photo viewer starts closing
-  // itself every time you try to page through it.
-  el.querySelector('#lpv-stage').addEventListener('click', e => {
-    if (e.target.id === 'lpv-stage') closeLogPhoto();
-  });
-  const prev = el.querySelector('#lpv-prev');
-  if (prev) prev.addEventListener('click', () => stepLogPhoto(-1));
-  const next = el.querySelector('#lpv-next');
-  if (next) next.addEventListener('click', () => stepLogPhoto(1));
-}
-
-// Marks the matched run inside a hit line, the way MAP's search does for a
-// title — reading the hit is the point, and an unmarked line makes you find
-// the word again by eye.
-function hlLogHit(line, q) {
-  const i = q ? line.toLowerCase().indexOf(q.toLowerCase()) : -1;
-  if (i < 0) return escHtml(line);
-  return escHtml(line.slice(0, i)) + '<mark>' + escHtml(line.slice(i, i + q.length))
-    + '</mark>' + escHtml(line.slice(i + q.length));
-}
-
-async function runLogSearch() {
-  const q = logsView.q.trim();
-  if (!q) { logsView.hits = null; renderLogs(); return; }
-  logsView.hits = await apiGet(`/api/logs?q=${encodeURIComponent(q)}`, []);
-  // Another keystroke landed while this was in flight — that answer wins.
-  if (logsView.q.trim() !== q) return;
-  renderLogs();
-}
-
-// THE LOG PAGE (2026-10-01, Quentin's design): three columns on a wide
-// window — the list (search, the filter, + New, the logs by month) on the
-// left, the open log in the middle, its counts and Dangerous writing on the
-// right. A phone keeps the two-step reading: the list, then one log with a
-// way back. One render for both; the CSS decides which parts a phone shows.
-const LOG_BOLT_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>';
-
-function logMonthLabel(ymd) {
-  const d = new Date(String(ymd || '').slice(0, 10) + 'T12:00:00');
-  if (isNaN(d)) return 'Undated';
-  const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleDateString('en-US', sameYear ? { month: 'long' } : { month: 'long', year: 'numeric' });
-}
-
-function logShortDate(l) {
-  const d = new Date(l.created ? l.created + 'T12:00:00' : l.updated_at);
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-// The blank log on the Log page (renderLogs). Its words are kept in view
-// state, not the DOM, so a repaint of the list beside it loses nothing; the
-// first time it holds any text it is created as a FRESH file (never reopening
-// a same-named one) and from then on it is simply the open log.
-function wireLogDraft() {
-  const ta = document.getElementById('log-editor');
-  const title = document.getElementById('log-draft-title');
-  if (!ta || !title) return;
-  ta.value = logsView.draftText || '';
-  updateLogHighlight();
-  paintLogCounts();
-  title.addEventListener('input', () => {
-    logsView.draftTitle = title.value;
-    const row = document.querySelector('.lg-draft-row .log-row-name');
-    if (row) row.textContent = title.value.trim() || 'Untitled';
-  });
-  title.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); ta.focus(); }
-  });
-  ta.addEventListener('input', () => {
-    logsView.draftText = ta.value;
-    updateLogHighlight();
-    paintLogCounts();
-    clearTimeout(logsView.saveTimer);
-    logsView.saveTimer = setTimeout(logDraftCommit, 1000);
-  });
-  ['select', 'keyup', 'pointerup'].forEach(ev => ta.addEventListener(ev, paintLogCounts));
-  ta.addEventListener('scroll', () => {
-    const hl = document.getElementById('log-highlight');
-    hl.scrollTop = ta.scrollTop;
-    hl.scrollLeft = ta.scrollLeft;
-  });
-  ta.addEventListener('keydown', logKeydown);
-  ta.addEventListener('blur', logDraftCommit);
-  if (SETTINGS_WIDE.matches && document.activeElement !== document.getElementById('logs-q')) title.focus();
-}
-
-async function logDraftCommit() {
-  clearTimeout(logsView.saveTimer);
-  // A first write already under way is AWAITED, never skipped: the blur that
-  // a click on a page button causes starts one, and the button's own handler
-  // has to land after it or it finds no log open (the Dangerous writing door
-  // made a second, separate log that way).
-  if (logsView.committing) return logsView.committing;
-  if (logsView.open) return;
-  const text = logsView.draftText || '';
-  if (!text.trim()) return;
-  logsView.committing = (async () => {
-    const log = await apiSend('/api/logs', 'POST',
-      { name: (logsView.draftTitle || '').trim() || 'Untitled', tags: [], fresh: true }).then(r => r.json());
-    // Whatever was typed while the file was being made goes with it.
-    const now = document.getElementById('log-editor');
-    const body = now && !logsView.open ? now.value : text;
-    await apiSend(`/api/logs/${encodeURIComponent(log.name)}`, 'PUT', { content: body });
-    logsView.open = log.name;
-    // Typing does not stop for the network: what landed after the PUT is
-    // carried into the open log and saved by its own road.
-    const latest = now ? now.value : body;
-    logsView.content = latest;
-    logsView.dirty = latest !== body;
-    logsView.draftText = '';
-    logsView.draftTitle = '';
-    logsView.logs = await apiGet('/api/logs', logsView.logs);
-    // The editor under the cursor stays the same element; only the list and
-    // the page's state learn that it is a real log now.
-    const keep = document.activeElement === now ? [now.selectionStart, now.selectionEnd] : null;
-    renderLogs();
-    const ta = document.getElementById('log-editor');
-    if (ta && keep) { ta.focus(); ta.setSelectionRange(keep[0], keep[1]); }
-    if (logsView.dirty) logsView.saveTimer = setTimeout(flushLogSave, 1000);
-  })();
-  try {
-    await logsView.committing;
-  } finally {
-    logsView.committing = null;
-  }
-}
-
-// RENAME A LOG (2026-10-01, Quentin's instruction): double-click its name in
-// the list, or its title over the editor. The date stays in the filename; only
-// the title changes. Undo renames it back.
-function logRenameEl(span, name) {
-  const meta = logsView.logs.find(l => l.name === name);
-  const was = meta ? meta.title : span.textContent;
-  inlineEdit(span, {
-    value: was,
-    className: 's2-rename-input lg-rename',
-    onCancel: () => renderLogs(),
-    onCommit: v => renameLog(name, v, was),
-  });
-}
-
-async function renameLog(name, title, was) {
-  if (logsView.open === name) await flushLogSave();
-  const r = await apiSend(`/api/logs/${encodeURIComponent(name)}`, 'PATCH', { title }).catch(() => null);
-  const out = r && r.ok ? await r.json() : null;
-  if (!out) { toast('That title is taken by another log'); renderLogs(); return; }
-  if (logsView.open === name) logsView.open = out.name;
-  pushUndo(`renamed log to "${title}"`, async () => {
-    if (logsView.open === out.name) await flushLogSave();
-    const back = await apiSend(`/api/logs/${encodeURIComponent(out.name)}`, 'PATCH', { title: was })
-      .then(x => (x.ok ? x.json() : null)).catch(() => null);
-    if (back && logsView.open === out.name) logsView.open = back.name;
-    logsView.logs = await apiGet('/api/logs', logsView.logs);
-    renderLogs();
-  });
-  logsView.logs = await apiGet('/api/logs', logsView.logs);
-  renderLogs();
-}
-
-// DELETE A LOG: the × on the row you are on. The undo writes the same file
-// back under its own name (fresh, so nothing made since is overwritten).
-async function deleteLog(name) {
-  if (logsView.open === name) await flushLogSave();
-  const log = await apiGet(`/api/logs/${encodeURIComponent(name)}`, null);
-  if (!log) return;
-  await apiSend(`/api/logs/${encodeURIComponent(name)}`, 'DELETE');
-  const meta = logsView.logs.find(l => l.name === name);
-  pushUndo(`deleted log "${(meta && meta.title) || name}"`, async () => {
-    const back = await apiSend('/api/logs', 'POST', { name, fresh: true }).then(x => x.json());
-    await apiSend(`/api/logs/${encodeURIComponent(back.name)}`, 'PUT', { content: log.content });
-    logsView.logs = await apiGet('/api/logs', logsView.logs);
-    await openLog(back.name);
-  });
-  if (logsView.open === name) { logsView.open = null; logsView.content = ''; }
-  logsView.logs = await apiGet('/api/logs', logsView.logs);
-  renderLogs();
-}
-
-// Words and characters of the log — of the SELECTION while there is one.
-function paintLogCounts() {
-  const ta = document.getElementById('log-editor');
-  const out = document.getElementById('log-counts');
-  if (!ta || !out) return;
-  const sel = ta.selectionEnd > ta.selectionStart;
-  const txt = sel ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : ta.value;
-  const wc = (txt.match(/\S+/g) || []).length, cc = txt.length;
-  out.classList.toggle('lg-sel', sel);
-  out.innerHTML = `<span>${wc} ${wc === 1 ? 'word' : 'words'}</span>
-    <span>${cc} ${cc === 1 ? 'character' : 'characters'}</span>
-    ${sel ? '<span class="lg-sel-note">selected</span>' : ''}`;
-}
-
-function renderLogs() {
-  const body = document.getElementById('logs-body');
-  if (!body) return;
-  syncRoute();
-
-  // The DATE is a column, not part of the name. It still lives in the
-  // filename (it is what keeps two logs on one topic from being one file),
-  // but nothing here shows it inside the title any more.
-  const logs = sortedLogs();
-  let month = null;
-  const rows = logs.map(l => {
-    const m = logMonthLabel(logDate(l));
-    const head = m !== month ? `<div class="lg-month">${escHtml(m)}</div>` : '';
-    month = m;
-    return `${head}<button class="log-row${l.name === logsView.open ? ' on' : ''}" data-name="${escHtml(l.name)}">
-        <span class="log-row-name" title="Double-click to rename">${escHtml(l.title)}</span>
-        <span class="log-row-date">${logShortDate(l)}</span>
-        <span class="lg-del" role="button" data-del="${escHtml(l.name)}" title="Delete this log">×</span>
-        ${(l.hits || []).filter(Boolean).map(h =>
-          `<span class="log-hit">${hlLogHit(h, logsView.q)}</span>`).join('')}
-      </button>`;
-  }).join('');
-  const hidden = logsView.logs.length - logs.length;
-  const openMeta = logsView.logs.find(l => l.name === logsView.open);
-  // THE BLANK LOG (2026-10-01, Quentin's design): with nothing open the page
-  // IS a new log — a Title and "Start writing…", the list naming it Untitled
-  // at the top. It becomes a file only once something is written in it
-  // (logDraftCommit), so opening the page leaves nothing behind.
-  const drafting = !logsView.open;
-  const today = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  const draftRow = drafting ? `<button class="log-row on lg-draft-row">
-      <span class="log-row-name">${escHtml(logsView.draftTitle || 'Untitled')}</span>
-      <span class="log-row-date">${today}</span></button>` : '';
-
-  body.innerHTML = `
-    <div class="lg-page${logsView.open ? ' lg-has-open' : ''}">
-      <aside class="lg-side">
-        <div class="lg-tools"><div class="lg-tools-row">
-          <span class="count">${logs.length} ${logs.length === 1 ? 'log' : 'logs'}</span>
-          <button id="log-new" class="lg-new">+ New</button></div></div>
-        <div class="log-list">${draftRow}${rows || `<div class="empty">${
-          logsView.q ? `Nothing in the logs says “${escHtml(logsView.q)}”`
-          : logsView.logs.length ? 'No log carries every tag you asked for'
-          : 'No logs yet'}</div>`}
-          ${hidden > 0 ? `<div class="log-hidden-note">${hidden} more ${
-            logsView.q ? 'not matching' : 'behind the filter'}</div>` : ''}</div>
-      </aside>
-      <main class="lg-main">${logsView.open ? `
-        <div class="log-editor-bar">
-          <button id="log-back" class="log-back-btn">‹ All logs</button>
-          <h1 class="lg-title" title="Double-click to rename">${escHtml((openMeta && openMeta.title) || logsView.open)}</h1>
-          <span id="log-save-status" class="log-save-status"></span>
-          <button id="log-photo" class="log-photo-btn">+ photo</button>
-          <input type="file" id="log-photo-input" accept="image/*" hidden>
-        </div>
-        <div id="log-photos" class="log-photos hidden"></div>
-        <div class="log-editor-wrap">
-          <div id="log-highlight" class="log-highlight" aria-hidden="true"></div>
-          <textarea id="log-editor" class="log-editor" spellcheck="false" placeholder="Start writing…"></textarea>
-        </div>` : `
-        <input id="log-draft-title" class="lg-title-in" placeholder="Title" autocomplete="off"
-          value="${escHtml(logsView.draftTitle || '')}">
-        <div class="log-editor-wrap">
-          <div id="log-highlight" class="log-highlight" aria-hidden="true"></div>
-          <textarea id="log-editor" class="log-editor" spellcheck="false" placeholder="Start writing…"></textarea>
-        </div>`}
-      </main>
-      <div class="lg-right">
-        <button id="log-dangerous" class="dw-entry" title="Stop typing and the draft is destroyed">${LOG_BOLT_SVG} Dangerous writing</button>
-        <div id="log-counts" class="lg-counts"></div>
-      </div>
-    </div>`;
-
-  logsFilter.render();
-
-  body.querySelectorAll('.lg-del[data-del]').forEach(x => x.addEventListener('click', e => {
-    e.stopPropagation();
-    deleteLog(x.dataset.del);
-  }));
-  // A double-click on the NAME renames. The single click waits out the
-  // double-click window before it opens the log (MAP's and Lists' rule), or
-  // the open would repaint the row out from under the rename.
-  const head = body.querySelector('.lg-title');
-  if (head) head.addEventListener('dblclick', () => logRenameEl(head, logsView.open));
-  body.querySelectorAll('.log-row').forEach(row => {
-    onTapOrDouble(row, async () => {
-      if (row.querySelector('.lg-rename')) return;
-      // A log is open BESIDE the list now, so picking another is the moment
-      // the open one is put down — its pending save (or the blank log's
-      // first write) goes first.
-      await logDraftCommit();
-      await flushLogSave();
-      openLog(row.dataset.name);
-    }, e => {
-      const span = e.target.closest('.log-row-name');
-      if (span && row.dataset.name) logRenameEl(span, row.dataset.name);
-    });
-  });
-  // THE LOG YOU ARE WRITING (2026-10-01, Quentin's instruction): the session
-  // lands in the log on screen. Its pending save goes first, and a blank log
-  // that already holds text becomes a file first, so the session appends to
-  // it; a blank log with only a title becomes a new log of that title.
-  document.getElementById('log-dangerous').addEventListener('click', async () => {
-    await logDraftCommit();
-    await flushLogSave();
-    openDangerousWriting({ appendTo: logsView.open,
-      logName: logsView.open ? null : (logsView.draftTitle || '').trim() || null });
-  });
-  // Name and tags, and NO date to type — the server stamps today. Typing
-  // '26-8-17' in front of every log was a filing convention the app can keep
-  // for you, and getting it subtly wrong is what made the list unsortable.
-  document.getElementById('log-new').addEventListener('click', async () => {
-    // On a wide window the blank log IS the new log: put the open one down.
-    if (SETTINGS_WIDE.matches) {
-      await logDraftCommit();
-      await flushLogSave();
-      logsView.open = null;
-      renderLogs();
-      return;
-    }
-    openEntrySheet({
-    title: 'New log',
-    placeholder: 'what is this log about…',
-    hint: 'Dated today. Tags are optional, and live in the file itself.',
-    button: 'Create', closeOnAdd: true, tags: true, tagVocab: logTagVocab(),
-    add: async (raw, tags) => {
-      await flushLogSave();
-      const log = await apiSend('/api/logs', 'POST',
-        { name: raw, tags }).then(r => r.json());
-      logsView.logs = await apiGet('/api/logs', logsView.logs);
-      logsView.open = log.name;
-      logsView.content = log.content;
-      logsView.dirty = false;
-      renderLogs();
-    },
-    });
-  });
-  if (!logsView.open) { wireLogDraft(); return; }
-
-  const ta = document.getElementById('log-editor');
-  ta.value = logsView.content;
-  updateLogHighlight();
-  renderLogPhotos();
-  paintLogCounts();
-  ta.addEventListener('input', () => {
-    updateLogHighlight();
-    renderLogPhotos();      // a pasted or uploaded link joins the strip at once
-    paintLogCounts();
-    logsView.dirty = true;
-    document.getElementById('log-save-status').textContent = '·';
-    clearTimeout(logsView.saveTimer);
-    logsView.saveTimer = setTimeout(flushLogSave, 1000);
-  });
-  ['select', 'keyup', 'pointerup'].forEach(ev => ta.addEventListener(ev, paintLogCounts));
-  ta.addEventListener('scroll', () => {
-    const hl = document.getElementById('log-highlight');
-    hl.scrollTop = ta.scrollTop;
-    hl.scrollLeft = ta.scrollLeft;
-  });
-  ta.addEventListener('keydown', logKeydown);
-  ta.addEventListener('paste', logPaste);
-  ta.addEventListener('blur', flushLogSave);
-  const photoInput = document.getElementById('log-photo-input');
-  document.getElementById('log-photo').addEventListener('click', () => photoInput.click());
-  photoInput.addEventListener('change', () => {
-    const f = photoInput.files[0];
-    // Cleared BEFORE the upload: picking the same photo twice fires no change
-    // event while the input still holds it, which reads as a dead button.
-    photoInput.value = '';
-    uploadLogPhoto(f);
-  });
-  document.getElementById('log-back').addEventListener('click', async () => {
-    await flushLogSave();
-    logsView.open = null;
-    logsView.logs = await apiGet('/api/logs', logsView.logs);
-    renderLogs();
-  });
-  // Not on a touch screen: there the focus raises the keyboard over the log
-  // you opened to READ, and a tap in the text is how writing starts anyway.
-  if (document.activeElement !== document.getElementById('logs-q')
-      && !matchMedia('(hover: none)').matches) ta.focus();
 }
 
 // ── Social exposure v1 (dryrun) ──────────────────────────────
@@ -9813,7 +8704,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initPanelToggle();
   initBlockEditor();
   initTimeline();
-  initLogsView();
   initHub();
   initTopNav();
   initObjectDoors();
@@ -9824,23 +8714,16 @@ document.addEventListener('DOMContentLoaded', () => {
   initGeo();
   initEngage();
   // Engage IS the home screen (9c): the day renders once everything is loaded.
-  // Last line of defence for unsaved notes and log text. visibilitychange is
-  // the one that actually lands — it fires while the page is still allowed to
-  // run fetches, unlike pagehide, which is often too late to finish a PATCH.
-  // Note the ASYMMETRY: for notes and logs these hooks SAVE, but a dangerous
-  // session is not a document — leaving it is stopping, and stopping is what
-  // the mechanic punishes. Same event, opposite meaning, on purpose.
+  // Last line of defence for unsaved notes. visibilitychange is the one that
+  // actually lands — it fires while the page is still allowed to run fetches,
+  // unlike pagehide, which is often too late to finish a PATCH.
   document.addEventListener('visibilitychange', () => {
     // Coming BACK is when a sleeping device notices midnight happened.
     if (document.visibilityState !== 'hidden') { checkDayRollover(); return; }
-    if (dwView.phase === 'writing') { dwFail(); return; }
     flushOpenNotes();
-    flushLogSave();
   });
   window.addEventListener('pagehide', () => {
-    if (dwView.phase === 'writing') { dwFail(); return; }
     flushOpenNotes();
-    flushLogSave();
   });
   loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); initRoutes(); });
   setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); }, 60000);
@@ -11805,7 +10688,7 @@ function mapKeysLive() {
   return !!ov && !ov.classList.contains('hidden')
     && !(settings && !settings.classList.contains('hidden'))
     && !clarifyView.open && !entrySheet.open && !seSheet.kind && !objMenu.open
-    && !mapView.menuOpen && !occasionView.open && !ctxSheet.tag && !dwView.open;
+    && !mapView.menuOpen && !occasionView.open && !ctxSheet.tag;
 }
 
 async function mapAfterWrite() {

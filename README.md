@@ -66,7 +66,7 @@ Three launch modes:
 | Server | `PT_HEADLESS=1 python app.py` |
 | Desktop client against a remote server | `PT_SERVER=http://<host>:5000 python app.py` |
 
-`PT_DATA_DIR` sets the working directory the app reads and writes data in — `config.json`, `tracker.db`, `logs/`, `backups/`. Unset, it is the current directory. The repository holds no data.
+`PT_DATA_DIR` sets the working directory the app reads and writes data in — `config.json`, `tracker.db`, `backups/`. Unset, it is the current directory. The repository holds no data.
 
 A service worker caches the app shell and `GET /api/*` responses network-first, falling back to cache only when a fetch fails. Mutations are not intercepted and not queued. Registration requires a secure context, which `tailscale serve` provides.
 

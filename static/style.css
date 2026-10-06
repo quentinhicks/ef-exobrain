@@ -404,7 +404,7 @@ select option {
 
 /* ── Modal ──────────────────────────────────────────────────── */
 
-/* 155: ABOVE the .m-overlay band (140) and the map/logs/person overlays (150),
+/* 155: ABOVE the .m-overlay band (140) and the map/person overlays (150),
    below the hub (160). Settings is opened FROM the hub while another surface is
    still up, and openBlockEditor does not close it — at z 100 it opened silently
    BEHIND whatever you were looking at, which reads as a dead button. It is the
@@ -874,7 +874,6 @@ select option {
 .se-openpicker > span:first-child { flex: 1; }
 .se-openpicker:hover { border-color: var(--accent); }
 
-
 /* Swatches at row height, not a select of colour names. */
 .se-swatches { display: flex; gap: 6px; flex-wrap: wrap; }
 
@@ -1260,7 +1259,6 @@ select option {
   gap: 6px;
 }
 
-
 #tl-date-label {
   flex: none;
   width: var(--daynav-slot);
@@ -1315,7 +1313,6 @@ select option {
 
 .tl-nav { flex: none; }
 #tl-date-label { flex: none; }
-
 
 .tl-refresh-area {
   margin-left: auto;
@@ -1392,7 +1389,6 @@ select option {
 /* When the calendar is minimized, left-anchored modals take the freed width
    (full width minus the 40px calendar strip) instead of the default 50%. */
 body.calendar-minimized #block-editor-modal,
-body.calendar-minimized #logs-modal,
 body.calendar-minimized #review-modal {
   width: calc(100% - 40px);
 }
@@ -1748,7 +1744,6 @@ body.calendar-minimized #review-modal {
   overflow-y: auto;
 }
 
-
 .tl-deadline-group {
   padding: 8px 12px 4px;
 }
@@ -2021,7 +2016,6 @@ body.calendar-minimized #review-modal {
   display: inline-block;
 }
 
-
 /* -- Section 2: Active project items ---------------------- */
 
 #section2 {
@@ -2051,7 +2045,6 @@ body.calendar-minimized #review-modal {
 .s2-item:last-child {
   border-bottom: none;
 }
-
 
 .inbox-area-suggested {
   opacity: 0.45;
@@ -2142,7 +2135,6 @@ body.calendar-minimized #review-modal {
   border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
-
 
 /* -- Section 2 interactive items -------------------------- */
 
@@ -2495,7 +2487,6 @@ body.calendar-minimized #review-modal {
 /* The area of the block you are actually in. */
 .s2-area-head.s2-area-current .s2-area-name { color: var(--accent); }
 
-
 .s2-area-body {
   padding: 0 0 4px 14px;
 }
@@ -2548,102 +2539,6 @@ body.calendar-minimized #review-modal {
   background: var(--gold);
 }
 
-/* ── Logs modal ── */
-
-#logs-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--overlay);
-  z-index: 150;
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-start;
-}
-
-#logs-overlay.hidden {
-  display: none;
-}
-
-#logs-modal {
-  background: var(--bg);
-  border-right: 1px solid var(--border);
-  width: 50%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  animation: modal-slide-in 0.25s ease;
-}
-
-/* The body itself does NOT scroll: the list does, so the sort bar stays at
-   the top and the new-log form stays reachable at the bottom instead of
-   sitting 25 rows down. The editor view relies on the same column — its
-   .log-editor-wrap takes the freed height and scrolls internally. */
-#logs-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px 20px;
-  overflow: hidden;
-}
-
-.log-list-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: -4px;
-}
-
-.log-sort-btn {
-  color: var(--text-secondary);
-  font-size: 11px;
-  padding: 2px 4px;
-}
-
-.log-sort-btn:hover {
-  color: var(--accent);
-}
-
-.log-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-/* A row must not shrink to fit — with 25 logs the list scrolls instead. */
-.log-list .log-row { flex: none; }
-
-.log-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-primary);
-  font-size: 13px;
-  text-align: left;
-}
-
-.log-row:hover {
-  border-color: var(--accent);
-}
-
-.log-row-date {
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-
-.log-editor-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
 .log-back-btn {
   color: var(--text-secondary);
   font-size: 12px;
@@ -2653,222 +2548,6 @@ body.calendar-minimized #review-modal {
 .log-back-btn:hover {
   color: var(--text-primary);
 }
-
-/* A finger target, not a 12px word: this is the one control in the bar that
-   opens the camera, and there is no hover to find it with. */
-.log-photo-btn {
-  color: var(--text-secondary);
-  font-size: 12px;
-  padding: 8px 12px;
-  min-height: 36px;
-  border: 1px solid var(--border-soft);
-  border-radius: 4px;
-}
-
-.log-photo-btn:hover {
-  color: var(--text-primary);
-}
-
-.log-save-status {
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-/* The open log's photos. A strip, not a grid: it sits between the bar and the
-   editor, so it may cost one row of typing space and no more. Scrolls sideways
-   on its own — the overlay body must never scroll horizontally. */
-.log-photos {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  flex: 0 0 auto;
-  padding-bottom: 2px;
-}
-
-/* 56px, because a thumbnail is a finger target with no hover to find it. */
-.log-thumb {
-  flex: 0 0 auto;
-  width: 56px;
-  height: 56px;
-  padding: 0;
-  border: 1px solid var(--text-secondary);
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--surface-low);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.log-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.log-thumb-fallback {
-  color: var(--text-secondary);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-/* Full-screen, and DARK IN BOTH THEMES on purpose (the NOW panel's precedent,
-   inverted): a photo is judged against a neutral ground, and a light frame
-   around a phone snapshot changes what you think you are looking at. Above the
-   sheet band (200) so the picture is never behind something that was already
-   up; below dangerous writing (240), which nothing may cover. */
-#log-photo-view {
-  position: fixed;
-  inset: 0;
-  height: var(--vvh, 100dvh);
-  z-index: 210;
-  background: #000;            /* solid: the log's text showing through a
-                                  scrim is noise behind a photograph */
-  display: flex;
-  flex-direction: column;
-}
-
-#log-photo-view.hidden { display: none; }
-
-.lpv-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 12px;
-}
-
-.lpv-close {
-  color: #fff;
-  font-size: 13px;
-  padding: 8px 10px;
-  min-height: 36px;
-}
-
-.lpv-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lpv-stage {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
-}
-
-.lpv-stage img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-
-.lpv-fallback {
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 13px;
-  line-height: 1.5;
-  text-align: center;
-  padding: 0 24px;
-}
-
-.lpv-nav {
-  display: flex;
-  justify-content: space-between;
-  padding: 10px 14px 18px;
-}
-
-/* Thirds of nothing to aim at otherwise: these are the only two controls on a
-   screen filled with picture, so they are 48px targets at the bottom, where a
-   thumb reaches. */
-.lpv-step {
-  color: #fff;
-  font-size: 20px;
-  min-width: 72px;
-  min-height: 48px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 4px;
-}
-
-.lpv-step:disabled {
-  color: rgba(255, 255, 255, 0.3);
-  border-color: rgba(255, 255, 255, 0.12);
-}
-
-.log-editor-wrap {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-}
-
-.log-editor-wrap:focus-within {
-  border-color: var(--accent);
-}
-
-.log-highlight,
-.log-editor {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  border: none;
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.6;
-  padding: 12px;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-}
-
-.log-highlight {
-  overflow: hidden;
-  pointer-events: none;
-  color: var(--text-primary);
-}
-
-/* The gutter is reserved HERE ONLY, so the textarea's content width doesn't
-   jump when the scrollbar appears. The highlight layer is sized to match in
-   JS (updateLogHighlight) rather than by a second copy of this declaration:
-   WebKit honors scrollbar-gutter on a real scroll container but not on the
-   overflow:hidden highlight, which left the two layers 6px apart. */
-.log-editor {
-  width: 100%;
-  height: 100%;
-  background: transparent;
-  color: transparent;
-  caret-color: var(--text-primary);
-  resize: none;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-}
-
-.log-editor:focus {
-  border: none;
-}
-
-.log-editor::selection {
-  color: transparent;
-  background: rgba(152, 185, 221, 0.35);
-}
-
-.md-heading { color: var(--accent); font-weight: 600; }
-.md-bold { font-weight: 600; }
-.md-italic { font-style: italic; }
-/* Decoration only, so it needs no light-mode value in the appendix. */
-.md-strike { text-decoration: line-through; }
-.md-code { color: #d9b48f; background: var(--tint); border-radius: 3px; }
-.md-codeblock { color: #d9b48f; }
-.md-link { color: var(--accent); text-decoration: underline; }
-.md-marker { color: var(--accent); }
-.md-quote { color: #adc9a0; font-style: italic; }
-.md-hr { color: var(--text-secondary); }
 
 #review-overlay {
   position: fixed;
@@ -3019,7 +2698,7 @@ body.calendar-minimized #review-modal {
    and a labelled item cannot be misread the way an overloaded gesture can.
 
    Above the sheets (200), because a menu is always the innermost thing on
-   screen, and below the people timer (250) and dangerous writing (240), which
+   screen, and below the people timer (250), which
    nothing may cover. */
 #obj-menu {
   position: fixed;
@@ -3574,7 +3253,6 @@ body.np-body {
 
 #tracking-habit .jh-since { color: var(--text-secondary); font-size: 12px; }
 
-
 /* Tabulator dark-theme overrides */
 
 .tabulator {
@@ -3781,7 +3459,6 @@ body.np-body {
 
 .pm-name { flex: 1; }
 
-
 .pm-delete {
   color: var(--text-secondary);
   font-size: 14px;
@@ -3790,7 +3467,6 @@ body.np-body {
 }
 
 .pm-delete:hover { color: var(--danger); }
-
 
 /* ── NOW — the next-actions lens ─────────────────────────────
    Flat by construction: no group containers, no indentation. The parent chain
@@ -4066,7 +3742,6 @@ body.np-body {
   margin-left: 6px;
   padding-left: 10px;
 }
-
 
 .map-acts { display: flex; align-items: center; gap: 3px; flex: none; }
 
@@ -4632,7 +4307,6 @@ body.np-body {
 /* Undo in the top strip (10c): greyed while there is nothing to undo. */
 #eg-undo:disabled { opacity: 0.35; cursor: default; background: none; }
 
-
 /* Every gap opens while a drag is in flight. Tap-to-arm-then-tap-a-gap went
    2026-08-11: a two-step gesture whose second target was invisible until the
    first step, on a surface where Show-on date+time already places an action. */
@@ -4666,7 +4340,6 @@ body.np-body {
 }
 
 .gtd-section-head:hover { color: var(--text-primary); }
-
 
 /* ── Reference lists (tab-lists) — GTD's non-actionable keeps ── */
 #ref-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
@@ -4753,9 +4426,9 @@ body.np-body {
 /* Every modal is a phone-sized surface now: full width, capped at the shell,
    centered over the letterboxed column on a big screen. */
 
-#modal-overlay, #logs-overlay, #review-overlay, #map-overlay {
+#modal-overlay, #review-overlay, #map-overlay {
   justify-content: center;
-}#block-editor-modal, #logs-modal, #review-modal, #map-modal {
+}#block-editor-modal, #review-modal, #map-modal {
   width: 100%;
   max-width: 430px;
   border-left: 1px solid var(--border);
@@ -6142,11 +5815,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    a gate's non-default states are settings-row badges now, and those are
    drawn in vars, so they need no light-mode entry.) */
 
-/* Markdown syntax colors, deepened for contrast on white. */
-:root.theme-light .md-code,
-:root.theme-light .md-codeblock { color: #8a5326; }
-:root.theme-light .md-quote { color: #47693a; }
-
 /* A calendar event's text is pulled toward INK here, not toward white, and
    further than the dark theme pulls it: a pastel is already close to a white
    page, so half of it is still a pastel. The percentages are measured, not
@@ -6177,11 +5845,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 
 /* Accent tints: keyed to the pastel accent, so they vanish on a light bg. */
 :root.theme-light .s2-drop-target { background: rgba(47, 111, 181, 0.10); }
-:root.theme-light .log-editor::selection { background: rgba(47, 111, 181, 0.22); }
 
 :root.theme-light .now-row:focus { background: rgba(47, 111, 181, 0.08); }
 :root.theme-light .s2-item-recurring { background: rgba(186, 160, 40, 0.16); }
-
 
 :root.theme-light .now-chip-on { background: rgba(47, 111, 181, 0.10); }
 
@@ -6193,7 +5859,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    .sheet's bottom: 0 sits earlier in the file. Listed by name because a
    few non-overlay fixed elements (toast, stale banner) legitimately keep
    inset: 0. Theme-independent, hence after the light appendix. */
-.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, .sheet-backdrop, .sheet {
+.m-overlay, #map-overlay, #modal-overlay, .sheet-backdrop, .sheet {
   /* Above the bar, AND above whatever the browser chrome or the keyboard is
      covering: 100% is the viewport, --vvh is what you can see, so the
      difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
@@ -6252,102 +5918,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   cursor: pointer;
 }
 .oc-del { color: var(--danger); }
-
-/* ── Dangerous writing ───────────────────────────────────────
-   z 240: ABOVE the global bar (170) and the clarify sheet (200), below
-   #people-timer (250). The only surface in the app that covers the bar —
-   capture during a session is the exact task-switch being punished, and the
-   bar's own Esc would be a way to stop typing for free. */
-#dw-session {
-  position: fixed;
-  inset: 0;
-  height: var(--vvh, 100dvh);
-  left: 50%;
-  transform: translateX(-50%);
-  width: 100%;
-  max-width: 430px;
-  background: var(--surface);
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-  z-index: 240;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-.dw-wrap { display: flex; flex-direction: column; gap: 2px; padding: 18px 0 14px; }
-.dw-writing { flex: 1; min-height: 0; padding: 12px 0 0; gap: 0; }
-.dw-title {
-  font-size: 19px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  padding: 0 14px 6px;
-}
-.dw-warn {
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--danger);
-  padding: 0 14px 12px;
-}
-.dw-target {
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--text-secondary);
-  padding: 0 14px 8px;
-}
-.dw-target b { color: var(--text-primary); font-weight: 600; }
-.dw-actions { display: flex; align-items: center; gap: 10px; padding: 14px 14px 0; }
-.dw-begin {
-  flex: 1;
-  font-size: 15px;
-  font-weight: 600;
-  padding: 11px;
-  border-radius: 8px;
-  background: var(--danger);
-  color: var(--on-accent);
-  cursor: pointer;
-}
-.dw-custom { width: 68px; text-align: center; }
-.dw-editor {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  resize: none;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--text-primary);
-  font: 15px/1.6 var(--font-mono);
-  padding: 0 14px;
-}
-/* Hardcore: the text is there, you just don't get to read it back. */
-.dw-blind { color: transparent; text-shadow: none; caret-color: var(--accent); }
-.dw-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-top: 1px solid var(--border-soft);
-}
-.dw-progress { font: 11px var(--font-mono); color: var(--text-secondary); flex: 1; }
-.dw-entry {
-  margin: 14px auto 0;
-  display: block;
-  font: 11px var(--font-mono);
-  color: var(--danger);
-  border: 1px solid var(--danger);
-  border-radius: 20px;
-  padding: 6px 14px;
-  cursor: pointer;
-}
-
-/* Two thirds through the idle window with nothing typed: the surface goes
-   red. A warning, not a countdown — a number would be something to watch
-   instead of write, but a silent wipe with no tell reads as a bug. */
-#dw-session.dw-danger {
-  border-color: var(--danger);
-  box-shadow: inset 0 0 0 3px var(--danger);
-  transition: box-shadow 0.25s ease;
-}
 
 /* The create row before anything is typed: an offer, not an action. */
 .cl-proj-new-empty { color: var(--text-secondary); opacity: .75; }
@@ -6489,33 +6059,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .be-section .cl-hint { display: block; padding: 6px 20px 12px; line-height: 1.6; }
 .be-about-row { border-bottom: none; }
 
-/* Log search: the field, and the matched lines under a row. */
-.log-hit {
-  display: block;
-  width: 100%;
-  font: 11px/1.6 var(--font-mono);
-  color: var(--text-secondary);
-  padding-left: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* The accent at low alpha: readable as a highlight in BOTH themes without a
-   second variable, since --accent is already redefined in the light appendix. */
-.log-hit mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--text-primary); }
-
-/* A log row's tags, inline after the title. Named vars only, so the light
-   appendix needs no entry of its own. */
-.log-tag {
-  font: 10px var(--font-mono);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-soft);
-  border-radius: 999px;
-  padding: 1px 6px;
-  margin-left: 6px;
-  white-space: nowrap;
-}
-.log-hidden-note { font: 11px var(--font-mono); color: var(--text-secondary); padding: 6px 20px; }
 /* The new-tag field sits in the chip row and must not stretch it. */
 .en-tag-new { flex: 0 0 90px; min-width: 90px; font: 12px var(--font-mono); padding: 2px 8px; }
 
@@ -6717,7 +6260,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .tl-plan-sum { color: var(--text-primary); font-weight: 600; }
 .tl-plan-hint { color: var(--text-secondary); font-size: 11px; }
 
-
 .tl-plan-dlabel { color: var(--text-secondary); font-size: 11px; margin-right: 2px; }
 
 /* The chip wears the colour its spans will draw in, so the pick and the result
@@ -6738,7 +6280,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* ── The top strip's half of the same contract ───────────────────────────
    Every full-screen layer starts UNDER the strip rather than covering it.
    Sheets are not listed: they are modal at z 200 and cover it on purpose. */
-.m-overlay, #logs-overlay, #map-overlay, #modal-overlay{
+.m-overlay, #map-overlay, #modal-overlay{
   top: var(--tnav-h);
 }
 
@@ -6751,7 +6293,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    designs do. Last in the file, so it wins over each surface's own rules. */
 :root { --page-w: 100%; }
 @media (min-width: 900px) { :root { --page-w: var(--eg-measure); } }
-.m-overlay, #logs-overlay, #map-overlay, #modal-overlay {
+.m-overlay, #map-overlay, #modal-overlay {
   left: 0;
   right: 0;
   width: auto;
@@ -6761,7 +6303,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border: none;
   justify-content: flex-start;
 }
-.m-close, #logs-close, #map-close, #modal-close { display: none; }
+.m-close, #map-close, #modal-close { display: none; }
 #cal-overlay > .m-head { display: none; }
 #tab-lists:not(.ref-index) > *, #tab-tracking > *, #tab-social > *, #now-full > * {
   width: 100%;
@@ -6956,7 +6498,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   transition: width 0.15s;
 }
 .tn-search:focus-within { border-color: var(--accent); }
-/* The page's own field styles (#map-q, #logs-q) stop at the strip. */
+/* The page's own field styles (#map-q) stop at the strip. */
 #top-nav .tn-search input { border: none; border-radius: 0; background: transparent; padding: 0; height: auto; }
 @media (max-width: 899px) {
   .tn-pill { font-size: 12px; padding: 4px 4px; }
@@ -6994,7 +6536,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .tn-menu.hidden { display: none; }
 
-
 /* The calendar's selector switching a layer off (calFilter, a stripMenu). */
 #cal-overlay.cal-hide-blocks .tl-block,
 #cal-overlay.cal-hide-blocks #tl-blocks-layer { display: none; }
@@ -7031,106 +6572,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
 }
 
-/* ── THE LOG PAGE (2026-10-01, Quentin's design) ─────────────────────────
-   Wide: the list in the left column, the open log in the middle one (the
-   Now column), its counts and Dangerous writing in the right. A phone shows
-   the list, or one log with its way back — never both. */
-#logs-modal {
-  position: relative;
-  width: 100%;
-  max-width: none;
-  border: none;
-  background: var(--surface-mid);
-  animation: none;
-  box-shadow: none;
-}
-#logs-modal > .modal-header { display: none; }
-#logs-body { padding: 0; gap: 0; }
-.lg-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.lg-side { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.lg-tools { padding: 14px 16px 8px; display: flex; flex-direction: column; gap: 8px; }
-.lg-tools-row { display: flex; align-items: center; justify-content: space-between; }
-.lg-new:hover { background: var(--surface-2); color: var(--text-primary); }
-.lg-new { font-size: 13px; color: var(--text-secondary); padding: 3px 6px; margin-right: -6px; border-radius: 6px; }
-#logs-modal .log-list { padding: 0 16px 16px; gap: 0; }
-.lg-month {
-  padding: 16px 0 4px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-}
-#logs-modal .log-row {
-  flex-wrap: wrap;
-  gap: 0 8px;
-  padding: 6px 8px;
-  margin: 0 -8px;
-  border: none;
-  border-radius: 6px;
-  font-size: 13.5px;
-}
-#logs-modal .log-row:hover { background: var(--surface-2); }
-#logs-modal .log-row.on { background: var(--surface-2); font-weight: 600; }
-.log-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#logs-modal .log-row-date { font: 11.5px var(--font-mono); white-space: nowrap; }
-.lg-main { display: none; flex-direction: column; gap: 10px; min-height: 0; padding: 14px 16px 12px; }
-.lg-has-open .lg-main { display: flex; flex: 1; }
-.lg-has-open .lg-side { display: none; }
-.lg-title {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-#logs-modal .log-editor-bar { gap: 10px; justify-content: flex-start; }
-#logs-modal .log-editor-wrap { border: none; background: transparent; }
-#logs-modal .log-highlight, #logs-modal .log-editor { padding: 0; font-size: 14px; line-height: 1.65; }
-.lg-none { color: var(--text-secondary); font-size: 14px; }
-.lg-right { padding: 4px 16px 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.lg-has-open .lg-right { display: none; }
-.lg-right .dw-entry { display: inline-flex; align-items: center; gap: 6px; }
-.lg-counts {
-  margin-top: 14px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-  font: 13px var(--font-mono);
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-.lg-counts.lg-sel { color: var(--accent); }
-.lg-sel-note { font-size: 11.5px; }
-@media (min-width: 900px) {
-  .lg-page {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
-  }
-  .lg-side, .lg-has-open .lg-side { display: flex; }
-  .lg-tools { padding: 18px 16px 8px 24px; }
-  #logs-modal .log-list { padding: 0 16px 16px 24px; }
-  .lg-main, .lg-has-open .lg-main {
-    display: flex;
-    padding: 30px 40px;
-    border-left: 1px solid var(--border-soft);
-    border-right: 1px solid var(--border-soft);
-  }
-  .lg-title { font-size: 24px; }
-  #logs-modal .log-back-btn { display: none; }
-  #logs-modal .log-highlight, #logs-modal .log-editor { font-size: 15px; }
-  .lg-right, .lg-has-open .lg-right {
-    display: flex;
-    padding: 22px 24px 0;
-    align-items: flex-end;
-    text-align: right;
-  }
-}
-
 /* The calendar selector's week row (calFilter, a stripMenu). */
 .cf-week .wk-title { flex: 1; text-align: center; font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
 .cf-tools .chip { display: inline-flex; align-items: center; gap: 5px; }
@@ -7159,26 +6600,14 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   .ref-peek-n { font: 12px var(--font-mono); color: var(--text-secondary); }
   .ref-peek-open { font-size: 12.5px; color: var(--text-secondary); padding: 3px 6px; border-radius: 6px; }
   .ref-peek-open:hover { background: var(--surface-2); color: var(--text-primary); }
-  
+
   .ref-peek-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px;
     line-height: 1.4; color: var(--text-primary); }
   .ref-peek-dot { width: 4px; height: 4px; margin: 8px 6px 0; flex: none; border-radius: 50%; background: var(--text-secondary); }
   .ref-peek-done { color: var(--text-secondary); text-decoration: line-through; }
   .ref-peek-sub { color: var(--text-secondary); }
-  
 
 }
-
-/* The Log page's blank log: its Title is the field the heading becomes. */
-.lg-title-in {
-  border: none;
-  outline: none;
-  background: transparent;
-  padding: 0;
-  font: 600 20px var(--font-ui);
-  color: var(--text-primary);
-}
-@media (min-width: 900px) { .lg-title-in { font-size: 24px; } }
 
 /* ── NO POPUPS: every sheet DOCKS INTO THE RIGHT COLUMN, AND THE PAGE MAKES
    ROOM FOR IT (2026-10-01, Quentin's instruction; reflow 2026-10-05) ───────
@@ -7209,8 +6638,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
   :root:has(.dock-panel:not(.hidden)) { --dock-open: var(--dock-w); }
   #app { padding-right: var(--dock-open, 0px); }
-  .m-overlay, #logs-overlay, #map-overlay, #modal-overlay { right: var(--dock-open, 0px); }
-  
+  .m-overlay, #map-overlay, #modal-overlay { right: var(--dock-open, 0px); }
+
   #engage-body .eg-rt-pop { left: calc(var(--view-w) / 2 + var(--eg-measure) / 2 + 12px); }
 
   /* !important because each sheet's own id rule outranks a class. */
@@ -7249,51 +6678,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   .cl-item { padding-top: 14px; padding-bottom: 18px; }
   .cl-sec { padding-top: 6px; }
 
-  /* Dangerous writing's SETUP docks like any panel, but top to bottom (it is
-     still the one surface over the dock), with an invisible layer over the
-     rest. */
-  #dw-session { bottom: 0 !important; height: auto; padding: 0 10px !important; }
-  body.dw-open::after {
-    content: '';
-    position: fixed;
-    inset: 0;
-    z-index: 239;
-  }
-  /* WHILE WRITING it takes all three columns (2026-10-05, Quentin's
-     instruction), in the style of the Log page's middle column: the page's
-     ground, the text in the --eg-measure column between two hairlines. It is
-     then not a panel beside the page, so nothing makes room for it. */
-  #dw-session:has(.dw-writing) {
-    left: 0 !important;
-    width: auto !important;
-    border-left: none !important;
-    padding: 0 !important;
-  }
-  :root:has(#dw-session:not(.hidden) .dw-writing) { --dock-open: 0px; }
-  #dw-session .dw-writing {
-    width: var(--eg-measure);
-    margin: 0 auto;
-    padding: 28px 24px 0;
-    box-sizing: border-box;
-    border-left: 1px solid var(--border-soft);
-    border-right: 1px solid var(--border-soft);
-  }
-  #dw-session .dw-writing .dw-editor { padding: 0; font-size: 14px; line-height: 1.65; }
-  #dw-session .dw-writing .dw-foot { padding-left: 0; padding-right: 0; }
-
-  
-  
 }
-
-/* A log's × — on the row you are on, and under the pointer (always there on
-   a touch screen, which has no hover). */
-.lg-del { display: none; width: 18px; text-align: center; font-size: 15px; color: var(--text-secondary); cursor: pointer; }
-.lg-del:hover { color: var(--danger); }
-#logs-modal .log-row.on .lg-del, #logs-modal .log-row:hover .lg-del { display: inline-block; }
-.lg-draft-row .lg-del { display: none !important; }
-@media (hover: none) { #logs-modal .log-row .lg-del { display: inline-block; } }
-.lg-rename { flex: 1; min-width: 0; font: inherit; }
-.lg-title.lg-rename, h1 + .lg-rename { font-size: 24px; font-weight: 600; }
 
 /* Settings → Gates: the dashboard, mounted. It scrolls inside its own frame,
    which is the height of what you can see, so its sheets (fixed inside it)

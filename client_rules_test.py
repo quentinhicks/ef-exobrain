@@ -239,10 +239,10 @@ def settings_refresh_fails(lines):
 # right edge and told the page nothing, so every one covered the page's right
 # column. `.dock-panel` now both places a panel and makes the page give up its
 # width (style.css, the NO POPUPS block) — so a sheet or read-out without it
-# would float over the page again. Scanned: every *-sheet / *-pop / *-session
-# element in the shell.
+# would float over the page again. Scanned: every *-sheet / *-pop element in
+# the shell (`-session` went with dangerous writing, 2026-10-06).
 INDEX_HTML = os.path.join(HERE, 'templates', 'index.html')
-DOCKED = re.compile(r'<[a-z]+ id="([a-z-]+-(?:sheet|pop|session))"([^>]*)>')
+DOCKED = re.compile(r'<[a-z]+ id="([a-z-]+-(?:sheet|pop))"([^>]*)>')
 
 
 def dock_panel_fails():
