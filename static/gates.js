@@ -3,10 +3,11 @@
 // visible and encapsulated there).
 //
 // Its own document and its own script, touching none of app.js: the NOW
-// panel's arrangement (panel.js). That is also why a handful of small helpers
-// here (the day arithmetic, the pointer drag, the undo stack) are written out
-// again rather than shared — there is no build step and no module system, and
-// a page that loads app.js is not encapsulated.
+// panel's arrangement (panel.js). What every document needs — the escaper,
+// the fetch envelope, toast, copy, the undo stack, theme and privacy, the day
+// and minute arithmetic — is static/common.js, loaded first (2026-10-05).
+// The copies this file used to keep had drifted: its copy had no http
+// fallback, so the key sheet's Copy failed off localhost.
 //
 // THE RULES THIS FILE KEEPS, all of them the app's own:
 //   * THE DAY IS SERVED, never mirrored. Every window, verdict, lock and price
@@ -23,7 +24,6 @@
 //     gates with no live tag, etc.; its sentence is toasted, never a number.
 'use strict';
 
-const DAY_MIN = 1440;
 const PX_PER_MIN = 0.8;
 const SNAP_MIN = 5;
 const HOLD_MS = 550;
@@ -48,39 +48,26 @@ const G = {
   armConfirmUntil: 0,
   foldOpen: false,     // the prices/account disclosure survives a repaint
   ledgerGate: '',
-  undo: [],
 };
 
 const $ = sel => document.querySelector(sel);
-const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
-  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = c => '$' + (Number(c || 0) / 100).toFixed(2);
-const pad = n => String(n).padStart(2, '0');
 
-// ── Theme and privacy: the app's two documents' conventions, read here ──
+const money = c => '$' + (Number(c || 0) / 100).toFixed(2);
+
+
+// ── Theme and privacy: common.js's, the app's conventions ──
 // The theme is mirrored in localStorage by app.js; the db copy (settings.theme)
 // is reconciled once settings arrive. Privacy is sessionStorage — this page is
-// reached in the SAME tab, so the app's privacy state carries over and back.
-function applyTheme(t) {
-  document.documentElement.classList.toggle('theme-light', t === 'light');
-}
-try { applyTheme(localStorage.getItem('theme') || 'dark'); } catch (e) { /* private mode */ }
-function setPrivacy(on) {
-  document.documentElement.classList.toggle('priv-mode', !!on);
-  try {
-    if (on) sessionStorage.setItem('privacy', '1'); else sessionStorage.removeItem('privacy');
-  } catch (e) { /* the class still applies */ }
-}
-try { if (sessionStorage.getItem('privacy') === '1') setPrivacy(true); } catch (e) { /* none */ }
+// reached in the SAME tab, so the app's privacy state carries over and back
+// (common.js reads it before the first paint).
+applyTheme(storedTheme());
 
 // ── Days and minutes ──────────────────────────────────────────
-function ymdOf(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
-// What time is it — the wall clock's date. Only ever the START of navigation;
+// wallDay() — the wall clock's date — is only ever the START of navigation;
 // every write sends the day on screen instead.
-function wallDay() { return ymdOf(new Date()); }
 function plusDays(ymd, n) {
   const [y, m, d] = ymd.split('-').map(Number);
-  return ymdOf(new Date(y, m - 1, d + n));
+  return formatDateYMD(new Date(y, m - 1, d + n));
 }
 function dayDiff(a, b) {
   const [ay, am, ad] = a.split('-').map(Number);
@@ -93,11 +80,8 @@ function minOn(ymd, iso) {
   const s = String(iso || '');
   return dayDiff(ymd, s.slice(0, 10)) * DAY_MIN + (+s.slice(11, 13) || 0) * 60 + (+s.slice(14, 16) || 0);
 }
-function clock(min) {
-  const w = ((min % DAY_MIN) + DAY_MIN) % DAY_MIN;
-  return `${pad(Math.floor(w / 60))}:${pad(w % 60)}`;
-}
-function clockLabel(min) { return clock(min) + (min >= DAY_MIN ? ' +1d' : ''); }
+
+function clockLabel(min) { return clockHHMM(min) + (min >= DAY_MIN ? ' +1d' : ''); }
 function hhmmMin(s) {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '').trim());
   return m ? (+m[1]) * 60 + (+m[2]) : null;
@@ -121,61 +105,21 @@ const judgeStale = iso => !iso || (Date.now() - new Date(iso).getTime()) / 60000
 // ── Talking to the server ─────────────────────────────────────
 // A read falls back to what is already on screen, never to empty: "no gates"
 // is a claim, and a failed fetch is not evidence for it.
-async function getJSON(url, fallback) {
-  try {
-    const r = await fetch(url);
-    if (!r.ok) return fallback;
-    return await r.json();
-  } catch (e) { return fallback; }
-}
-async function send(url, method, body) {
-  try {
-    const r = await fetch(url, {
-      method,
-      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const data = await r.json().catch(() => ({}));
-    return { ok: r.ok, status: r.status, data };
-  } catch (e) {
-    return { ok: false, status: 0, data: { error: 'No connection — nothing was saved.' } };
-  }
-}
+// (apiGet for reads, apiSendData for writes — common.js.)
 const refusal = (res, what) => (res.data && res.data.error) || `${what} (${res.status || 'offline'})`;
 
-let toastTimer = null;
-function toast(msg) {
-  const el = $('#gd-toast');
-  el.textContent = msg;
-  el.classList.remove('hidden');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.add('hidden'), 4500);
-}
-
-async function copyText(text, what) {
-  try { await navigator.clipboard.writeText(text); toast(`${what} copied`); }
-  catch (e) { toast(`Could not copy — select it by hand: ${text}`); }
-}
-
 // ── Undo: the day-level gestures only ─────────────────────────
-// Session-local, LIFO, cap 30, like the app's. The permanent config in the
-// editor is NOT undoable (the app's rule for its Settings surfaces): every
-// easing there already waits 24h and can be called off from the same sheet.
-function pushUndo(label, inverse) {
-  G.undo.push({ label, inverse });
-  if (G.undo.length > 30) G.undo.shift();
-  paintUndo();
-}
-async function runUndo() {
-  const u = G.undo.pop();
-  paintUndo();
-  if (!u) return;
-  if (await u.inverse()) toast(`Undid: ${u.label}`);
-}
-function paintUndo() {
+// common.js's stack, the app's. The permanent config in the editor is NOT
+// undoable (the app's rule for its Settings surfaces): every easing there
+// already waits 24h and can be called off from the same sheet. An inverse
+// here returns false when the server refused it, having toasted why.
+const gatesUndo = makeUndoStack((top, n) => paintUndo(top, n));
+function pushUndo(label, inverse) { gatesUndo.push(label, inverse); }
+function runUndo() { return gatesUndo.run(); }
+function paintUndo(top, n) {
   const b = $('#gd-undo');
-  b.disabled = !G.undo.length;
-  b.title = G.undo.length ? `Undo: ${G.undo[G.undo.length - 1].label} (Ctrl+Z)` : 'Nothing to undo';
+  b.disabled = !n;
+  b.title = top ? `Undo: ${top.label} (Ctrl+Z)` : 'Nothing to undo';
 }
 
 // ── Proof: what each kind actually proves ─────────────────────
@@ -217,7 +161,7 @@ const proofOf = n => PROOF[(n && n.proof_mode) || 'link'] || PROOF.link;
 function proofBadge(n) {
   const p = proofOf(n);
   const noFence = (n.proof_mode || 'link') === 'link' && n.geofence_lat == null;
-  return `<span class="gd-badge ${p.cls}" title="${esc(p.threat)}">${esc(p.strength)}`
+  return `<span class="gd-badge ${p.cls}" title="${escHtml(p.threat)}">${escHtml(p.strength)}`
     + `${noFence ? ' · no place pinned' : ''}</span>`;
 }
 
@@ -293,14 +237,14 @@ async function loadAll() {
   const date = G.date;
   const c = claim(['day', 'nodes', 'billing', 'ledger', 'segments', 'context']);
   const [day, nodes, billing, ledger, events, segments, locations, settings] = await Promise.all([
-    getJSON(`/api/gates/day?date=${date}`, G.day),
-    getJSON('/api/accountability/nodes', G.nodes),
-    getJSON('/api/gates/billing', G.billing),
-    getJSON('/api/gates/ledger', G.ledger),
-    getJSON('/api/gcal', G.events),
-    getJSON(`/api/blocks/day?date=${date}&all=1`, G.segments),
-    getJSON('/api/locations', G.locations),
-    getJSON('/api/settings', G.settings),
+    apiGet(`/api/gates/day?date=${date}`, G.day),
+    apiGet('/api/accountability/nodes', G.nodes),
+    apiGet('/api/gates/billing', G.billing),
+    apiGet('/api/gates/ledger', G.ledger),
+    apiGet('/api/gcal', G.events),
+    apiGet(`/api/blocks/day?date=${date}&all=1`, G.segments),
+    apiGet('/api/locations', G.locations),
+    apiGet('/api/settings', G.settings),
   ]);
   if (G.date !== date) return;            // navigated away while reading
   if (current(c, 'day')) G.day = day;
@@ -326,9 +270,9 @@ async function reloadDay() {
   const date = G.date;
   const c = claim(['day', 'nodes', 'segments']);
   const [day, nodes, segments] = await Promise.all([
-    getJSON(`/api/gates/day?date=${date}`, G.day),
-    getJSON('/api/accountability/nodes', G.nodes),
-    getJSON(`/api/blocks/day?date=${date}&all=1`, G.segments),
+    apiGet(`/api/gates/day?date=${date}`, G.day),
+    apiGet('/api/accountability/nodes', G.nodes),
+    apiGet(`/api/blocks/day?date=${date}&all=1`, G.segments),
   ]);
   if (G.date !== date) return;
   if (current(c, 'day')) G.day = day;
@@ -344,10 +288,10 @@ async function reloadConfig() {
   const date = G.date;
   const c = claim(['day', 'nodes', 'billing', 'ledger']);
   const [nodes, day, billing, ledger] = await Promise.all([
-    getJSON('/api/accountability/nodes', G.nodes),
-    getJSON(`/api/gates/day?date=${date}`, G.day),
-    getJSON('/api/gates/billing', G.billing),
-    getJSON('/api/gates/ledger', G.ledger),
+    apiGet('/api/accountability/nodes', G.nodes),
+    apiGet(`/api/gates/day?date=${date}`, G.day),
+    apiGet('/api/gates/billing', G.billing),
+    apiGet('/api/gates/ledger', G.ledger),
   ]);
   if (current(c, 'nodes')) G.nodes = Array.isArray(nodes) ? nodes : G.nodes;
   if (current(c, 'day') && G.date === date) G.day = day;
@@ -389,7 +333,7 @@ function readRoute() {
 }
 
 const sectionHead = (title, extra) =>
-  `<div class="gd-sec-head"><h2>${esc(title)}</h2>${extra || ''}</div>`;
+  `<div class="gd-sec-head"><h2>${escHtml(title)}</h2>${extra || ''}</div>`;
 
 // ══ 1. MONEY — will this charge me, and what stops it ══════════
 function moneyVerdict(b) {
@@ -409,7 +353,7 @@ function moneyVerdict(b) {
         + 'fails without sending anything.' };
   }
   return { cls: 'gd-live', text: 'LIVE. A missed gate bills real money.',
-    sub: `Bills ${esc(b.user)} — only for a day listed under "At stake", and at most `
+    sub: `Bills ${escHtml(b.user)} — only for a day listed under "At stake", and at most `
       + `${money(b.cap_cents)} in any 7 days, whatever happens.` };
 }
 
@@ -433,25 +377,25 @@ function renderMoney() {
       ${hint ? `<div class="gd-hint">${hint}</div>` : ''}</div></div>`;
 
   el.innerHTML = sectionHead('Money')
-    + `<div class="gd-verdict ${v.cls}"><div class="gd-vtext">${esc(v.text)}</div>
+    + `<div class="gd-verdict ${v.cls}"><div class="gd-vtext">${escHtml(v.text)}</div>
         <div class="gd-vsub">${v.sub}</div></div>`
     + `<div class="gd-seg" role="group" aria-label="Charging">
         <button data-mode="off" class="${mode === 'off' ? 'gd-on' : ''}">Off</button>
         <button data-mode="live" class="${mode === 'live' ? 'gd-on gd-on-live' : ''}${confirming ? ' gd-confirm' : ''}">${
-          confirming ? `Tap again: bill ${esc(b.user || 'nobody')}` : 'Live'}</button>
+          confirming ? `Tap again: bill ${escHtml(b.user || 'nobody')}` : 'Live'}</button>
       </div>
       <div class="gd-hint">Off is immediate. Live asks twice, and reaches FORWARD only: a day is
         at stake only if charging was armed before its window opened.</div>`
     + '<h3>At stake</h3>' + stakeList(b)
     + '<h3>The locks, in the order they are checked</h3>'
-    + row(mark(!judgeStale(b.judge_last_run)), 'The judge', esc(agoLabel(b.judge_last_run)),
+    + row(mark(!judgeStale(b.judge_last_run)), 'The judge', escHtml(agoLabel(b.judge_last_run)),
       'Runs on the server every few minutes and freezes each finished day. Stale = nothing is being decided.')
     + row(mark(!!b.armed_at, !b.armed_at), 'Armed',
-      b.armed_at ? `since ${esc(stamp(b.armed_at))}` : 'no',
+      b.armed_at ? `since ${escHtml(stamp(b.armed_at))}` : 'no',
       'The one switch. Only this page\'s Live button arms it, and the time is recorded.')
-    + row(mark(b.has_user), 'Bills', b.has_user ? esc(b.user) : 'no Beeminder user set', '')
+    + row(mark(b.has_user), 'Bills', b.has_user ? escHtml(b.user) : 'no Beeminder user set', '')
     + row(mark(tok ? tok.valid : b.has_token), 'Token',
-      tok ? (tok.valid ? 'checked just now — valid' : esc(tok.reason || 'invalid'))
+      tok ? (tok.valid ? 'checked just now — valid' : escHtml(tok.reason || 'invalid'))
         : (b.has_token ? 'set — not checked' : 'not set'),
       'Kept in config.json on the server, never in the database or its backups. This page can '
         + 'set it or clear it, and can never read it back.')
@@ -471,7 +415,7 @@ function renderMoney() {
         floor is $1), while the ledger and the cap count the whole stake. Keep stakes at least fee + $1.</div>`
     + '<h3>Beeminder account</h3>'
     + `<div class="gd-form">
-        <label>User <input type="text" id="gd-user" autocomplete="off" value="${esc(b.user || '')}"></label>
+        <label>User <input type="text" id="gd-user" autocomplete="off" value="${escHtml(b.user || '')}"></label>
         <label>Token <input type="password" id="gd-token" autocomplete="new-password" placeholder="${b.has_token ? 'set — blank leaves it' : 'paste the auth token'}"></label>
         <button class="gd-btn" id="gd-save-cred">Save account</button>
         ${b.has_token ? '<button class="gd-btn gd-danger" id="gd-clear-token">Remove the token</button>' : ''}
@@ -480,7 +424,7 @@ function renderMoney() {
   el.querySelectorAll('[data-mode]').forEach(btn => btn.addEventListener('click', () => setMode(btn.dataset.mode)));
   el.querySelector('.gd-fold').addEventListener('toggle', e => { G.foldOpen = e.target.open; });
   $('#gd-verify').addEventListener('click', async () => {
-    const r = await getJSON('/api/gates/billing?verify=1', null);
+    const r = await apiGet('/api/gates/billing?verify=1', null);
     if (!r) { toast('Could not reach the server'); return; }
     G.billing = r;
     G.tokenCheck = r.token || { valid: false, reason: 'no token set' };
@@ -488,7 +432,7 @@ function renderMoney() {
   });
   $('#gd-save-prices').addEventListener('click', async () => {
     const cents = id => Math.round(parseFloat($(id).value || '0') * 100);
-    const res = await send('/api/gates/billing', 'PATCH', {
+    const res = await apiSendData('/api/gates/billing', 'PATCH', {
       gate_charge_cents: cents('#gd-default'), gate_card_fee_cents: cents('#gd-fee'),
       gate_weekly_cap_cents: cents('#gd-cap') });
     if (!res.ok) { toast(refusal(res, 'Prices not saved')); return; }
@@ -498,7 +442,7 @@ function renderMoney() {
   $('#gd-save-cred').addEventListener('click', async () => {
     const body = { beeminder_user: $('#gd-user').value.trim(), beeminder_auth_token: $('#gd-token').value.trim() };
     if (!body.beeminder_user && !body.beeminder_auth_token) { toast('Nothing typed — nothing changed'); return; }
-    const res = await send('/api/gates/billing', 'PATCH', body);
+    const res = await apiSendData('/api/gates/billing', 'PATCH', body);
     if (!res.ok) { toast(refusal(res, 'Account not saved')); return; }
     G.tokenCheck = null;
     toast(body.beeminder_auth_token ? 'Saved. The token is stored and will not be shown again.' : 'User saved');
@@ -506,7 +450,7 @@ function renderMoney() {
   });
   const clr = $('#gd-clear-token');
   if (clr) clr.addEventListener('click', async () => {
-    const res = await send('/api/config', 'PATCH', { beeminder_auth_token: '__clear__' });
+    const res = await apiSendData('/api/config', 'PATCH', { beeminder_auth_token: '__clear__' });
     if (!res.ok) { toast(refusal(res, 'Token not removed')); return; }
     G.tokenCheck = null;
     toast('Token removed — nothing can be charged until a new one is saved');
@@ -521,9 +465,9 @@ function stakeList(b) {
   const cs = b.commitments || [];
   if (!cs.length) return '<p class="gd-empty">Nothing is committed for today or tomorrow.</p>';
   return '<div class="gd-ledger">' + cs.map(c => `<div class="gd-lrow">
-      <span class="gd-ldate">${esc(c.date)}</span>
-      <span class="gd-lgate">${esc(c.label)}</span>
-      <span class="gd-lout">${esc(c.window_start)}–${esc(c.window_end)}${c.offset_days ? ' +1d' : ''}</span>
+      <span class="gd-ldate">${escHtml(c.date)}</span>
+      <span class="gd-lgate">${escHtml(c.label)}</span>
+      <span class="gd-lout">${escHtml(c.window_start)}–${escHtml(c.window_end)}${c.offset_days ? ' +1d' : ''}</span>
       <span class="gd-lcharge">${commitmentWords(c, b.live)}</span>
     </div>`).join('') + '</div>';
 }
@@ -531,7 +475,7 @@ function stakeList(b) {
 function commitmentWords(c, live) {
   if (!c) return 'nothing — this day was not committed, so it cannot cost anything';
   const amount = c.staked_cents ? money(c.staked_cents) : null;
-  if (c.sealed) return amount ? `${amount} at stake — sealed ${esc(stamp(c.sealed_at))}`
+  if (c.sealed) return amount ? `${amount} at stake — sealed ${escHtml(stamp(c.sealed_at))}`
     : 'judged for the record — nothing at stake (not armed when it opened)';
   return amount ? `${amount} if nothing changes before it opens`
     : (live ? 'not at stake yet' : 'record only — not armed');
@@ -551,7 +495,7 @@ async function setMode(mode) {
   }
   G.armConfirmUntil = 0;
   const body = { armed: mode !== 'off' };
-  const res = await send('/api/gates/billing', 'PATCH', body);
+  const res = await apiSendData('/api/gates/billing', 'PATCH', body);
   if (!res.ok) { toast(refusal(res, 'Charging not changed')); }
   else toast(mode === 'off' ? 'Disarmed. No money can move.'
     : 'LIVE — gates committed from now on bill real money when missed');
@@ -605,15 +549,15 @@ function renderDay() {
 
   const hours = [];
   for (let m = lo; m <= hi; m += 60) {
-    hours.push(`<div class="gd-hour" style="top:${y(m)}px"><span>${clock(m)}</span></div>`);
+    hours.push(`<div class="gd-hour" style="top:${y(m)}px"><span>${clockHHMM(m)}</span></div>`);
   }
   const segHtml = segs.map(s => `<div class="gd-seg-band" style="top:${y(Math.max(lo, s.start))}px;height:${
-    Math.max(2, y(Math.min(hi, s.end)) - y(Math.max(lo, s.start)))}px;--c:${esc(s.color || 'var(--border)')}">
-      <span>${esc(s.label || '')}</span></div>`).join('');
+    Math.max(2, y(Math.min(hi, s.end)) - y(Math.max(lo, s.start)))}px;--c:${escHtml(s.color || 'var(--border)')}">
+      <span>${escHtml(s.label || '')}</span></div>`).join('');
   const evHtml = evs.map(e => {
     const s = Math.max(lo, e.s), en = Math.min(hi, e.e);
-    return `<div class="gd-ev" style="top:${y(s)}px;height:${Math.max(12, y(en) - y(s))}px;--c:${esc(e.color || 'var(--text-secondary)')}"
-      title="${esc(e.title)} ${clock(e.s)}–${clock(e.e)}"><span>${esc(e.title)}</span></div>`;
+    return `<div class="gd-ev" style="top:${y(s)}px;height:${Math.max(12, y(en) - y(s))}px;--c:${escHtml(e.color || 'var(--text-secondary)')}"
+      title="${escHtml(e.title)} ${clockHHMM(e.s)}–${clockHHMM(e.e)}"><span>${escHtml(e.title)}</span></div>`;
   }).join('');
 
   // Lanes, so two gates open at once sit side by side instead of on top.
@@ -647,10 +591,10 @@ function renderDay() {
     return `<div class="gd-gate gd-st-${st}${G.sel === g.node_id ? ' gd-picked' : ''}${g.skipped ? ' gd-skipped' : ''}${
       g.window.all_day ? ' gd-allday' : ''}${locked ? ' gd-locked' : ''}" data-gate="${g.node_id}"
       style="top:${top}px;height:${h}px;left:calc(${lane} * (100% / ${lanes}));width:calc(100% / ${lanes} - 4px)"
-      title="${esc(locked || 'Drag the top or bottom edge to move this day only')}">
+      title="${escHtml(locked || 'Drag the top or bottom edge to move this day only')}">
       ${locked ? '' : `<span class="gd-grab gd-grab-top" data-edge="start" style="top:${-up}px;height:${10 + up}px"></span>`}
-      <div class="gd-gate-name">${esc(g.label)}</div>
-      <div class="gd-gate-time">${clock(g.window.start_min)}–${clockLabel(g.window.end_min)}${
+      <div class="gd-gate-name">${escHtml(g.label)}</div>
+      <div class="gd-gate-time">${clockHHMM(g.window.start_min)}–${clockLabel(g.window.end_min)}${
         g.window.all_day ? ' · all day' : ''}</div>
       ${locked ? '' : `<span class="gd-grab gd-grab-bot" data-edge="end" style="bottom:${-down}px;height:${10 + down}px"></span>`}
     </div>`;
@@ -663,12 +607,12 @@ function renderDay() {
       <button class="gd-icon" id="gd-next" title="Next day">›</button>
       ${isToday ? '' : '<button class="gd-btn gd-small" id="gd-today">Today</button>'}
     </div>`)
-    + `<div class="gd-hint">${esc(dayLabel(date))}${isToday ? ' (today)' : ''}. Gates on the right, your
+    + `<div class="gd-hint">${escHtml(dayLabel(date))}${isToday ? ' (today)' : ''}. Gates on the right, your
       calendar and blocks behind them for context — the calendar is never judged. Drag a gate's top
       or bottom edge to change THIS DAY only (on a phone, hold it first). Tap a gate to see how the
       judge sees the day.</div>`
     + (allDayEvs.length ? `<div class="gd-allday-evs">${allDayEvs.map(e =>
-        `<span class="gd-chip">${esc(e.summary || '')}</span>`).join('')}</div>` : '')
+        `<span class="gd-chip">${escHtml(e.summary || '')}</span>`).join('')}</div>` : '')
     + (gates.length ? `<div class="gd-tl" style="height:${y(hi) + 8}px">
         ${hours.join('')}
         <div class="gd-ctx">${segHtml}${evHtml}</div>
@@ -676,7 +620,7 @@ function renderDay() {
         ${nowMin != null && nowMin >= lo && nowMin <= hi ? `<div class="gd-now" style="top:${y(nowMin)}px"></div>` : ''}
       </div>` : '<p class="gd-empty">No gates yet — add one below.</p>')
     + (idle.length ? `<div class="gd-hint">Not running ${isToday ? 'today' : 'this day'}: ${
-        idle.map(g => esc(g.label)).join(', ')}.</div>` : '')
+        idle.map(g => escHtml(g.label)).join(', ')}.</div>` : '')
     + '<div id="gd-detail"></div>';
 
   $('#gd-prev').addEventListener('click', () => goDay(plusDays(G.date, -1)));
@@ -772,7 +716,7 @@ function startDrag(g, band, edge, y0, pid, handle) {
       }
       band.style.top = `${lo + ns * PX_PER_MIN}px`;
       band.style.height = `${Math.max(22, (ne - ns) * PX_PER_MIN)}px`;
-      timeEl.textContent = `${clock(ns)}–${clockLabel(ne)}`;
+      timeEl.textContent = `${clockHHMM(ns)}–${clockLabel(ne)}`;
     },
     async end(dropped) {
       band.classList.remove('gd-dragging');
@@ -791,8 +735,8 @@ function startDrag(g, band, edge, y0, pid, handle) {
 // override that merely agrees with the default is not an undo.
 async function writeWindow(g, date, ns, ne, edge) {
   const prev = g.override && !g.override.skipped ? g.override : null;
-  const res = await send(`/api/accountability/nodes/${g.node_id}/overrides`, 'POST', {
-    date, window_start: clock(ns), window_end: clock(ne),
+  const res = await apiSendData(`/api/accountability/nodes/${g.node_id}/overrides`, 'POST', {
+    date, window_start: clockHHMM(ns), window_end: clockHHMM(ne),
     window_end_offset_days: ne >= DAY_MIN ? 1 : 0,
   });
   if (!res.ok) { toast(refusal(res, 'Could not move it')); renderDay(); return; }
@@ -803,10 +747,10 @@ async function writeWindow(g, date, ns, ne, edge) {
 
 async function restoreWindow(id, date, prev) {
   const res = prev
-    ? await send(`/api/accountability/nodes/${id}/overrides`, 'POST', {
+    ? await apiSendData(`/api/accountability/nodes/${id}/overrides`, 'POST', {
         date, window_start: prev.window_start, window_end: prev.window_end,
         window_end_offset_days: prev.window_end_offset_days || 0 })
-    : await send(`/api/accountability/nodes/${id}/overrides/${date}`, 'DELETE');
+    : await apiSendData(`/api/accountability/nodes/${id}/overrides/${date}`, 'DELETE');
   if (!res.ok) { toast(refusal(res, 'Could not undo that window')); return false; }
   if (date === G.date) await reloadDay();
   return true;
@@ -817,8 +761,8 @@ async function restoreWindow(id, date, prev) {
 // takes the 24h lock; putting it back re-commits and never waits.
 async function setSkip(id, date, want) {
   const res = want
-    ? await send(`/api/accountability/nodes/${id}/overrides`, 'POST', { date, skipped: true })
-    : await send(`/api/accountability/nodes/${id}/overrides/${date}`, 'DELETE');
+    ? await apiSendData(`/api/accountability/nodes/${id}/overrides`, 'POST', { date, skipped: true })
+    : await apiSendData(`/api/accountability/nodes/${id}/overrides/${date}`, 'DELETE');
   if (!res.ok) {
     toast(refusal(res, want ? 'Could not call that day off' : 'Could not put that day back'));
     return false;
@@ -835,8 +779,8 @@ function recordStrip(h) {
   for (let d = h.from; d <= h.to; d = plusDays(d, 1)) {
     const r = byDate[d];
     const o = r ? r.outcome : 'none';
-    cells.push(`<span class="gd-rec gd-rec-${o}" title="${esc(dayLabel(d))}: ${
-      r ? esc(OUTCOME_WORD[o] || o) + (r.amount_cents ? ' · ' + money(r.amount_cents) : '') : 'not judged'}"></span>`);
+    cells.push(`<span class="gd-rec gd-rec-${o}" title="${escHtml(dayLabel(d))}: ${
+      r ? escHtml(OUTCOME_WORD[o] || o) + (r.amount_cents ? ' · ' + money(r.amount_cents) : '') : 'not judged'}"></span>`);
   }
   return `<div class="gd-record">${cells.join('')}</div>
     <div class="gd-hint">Last 14 days, read back off the frozen rows: filled = met, hollow = did not run,
@@ -857,19 +801,19 @@ function renderDetail() {
     verdict = '○ Nothing was committed this day, so it cannot cost anything.';
   } else if (g.judged) {
     verdict = v.passed ? `✓ Met — judged and frozen.`
-      : `✗ ${esc(gateReason(g.judged.failure_reason))} — ${esc(gateStatus(g.judged.charge_status))}`
+      : `✗ ${escHtml(gateReason(g.judged.failure_reason))} — ${escHtml(gateStatus(g.judged.charge_status))}`
         + (g.judged.amount_cents ? ` · ${money(g.judged.amount_cents)}` : '');
   } else if (!g.applies) {
     verdict = g.skipped ? '○ Called off — this day lands "did not run".' : '○ Does not run this day.';
   } else {
-    verdict = v.met ? '✓ Cleared. It settles at ' + esc(stamp(v.settles_at)) + '.'
+    verdict = v.met ? '✓ Cleared. It settles at ' + escHtml(stamp(v.settles_at)) + '.'
       : `Not cleared yet. If the day ended now it would owe ${money(v.owed_cents)}`
         + `${g.commitment && g.commitment.staked_cents && g.live ? '' : ' (nothing is at stake this day)'}`
-        + `. It settles at ${esc(stamp(v.settles_at))}.`;
+        + `. It settles at ${escHtml(stamp(v.settles_at))}.`;
   }
   const lockedWhy = g.skip_locked && !g.skipped ? 'Locked: this gate closes within 24h.' : '';
   const scans = (g.scans || []).map(sc => `<li class="${sc.satisfies && sc.in_window ? 'gd-good-text' : ''}">
-      ${esc(sc.local_time || '?')} · ${sc.proof === 'tag' ? 'tag tap' : 'link scan'}${
+      ${escHtml(sc.local_time || '?')} · ${sc.proof === 'tag' ? 'tag tap' : 'link scan'}${
       sc.distance_m != null ? ` · ${sc.distance_m} m away` : ''}${
       sc.accuracy_m != null ? ` (±${Math.round(sc.accuracy_m)} m, as the phone reported it)` : ''} · ${
       sc.in_window ? 'inside the window' : 'outside the window'} · ${
@@ -877,23 +821,23 @@ function renderDetail() {
   const pend = pendingGroups(g.pending_changes || []);
 
   el.innerHTML = `<div class="gd-card">
-    <div class="gd-card-head"><h3>${esc(g.label)}</h3>${proofBadge(node)}</div>
+    <div class="gd-card-head"><h3>${escHtml(g.label)}</h3>${proofBadge(node)}</div>
     <div class="gd-verdict-line">${verdict}</div>
     <dl class="gd-dl">
-      <dt>Window</dt><dd>${clock(w.start_min)} – ${clockLabel(w.end_min)} · set by ${esc(w.from)}</dd>
+      <dt>Window</dt><dd>${clockHHMM(w.start_min)} – ${clockLabel(w.end_min)} · set by ${escHtml(w.from)}</dd>
       <dt>Judged on</dt><dd>${w.all_day ? 'the whole day — the window only places it here'
         : 'the window — proof after it closes is not proof'}</dd>
-      <dt>Proof</dt><dd>${esc(p.name)}. ${esc(p.threat)}</dd>
+      <dt>Proof</dt><dd>${escHtml(p.name)}. ${escHtml(p.threat)}</dd>
       <dt>Stake</dt><dd>${money(g.stake_cents)} · ${commitmentWords(g.commitment, g.live)}</dd>
-      ${g.location ? `<dt>Place</dt><dd>${esc(g.location.name || 'a pinned point')} · within ${
-        esc(g.location.radius_m)} m of ${Number(g.location.lat).toFixed(5)}, ${Number(g.location.lng).toFixed(5)}</dd>` : ''}
+      ${g.location ? `<dt>Place</dt><dd>${escHtml(g.location.name || 'a pinned point')} · within ${
+        escHtml(g.location.radius_m)} m of ${Number(g.location.lat).toFixed(5)}, ${Number(g.location.lng).toFixed(5)}</dd>` : ''}
       ${g.hours ? `<dt>Hours</dt><dd>${g.hours.logged_minutes || 0} of ${g.hours.required_minutes || 0} min${
         g.hours.frozen ? ' (frozen)' : ''}</dd>` : ''}
     </dl>
     <h4>Every scan and tap of the day</h4>
     ${scans ? `<ul class="gd-list">${scans}</ul>` : '<p class="gd-empty">None.</p>'}
     ${pend.length ? `<h4>Changes already scheduled</h4><ul class="gd-list">${pend.map(pg =>
-      `<li>${pg.label ? esc(pg.label) + ' → ' : ''}${esc(pg.text)} from ${esc(pg.effective_date)}</li>`).join('')}</ul>` : ''}
+      `<li>${pg.label ? escHtml(pg.label) + ' → ' : ''}${escHtml(pg.text)} from ${escHtml(pg.effective_date)}</li>`).join('')}</ul>` : ''}
     <h4>Record</h4>${recordStrip(g.history)}
     <div class="gd-actions">
       ${g.applies || g.skipped ? `<button class="gd-btn" id="gd-skip" ${lockedWhy || g.judged ? 'disabled' : ''}>${
@@ -915,7 +859,7 @@ function renderDetail() {
   const unov = $('#gd-unov');
   if (unov) unov.addEventListener('click', async () => {
     const date = G.date, prev = g.override, id = g.node_id;
-    const res = await send(`/api/accountability/nodes/${id}/overrides/${date}`, 'DELETE');
+    const res = await apiSendData(`/api/accountability/nodes/${id}/overrides/${date}`, 'DELETE');
     if (!res.ok) { toast(refusal(res, 'Could not remove it')); return; }
     pushUndo(`removed "${g.label}"'s change on ${dayLabel(date)}`, () => restoreWindow(id, date, prev));
     await reloadDay();
@@ -930,12 +874,12 @@ function renderGates() {
     const paused = !n.active || (n.pending_changes || []).some(p => p.field === 'active' && falsyFlag(p.new_value));
     const pend = (n.pending_changes || []).length;
     return `<button class="gd-gate-row${paused ? ' gd-dim' : ''}" data-open="${n.id}">
-      <div class="gd-row-line"><span class="gd-row-name">${esc(n.label)}</span>
+      <div class="gd-row-line"><span class="gd-row-name">${escHtml(n.label)}</span>
         <span class="gd-row-val">${n.charge_cents == null ? 'default stake' : money(n.charge_cents)}</span></div>
       <div class="gd-badges">${proofBadge(n)}${!n.active ? '<span class="gd-badge">paused</span>' : ''}${
         pend ? `<span class="gd-badge gd-pend">${pend} scheduled</span>` : ''}${
         n.all_day ? '<span class="gd-badge">all day</span>' : ''}</div>
-      <div class="gd-hint">${esc(n.schedule_label || 'no schedule')}</div>
+      <div class="gd-hint">${escHtml(n.schedule_label || 'no schedule')}</div>
     </button>`;
   }).join('');
   el.innerHTML = sectionHead('Gates', '<button class="gd-btn gd-small" id="gd-new">+ Gate</button>')
@@ -980,7 +924,7 @@ function closeEditor() {
 }
 
 async function loadTaps(id) {
-  const rows = await getJSON(`/api/accountability/nodes/${id}/taps`, G.taps[id] || null);
+  const rows = await apiGet(`/api/accountability/nodes/${id}/taps`, G.taps[id] || null);
   G.taps[id] = rows || [];
   if (G.edit && G.edit.id === id) renderSheet();
 }
@@ -1001,16 +945,16 @@ function schedFields(v) {
   return `<div class="gd-days">${WEEKDAYS.map(([d, l]) =>
       `<button type="button" class="gd-day${v.days.includes(d) ? ' gd-on' : ''}" data-day="${d}" title="${d}">${l}</button>`).join('')}</div>
     <div class="gd-form gd-inline">
-      <label>From <input type="time" data-k="from" value="${esc(v.from)}"></label>
-      <label>To <input type="time" data-k="to" value="${esc(v.to)}"></label>
+      <label>From <input type="time" data-k="from" value="${escHtml(v.from)}"></label>
+      <label>To <input type="time" data-k="to" value="${escHtml(v.to)}"></label>
     </div>
     <div class="gd-hint">A "To" earlier than "From" closes the next morning.</div>`;
 }
 
 function locationSelect(v, keepLabel) {
-  return `<select data-k="location"><option value="">${esc(keepLabel)}</option>${
+  return `<select data-k="location"><option value="">${escHtml(keepLabel)}</option>${
     G.locations.filter(l => l.active || String(l.id) === v.location).map(l =>
-      `<option value="${l.id}"${String(l.id) === v.location ? ' selected' : ''}>${esc(l.name)} (${l.radius_m} m)</option>`).join('')}</select>`;
+      `<option value="${l.id}"${String(l.id) === v.location ? ' selected' : ''}>${escHtml(l.name)} (${l.radius_m} m)</option>`).join('')}</select>`;
 }
 
 function renderSheet() {
@@ -1028,11 +972,11 @@ function renderSheet() {
 
   let body;
   if (!n) {
-    body = `<label class="gd-field">Name <input type="text" data-k="label" value="${esc(v.label)}" placeholder="e.g. Gym"></label>
+    body = `<label class="gd-field">Name <input type="text" data-k="label" value="${escHtml(v.label)}" placeholder="e.g. Gym"></label>
       <div class="gd-field"><div class="gd-flabel">When it runs</div>${schedFields(v)}</div>
       <div class="gd-form gd-inline">
         <label>Place ${locationSelect(v, '— no place —')}</label>
-        <label>Radius <input type="number" min="10" data-k="radius" value="${esc(v.radius)}" placeholder="the place's"></label>
+        <label>Radius <input type="number" min="10" data-k="radius" value="${escHtml(v.radius)}" placeholder="the place's"></label>
       </div>
       <div class="gd-hint">A new gate starts as a link gate: it prints as a QR code, and a scan inside
         the window (and the place, if you pin one) clears it. Make it tag-only once its tag is set up —
@@ -1044,16 +988,16 @@ function renderSheet() {
     const scanUrl = `${G.settings.gate_scan_url || ''}/scan/${n.token}`;
     const taps = G.taps[n.id];
     body = `
-      <label class="gd-field">Name <input type="text" data-k="label" value="${esc(v.label)}"></label>
+      <label class="gd-field">Name <input type="text" data-k="label" value="${escHtml(v.label)}"></label>
 
       <div class="gd-field"><div class="gd-flabel">Passes when</div>
-        <div class="gd-strong-line">${esc(passesWhen(v, n))}.</div></div>
+        <div class="gd-strong-line">${escHtml(passesWhen(v, n))}.</div></div>
 
       <label class="gd-field">Proof
         <select data-k="proof" data-rerender="1">
-          ${Object.entries(PROOF).filter(([k, pp]) => !pp.retired || v.proof0 === k).map(([k, pp]) => `<option value="${k}"${v.proof === k ? ' selected' : ''}${pp.retired ? ' disabled' : ''}>${esc(pp.name)} — ${esc(pp.strength)}</option>`).join('')}
+          ${Object.entries(PROOF).filter(([k, pp]) => !pp.retired || v.proof0 === k).map(([k, pp]) => `<option value="${k}"${v.proof === k ? ' selected' : ''}${pp.retired ? ' disabled' : ''}>${escHtml(pp.name)} — ${escHtml(pp.strength)}</option>`).join('')}
         </select></label>
-      <div class="gd-threat ${p.cls}"><b>${esc(p.strength)}.</b> ${esc(p.threat)}</div>
+      <div class="gd-threat ${p.cls}"><b>${escHtml(p.strength)}.</b> ${escHtml(p.threat)}</div>
       <div class="gd-hint">${v.proof === 'tag' ? 'Going back to the link is an easing, so it waits 24h.'
         : 'Switching to tag-only applies at once, and is refused until a tag with its keys is live.'}</div>
 
@@ -1067,30 +1011,30 @@ function renderSheet() {
           : 'The window IS the deadline. Making it all-day is the largest easing there is, so it waits 24h.'}</div>`}
 
       <div class="gd-field"><div class="gd-flabel">When it runs</div>
-        <div>${esc(n.schedule_label || 'no schedule')}</div>
+        <div>${escHtml(n.schedule_label || 'no schedule')}</div>
         ${v.sched ? schedFields(v) + '<div class="gd-hint">Saving writes a NEW weekly schedule and points the gate at it; the old one is left untouched for everything else using it. Fewer days or a shorter window apply at once; anything easier waits 24h.</div>'
           : '<button type="button" class="gd-btn gd-small" id="gd-sched">Replace with a weekly schedule</button>'}
       </div>
 
       ${v.proof === 'link' ? `<div class="gd-form gd-inline">
         <label>Place ${locationSelect(v, n.geofence_lat != null ? '— keep the current place —' : '— none —')}</label>
-        <label>Radius <input type="number" min="10" data-k="radius" value="${esc(v.radius)}"></label>
+        <label>Radius <input type="number" min="10" data-k="radius" value="${escHtml(v.radius)}"></label>
       </div>
       <div class="gd-hint">${n.geofence_lat != null ? `Pinned at ${Number(n.geofence_lat).toFixed(5)}, ${Number(n.geofence_lng).toFixed(5)}. ` : 'No place pinned: a scan from anywhere counts. '}Widening the radius or moving the place waits 24h.</div>` : ''}
 
-      <label class="gd-field">Stake <span class="gd-money-in">$<input type="number" min="0" step="0.25" data-k="stake" value="${esc(v.stake)}" placeholder="${G.billing ? (G.billing.default_cents / 100).toFixed(2) : 'default'}"></span></label>
+      <label class="gd-field">Stake <span class="gd-money-in">$<input type="number" min="0" step="0.25" data-k="stake" value="${escHtml(v.stake)}" placeholder="${G.billing ? (G.billing.default_cents / 100).toFixed(2) : 'default'}"></span></label>
       <div class="gd-hint">What failing this gate costs, whole or nothing. Blank uses the default. Raising it applies now; lowering waits 24h.</div>
 
       ${scanKind ? `<div class="gd-field"><div class="gd-flabel">Scan link</div>
-        <div class="gd-mono gd-wrap">${esc(scanUrl)}</div>
-        <button type="button" class="gd-btn gd-small" data-copy="${esc(scanUrl)}" data-what="Scan link">Copy</button>
+        <div class="gd-mono gd-wrap">${escHtml(scanUrl)}</div>
+        <button type="button" class="gd-btn gd-small" data-copy="${escHtml(scanUrl)}" data-what="Scan link">Copy</button>
         <div class="gd-hint">The QR code to print. ${v.proof === 'tag' ? 'On a tag-only gate a link scan is logged and does NOT clear it.'
           : 'Anyone with this link can clear the gate — keep it out of photos and chats.'}</div></div>
         ${tagsHtml(n)}
         <div class="gd-field"><div class="gd-flabel">Last taps <button type="button" class="gd-btn gd-small" id="gd-taps">Refresh</button></div>
           ${taps == null ? '<p class="gd-empty">reading…</p>' : taps.length ? `<ul class="gd-list gd-mono">${taps.map(t =>
-            `<li class="${t.ok ? 'gd-good-text' : 'gd-bad-text'}">${t.ok ? '✓' : '✗'} ${esc(t.at || '??')} · ${esc(t.orphan ? 'unidentified tag' : (t.tag_label || 'tag'))} · ${
-              t.ok ? 'read ' + esc(t.counter) : esc(t.reason || 'refused')}</li>`).join('')}</ul>`
+            `<li class="${t.ok ? 'gd-good-text' : 'gd-bad-text'}">${t.ok ? '✓' : '✗'} ${escHtml(t.at || '??')} · ${escHtml(t.orphan ? 'unidentified tag' : (t.tag_label || 'tag'))} · ${
+              t.ok ? 'read ' + escHtml(t.counter) : escHtml(t.reason || 'refused')}</li>`).join('')}</ul>`
             : '<p class="gd-empty">None yet. Every tap of /t is written down, refused ones with the reason.</p>'}
         </div>
         <details class="gd-field"><summary>How to program a tag</summary>${TAG_STEPS}</details>` : ''}
@@ -1099,20 +1043,20 @@ function renderSheet() {
         <select data-k="active"><option value="1"${v.active ? ' selected' : ''}>Active</option><option value="0"${!v.active ? ' selected' : ''}>Paused</option></select></label>
       <div class="gd-hint">Pausing is an easing: it takes effect in 24h, and setting it back to Active before then calls it off.</div>
 
-      <label class="gd-field">Takes effect <input type="date" data-k="effective" value="${esc(v.effective)}"></label>
+      <label class="gd-field">Takes effect <input type="date" data-k="effective" value="${escHtml(v.effective)}"></label>
       <div class="gd-hint">Blank: now, with easings waiting their 24h. A date moves the whole save to that day; an easing dated sooner than 24h still waits. Nothing reaches back into a day already judged.</div>
 
       ${pend.length ? `<div class="gd-field"><div class="gd-flabel">Scheduled</div>${pend.map((pg, i) =>
-        `<div class="gd-pend-row"><span>${pg.label ? esc(pg.label) + ' → ' : ''}${esc(pg.text)} from ${esc(pg.effective_date)}</span>
+        `<div class="gd-pend-row"><span>${pg.label ? escHtml(pg.label) + ' → ' : ''}${escHtml(pg.text)} from ${escHtml(pg.effective_date)}</span>
           <button type="button" class="gd-btn gd-small" data-calloff="${i}">Call off</button></div>`).join('')}
         <div class="gd-hint">Anything that makes a gate easier waits 24h, so it cannot be loosened in the moment you want to dodge it.</div></div>` : ''}`;
   }
 
   el.innerHTML = `<div class="gd-sheet-head">
-      <h2>${n ? esc(n.label) : 'New gate'}</h2>
+      <h2>${n ? escHtml(n.label) : 'New gate'}</h2>
       <button class="gd-icon" id="gd-close" title="Close (Esc)">✕</button></div>
     <div class="gd-sheet-body">${body}
-      ${E.error ? `<div class="gd-error">${esc(E.error)}</div>` : ''}
+      ${E.error ? `<div class="gd-error">${escHtml(E.error)}</div>` : ''}
     </div>
     <div class="gd-sheet-foot">
       ${n ? `<button class="gd-btn gd-danger" id="gd-delete">${E.confirmDelete ? 'Tap again to delete' + (n.active ? ' (in 24h)' : '')
@@ -1131,26 +1075,26 @@ function tagsHtml(n) {
     : t.pending_live_at ? `starts counting ${stamp(t.pending_live_at)}`
     : !t.active ? 'paused' : !t.last_tap_at ? 'live, never tapped' : `last tap ${stamp(t.last_tap_at)}`;
   return `<div class="gd-field"><div class="gd-flabel">Tags</div>
-    ${n.tap_url ? `<div class="gd-mono gd-wrap">${esc(n.tap_url)}</div>
-      <button type="button" class="gd-btn gd-small" data-copy="${esc(n.tap_url)}" data-what="Tap URL">Copy tap URL</button>
+    ${n.tap_url ? `<div class="gd-mono gd-wrap">${escHtml(n.tap_url)}</div>
+      <button type="button" class="gd-btn gd-small" data-copy="${escHtml(n.tap_url)}" data-what="Tap URL">Copy tap URL</button>
       <div class="gd-hint">Write this to the tag as its NDEF URL, zeros included — the tag overwrites them on every tap.</div>`
       : '<div class="gd-hint">Set a Scan URL in the app\'s Settings → Connections first — a tag needs somewhere to point.</div>'}
     ${tags.map(t => `<div class="gd-tag">
-        <div class="gd-row-line"><span class="gd-row-name">${esc(t.label)}</span><span class="gd-mono">${esc(t.uid)}</span></div>
-        <div class="gd-hint">${esc(tagState(t))}${t.keys_set ? ' · keys set (write-only)' : ''}</div>
+        <div class="gd-row-line"><span class="gd-row-name">${escHtml(t.label)}</span><span class="gd-mono">${escHtml(t.uid)}</span></div>
+        <div class="gd-hint">${escHtml(tagState(t))}${t.keys_set ? ' · keys set (write-only)' : ''}</div>
         <div class="gd-actions">
           <button type="button" class="gd-btn gd-small" data-tagkeys="${t.id}">${t.keys_set ? 'Replace keys' : 'Set keys'}</button>
           <button type="button" class="gd-btn gd-small" data-tagactive="${t.id}" data-to="${t.active ? 0 : 1}">${t.active ? 'Pause' : 'Resume'}</button>
           <button type="button" class="gd-btn gd-small gd-danger" data-tagdel="${t.id}">Delete</button>
         </div></div>`).join('')}
     ${tf ? `<div class="gd-tagform">
-        ${tf.id ? `<div class="gd-flabel">Keys for "${esc((tags.find(t => t.id === tf.id) || {}).label)}"</div>`
-          : `<label>Name <input type="text" data-tk="label" value="${esc(tf.label)}" placeholder="e.g. Gym door"></label>
-             <label>UID <input type="text" data-tk="uid" value="${esc(tf.uid)}" placeholder="7 bytes, 14 hex chars" class="gd-mono"></label>`}
-        ${tf.reveal ? `<div class="gd-keyrow"><span>Meta key</span><span class="gd-mono gd-wrap">${esc(tf.meta)}</span>
-            <button type="button" class="gd-btn gd-small" data-copy="${esc(tf.meta)}" data-what="Meta key">Copy</button></div>
-          <div class="gd-keyrow"><span>File key</span><span class="gd-mono gd-wrap">${esc(tf.mac)}</span>
-            <button type="button" class="gd-btn gd-small" data-copy="${esc(tf.mac)}" data-what="File key">Copy</button></div>
+        ${tf.id ? `<div class="gd-flabel">Keys for "${escHtml((tags.find(t => t.id === tf.id) || {}).label)}"</div>`
+          : `<label>Name <input type="text" data-tk="label" value="${escHtml(tf.label)}" placeholder="e.g. Gym door"></label>
+             <label>UID <input type="text" data-tk="uid" value="${escHtml(tf.uid)}" placeholder="7 bytes, 14 hex chars" class="gd-mono"></label>`}
+        ${tf.reveal ? `<div class="gd-keyrow"><span>Meta key</span><span class="gd-mono gd-wrap">${escHtml(tf.meta)}</span>
+            <button type="button" class="gd-btn gd-small" data-copy="${escHtml(tf.meta)}" data-what="Meta key">Copy</button></div>
+          <div class="gd-keyrow"><span>File key</span><span class="gd-mono gd-wrap">${escHtml(tf.mac)}</span>
+            <button type="button" class="gd-btn gd-small" data-copy="${escHtml(tf.mac)}" data-what="File key">Copy</button></div>
           <div class="gd-hint">Copy BOTH into your tag writer before saving — once stored they are never shown again.
             The way back is a new pair and a rewritten tag, not a lookup.</div>`
           : `<label>Meta key <input type="password" data-tk="meta" autocomplete="off" placeholder="32 hex chars" class="gd-mono"></label>
@@ -1195,7 +1139,7 @@ function wireSheet(n) {
     E.forceRender = true;
     renderSheet();
   }));
-  el.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => copyText(b.dataset.copy, b.dataset.what)));
+  el.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => copyAndSay(b.dataset.copy, b.dataset.what)));
   const sched = el.querySelector('#gd-sched');
   if (sched) sched.addEventListener('click', () => {
     v.sched = true;
@@ -1211,7 +1155,7 @@ function wireSheet(n) {
     const grp = pendingGroups(n.pending_changes || [])[+b.dataset.calloff];
     // Every field of the decision, or none: half a moved fence is nowhere.
     for (const f of grp.fields) {
-      const res = await send(`/api/accountability/nodes/${n.id}/pending/${f}`, 'DELETE');
+      const res = await apiSendData(`/api/accountability/nodes/${n.id}/pending/${f}`, 'DELETE');
       if (!res.ok) { toast(refusal(res, 'Could not call it off')); break; }
     }
     await reloadConfig();
@@ -1243,14 +1187,14 @@ function wireSheet(n) {
   const tsave = el.querySelector('#gd-tagsave');
   if (tsave) tsave.addEventListener('click', () => saveTag(n));
   el.querySelectorAll('[data-tagactive]').forEach(b => b.addEventListener('click', async () => {
-    const res = await send(`/api/accountability/tags/${b.dataset.tagactive}`, 'PATCH', { active: +b.dataset.to });
+    const res = await apiSendData(`/api/accountability/tags/${b.dataset.tagactive}`, 'PATCH', { active: +b.dataset.to });
     if (!res.ok) { toast(refusal(res, 'That change was refused')); return; }
     if (res.data && res.data.pending) toast(`It starts counting ${stamp(res.data.apply_at)}`);
     await reloadConfig();
   }));
   el.querySelectorAll('[data-tagdel]').forEach(b => b.addEventListener('click', async () => {
     if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Tap again'; return; }
-    const res = await send(`/api/accountability/tags/${b.dataset.tagdel}`, 'DELETE');
+    const res = await apiSendData(`/api/accountability/tags/${b.dataset.tagdel}`, 'DELETE');
     if (!res.ok) { toast(refusal(res, 'Delete refused')); return; }
     await reloadConfig();
   }));
@@ -1259,7 +1203,7 @@ function wireSheet(n) {
   if (del) del.addEventListener('click', async () => {
     if (!E.confirmDelete) { E.confirmDelete = true; E.forceRender = true; renderSheet(); return; }
     const q = v.effective ? `?effective_from=${encodeURIComponent(v.effective)}` : '';
-    const res = await send(`/api/accountability/nodes/${n.id}${q}`, 'DELETE');
+    const res = await apiSendData(`/api/accountability/nodes/${n.id}${q}`, 'DELETE');
     if (!res.ok) { toast(refusal(res, 'Delete refused')); return; }
     if (res.data && res.data.pending) toast(`Deleted from ${res.data.effective_date} — it runs until then`);
     else { toast('Gate deleted'); closeEditor(); }
@@ -1273,13 +1217,13 @@ async function saveTag(n) {
   const t = E.tag;
   const putKeys = async id => {
     if (!t.meta && !t.mac) return null;
-    const r = await send(`/api/accountability/tags/${id}/keys`, 'PUT', { meta: t.meta, mac: t.mac });
+    const r = await apiSendData(`/api/accountability/tags/${id}/keys`, 'PUT', { meta: t.meta, mac: t.mac });
     return r.ok ? null : refusal(r, 'Those keys were refused');
   };
   let err;
   if (!t.id) {
     if (!(t.label || '').trim()) { toast('A tag needs a name'); return; }
-    const res = await send(`/api/accountability/nodes/${n.id}/tags`, 'POST', { label: t.label.trim(), uid: t.uid });
+    const res = await apiSendData(`/api/accountability/nodes/${n.id}/tags`, 'POST', { label: t.label.trim(), uid: t.uid });
     if (!res.ok) { toast(refusal(res, 'Could not add it')); return; }
     err = await putKeys(res.data.id);
     if (!err && res.data.pending_live_at) toast(`Added — it starts counting ${stamp(res.data.pending_live_at)}`);
@@ -1303,9 +1247,9 @@ async function createWeeklySource(v, title) {
   if (!v.days.length) return { error: 'Pick at least one day.' };
   let dur = e - s;
   if (dur <= 0) dur += DAY_MIN;
-  const res = await send('/api/schedules', 'POST', {
+  const res = await apiSendData('/api/schedules', 'POST', {
     kind: 'rule', title: null,
-    start: `${wallDay()}T${clock(s)}:00`,
+    start: `${wallDay()}T${clockHHMM(s)}:00`,
     duration: `PT${Math.floor(dur / 60)}H${dur % 60}M`,
     recurrenceRules: [{ '@type': 'RecurrenceRule', frequency: 'weekly',
       byDay: WEEKDAYS.map(([d]) => d).filter(d => v.days.includes(d)).map(day => ({ '@type': 'NDay', day })) }],
@@ -1323,7 +1267,7 @@ async function createGate() {
   if (src.error) return fail(src.error);
   const loc = G.locations.find(l => String(l.id) === String(v.location));
   const radius = parseInt(v.radius);
-  const res = await send('/api/accountability/nodes', 'POST', {
+  const res = await apiSendData('/api/accountability/nodes', 'POST', {
     label: v.label.trim(), source_uid: src.uid,
     geofence_lat: loc ? loc.lat : null, geofence_lng: loc ? loc.lng : null,
     geofence_radius_m: loc ? (isNaN(radius) ? loc.radius_m : radius) : null,
@@ -1364,7 +1308,7 @@ async function saveGate(n) {
   const messages = [];
   if (Object.keys(body).length) {
     if (v.effective) body.effective_from = v.effective;
-    const res = await send(`/api/accountability/nodes/${n.id}`, 'PATCH', body);
+    const res = await apiSendData(`/api/accountability/nodes/${n.id}`, 'PATCH', body);
     if (!res.ok) return fail(refusal(res, 'Not saved'));
     // What the server actually decided, per field — the date asked for is not
     // always the day it starts, and saying the real day is the honest answer.
@@ -1380,7 +1324,7 @@ async function saveGate(n) {
   }
   if (v.active !== v.active0) {
     const route = v.active ? 'activate' : 'disable';
-    const res = await send(`/api/accountability/nodes/${n.id}/${route}`, 'PATCH',
+    const res = await apiSendData(`/api/accountability/nodes/${n.id}/${route}`, 'PATCH',
       v.active || !v.effective ? undefined : { effective_from: v.effective });
     if (!res.ok) return fail(refusal(res, v.active ? 'Resume refused' : 'Pause refused'));
     messages.push(v.active ? 'active' : `paused from ${(res.data && res.data.effective_date) || 'in 24h'}`);
@@ -1400,18 +1344,18 @@ function renderLedger() {
   const sum = st => rows.filter(r => st.includes(r.charge_status)).reduce((t, r) => t + (r.amount_cents || 0), 0);
   const gates = [...new Map(L.rows.map(r => [r.node_id, r.label])).entries()];
   el.innerHTML = sectionHead('Ledger', gates.length > 1 ? `<select id="gd-lgate"><option value="">every gate</option>${
-      gates.map(([id, label]) => `<option value="${id}"${String(id) === G.ledgerGate ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>` : '')
-    + `<div class="gd-hint">Every day the judge has frozen from ${esc(L.from)} to ${esc(L.to)} — met, missed and
+      gates.map(([id, label]) => `<option value="${id}"${String(id) === G.ledgerGate ? ' selected' : ''}>${escHtml(label)}</option>`).join('')}</select>` : '')
+    + `<div class="gd-hint">Every day the judge has frozen from ${escHtml(L.from)} to ${escHtml(L.to)} — met, missed and
       called off. A frozen row is never re-scored under later settings. Charged: ${money(sum(['succeeded']))}${
       sum(['unknown']) ? ` · unknown (may have charged): ${money(sum(['unknown']))}` : ''} · would have charged if live:
       ${money(sum(['would_fire', 'dryrun']))}.</div>`
-    + (rows.length ? `<div class="gd-ledger">${rows.map(r => `<div class="gd-lrow gd-lo-${esc(r.outcome)}">
-        <span class="gd-ldate">${esc(r.date)}</span>
-        <span class="gd-lgate">${esc(r.label)}</span>
-        <span class="gd-lout">${esc(OUTCOME_WORD[r.outcome] || r.outcome)}${r.failure_reason ? ' · ' + esc(gateReason(r.failure_reason)) : ''}</span>
-        <span class="gd-lcharge">${r.outcome === 'met' || r.outcome === 'off' ? '' : esc(gateStatus(r.charge_status))}${
-          r.amount_cents ? ' · ' + money(r.amount_cents) : ''}${r.charge_id ? ` · <span class="gd-mono">#${esc(r.charge_id)}</span>` : ''}</span>
-        ${r.window_start ? `<span class="gd-lwin">judged against ${esc(r.window_start)}–${esc(r.window_end)}${r.offset_days ? ' +1d' : ''}</span>` : ''}
+    + (rows.length ? `<div class="gd-ledger">${rows.map(r => `<div class="gd-lrow gd-lo-${escHtml(r.outcome)}">
+        <span class="gd-ldate">${escHtml(r.date)}</span>
+        <span class="gd-lgate">${escHtml(r.label)}</span>
+        <span class="gd-lout">${escHtml(OUTCOME_WORD[r.outcome] || r.outcome)}${r.failure_reason ? ' · ' + escHtml(gateReason(r.failure_reason)) : ''}</span>
+        <span class="gd-lcharge">${r.outcome === 'met' || r.outcome === 'off' ? '' : escHtml(gateStatus(r.charge_status))}${
+          r.amount_cents ? ' · ' + money(r.amount_cents) : ''}${r.charge_id ? ` · <span class="gd-mono">#${escHtml(r.charge_id)}</span>` : ''}</span>
+        ${r.window_start ? `<span class="gd-lwin">judged against ${escHtml(r.window_start)}–${escHtml(r.window_end)}${r.offset_days ? ' +1d' : ''}</span>` : ''}
       </div>`).join('')}</div>` : '<p class="gd-empty">Nothing judged in this range.</p>');
   const sel = $('#gd-lgate');
   if (sel) sel.addEventListener('change', () => { G.ledgerGate = sel.value; renderLedger(); });
@@ -1468,9 +1412,9 @@ const TAG_STEPS = `<ol class="gd-rules">
 
 // ── Keys ──────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
-  if (e.ctrlKey && e.altKey && (e.key === 'p' || e.key === 'P')) {
+  if (isPrivacyChord(e)) {
     e.preventDefault();
-    setPrivacy(!document.documentElement.classList.contains('priv-mode'));
+    setPrivacy(!privacyOn());
     return;
   }
   const typing = e.target.matches && e.target.matches('input, textarea, select');

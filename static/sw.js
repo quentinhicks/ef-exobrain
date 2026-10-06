@@ -34,6 +34,7 @@ const SHELL_URLS = [
   '/',
   '/panel',
   '/static/style.css',
+  '/static/common.js',
   '/static/app.js',
   '/static/panel.js',
   '/manifest.webmanifest',

@@ -31,7 +31,11 @@ of a bug that shipped:
                                 is covered the day it is written.
 
 The accessors' own definitions are the one legitimate use of each, so they are
-allowed by line and nowhere else.
+allowed by line and nowhere else. They live in static/common.js since
+2026-10-05, shared by every document — so the day and wrap bans scan EVERY
+client script (SCANNED), not app.js alone: a rule that one file obeys can be
+dodged by writing the same line in the next file, and the NOW panel had done
+exactly that with its own `d += 1440`.
 
 NOT CHECKED, and worth saying plainly: "never order HH:MM strings" is a real
 rule with no reliable pattern — a comparison of two variables that happen to
@@ -44,6 +48,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_JS = os.path.join(HERE, 'static', 'app.js')
+# Every client script the banned patterns apply to. common.js holds the
+# accessors themselves; the rest are the documents that ask them.
+SCANNED = ['common.js', 'app.js', 'gates.js', 'panel.js', 'inbox.js']
 
 # pattern -> (what to use instead, the function allowed to contain it)
 BANNED = [
@@ -272,43 +279,52 @@ def main():
     with open(APP_JS, encoding='utf-8') as f:
         lines = f.read().split('\n')
 
-    fails = object_door_fails(body)
-    fails += settings_refresh_fails(lines)
-    fails += dock_panel_fails()
+    fails = [('app.js',) + f for f in object_door_fails(body)]
+    fails += [('app.js',) + f for f in settings_refresh_fails(lines)]
+    fails += [('app.js',) + f for f in dock_panel_fails()]
     sheet_fails, n_sheets = sheet_registry_fails(body)
-    fails += sheet_fails
-    for n, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith('//') or stripped.startswith('*'):
-            continue                      # a comment may name what it bans
-        for pattern, instead, allowed_in in BANNED:
-            if not pattern.search(line):
-                continue
-            owner = owning_function(lines, n)
-            # None: there is no legitimate use anywhere, so nothing is exempt.
-            if allowed_in is not None and (allowed_in in owner or allowed_in in line):
-                continue
-            fails.append((n + 1, stripped[:88], instead))
-
-    dated = day_filing_functions(lines)
-    for name, start, end in dated:
-        for n in range(start, end + 1):
-            stripped = lines[n].strip()
+    fails += [('app.js',) + f for f in sheet_fails]
+    dated = []
+    for fname in SCANNED:
+        path = os.path.join(HERE, 'static', fname)
+        if not os.path.exists(path):
+            fails.append((fname, 0, 'missing', 'the script this test scans'))
+            continue
+        with open(path, encoding='utf-8') as f:
+            flines = f.read().split('\n')
+        for n, line in enumerate(flines):
+            stripped = line.strip()
             if stripped.startswith('//') or stripped.startswith('*'):
-                continue
-            if 'wallDay(' not in lines[n]:
-                continue
-            if any(p.search(lines[n]) for p, _why in CLOCK_OK):
-                continue
-            fails.append((n + 1, stripped[:88],
-                          'the surface\'s own day — %s() files a dated fact, so '
-                          'it sends the day it is about, never the clock' % name))
+                continue                      # a comment may name what it bans
+            for pattern, instead, allowed_in in BANNED:
+                if not pattern.search(line):
+                    continue
+                owner = owning_function(flines, n)
+                # None: there is no legitimate use anywhere, so nothing is exempt.
+                if allowed_in is not None and (allowed_in in owner or allowed_in in line):
+                    continue
+                fails.append((fname, n + 1, stripped[:88], instead))
+
+        fdated = day_filing_functions(flines)
+        dated += fdated
+        for name, start, end in fdated:
+            for n in range(start, end + 1):
+                stripped = flines[n].strip()
+                if stripped.startswith('//') or stripped.startswith('*'):
+                    continue
+                if 'wallDay(' not in flines[n]:
+                    continue
+                if any(p.search(flines[n]) for p, _why in CLOCK_OK):
+                    continue
+                fails.append((fname, n + 1, stripped[:88],
+                              'the surface\'s own day — %s() files a dated fact, so '
+                              'it sends the day it is about, never the clock' % name))
 
     if fails:
         fails.sort()
-        print('%d use(s) of a banned pattern in static/app.js:\n' % len(fails))
-        for lineno, text, instead in fails:
-            print(f'  app.js:{lineno}')
+        print('%d use(s) of a banned pattern in static/:\n' % len(fails))
+        for fname, lineno, text, instead in fails:
+            print(f'  {fname}:{lineno}')
             print(f'    {text}')
             print(f'    use: {instead}\n')
         print("""These are not style preferences — each one is the literal text of a bug that
@@ -317,7 +333,7 @@ bug even while it agrees, because agreeing is what it does right up until
 midnight, a paused row, or a config change.""")
         return 1
 
-    print('app.js uses the accessors.')
+    print('%s use the accessors.' % ', '.join(SCANNED))
     print('  which day     wallDay / viewDay')
     print('  past midnight spanEndMin / windowEndMin / clockHHMM / DAY_MIN')
     print('  a dated write %d function(s) file a dated fact, none from the clock'

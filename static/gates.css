@@ -213,11 +213,7 @@ body.gd-sheet-open { overflow: hidden; }
 .gd-tagform label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
 .gd-keyrow { display: grid; grid-template-columns: 64px 1fr auto; gap: 8px; align-items: center; font-size: 12px; color: var(--text-primary); }
 
-#gd-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 20px; z-index: 60;
-  max-width: 398px; width: calc(100% - 32px); padding: 10px 14px; border-radius: 10px; font-size: 13px;
-  background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--text-secondary); }
-#gd-toast.hidden { display: none; }
-/* Over an open sheet the toast rides above its foot, never on the buttons. */
-body.gd-sheet-open #gd-toast { bottom: 76px; }
+/* The toast is the app's #app-toast (common.js + style.css), which already
+   rides 76px up — above an open sheet's foot, never on its buttons. */
 .gd-fold { margin-top: 14px; }
 .gd-fold > summary { font-size: 13px; font-weight: 600; }

@@ -1,7 +1,7 @@
-// Minutes in a day. The one spelling of the wrap — see the semantic
-// minutes block further down for spanEndMin / windowEndMin / clockHHMM.
-// Declared HERE because `const` has no hoisting and state.view uses it.
-const DAY_MIN = 1440;
+// DAY_MIN, the minute and day helpers, the fetch envelope, toast, copy, the
+// undo stack, the theme and privacy setters all live in static/common.js
+// (2026-10-05), loaded before this file and shared with gates.js, panel.js
+// and inbox.js.
 
 // ── Theme ─────────────────────────────────────────────────────
 // The setting table is the source of truth (it lands in state.settings with
@@ -10,52 +10,14 @@ const DAY_MIN = 1440;
 // read synchronously here, before the first paint, with the fetched value
 // reconciling it afterwards. Only the MAIN window has a theme: the NOW panel
 // is its own document and is deliberately light always.
-function applyTheme(theme) {
-  const light = theme === 'light';
-  document.documentElement.classList.toggle('theme-light', light);
-  const label = document.getElementById('theme-label');
-  if (!label) return;  // called before the shell parses on the pre-paint pass
-  label.textContent = light ? 'Light' : 'Dark';
-  document.getElementById('theme-icon-sun').classList.toggle('hidden', !light);
-  document.getElementById('theme-icon-moon').classList.toggle('hidden', light);
-}
-
-applyTheme(localStorage.getItem('theme') || 'dark');
+applyTheme(storedTheme());
 
 // ── Privacy mode ──────────────────────────────────────────────
-// SOMEBODY IS STANDING BEHIND YOU (2026-09-16, Quentin's instruction). The
-// whole app washes out to a quarter of its contrast: still legible to the one
-// person leaning into it, not to a room. Ctrl+Alt+P, and the eye in Engage's
-// header.
-//
-// ONE CLASS ON <html>, the theme's idiom — and a filter on the ROOT element is
-// the one place a filter does NOT make a containing block for fixed
-// descendants, which every sheet, every overlay and the global bar depend on.
-// It is read synchronously here for the theme's reason (a washed screen that
-// paints bright first has failed at the one moment it existed for).
-//
-// sessionStorage, not localStorage: a reload must not drop the guard while the
-// person is still standing there, and a fresh launch must not come up grey
-// with nobody remembering why. Nothing is stored server-side for the same
-// reason — this is a fact about the room, not about the day.
-function privacyOn() {
-  return document.documentElement.classList.contains('priv-mode');
-}
-
-function setPrivacy(on) {
-  document.documentElement.classList.toggle('priv-mode', !!on);
-  try {
-    if (on) sessionStorage.setItem('privacy', '1');
-    else sessionStorage.removeItem('privacy');
-  } catch (e) { /* private mode: the class is still on, which is the feature */ }
-  paintPrivacyEye();
-}
-
-try {
-  if (sessionStorage.getItem('privacy') === '1') {
-    document.documentElement.classList.add('priv-mode');
-  }
-} catch (e) { /* no store, no memory — it starts off */ }
+// The class, its sessionStorage mirror and the pre-paint read are common.js's
+// (setPrivacy / privacyOn); app.py drives `setPrivacy(...)` in this window by
+// name. What is the APP's own is the eye in Engage's header, repainted on the
+// event setPrivacy fires.
+document.addEventListener('privacychange', () => paintPrivacyEye());
 
 // The eye now says PRIVACY, not the panel: struck through means hidden, which
 // is what the mode does, and the panel's own state is read in Settings where
@@ -91,7 +53,7 @@ async function togglePrivacy() {
 }
 
 function initThemeToggle() {
-  applyTheme(localStorage.getItem('theme') || 'dark');  // now that the icons exist
+  applyTheme(storedTheme());  // now that the icons exist
   document.getElementById('theme-toggle').addEventListener('click', async () => {
     const theme = document.documentElement.classList.contains('theme-light') ? 'dark' : 'light';
     applyTheme(theme);
@@ -3101,21 +3063,24 @@ function preserveCaret(id, rerender) {
 // Every button that CHANGES DATA registers how to reverse itself. The rule
 // is in CLAUDE.md: a new mutating handler ships with its inverse or it isn't
 // finished. Inverses are closures, so they capture the exact prior value
-// rather than guessing it later.
-const undoStack = [];
-const UNDO_MAX = 30;
+// rather than guessing it later. The stack itself is common.js's
+// makeUndoStack, shared with the gates dashboard; these three names are the
+// app's API over it.
+const undoStack = makeUndoStack(() => paintUndo());
 
 function pushUndo(label, inverse) {
-  undoStack.push({ label, inverse });
-  if (undoStack.length > UNDO_MAX) undoStack.shift();
-  paintUndo();
+  undoStack.push(label, inverse);
+}
+
+async function runUndo() {
+  await undoStack.run();
 }
 
 function paintUndo() {
   // ↩ lives in the top strip, which is visible from every page — greyed,
   // not hidden, while there is nothing to undo, so the strip never shifts.
   const eg = document.getElementById('eg-undo');
-  if (eg) eg.disabled = !undoStack.length;
+  if (eg) eg.disabled = !undoStack.size;
 }
 
 // ── Capture (one implementation, two entry points) ────────────
@@ -3264,63 +3229,8 @@ function renderBar() {
 }
 
 
-// ── The two shapes every call in this file already had ───────
-//
-// One JSON envelope, written once instead of at 134 call sites. They are
-// deliberately TWO functions, not one, because the file has two different
-// contracts and collapsing them would break one:
-//
-// apiGet SWALLOWS and falls back. That is the rule loadAll is built on — a
-// fetch never blanks the surface it feeds, so a dead endpoint yields the
-// CURRENT value, not []. Promise.all rejects as a unit, and one dead endpoint
-// used to blank the whole day.
-//
-// apiSend returns the RESPONSE, not the parsed body: 39 call sites read res.ok
-// or res.status to decide what to say, and a helper that hid the response
-// would send every one of them back to a raw fetch. Body omitted = no
-// Content-Type header, which is what a bare DELETE always sent.
-function apiGet(path, fallback) {
-  // Written out, not via a helper: this IS the helper. (The sweep that created
-  // the call sites rewrote this body into a call to itself — a good reminder
-  // that a mechanical transform will happily eat its own definition — twice, as
-  // it turned out: once on the sweep, once on the re-sweep after a merge.)
-  return fetch(path).then(r => r.json()).catch(() => fallback);
-}
-
-function apiSend(path, method, body) {
-  return fetch(path, body === undefined ? { method } : {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-let toastTimer = null;
-
-function toast(msg) {
-  let el = document.getElementById('app-toast');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'app-toast';
-    document.body.appendChild(el);
-  }
-  el.textContent = msg;
-  el.classList.add('toast-on');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('toast-on'), 2600);
-}
-
-async function runUndo() {
-  const entry = undoStack.pop();
-  paintUndo();
-  if (!entry) { toast('Nothing to undo'); return; }
-  try {
-    await entry.inverse();
-    toast('Undone: ' + entry.label);
-  } catch (e) {
-    toast("Couldn't undo " + entry.label);
-  }
-}
+// (apiGet / apiSend — the two shapes every call in this file has — and toast
+// are in common.js.)
 
 // Repaint whatever surfaces are open after an undo, without caring which one
 // the original action came from.
@@ -3769,13 +3679,6 @@ const _MONTHS_SHORT   = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug',
 const _WEEKDAYS_LONG  = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const _MONTHS_LONG    = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-function escHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 // Tiny markdown for project notes (support material is written in prose, so
 // plain <pre> text wasted it). Escape FIRST, then decorate — the input is
@@ -3850,9 +3753,6 @@ function formatDateLabel(date) {
   return `${_WEEKDAYS_SHORT[date.getDay()]} ${_MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
 }
 
-function formatDateYMD(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
 
 // ── WHICH DAY (2026-08-17) ───────────────────────────────────
 //
@@ -3874,10 +3774,7 @@ function formatDateYMD(date) {
 //
 // The rule: a write picks the day deliberately. If a new write reaches for
 // wallDay(), that has to be because the fact really is about the clock.
-function wallDay() {
-  return formatDateYMD(new Date());
-}
-
+// (wallDay and formatDateYMD are common.js's: every document asks it.)
 function viewDay() {
   return formatDateYMD(state.currentDate);
 }
@@ -4193,51 +4090,8 @@ async function saveDownload(name, text, type) {
   return null;
 }
 
-// COPY THAT WORKS OFF LOCALHOST. navigator.clipboard is gated on a SECURE
-// CONTEXT, so it is undefined over http://<tailnet-name>:5000 — which is every
-// Windows and Mac client running in PT_SERVER mode. The old code was
-// `navigator.clipboard?.writeText(...)` followed unconditionally by a success
-// toast, so on those machines nothing was copied and the app said it had been.
-// A lying confirmation is worse than a visible failure.
-//
-// The execCommand fallback is the same idiom the markdown editors already rely
-// on. It needs a real selection in the document, so the textarea is attached,
-// selected, copied and removed. Returns whether it actually worked, and every
-// caller must respect that rather than assume.
-async function copyText(text) {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch (e) { /* fall through — a rejected permission is not a reason to give up */ }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    // Off-screen but NOT display:none: an unrendered field cannot be selected.
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.top = '-1000px';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    ta.setSelectionRange(0, text.length);
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return !!ok;
-  } catch (e) {
-    return false;
-  }
-}
-
-// One place decides what a copy SAYS, so a failure can never be reported as a
-// success. On failure the text is shown, because a link you can select by hand
-// beats a button that quietly does nothing.
-async function copyAndSay(text, label) {
-  if (await copyText(text)) { toast(`${label} copied`); return true; }
-  toast(`Could not copy — ${text}`);
-  return false;
-}
+// (copyText — with the execCommand fallback that works off localhost — and
+// copyAndSay are common.js's, shared with the gates dashboard's key sheet.)
 
 // ── Connections (config.json) ────────────────────────────────
 //
@@ -10712,11 +10566,6 @@ function initGateDrag(handle, g, dateStr, geo, place) {
   } });
 }
 
-function timeToMinutes(timeStr) {
-  const [h, m] = timeStr.split(':').map(Number);
-  return h * 60 + m;
-}
-
 // ── SEMANTIC MINUTES (2026-08-17) ────────────────────────────
 //
 // A clock face is 0..1440, but a SPAN can run past midnight and a previous
@@ -10732,29 +10581,9 @@ function timeToMinutes(timeStr) {
 // compare minutes from then on. Do not order or compare HH:MM strings outside
 // this block — lexicographic order is right only within one day, which is
 // exactly the assumption that keeps breaking.
-// (DAY_MIN itself is declared at the TOP of this file: `const` does not hoist,
-// and state's view window uses it long before this point.)
-
-// End of a span that may cross midnight: an end at or before the start IS the
-// wrap. Takes the two clock times, so the comparison happens in one place.
-function spanEndMin(startHHMM, endHHMM) {
-  const s = timeToMinutes(startHHMM);
-  const e = timeToMinutes(endHHMM);
-  return e < s ? e + DAY_MIN : e;
-}
-
-// A window whose end carries an explicit +1 day (a gate's offset_days, and the
-// day-window payload's window_end_offset_days).
-function windowEndMin(endHHMM, offsetDays) {
-  return timeToMinutes(endHHMM) + (offsetDays ? DAY_MIN : 0);
-}
-
-// A semantic minute rendered back to a clock face. NEGATIVE-SAFE, which the
-// bare `m % 1440` was not: a previous-day block continuation starts below zero
-// and rendered as '-2:00'.
-function clockHHMM(minutes) {
-  return minutesToHHMM(((Math.round(minutes) % DAY_MIN) + DAY_MIN) % DAY_MIN);
-}
+// The accessors themselves — DAY_MIN, timeToMinutes, minutesToHHMM,
+// spanEndMin, windowEndMin, clockHHMM, minutesSince — are in static/common.js
+// (2026-10-05), so the gates dashboard and the NOW panel ask the same ones.
 
 // Effective default window for a weekday (0=Mon..6=Sun): the node's
 // weekly_windows entry for that day, else the node-wide defaults.
@@ -10846,11 +10675,6 @@ function localDatePlusDays(dateStr, days) {
   return formatDateYMD(d);
 }
 
-function minutesToHHMM(minutes) {
-  const h = Math.floor(minutes / 60) % 24;
-  const m = minutes % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
 
 // ── Settings → Gates and Locations ───────────────────────────
 //
@@ -13276,8 +13100,7 @@ function initUndo() {
 // because typing is when somebody walks up behind you.
 function initPrivacyHotkey() {
   document.addEventListener('keydown', e => {
-    if (!e.altKey || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
-    if (e.key !== 'p' && e.key !== 'P') return;
+    if (!isPrivacyChord(e)) return;
     e.preventDefault();
     togglePrivacy();
   });

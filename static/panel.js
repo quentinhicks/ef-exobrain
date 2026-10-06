@@ -34,26 +34,19 @@ function nowMinutes() {
   return d.getHours() * 60 + d.getMinutes();
 }
 
-function npLocalDate() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-// Everything the panel shows is 24-hour, matching the day view.
-function npFmt24(m) {
-  const t = ((m % 1440) + 1440) % 1440;
-  return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
-}
+// Which day and which clock face are common.js's (wallDay, clockHHMM — the
+// panel's 24-hour face is the day view's), as is the midnight wrap below.
 
 function npEl(id) {
   return document.getElementById(id);
 }
 
+// How long past `end` the clock is. `end` is a semantic minute of the day the
+// rows came from and may sit past 1440, while the clock restarts at midnight —
+// minutesSince is the one place that wrap is decided.
 function npOverrun(m, end) {
   if (end == null) return 0;
-  let d = m - end;
-  if (d < -720) d += 1440;
-  return Math.max(0, Math.floor(d));
+  return Math.max(0, Math.floor(minutesSince(m, end)));
 }
 
 function npSetSalience(cls) {
@@ -121,7 +114,7 @@ function npChecklist(row) {
 }
 
 async function npFetchDay() {
-  const day = await fetch('/api/engage/day').then(r => r.json()).catch(() => null);
+  const day = await apiGet('/api/engage/day', null);
   if (!day) return;
   npState.day = day;
   npState.fetchedDate = day.date;
@@ -181,7 +174,7 @@ function npAck() {
 }
 
 function npTick() {
-  if (npState.fetchedDate && npLocalDate() !== npState.fetchedDate) {
+  if (npState.fetchedDate && wallDay() !== npState.fetchedDate) {
     npFetchDay();
   }
   const row = npActiveAt(nowMinutes());
@@ -203,7 +196,7 @@ function renderPanel() {
   if (show) {
     bc.textContent = show.kind.toUpperCase();
     label.textContent = show.label;
-    const range = npFmt24(show.start) + '–' + npFmt24(show.end);
+    const range = clockHHMM(show.start) + '–' + clockHHMM(show.end);
     if (npState.mode === 3) {
       elapsed.textContent = 'overrun +' + npOverrun(m, npState.stayEnd) + ' min · ' + range;
     } else {
@@ -214,7 +207,7 @@ function renderPanel() {
     const next = npNextAt(m);
     if (next) {
       label.textContent = 'nothing active';
-      elapsed.textContent = 'next: ' + next.label + ' at ' + npFmt24(next.start);
+      elapsed.textContent = 'next: ' + next.label + ' at ' + clockHHMM(next.start);
     } else if (npState.day && npState.day.rows.length) {
       label.textContent = 'day complete';
       elapsed.textContent = '';
@@ -275,15 +268,11 @@ function npRenderTodos(show) {
 async function npTodoCheck(type, id) {
   if (npState.switchOpen) return;
   if (type === 'routine') {
-    await fetch(`/api/routine-items/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ done: true }),
-    });
+    await apiSend(`/api/routine-items/${id}`, 'PATCH', { done: true });
   } else {
-    await fetch(`/api/inbox/${id}`, { method: 'DELETE' });
+    await apiSend(`/api/inbox/${id}`, 'DELETE');
   }
-  fetch('/api/panel/saved', { method: 'POST' });
+  apiSend('/api/panel/saved', 'POST');
   await npFetchDay();
 }
 
@@ -310,11 +299,8 @@ function npCloseSwitch() {
 async function npSwitchSave() {
   const reason = npEl('np-reason').value.trim();
   if (!reason) return;
-  await fetch('/api/observations', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'switch', note: reason, now_block: npNowLabel() }),
-  });
+  await apiSend('/api/observations', 'POST',
+                { kind: 'switch', note: reason, now_block: npNowLabel() });
   npCloseSwitch();
   renderPanel();
 }
@@ -324,11 +310,8 @@ function npMarkInterrupted() {
     npState.interrupted = false;
   } else {
     npState.interrupted = true;
-    fetch('/api/observations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'interruption', note: '', now_block: npNowLabel() }),
-    });
+    apiSend('/api/observations', 'POST',
+            { kind: 'interruption', note: '', now_block: npNowLabel() });
   }
   renderPanel();
 }
@@ -394,14 +377,11 @@ function initPanel() {
   // window flips its own document and tells the other through the bridge the
   // global hotkeys already use; the class is all the state there is.
   document.addEventListener('keydown', e => {
-    if (!e.altKey || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
-    if (e.key !== 'p' && e.key !== 'P') return;
+    if (!isPrivacyChord(e)) return;
     e.preventDefault();
-    const on = !document.documentElement.classList.contains('priv-mode');
+    const on = !privacyOn();
     npSetPrivacy(on);
-    fetch('/api/panel/privacy', { method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ on }) }).catch(() => {});
+    apiSend('/api/panel/privacy', 'POST', { on }).catch(() => {});
   });
 
   npFetchDay();
@@ -410,9 +390,11 @@ function initPanel() {
 }
 
 // Driven from app.py when the main window or a global hotkey flips the mode.
-// Idempotent on purpose: the window that started it gets told again.
+// Idempotent on purpose: the window that started it gets told again. The name
+// is app.py's; the setter is common.js's, so a reload of this window keeps
+// the guard exactly as the main window's does.
 function npSetPrivacy(on) {
-  document.documentElement.classList.toggle('priv-mode', !!on);
+  setPrivacy(on);
 }
 
 initPanel();
