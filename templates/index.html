@@ -44,7 +44,7 @@
       <button id="map-filter" class="tn-pill"></button>
       <label class="tn-search" title="Search the projects"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input type="text" id="map-q" placeholder="Search" autocomplete="off"></label>
-      <span id="map-q-count" class="tn-count"></span>
+      <span id="map-q-count" class="count tn-count"></span>
     </div>
     <div class="tn-tools hidden" data-page="logs">
       <button id="logs-filter" class="tn-pill"></button>
@@ -96,8 +96,6 @@
           <span id="tl-date-label"></span>
           <button class="tl-nav-btn" id="nav-next">›</button>
           <button class="tl-today-btn" id="nav-today">Today</button>
-          <!-- Day | Week: drawn on a wide screen only (the week needs the room) -->
-          <div class="wk-seg" id="tl-view-seg"><button class="on" data-cal-view="day">Day</button><button data-cal-view="week">Week</button></div>
         </div>
         <div class="tl-refresh-area">
           <button class="tl-refresh-btn" id="tl-plan-mode" title="Draw the hours you plan to work">✎ Plan</button>

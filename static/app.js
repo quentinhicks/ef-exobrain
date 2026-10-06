@@ -2560,7 +2560,7 @@ function renderCalWeek() {
         <div class="wk-role-name"><span>${escHtml(r.label)}</span>
           <span class="wk-role-meta">${r.n}× this week · ${escHtml(when)}${focused && calWeek.focusDate
             ? ` · <a href="#" data-wk="open-gate" data-node="${r.id}" data-date="${calWeek.focusDate}">Open in Gates ›</a>` : ''}</span></div>
-        <div class="wk-seg">${[['none', 'None'], ['wake', 'Wake'], ['sleep', 'Sleep']].map(([v, l]) =>
+        <div class="seg">${[['none', 'None'], ['wake', 'Wake'], ['sleep', 'Sleep']].map(([v, l]) =>
           `<button class="${cur === v ? 'on' : ''}" data-wk="role" data-node="${r.id}" data-role="${v}">${l}</button>`).join('')}</div>
       </div>`;
     }).join('') || '<div class="wk-role-meta">No gates run this week.</div>';
@@ -2780,16 +2780,16 @@ const calFilter = stripMenu({
           <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
           <span class="wk-title">${escHtml(t.title)}</span>
           <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
-          ${t.thisWeek ? '' : '<button class="ctx-chip" data-wk="today">Today</button>'}
+          ${t.thisWeek ? '' : '<button class="chip" data-wk="today">Today</button>'}
         </div>
         <div class="tn-menu-chips cf-tools">
-          <button class="ctx-chip wk-mono${calWeek.pop === 'range' ? ' ctx-req' : ''}" data-wk="range"
+          <button class="chip wk-mono${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
             title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
-          <button class="ctx-chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
-          <button class="ctx-chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
+          <button class="chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
+          <button class="chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
           ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
         </div>` },
-      { title: 'View', chips: pickChipsHtml([{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }],
+      calWeekAvailable() && { title: 'View', chips: pickChipsHtml([{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }],
                                             calWeek.on ? 'week' : 'day', 'data-cal-view') },
       { title: 'Draw', chips: ['blocks', 'gates', 'events'].map(k =>
           toggleChipHtml(calShow[k] !== false, `data-calshow="${k}"`, k[0].toUpperCase() + k.slice(1))).join('') },
@@ -2825,15 +2825,16 @@ function initCalWeek() {
   const strip = document.getElementById('cal-filter-menu');
   if (!host || !overlay) return;
 
-  // The Day | Week switch, in both headers. Delegated on the overlay (and the
-  // selector's menu, where the week's copy stands), since both are rebuilt.
+  // The Day | Week switch. ONE copy, in the calendar's selector (2026-10-05):
+  // the day header drew a second (#tl-view-seg) on a wide window, where the
+  // selector already offers it — and the selector is the one place a phone
+  // reaches. Delegated, since the menu is rebuilt on every pick.
   const viewSwitch = e => {
     const v = e.target.closest('[data-cal-view]');
     if (!v) return;
     calWeek.pref = v.dataset.calView === 'week' ? 'week' : 'day';
     setCalView(calWeek.pref === 'week');
   };
-  overlay.addEventListener('click', viewSwitch);
   strip.addEventListener('click', viewSwitch);
   paintCalShowClasses();
 
@@ -3989,9 +3990,9 @@ function renderAssistantChanges() {
   const el = document.getElementById('be-assistant');
   if (!el) return;
   const rows = assistantView.rows;
-  if (rows == null) { el.innerHTML = '<div class="be-empty">Loading…</div>'; return; }
+  if (rows == null) { el.innerHTML = emptyHtml('Loading…'); return; }
   if (!rows.length) {
-    el.innerHTML = '<div class="be-empty">Nothing yet. When an assistant changes a gate deadline'
+    el.innerHTML = '<div class="empty">Nothing yet. When an assistant changes a gate deadline'
       + ' or a block through the Claude Code tools, it is listed here with its reason.</div>';
     return;
   }
@@ -4363,10 +4364,10 @@ function seFieldHtml(f, v) {
     )).join('')}</div>`;
   } else if (f.kind === 'days') {
     control = `<div class="se-days" data-f="${f.key}">${DAY_LETTERS.map((d, i) =>
-      `<button type="button" class="se-day${val.includes(i) ? ' se-on' : ''}" data-day="${i}" title="${DAY_NAMES[i]}">${d}</button>`
+      `<button type="button" class="chip se-day${val.includes(i) ? ' on' : ''}" data-day="${i}" title="${DAY_NAMES[i]}">${d}</button>`
     ).join('')}</div>`;
   } else if (f.kind === 'check') {
-    control = `<button type="button" class="se-check${val ? ' se-on' : ''}" data-f="${f.key}">${
+    control = `<button type="button" class="chip se-check${val ? ' on' : ''}" data-f="${f.key}">${
       escHtml(val ? f.on : f.off)}</button>`;
   } else if (f.kind === 'weekly') {
     // A gate's per-day windows: only the days the gate runs on get a row, and
@@ -4378,7 +4379,7 @@ function seFieldHtml(f, v) {
         <input type="time" class="se-input se-wk-start" value="${escHtml(w.start || '')}">
         <span class="se-wk-sep">–</span>
         <input type="time" class="se-input se-wk-end" value="${escHtml(w.end || '')}">
-        <button type="button" class="se-wk-off${w.offset ? ' se-on' : ''}">+1d</button>
+        <button type="button" class="chip chip-sm se-wk-off${w.offset ? ' on' : ''}">+1d</button>
       </div>`;
     }).join('')}</div>`;
   } else if (f.kind === 'textarea') {
@@ -4560,12 +4561,12 @@ function wireSeSheet(fields) {
         // A re-render is what makes the dependent fields (a gate's per-day
         // windows) follow the day keys; without one, repaint just this key.
         if (f.rerender) renderSeSheet();
-        else btn.classList.toggle('se-on', at === -1);
+        else btn.classList.toggle('on', at === -1);
       });
     } else if (f.kind === 'check') {
       wrap.addEventListener('click', () => {
         v[f.key] = !v[f.key];
-        wrap.classList.toggle('se-on', v[f.key]);
+        wrap.classList.toggle('on', v[f.key]);
         wrap.textContent = v[f.key] ? f.on : f.off;
         if (f.rerender) renderSeSheet();
       });
@@ -4575,12 +4576,12 @@ function wireSeSheet(fields) {
         const read = () => ({
           start: row.querySelector('.se-wk-start').value,
           end: row.querySelector('.se-wk-end').value,
-          offset: row.querySelector('.se-wk-off').classList.contains('se-on') ? 1 : 0,
+          offset: row.querySelector('.se-wk-off').classList.contains('on') ? 1 : 0,
         });
         row.querySelectorAll('input').forEach(inp =>
           inp.addEventListener('change', () => { v[f.key][dow] = read(); }));
         row.querySelector('.se-wk-off').addEventListener('click', e => {
-          e.currentTarget.classList.toggle('se-on');
+          e.currentTarget.classList.toggle('on');
           v[f.key][dow] = read();
         });
       });
@@ -5470,7 +5471,7 @@ function beRow(opts) {
       ${opts.meta ? `<span class="be-row-meta">${escHtml(opts.meta)}</span>` : ''}
       ${opts.sub ? `<span class="be-row-sub${opts.subClass ? ' ' + opts.subClass : ''}">${escHtml(opts.sub)}</span>` : ''}
     </span>
-    ${opts.badge ? `<span class="be-row-badge">${escHtml(opts.badge)}</span>` : ''}
+    ${opts.badge ? `<span class="badge">${escHtml(opts.badge)}</span>` : ''}
     <span class="be-chev">›</span>
   </button>`;
 }
@@ -5663,7 +5664,7 @@ function renderBeOccasions(occs) {
       meta: `“${o.match_text}” · ${plural((o.items || []).length, 'action')}`,
       badge: o.active ? '' : 'paused',
     })).join('')}
-    ${state.occasions.length ? '' : '<div class="be-empty">No occasions yet. '
+    ${state.occasions.length ? '' : '<div class="empty">No occasions yet. '
       + 'Add one here, or tap an event on the day.</div>'}
     ${beAddRow('Add occasion')}`;
   // Not wireBeList: that opens the shared se-sheet, and an occasion's editor is
@@ -6590,7 +6591,7 @@ function stripMenu(spec) {
     menu.classList.toggle('hidden', !spec.isOpen());
     if (!spec.isOpen()) { menu.innerHTML = ''; return; }
     const foot = (p.narrowed && spec.clear
-      ? '<button class="ctx-chip" data-tn-clear>⟳ show everything</button>' : '')
+      ? '<button class="chip" data-tn-clear>⟳ show everything</button>' : '')
       + (spec.foot ? spec.foot() : '');
     menu.innerHTML = spec.sections().filter(Boolean).map(s =>
       `<div class="tn-menu-sec">${escHtml(s.title)}</div>${
@@ -6623,7 +6624,7 @@ function tagChipsHtml(vocab, selected, attr, empty) {
   if (!vocab.length) return empty ? `<span class="cl-hint">${escHtml(empty)}</span>` : '';
   return vocab.map(t => {
     const on = selected.has(t);
-    return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" ${attr}="${escHtml(t)}"
+    return `<button class="chip${on ? ' on' : ''}" ${attr}="${escHtml(t)}"
       title="${on ? 'required — click to clear' : 'click to require'}"
       >${on ? '∧' : ''}${escHtml(t)}</button>`;
   }).join('');
@@ -6631,14 +6632,14 @@ function tagChipsHtml(vocab, selected, attr, empty) {
 
 // One of several, exactly one lit (a lens, an order, Day | Week).
 function pickChipsHtml(opts, current, attr) {
-  return opts.map(o => `<button class="ctx-chip ${o.value === current ? 'ctx-req' : 'ctx-off'}"
+  return opts.map(o => `<button class="chip${o.value === current ? ' on' : ''}"
     ${attr}="${escHtml(o.value)}"${o.title ? ` title="${escHtml(o.title)}"` : ''}
     >${escHtml(o.label)}</button>`).join('');
 }
 
 // An independent on/off.
 function toggleChipHtml(on, attrs, label) {
-  return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" ${attrs}>${escHtml(label)}</button>`;
+  return `<button class="chip${on ? ' on' : ''}" ${attrs}>${escHtml(label)}</button>`;
 }
 
 function toggleInSet(set, v) {
@@ -7048,7 +7049,7 @@ function refPeekHtml() {
     ${subs.map(x => `<div class="ref-peek-row ref-peek-sub"><span>▸ ${escHtml(x.name)}</span></div>`).join('')}
     ${l.items.map(i => `<div class="ref-peek-row${i.done ? ' ref-peek-done' : ''}"><span class="ref-peek-dot"></span><span>${
       escHtml(i.content)}</span></div>`).join('')
-      || (subs.length ? '' : '<div class="ref-peek-empty">Nothing in it yet.</div>')}
+      || (subs.length ? '' : emptyHtml('Nothing in it yet.'))}
   </div>`;
 }
 
@@ -7083,8 +7084,8 @@ function refListRow(l) {
   const subs = refView.lists.filter(x => x.parent_id === l.id).length;
   return `<div class="ref-row" data-id="${l.id}">
     <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}</span>
-    ${subs ? `<span class="map-count" title="${subs} list${subs === 1 ? '' : 's'} inside">▸${subs}</span>` : ''}
-    <span class="map-count">${l.items.filter(i => !i.done).length}</span>
+    ${subs ? `<span class="count" title="${subs} list${subs === 1 ? '' : 's'} inside">▸${subs}</span>` : ''}
+    <span class="count">${l.items.filter(i => !i.done).length}</span>
     <button class="ref-del" data-id="${l.id}" title="Delete list">×</button>
   </div>`;
 }
@@ -7110,7 +7111,7 @@ function renderRef() {
     // ROUTINES ARE LISTS (2026-10-05): what was the Routines section is
     // ordinary lists now, so the index is one section.
     body.innerHTML = mpSection('Lists', '', `<div class="ref-list">${rootLists.map(l => refListRow(l)).join('')
-      || '<div class="gtd-empty">No lists yet.</div>'}
+      || emptyHtml('No lists yet.')}
       <button id="ref-new" class="map-add-btn">+ list</button></div>`)
       + refPeekHtml();
     requestAnimationFrame(() => wireRefPeek(body));
@@ -7168,7 +7169,7 @@ function renderRef() {
         <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
         <button class="ref-del" data-item="${i.id}" title="Remove">×</button>
       </div>`).join('')
-      || (children.length ? '' : '<div class="gtd-empty">Empty.</div>')}
+      || (children.length ? '' : emptyHtml('Empty.'))}
     <button id="ref-add-item" class="map-add-btn">+ item</button>
     <button id="ref-add-sub" class="map-add-btn">+ list inside</button></div>`;
 
@@ -7384,7 +7385,7 @@ function renderEvSheet() {
     ${recentList('evtime').length ? `<div class="cl-chips">
       ${recentList('evtime').slice(0, 4).map(t => {
         const [s, e] = t.split('|');
-        return `<button class="cl-chip" data-evtime="${escHtml(t)}">${
+        return `<button class="chip chip-sm" data-evtime="${escHtml(t)}">${
           escHtml(s + (e ? '–' + e : ''))}</button>`;
       }).join('')}
     </div>` : ''}
@@ -7573,10 +7574,10 @@ function renderOccasionSheet() {
     <div class="cl-sec"><span class="cl-label">State</span>
       <span class="cl-hint">paused: no new actions are minted, and ones already
         on a day stay. Nothing is deleted.</span></div>
-    <div class="cl-row">
-      <button class="cl-pill${o.active ? ' cl-pill-on' : ''}" data-ocstate="1">Active</button>
-      <button class="cl-pill${o.active ? '' : ' cl-pill-on'}" data-ocstate="0">Paused</button>
-    </div>
+    <div class="cl-row"><div class="seg">
+      <button class="${o.active ? 'on' : ''}" data-ocstate="1">Active</button>
+      <button class="${o.active ? '' : 'on'}" data-ocstate="0">Paused</button>
+    </div></div>
     <div class="cl-sec"><span class="cl-label">Every time</span>
       <span class="cl-hint">${o.items.length} action${o.items.length === 1 ? '' : 's'}</span></div>
     ${o.items.map(it => `
@@ -7733,7 +7734,7 @@ function renderEntrySheet() {
     ${spec.hint ? `<div class="cl-donow">${escHtml(spec.hint)}</div>` : ''}
     ${spec.suggest && spec.suggest.length ? `
     <div class="cl-chips">
-      ${spec.suggest.map(t => `<button class="ctx-chip ctx-off" data-ensug="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+      ${spec.suggest.map(t => `<button class="chip" data-ensug="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
     </div>` : ''}
     ${spec.tags ? `
     <div class="cl-sec"><span class="cl-label">Tags</span></div>
@@ -8315,12 +8316,12 @@ function renderDangerous() {
     const PRESETS = [5, 10, 20];
     const WORD_PRESETS = [250, 500, 1000];
     const goalChips = dwView.goalKind === 'time'
-      ? PRESETS.map(m => `<button class="cl-chip${dwView.goalTime === m ? ' cl-chip-on' : ''}"
+      ? PRESETS.map(m => `<button class="chip chip-sm${dwView.goalTime === m ? ' on' : ''}"
           data-time="${m}">${m} min</button>`).join('')
         + `<input type="number" id="dw-time-custom" class="cl-chip-input dw-custom"
              min="1" max="240" placeholder="min"
              value="${PRESETS.includes(dwView.goalTime) ? '' : dwView.goalTime}">`
-      : WORD_PRESETS.map(w => `<button class="cl-chip${dwView.goalWords === w ? ' cl-chip-on' : ''}"
+      : WORD_PRESETS.map(w => `<button class="chip chip-sm${dwView.goalWords === w ? ' on' : ''}"
           data-words="${w}">${w} words</button>`).join('')
         + `<input type="number" id="dw-words-custom" class="cl-chip-input dw-custom"
              min="1" max="10000" placeholder="words"
@@ -8333,14 +8334,14 @@ function renderDangerous() {
 
         <div class="cl-sec"><span class="cl-label">Goal</span></div>
         <div class="cl-chips">
-          <button class="cl-chip${dwView.goalKind === 'time' ? ' cl-chip-on' : ''}" data-kind="time">Time</button>
-          <button class="cl-chip${dwView.goalKind === 'words' ? ' cl-chip-on' : ''}" data-kind="words">Words</button>
+          <button class="chip chip-sm${dwView.goalKind === 'time' ? ' on' : ''}" data-kind="time">Time</button>
+          <button class="chip chip-sm${dwView.goalKind === 'words' ? ' on' : ''}" data-kind="words">Words</button>
         </div>
         <div class="cl-chips">${goalChips}</div>
 
         <div class="cl-sec"><span class="cl-label">Hardcore</span></div>
         <div class="cl-chips">
-          <button class="cl-chip${dwView.hardcore ? ' cl-chip-on' : ''}" data-hard="1">${dwView.hardcore ? 'On' : 'Off'}</button>
+          <button class="chip chip-sm${dwView.hardcore ? ' on' : ''}" data-hard="1">${dwView.hardcore ? 'On' : 'Off'}</button>
           <span class="cl-hint">hides the text and disables backspace</span>
         </div>
 
@@ -8366,7 +8367,7 @@ function renderDangerous() {
       // Repaint the chips by hand rather than re-rendering: a re-render here
       // would take the field you are typing in with it.
       el.querySelectorAll('[data-time]').forEach(c =>
-        c.classList.toggle('cl-chip-on', parseInt(c.dataset.time) === dwView.goalTime));
+        c.classList.toggle('on', parseInt(c.dataset.time) === dwView.goalTime));
     });
     el.querySelectorAll('[data-words]').forEach(b => b.addEventListener('click', () => {
       dwView.goalWords = parseInt(b.dataset.words);
@@ -8378,7 +8379,7 @@ function renderDangerous() {
       if (!n || n < 1) return;
       dwView.goalWords = Math.min(10000, n);
       el.querySelectorAll('[data-words]').forEach(c =>
-        c.classList.toggle('cl-chip-on', parseInt(c.dataset.words) === dwView.goalWords));
+        c.classList.toggle('on', parseInt(c.dataset.words) === dwView.goalWords));
     });
     el.querySelector('[data-hard]').addEventListener('click', () => {
       dwView.hardcore = !dwView.hardcore;
@@ -9239,9 +9240,9 @@ function renderLogs() {
     <div class="lg-page${logsView.open ? ' lg-has-open' : ''}">
       <aside class="lg-side">
         <div class="lg-tools"><div class="lg-tools-row">
-          <span class="lg-count">${logs.length} ${logs.length === 1 ? 'log' : 'logs'}</span>
+          <span class="count">${logs.length} ${logs.length === 1 ? 'log' : 'logs'}</span>
           <button id="log-new" class="lg-new">+ New</button></div></div>
-        <div class="log-list">${draftRow}${rows || `<div class="log-empty">${
+        <div class="log-list">${draftRow}${rows || `<div class="empty">${
           logsView.q ? `Nothing in the logs says “${escHtml(logsView.q)}”`
           : logsView.logs.length ? 'No log carries every tag you asked for'
           : 'No logs yet'}</div>`}
@@ -9502,7 +9503,7 @@ function renderSocial() {
   const f = socialView.form;
 
   const chipRow = (axis, sel) => (byAxis[axis] || []).map(l =>
-    `<button class="cl-chip so-lvl${sel === l.id ? ' cl-chip-on' : ''}" data-axis="${axis}" data-id="${l.id}">
+    `<button class="chip chip-sm so-lvl${sel === l.id ? ' on' : ''}" data-axis="${axis}" data-id="${l.id}">
        ${escHtml(socialShortLabel(l.id))}${l.rating != null ? ` <span class="so-rating">${l.rating}</span>` : ''}
      </button>`).join('');
 
@@ -9554,8 +9555,8 @@ function renderSocial() {
         <div class="so-card so-form">
           <div class="so-card-top"><span class="cl-label">${spec ? "Plan today's rep" : 'Log a rep'}</span></div>
           <div class="cl-chips">
-            <button class="cl-chip so-fam${f.family === 'directed' ? ' cl-chip-on' : ''}" data-fam="directed">directed</button>
-            <button class="cl-chip so-fam${f.family === 'broadcast' ? ' cl-chip-on' : ''}" data-fam="broadcast">broadcast</button>
+            <button class="chip chip-sm so-fam${f.family === 'directed' ? ' on' : ''}" data-fam="directed">directed</button>
+            <button class="chip chip-sm so-fam${f.family === 'broadcast' ? ' on' : ''}" data-fam="broadcast">broadcast</button>
           </div>
           ${(cfg.axes[f.family] || []).map(axis => `
             <div class="so-axis"><span class="cl-hint">${SOCIAL_AXIS_TITLES[axis] || axis}</span>
@@ -9588,10 +9589,10 @@ function renderSocial() {
       <div class="so-axis"><span class="cl-hint">micro — one tap logs it</span>
         <div class="cl-chips">${(byAxis.micro || []).map(l => {
           const n = (day.reps || []).filter(r => r.family === 'micro' && r.levels.micro === l.id).length;
-          return `<button class="cl-chip so-micro" data-id="${l.id}" ${l.rating == null ? 'disabled title="rate this in calibration first"' : ''}>
+          return `<button class="chip chip-sm so-micro" data-id="${l.id}" ${l.rating == null ? 'disabled title="rate this in calibration first"' : ''}>
             ${escHtml(socialShortLabel(l.id))}${l.rating != null ? ` <span class="so-rating">${l.rating}</span>` : ''}${n ? ` ×${n}` : ''}</button>`;
         }).join('')}
-        ${f ? '' : '<button class="cl-chip" id="so-log-open">+ log a rep…</button>'}</div></div>`;
+        ${f ? '' : '<button class="chip chip-sm" id="so-log-open">+ log a rep…</button>'}</div></div>`;
 
     if (socialView.cues) main += `<div class="so-cues cl-hint" title="The evening tally's retrieval cue">walk the day: ${escHtml(socialView.cues)}</div>`;
 
@@ -9602,7 +9603,7 @@ function renderSocial() {
         ${r.planned ? '<span class="so-planned" title="spec’d in advance">◆</span>' : ''}
         ${r.pre_rating != null ? `<span class="cl-hint">felt ${r.pre_rating}</span>` : ''}
         <button class="so-del" data-id="${r.id}" title="Remove">×</button>
-      </div>`).join('') || '<div class="gtd-empty">Nothing logged today.</div>'}</div>`;
+      </div>`).join('') || emptyHtml('Nothing logged today.')}</div>`;
   } else {
     main += `<div class="so-intro">Rate each level below for anticipatory pressure (0–10),
       then pick the <b>anchor</b> — the directed cell whose price becomes D, your daily dose.
@@ -10687,7 +10688,7 @@ async function renderQrManager() {
   const panel = document.getElementById('be-qr-section');
   const locPanel = document.getElementById('be-loc-section');
   if (!panel || !locPanel) return;
-  panel.innerHTML = '<div class="be-empty">Loading…</div>';
+  panel.innerHTML = emptyHtml('Loading…');
 
   let nodes = null;
   let locations = null;
@@ -10704,7 +10705,7 @@ async function renderQrManager() {
   // non-array there breaks every later nodes.map/find — renderTimeline's
   // included, which took the whole to-do side of the app down with it.
   if (!Array.isArray(nodes)) {
-    panel.innerHTML = '<div class="be-empty se-error">Failed to load gates.</div>';
+    panel.innerHTML = emptyHtml('Failed to load gates.', 'se-error');
     locPanel.innerHTML = '';
     return;
   }
@@ -10866,7 +10867,7 @@ function todayEntry(m) {
 }
 
 function todayControl(m, e) {
-  const btn = (val, label, on) => `<button class="mx-set${on ? ' mx-set-on' : ''}"`
+  const btn = (val, label, on) => `<button class="chip chip-sm mx-set${on ? ' on' : ''}"`
     + ` data-metric="${m.id}" data-val="${val}">${escHtml(label)}</button>`;
   if (m.kind === 'yesno') {
     return `<span class="mx-yn">${btn('1', 'yes', e && e.value_num === 1)}${
@@ -10902,14 +10903,14 @@ function renderToday() {
         ${m.prompt ? `<span class="mx-meta">${escHtml(m.prompt)}</span>` : ''}
         ${todayControl(m, todayEntry(m))}
       </div>`).join('')
-      || '<div class="gtd-empty">Nothing is asked today. The questions are written in Settings → Metrics.</div>'}
+      || emptyHtml('Nothing is asked today. The questions are written in Settings → Metrics.')}
     </div>
     ${asked.length ? `<div class="mx-sec">Today's contexts</div>
       <div class="mx-list">${asked.map(t => `
         <div class="mx-today">
           <span class="mx-name">${escHtml(t)}</span>
           <span class="mx-yn">${[[true, 'today'], [false, 'not today']].map(([v, label]) =>
-            `<button class="mx-set${ans[t] === v ? ' mx-set-on' : ''}" data-tag="${escHtml(t)}"`
+            `<button class="chip chip-sm mx-set${ans[t] === v ? ' on' : ''}" data-tag="${escHtml(t)}"`
             + ` data-val="${v ? 1 : 0}">${label}</button>`).join('')}</span>
         </div>`).join('')}</div>` : ''}`;
 
@@ -10922,13 +10923,13 @@ function renderToday() {
     await refreshTracking();
   };
   body.querySelectorAll('.mx-set[data-metric]').forEach(b => b.addEventListener('click', () =>
-    save(parseInt(b.dataset.metric), b.classList.contains('mx-set-on') ? null : b.dataset.val)));
+    save(parseInt(b.dataset.metric), b.classList.contains('on') ? null : b.dataset.val)));
   body.querySelectorAll('.mx-today-in').forEach(el => el.addEventListener('change', () => {
     el.blur();
     save(parseInt(el.dataset.metric), el.value);
   }));
   body.querySelectorAll('.mx-set[data-tag]').forEach(b => b.addEventListener('click', async () => {
-    const applies = b.classList.contains('mx-set-on') ? null : b.dataset.val === '1';
+    const applies = b.classList.contains('on') ? null : b.dataset.val === '1';
     const res = await apiSend('/api/tag-daily/answer', 'POST',
       { tag: b.dataset.tag, date: trackingView.day, applies });
     if (!res.ok) { toast('Could not save that answer'); return; }
@@ -10998,7 +10999,7 @@ function renderTracking() {
   }).join('');
 
   body.innerHTML = `
-    <div class="mx-list">${rows || `<div class="gtd-empty">No metrics yet — Settings → `
+    <div class="mx-list">${rows || `<div class="empty">No metrics yet — Settings → `
       + `Metrics is where the questions are written.</div>`}</div>
     <div class="mx-sec">Habits and experiments</div>
     <div id="tracking-habit"></div>`;
@@ -11032,7 +11033,7 @@ function renderMetricDetail(body) {
     }
     if (m.kind === 'yesno') {
       return `<span class="mx-yn">${['1', '0'].map(v =>
-        `<button class="mx-set${String(e.value_num) === v ? ' mx-set-on' : ''}"`
+        `<button class="chip chip-sm mx-set${String(e.value_num) === v ? ' on' : ''}"`
         + ` data-date="${e.date}" data-step="${e.step_id}" data-val="${v}">`
         + `${v === '1' ? 'yes' : 'no'}</button>`).join('')}</span>`;
     }
@@ -11052,7 +11053,7 @@ function renderMetricDetail(body) {
         ${control(e)}
         <span class="mx-day-step">${escHtml(stepName(e.step_id))}</span>
       </div>`).join('')
-      || '<div class="gtd-empty">Nothing answered in this window yet.</div>'}`;
+      || emptyHtml('Nothing answered in this window yet.')}`;
 
   document.getElementById('mx-back').addEventListener('click', () => {
     trackingView.open = null;
@@ -11073,7 +11074,7 @@ function renderMetricDetail(body) {
 function renderHabitPanel(hb) {
   const el = document.getElementById('tracking-habit');
   if (!el) return;
-  if (!hb) { el.innerHTML = '<span class="jh-empty">Habits unavailable.</span>'; return; }
+  if (!hb) { el.innerHTML = emptyHtml('Habits unavailable.'); return; }
   trackingView.habits = hb;
   const ex = hb.experiments || {};
   const rows = [];
@@ -11271,7 +11272,7 @@ const mapFilter = stripMenu({
         { value: 'on', label: 'due first', title: 'Due dates first, then deferred by how soon they return' },
         { value: 'off', label: 'tree order' }], mapSortOn() ? 'on' : 'off', 'data-mapsort') },
   ],
-  foot: () => '<button class="ctx-chip" id="map-export" title="Downloads it and copies it">⤓ Download Markdown</button>',
+  foot: () => '<button class="chip" id="map-export" title="Downloads it and copies it">⤓ Download Markdown</button>',
   clear: () => { mapView.lens = 'all'; mapView.tags.clear(); },
   onChange: () => renderMap(),
   wire: (menu, stay) => {
@@ -11652,7 +11653,7 @@ function renderMap() {
         <span class="mp-meta">${[badge(i), `<span class="map-crumb">${escHtml(crumb(i)) || 'in'}</span>`]
           .filter(Boolean).join(' · ')}</span>
       </div>`;
-    }).join('') : `<div class="pm-empty">Nothing matches "${escHtml(q)}".</div>`}</section></div></div>`;
+    }).join('') : `<div class="empty">Nothing matches "${escHtml(q)}".</div>`}</section></div></div>`;
     wireMapRows(body, byId);
     mapSelSync();
     return;
@@ -11670,16 +11671,16 @@ function renderMap() {
       const live = areaTreeHtml(sec.items, false);
       const later = areaTreeHtml(sec.items, true);
       const nLater = sec.items.filter(i => i.status === 'on_hold').length;
-      rows = live + (later ? `<div class="map-someday-head">Someday / maybe<span class="map-count">${nLater}</span></div>${later}` : '');
+      rows = live + (later ? `<div class="map-someday-head">Someday / maybe<span class="count">${nLater}</span></div>${later}` : '');
     }
     return `<section class="mp-sec" data-sec="${sec.key}">
       <h2 class="mp-sec-title"${sec.obj ? ` data-obj="${sec.obj}"` : ''}>${escHtml(sec.name)}${
         sec.paused ? '<span class="mp-sub">paused</span>' : ''}${
         sec.sub ? `<span class="mp-sub">${escHtml(sec.sub)}</span>` : ''}</h2>
-      ${rows || '<div class="mp-empty">Nothing filed here.</div>'}
+      ${rows || emptyHtml('Nothing filed here.')}
     </section>`;
   };
-  const empty = `<div class="pm-empty mp-none">${
+  const empty = `<div class="empty mp-none">${
     mapLens().key !== 'all' || mapFilterExtras()
       // An empty list under a filter is a fact about the QUESTION, not about
       // the inventory — say which, or it reads as "you have nothing".
@@ -12977,32 +12978,32 @@ function renderCtxSheet() {
     <div class="cl-sec"><span class="cl-label">▭ Device</span>
       ${implicit ? '<span class="cl-hint">implied by the tag name</span>' : ''}</div>
     <div class="cl-chips">
-      ${['pc', 'phone'].map(d => `<button class="cl-chip${dev === d ? ' cl-chip-on' : ''}"
+      ${['pc', 'phone'].map(d => `<button class="chip chip-sm${dev === d ? ' on' : ''}"
         data-dev="${d}">${d}</button>`).join('')}
-      ${boundDev ? '<button class="cl-chip" data-dev="none">✕ any device</button>' : ''}
+      ${boundDev ? '<button class="chip chip-sm" data-dev="none">✕ any device</button>' : ''}
     </div>
 
     <div class="cl-sec"><span class="cl-label">⌖ Location</span>
       <span class="cl-hint">${state.geo.ok ? 'located' : 'no fix — nothing is hidden'}</span></div>
     <div class="cl-chips">
       ${(state.locations || []).filter(l => l.active !== 0
-        || (boundLoc && boundLoc.location_id === l.id)).map(l => `<button class="cl-chip${
-        boundLoc && boundLoc.location_id === l.id ? ' cl-chip-on' : ''}"
+        || (boundLoc && boundLoc.location_id === l.id)).map(l => `<button class="chip chip-sm${
+        boundLoc && boundLoc.location_id === l.id ? ' on' : ''}"
         data-loc="${l.id}">${escHtml(l.name)}</button>`).join('')
         || '<span class="cl-hint">no presets — add one in Settings → Locations</span>'}
-      ${boundLoc ? '<button class="cl-chip" data-loc="none">✕ anywhere</button>' : ''}
+      ${boundLoc ? '<button class="chip chip-sm" data-loc="none">✕ anywhere</button>' : ''}
     </div>
 
     <div class="cl-sec"><span class="cl-label">◷ Time</span></div>
     <div class="cl-chips">
       ${(state.schedules || [])
         .filter(p => p.title || (boundTime && boundTime.source_uid === p.uid))
-        .map(p => `<button class="cl-chip${
-        boundTime && boundTime.source_uid === p.uid ? ' cl-chip-on' : ''}"
+        .map(p => `<button class="chip chip-sm${
+        boundTime && boundTime.source_uid === p.uid ? ' on' : ''}"
         data-time="${p.uid}" title="${escHtml(p.label || '')}">${
         escHtml(p.title || 'its own hours')}</button>`).join('')
         || '<span class="cl-hint">no schedules — add one in Settings → Times</span>'}
-      ${boundTime ? '<button class="cl-chip" data-time="none">✕ any time</button>' : ''}
+      ${boundTime ? '<button class="chip chip-sm" data-time="none">✕ any time</button>' : ''}
     </div>
     ${boundTime ? (() => {
       const p = (state.schedules || []).find(x => x.uid === boundTime.source_uid);
@@ -13018,9 +13019,9 @@ function renderCtxSheet() {
       <span class="cl-hint">${dailyOn ? (todayAns === false ? 'not today'
         : todayAns === true ? 'applies today' : 'unanswered — nothing hidden') : 'never asked'}</span></div>
     <div class="cl-chips">
-      <button class="cl-chip${dailyOn ? ' cl-chip-on' : ''}" data-daily="on"
+      <button class="chip chip-sm${dailyOn ? ' on' : ''}" data-daily="on"
         title="The morning routine's contexts step will ask about this tag">ask</button>
-      ${dailyOn ? '<button class="cl-chip" data-daily="off">✕ stop asking</button>' : ''}
+      ${dailyOn ? '<button class="chip chip-sm" data-daily="off">✕ stop asking</button>' : ''}
     </div>
 
     <div class="cl-row">
@@ -13534,7 +13535,7 @@ function renderEngage() {
   const returning = isToday ? []
     : (engageView.deferred || []).filter(i => i.defer_until === dateStr);
   const deferHtml = returning.length ? `
-    <div class="eg-pool-head">Returning this day<span class="map-count">${returning.length}</span></div>
+    <div class="eg-pool-head">Returning this day<span class="count">${returning.length}</span></div>
     <div class="eg-pool">
       ${returning.map(i => `
         <div class="eg-row eg-pool-item eg-defer-row" data-id="${i.id}">
@@ -13629,7 +13630,7 @@ function renderEngage() {
   const parts = [];
   if (!rows.length) {
     parts.push(gapHtml(540));
-    parts.push(`<div class="eg-empty">Nothing fixed ${isToday ? 'today' : 'this day'} — drag an action up from the pool.</div>`);
+    parts.push(`<div class="empty">Nothing fixed ${isToday ? 'today' : 'this day'} — drag an action up from the pool.</div>`);
   } else {
     parts.push(gapHtml(Math.max(0, rows[0].minute - 30)));
     rows.forEach((r, i) => {
@@ -13693,7 +13694,7 @@ function renderEngage() {
               title="Double-click to rewrite">${escHtml(i.content)}</span>
             <button class="eg-rt-del" data-rt="${i.id}" title="Remove from the routine">×</button>
           </div>`;
-        }).join('') || '<div class="eg-empty">No checklist yet — add the first line below.</div>'}
+        }).join('') || emptyHtml('No checklist yet — add the first line below.')}
       </div>
       <input type="text" class="eg-rt-add" placeholder="+ add to the routine…" autocomplete="off">
     </div>`;
@@ -13745,7 +13746,7 @@ function renderEngage() {
             : 'Tap to start · tap again to complete')}
           <span class="eg-text">${escHtml(i.content)}</span>
           <span class="eg-tags">${dueChip(i, 'eg-tag')}</span>
-        </div>`).join('') || '<div class="eg-empty">Nothing available — done, parked, or handed off.</div>'}
+        </div>`).join('') || emptyHtml('Nothing available — done, parked, or handed off.')}
     </div>
     ${popHtml}
     </div>
@@ -14102,7 +14103,7 @@ async function renderNowFull() {
   const body = document.getElementById('now-full-body');
   if (!body) return;
   const day = await apiGet('/api/engage/day', null);
-  if (!day) { body.innerHTML = '<div class="gtd-empty">Could not load the day.</div>'; return; }
+  if (!day) { body.innerHTML = emptyHtml('Could not load the day.'); return; }
   const d = new Date();
   const m = d.getHours() * 60 + d.getMinutes();
   const PRIO = { event: 3, routine: 2, block: 1 };
@@ -15033,9 +15034,9 @@ function renderClarify() {
   const doProgress = verb === 'do' && clarifyView.doVariant === 'progress';
   const doVariantChips = () => `
     <div class="cl-chips">
-      <button class="cl-chip${clarifyView.doVariant === 'done' ? ' cl-chip-on' : ''}"
+      <button class="chip chip-sm${clarifyView.doVariant === 'done' ? ' on' : ''}"
         data-dovar="done" title="Two-minute rule — filing marks it done">finish it now</button>
-      <button class="cl-chip${doProgress ? ' cl-chip-on' : ''}"
+      <button class="chip chip-sm${doProgress ? ' on' : ''}"
         data-dovar="progress" title="Starting it — it stays in the pool, marked ◐">start it now <span class="cl-key">I</span></button>
     </div>`;
   const verbBtn = (v, label, key) =>
@@ -15052,8 +15053,8 @@ function renderClarify() {
       <div class="cl-sec"><span class="cl-label">Comes back</span>
         <span class="cl-hint">a new one appears, this often</span></div>
       <div class="cl-chips">
-        ${REC_PERIODS.map(p => `<button class="cl-chip${
-          rec.interval === p.n ? ' cl-chip-on' : ''}" data-recper="${p.n}">${p.label}</button>`).join('')}
+        ${REC_PERIODS.map(p => `<button class="chip chip-sm${
+          rec.interval === p.n ? ' on' : ''}" data-recper="${p.n}">${p.label}</button>`).join('')}
       </div>
       <div class="cl-row">
         <span class="cl-label">First one</span>
@@ -15073,10 +15074,10 @@ function renderClarify() {
       </div>
       <div class="cl-sec"><span class="cl-label">State</span>
         <span class="cl-hint">paused: nothing new is seeded</span></div>
-      <div class="cl-chips">
-        <button class="cl-chip${rec.active ? ' cl-chip-on' : ''}" data-recact="1">Active</button>
-        <button class="cl-chip${rec.active ? '' : ' cl-chip-on'}" data-recact="0">Paused</button>
-      </div>
+      <div class="cl-row"><div class="seg">
+        <button class="${rec.active ? 'on' : ''}" data-recact="1">Active</button>
+        <button class="${rec.active ? '' : 'on'}" data-recact="0">Paused</button>
+      </div></div>
       <div class="cl-row"><span class="cl-hint">Paused stops new ones being seeded.
         Any already filed stay exactly where they are.</span></div>`;
   } else if (isProj) {
@@ -15094,7 +15095,7 @@ function renderClarify() {
         <span class="cl-hint">every action under it inherits these</span></div>
       <div class="cl-chips">
         ${clarifyView.tagVocab.filter(t => !EST_TAGS.includes(t)).map(t =>
-          `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+          `<button class="chip chip-sm${clarifyView.tags.has(t) ? ' on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
         <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
       </div>
       <div class="cl-row">
@@ -15110,7 +15111,7 @@ function renderClarify() {
       <div class="cl-sec"><span class="cl-label">Waiting on</span><span class="cl-hint">who owns it now</span></div>
       <div class="cl-chips">
         ${clarifyView.peopleNames.map(nm =>
-          `<button class="cl-chip${clarifyView.who === nm ? ' cl-chip-on' : ''}" data-who="${escHtml(nm)}">${escHtml(nm)}</button>`).join('')}
+          `<button class="chip chip-sm${clarifyView.who === nm ? ' on' : ''}" data-who="${escHtml(nm)}">${escHtml(nm)}</button>`).join('')}
         <input type="text" id="cl-who-custom" class="cl-chip-input" placeholder="+ someone" value="${escHtml(custom)}">
       </div>
       <div class="cl-row">
@@ -15127,7 +15128,7 @@ function renderClarify() {
         handOffAvailable() ? ' · hold pc/phone to send it there' : ''}</span></div>
       <div class="cl-chips">
         ${clarifyView.tagVocab.map(t =>
-          `<button class="cl-chip${clarifyView.tags.has(t) ? ' cl-chip-on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+          `<button class="chip chip-sm${clarifyView.tags.has(t) ? ' on' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
         <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
       </div>
       ${clarifyInherited().length ? `<div class="cl-row"><span class="cl-hint">from the project:
@@ -15172,7 +15173,7 @@ function renderClarify() {
       <div class="cl-sec"><span class="cl-label">Filing to</span>
         <span class="cl-hint">${clarifyView.areaId ? 'tap again to clear' : 'nothing in particular'}</span></div>
       ${shown.length ? `<div class="cl-chips">
-        ${shown.map(a => `<button class="cl-chip${a.id === clarifyView.areaId ? ' cl-chip-on' : ''}"
+        ${shown.map(a => `<button class="chip chip-sm${a.id === clarifyView.areaId ? ' on' : ''}"
            data-area="${a.id}">${escHtml(a.name)}</button>`).join('')}
       </div>` : ''}`;
   }
@@ -15247,7 +15248,7 @@ function renderClarify() {
       <button class="cl-pill${clarifyView.refOpen ? ' cl-pill-on' : ''}" id="cl-reference">Reference <span class="cl-key">R</span></button>
     </div>`}
     ${clarifyView.refOpen && !tpl && !rec ? `<div class="cl-chips cl-ref-row">
-      ${clarifyView.refLists.map(l => `<button class="cl-chip" data-reflist="${l.id}">${escHtml(l.name)}</button>`).join('')}
+      ${clarifyView.refLists.map(l => `<button class="chip chip-sm" data-reflist="${l.id}">${escHtml(l.name)}</button>`).join('')}
       <input type="text" id="cl-ref-new" class="cl-chip-input" placeholder="+ new list">
     </div>` : ''}
     <div class="cl-foot">
@@ -15308,7 +15309,7 @@ function renderClarify() {
     toast('Deleted');
     closeClarify();
   });
-  sheet.querySelectorAll('.cl-chip[data-tag]').forEach(b => {
+  sheet.querySelectorAll('.chip[data-tag]').forEach(b => {
     b.addEventListener('click', () => {
       const t = b.dataset.tag;
       if (clarifyView.tags.has(t)) clarifyView.tags.delete(t);
@@ -15331,11 +15332,11 @@ function renderClarify() {
       onLongPress(b, () => handOffToDevice(b.dataset.tag));
     }
   });
-  sheet.querySelectorAll('.cl-chip[data-who]').forEach(b => b.addEventListener('click', () => {
+  sheet.querySelectorAll('.chip[data-who]').forEach(b => b.addEventListener('click', () => {
     clarifyView.who = clarifyView.who === b.dataset.who ? '' : b.dataset.who;
     renderClarify();
   }));
-  sheet.querySelectorAll('.cl-chip[data-area]').forEach(b => {
+  sheet.querySelectorAll('.chip[data-area]').forEach(b => {
     b.addEventListener('click', () => {
       // Letting go of an area files under nothing (domains are gone).
       const aid = parseInt(b.dataset.area);
@@ -15497,7 +15498,7 @@ function renderClarify() {
     closeClarify();
     if (back) back();
   });
-  sheet.querySelectorAll('.cl-chip[data-reflist]').forEach(b => b.addEventListener('click', () => {
+  sheet.querySelectorAll('.chip[data-reflist]').forEach(b => b.addEventListener('click', () => {
     fileClarify('reference', parseInt(b.dataset.reflist));
   }));
   const refNew = sheet.querySelector('#cl-ref-new');
@@ -15769,13 +15770,13 @@ function renderClarifyCompose(sheet) {
           <span class="cl-chain-text">${escHtml(a.content)}</span>
           <span class="cl-chain-tags">${(a.tags || '').split(' ').filter(Boolean)
             .map(t => `<span class="map-tag">${escHtml(t)}</span>`).join('')}${
-            dueOf(a) ? dueChip(a, 'map-badge') : ''}</span>
+            dueOf(a) ? dueChip(a, 'badge') : ''}</span>
           ${a.after_id ? `<button class="cl-chain-x" data-id="${a.id}"
             title="Unchain — it stops waiting on ${escHtml((byId[a.after_id] || {}).content || 'that')}">✕</button>` : ''}
           <button class="cl-chain-go" data-go="${a.id}"
             title="Clarify this action — contexts, due, show-on, notes">›</button>
         </div>`).join('')
-        || '<div class="gtd-empty">No actions yet — type the first one below.</div>'}
+        || emptyHtml('No actions yet — type the first one below.')}
     </div>
     <div class="cl-action-wrap">
       <input type="text" id="cl-compose-add" class="cl-action"

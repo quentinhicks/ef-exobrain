@@ -161,7 +161,7 @@ const proofOf = n => PROOF[(n && n.proof_mode) || 'link'] || PROOF.link;
 function proofBadge(n) {
   const p = proofOf(n);
   const noFence = (n.proof_mode || 'link') === 'link' && n.geofence_lat == null;
-  return `<span class="gd-badge ${p.cls}" title="${escHtml(p.threat)}">${escHtml(p.strength)}`
+  return `<span class="badge ${p.cls === 'gd-strong' ? 'badge-ok' : 'badge-warn'}" title="${escHtml(p.threat)}">${escHtml(p.strength)}`
     + `${noFence ? ' · no place pinned' : ''}</span>`;
 }
 
@@ -362,7 +362,7 @@ function renderMoney() {
   const b = G.billing;
   if (!b) {
     el.innerHTML = sectionHead('Money')
-      + '<p class="gd-empty gd-bad-text">The billing state did not load, so nothing here is known. ↻ to retry.</p>';
+      + emptyHtml('The billing state did not load, so nothing here is known. ↻ to retry.', 'gd-bad-text');
     return;
   }
   const v = moneyVerdict(b);
@@ -379,9 +379,9 @@ function renderMoney() {
   el.innerHTML = sectionHead('Money')
     + `<div class="gd-verdict ${v.cls}"><div class="gd-vtext">${escHtml(v.text)}</div>
         <div class="gd-vsub">${v.sub}</div></div>`
-    + `<div class="gd-seg" role="group" aria-label="Charging">
-        <button data-mode="off" class="${mode === 'off' ? 'gd-on' : ''}">Off</button>
-        <button data-mode="live" class="${mode === 'live' ? 'gd-on gd-on-live' : ''}${confirming ? ' gd-confirm' : ''}">${
+    + `<div class="seg gd-seg" role="group" aria-label="Charging">
+        <button data-mode="off" class="${mode === 'off' ? 'on' : ''}">Off</button>
+        <button data-mode="live" class="${mode === 'live' ? 'on gd-on-live' : ''}${confirming ? ' gd-confirm' : ''}">${
           confirming ? `Tap again: bill ${escHtml(b.user || 'nobody')}` : 'Live'}</button>
       </div>
       <div class="gd-hint">Off is immediate. Live asks twice, and reaches FORWARD only: a day is
@@ -463,7 +463,7 @@ function renderMoney() {
 // answer to "will this charge me".
 function stakeList(b) {
   const cs = b.commitments || [];
-  if (!cs.length) return '<p class="gd-empty">Nothing is committed for today or tomorrow.</p>';
+  if (!cs.length) return emptyHtml('Nothing is committed for today or tomorrow.');
   return '<div class="gd-ledger">' + cs.map(c => `<div class="gd-lrow">
       <span class="gd-ldate">${escHtml(c.date)}</span>
       <span class="gd-lgate">${escHtml(c.label)}</span>
@@ -618,7 +618,7 @@ function renderDay() {
         <div class="gd-ctx">${segHtml}${evHtml}</div>
         <div class="gd-lanes">${gateHtml}</div>
         ${nowMin != null && nowMin >= lo && nowMin <= hi ? `<div class="gd-now" style="top:${y(nowMin)}px"></div>` : ''}
-      </div>` : '<p class="gd-empty">No gates yet — add one below.</p>')
+      </div>` : emptyHtml('No gates yet — add one below.'))
     + (idle.length ? `<div class="gd-hint">Not running ${isToday ? 'today' : 'this day'}: ${
         idle.map(g => escHtml(g.label)).join(', ')}.</div>` : '')
     + '<div id="gd-detail"></div>';
@@ -835,7 +835,7 @@ function renderDetail() {
         g.hours.frozen ? ' (frozen)' : ''}</dd>` : ''}
     </dl>
     <h4>Every scan and tap of the day</h4>
-    ${scans ? `<ul class="gd-list">${scans}</ul>` : '<p class="gd-empty">None.</p>'}
+    ${scans ? `<ul class="gd-list">${scans}</ul>` : emptyHtml('None.')}
     ${pend.length ? `<h4>Changes already scheduled</h4><ul class="gd-list">${pend.map(pg =>
       `<li>${pg.label ? escHtml(pg.label) + ' → ' : ''}${escHtml(pg.text)} from ${escHtml(pg.effective_date)}</li>`).join('')}</ul>` : ''}
     <h4>Record</h4>${recordStrip(g.history)}
@@ -876,14 +876,14 @@ function renderGates() {
     return `<button class="gd-gate-row${paused ? ' gd-dim' : ''}" data-open="${n.id}">
       <div class="gd-row-line"><span class="gd-row-name">${escHtml(n.label)}</span>
         <span class="gd-row-val">${n.charge_cents == null ? 'default stake' : money(n.charge_cents)}</span></div>
-      <div class="gd-badges">${proofBadge(n)}${!n.active ? '<span class="gd-badge">paused</span>' : ''}${
-        pend ? `<span class="gd-badge gd-pend">${pend} scheduled</span>` : ''}${
-        n.all_day ? '<span class="gd-badge">all day</span>' : ''}</div>
+      <div class="gd-badges">${proofBadge(n)}${!n.active ? '<span class="badge">paused</span>' : ''}${
+        pend ? `<span class="badge badge-wait">${pend} scheduled</span>` : ''}${
+        n.all_day ? '<span class="badge">all day</span>' : ''}</div>
       <div class="gd-hint">${escHtml(n.schedule_label || 'no schedule')}</div>
     </button>`;
   }).join('');
   el.innerHTML = sectionHead('Gates', '<button class="gd-btn gd-small" id="gd-new">+ Gate</button>')
-    + (rows || '<p class="gd-empty">No gates. A gate is a place and a time you commit to being there.</p>');
+    + (rows || emptyHtml('No gates. A gate is a place and a time you commit to being there.'));
   $('#gd-new').addEventListener('click', () => openEditor(null));
   el.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => openEditor(+b.dataset.open)));
 }
@@ -943,7 +943,7 @@ function passesWhen(v, n) {
 
 function schedFields(v) {
   return `<div class="gd-days">${WEEKDAYS.map(([d, l]) =>
-      `<button type="button" class="gd-day${v.days.includes(d) ? ' gd-on' : ''}" data-day="${d}" title="${d}">${l}</button>`).join('')}</div>
+      `<button type="button" class="chip gd-day${v.days.includes(d) ? ' on' : ''}" data-day="${d}" title="${d}">${l}</button>`).join('')}</div>
     <div class="gd-form gd-inline">
       <label>From <input type="time" data-k="from" value="${escHtml(v.from)}"></label>
       <label>To <input type="time" data-k="to" value="${escHtml(v.to)}"></label>
@@ -1032,10 +1032,10 @@ function renderSheet() {
           : 'Anyone with this link can clear the gate — keep it out of photos and chats.'}</div></div>
         ${tagsHtml(n)}
         <div class="gd-field"><div class="gd-flabel">Last taps <button type="button" class="gd-btn gd-small" id="gd-taps">Refresh</button></div>
-          ${taps == null ? '<p class="gd-empty">reading…</p>' : taps.length ? `<ul class="gd-list gd-mono">${taps.map(t =>
+          ${taps == null ? emptyHtml('reading…') : taps.length ? `<ul class="gd-list gd-mono">${taps.map(t =>
             `<li class="${t.ok ? 'gd-good-text' : 'gd-bad-text'}">${t.ok ? '✓' : '✗'} ${escHtml(t.at || '??')} · ${escHtml(t.orphan ? 'unidentified tag' : (t.tag_label || 'tag'))} · ${
               t.ok ? 'read ' + escHtml(t.counter) : escHtml(t.reason || 'refused')}</li>`).join('')}</ul>`
-            : '<p class="gd-empty">None yet. Every tap of /t is written down, refused ones with the reason.</p>'}
+            : emptyHtml('None yet. Every tap of /t is written down, refused ones with the reason.')}
         </div>
         <details class="gd-field"><summary>How to program a tag</summary>${TAG_STEPS}</details>` : ''}
 
@@ -1339,7 +1339,7 @@ async function saveGate(n) {
 function renderLedger() {
   const el = $('#gd-ledger');
   const L = G.ledger;
-  if (!L) { el.innerHTML = sectionHead('Ledger') + '<p class="gd-empty gd-bad-text">The ledger did not load. ↻ to retry.</p>'; return; }
+  if (!L) { el.innerHTML = sectionHead('Ledger') + emptyHtml('The ledger did not load. ↻ to retry.', 'gd-bad-text'); return; }
   const rows = L.rows.filter(r => !G.ledgerGate || String(r.node_id) === G.ledgerGate);
   const sum = st => rows.filter(r => st.includes(r.charge_status)).reduce((t, r) => t + (r.amount_cents || 0), 0);
   const gates = [...new Map(L.rows.map(r => [r.node_id, r.label])).entries()];
@@ -1356,7 +1356,7 @@ function renderLedger() {
         <span class="gd-lcharge">${r.outcome === 'met' || r.outcome === 'off' ? '' : escHtml(gateStatus(r.charge_status))}${
           r.amount_cents ? ' · ' + money(r.amount_cents) : ''}${r.charge_id ? ` · <span class="gd-mono">#${escHtml(r.charge_id)}</span>` : ''}</span>
         ${r.window_start ? `<span class="gd-lwin">judged against ${escHtml(r.window_start)}–${escHtml(r.window_end)}${r.offset_days ? ' +1d' : ''}</span>` : ''}
-      </div>`).join('')}</div>` : '<p class="gd-empty">Nothing judged in this range.</p>');
+      </div>`).join('')}</div>` : emptyHtml('Nothing judged in this range.'));
   const sel = $('#gd-lgate');
   if (sel) sel.addEventListener('change', () => { G.ledgerGate = sel.value; renderLedger(); });
 }

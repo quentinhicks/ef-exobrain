@@ -37,7 +37,7 @@ body.gd-sheet-open { overflow: hidden; }
   text-transform: uppercase; letter-spacing: 0.04em; }
 
 .gd-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.45; margin-top: 4px; }
-.gd-empty { font-size: 13px; color: var(--text-secondary); padding: 6px 0; }
+
 .gd-mono { font-family: var(--font-mono); font-size: 12px; }
 .gd-wrap { word-break: break-all; }
 .gd-good-text { color: var(--success); }
@@ -63,12 +63,13 @@ body.gd-sheet-open { overflow: hidden; }
 .gd-verdict.gd-live { border: 2px solid var(--danger); }
 .gd-verdict.gd-live .gd-vtext { color: var(--danger); }
 
-.gd-seg { display: flex; margin-top: 12px; border: 1px solid var(--text-secondary); border-radius: 9px; overflow: hidden; }
-.gd-seg button { flex: 1; min-height: 40px; font-size: 13px; border-right: 1px solid var(--text-secondary); }
-.gd-seg button:last-child { border-right: none; }
-.gd-seg button.gd-on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
-.gd-seg button.gd-on-live { background: var(--danger); color: var(--bg); }
-.gd-seg button.gd-confirm { background: var(--danger); color: var(--bg); font-weight: 600; }
+/* The money switch is the app's one .seg, full width and finger-high. Live
+   keeps its own colour: lit, or asking twice, it is money and says so. */
+.gd-seg { display: flex; margin-top: 12px; }
+.gd-seg > button { flex: 1; min-height: 40px; font-size: 13px; }
+.gd-seg > button.on { font-weight: 600; }
+.gd-seg > button.gd-on-live { background: var(--danger); color: var(--bg); }
+.gd-seg > button.gd-confirm { background: var(--danger); color: var(--bg); font-weight: 600; }
 
 .gd-row { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border-soft); }
 .gd-row-main { flex: 1; min-width: 0; }
@@ -166,10 +167,7 @@ body.gd-sheet-open { overflow: hidden; }
 .gd-gate-row:hover { background: var(--surface-2); }
 .gd-gate-row.gd-dim { opacity: 0.6; }
 .gd-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.gd-badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--border); color: var(--text-secondary); }
-.gd-badge.gd-strong { border-color: var(--success); color: var(--success); }
-.gd-badge.gd-weak { border-color: var(--gold); color: var(--gold); }
-.gd-badge.gd-pend { border-color: var(--accent); color: var(--accent); }
+
 .gd-threat { font-size: 12px; line-height: 1.45; padding: 8px 10px; border-radius: 8px; margin-top: 6px;
   background: var(--surface-low); color: var(--text-primary); border-left: 3px solid var(--border); }
 .gd-threat.gd-strong { border-left-color: var(--success); }
@@ -203,8 +201,8 @@ body.gd-sheet-open { overflow: hidden; }
 .gd-sheet-foot .gd-primary { margin-left: auto; }
 .gd-error { color: var(--danger); font-size: 13px; margin-top: 12px; }
 .gd-days { display: flex; gap: 4px; }
-.gd-day { flex: 1; min-height: 36px; border-radius: 8px; border: 1px solid var(--text-secondary); font-size: 13px; }
-.gd-day.gd-on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+/* A day key is the app's .chip; this is only its shape. */
+.gd-day { flex: 1; min-height: 36px; border-radius: 8px; font-size: 13px; padding: 0; }
 .gd-pend-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0;
   font-size: 12px; color: var(--text-primary); }
 .gd-tag { padding: 8px 0; border-top: 1px solid var(--border-soft); color: var(--text-primary); }

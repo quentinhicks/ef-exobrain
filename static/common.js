@@ -35,6 +35,16 @@ function escHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+// What an empty list says instead of nothing (2026-10-05). Ten classes said it
+// at four sizes and five paddings (.gtd-empty, .eg-empty, .be-empty,
+// .gd-empty, …); .empty in style.css is the one look, and a list whose rows
+// are inset sets --empty-x rather than growing an eleventh. `cls` is for a
+// meaning the sentence carries (the dashboard's failed-load red), never a
+// layout. Plain text only: a sentence with a link in it writes the class.
+function emptyHtml(text, cls) {
+  return `<div class="empty${cls ? ' ' + cls : ''}">${escHtml(text)}</div>`;
+}
+
 // ── Which day ─────────────────────────────────────────────────
 function formatDateYMD(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
