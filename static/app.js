@@ -573,6 +573,71 @@ function justPointerDragged() {
   return Date.now() - lastPointerDragAt < 400;
 }
 
+// ── ONE INLINE RENAME, ONE TAP-OR-DOUBLE (2026-10-05) ─────────
+// Six places each built the same field: an input in place of the text,
+// focused and selected, a settled guard so Enter and the blur that follows
+// cannot both save, Enter commits, Esc cancels (stopped, or the same keydown
+// reaches initHub's ladder and peels the page behind the field), blur
+// commits. Now `inlineEdit(span, {value, className, onCommit, onCancel, row,
+// allowBlank})`: onCommit(v) runs when the trimmed text changed (and is not
+// blank unless allowBlank), onCancel() otherwise — each owns the repaint. A
+// row being renamed is not draggable while it is (MAP, the pool), and a
+// click inside the field belongs to the field, not to the row's tap. Returns
+// the input, so a caller can still mark it. The field lets go of focus the
+// moment it settles: the repaint guards (renderEngage's eg-renaming, the plan
+// layer's) stand down for an unfocused field, so the repaint that follows
+// lands.
+function inlineEdit(span, { value, className, onCommit, onCancel, row, allowBlank }) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = className || 's2-rename-input';
+  input.value = value;
+  if (row) row.draggable = false;
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const finish = async save => {
+    if (settled) return;
+    settled = true;
+    input.blur();
+    if (row) row.draggable = true;
+    const v = input.value.trim();
+    if (save && v !== value && (v || allowBlank)) await onCommit(v);
+    else await onCancel();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', e => e.stopPropagation());
+  return input;
+}
+
+// A click that waits out the double-click window before it acts, so a
+// double-click (a rename) is not first taken as a tap (an open) that repaints
+// the text out from under it. Five copies of this timer existed. `within`
+// narrows both gestures to part of the element; a click trailing a long
+// press or a drag is not a tap.
+const DBL_WAIT_MS = 220;
+
+function onTapOrDouble(el, tap, dbl, within) {
+  let t = null;
+  el.addEventListener('click', e => {
+    if (within && !e.target.closest(within)) return;
+    if (justLongPressed() || justPointerDragged()) return;
+    if (e.detail > 1) return;
+    clearTimeout(t);
+    t = setTimeout(() => tap(e), DBL_WAIT_MS);
+  });
+  el.addEventListener('dblclick', e => {
+    if (within && !e.target.closest(within)) return;
+    clearTimeout(t);
+    dbl(e);
+  });
+}
+
 function onLongPress(el, fn) {
   let t = null, sx = 0, sy = 0, fired = false;
   el.addEventListener('pointerdown', e => {
@@ -1253,42 +1318,29 @@ function editPlanSpanLocation(id, el) {
   const was = span.location || '';
   const sub = el.querySelector('.tl-plan-sublabel');
   if (sub) sub.remove();
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'tl-plan-loc-input';
-  input.placeholder = 'where?';
-  input.value = was;
-  input.setAttribute('aria-label', 'Where this span happens');
-  el.appendChild(input);
-  input.focus();
-  input.select();
-
-  let done = false;
-  async function finish(save) {
-    if (done) return;
-    done = true;
-    const now = input.value.trim();
-    input.blur();
-    if (!save || now === was) { renderTimeline(); return; }
-    const res = await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: now });
-    if (!res.ok) { toast('Could not save where'); renderTimeline(); return; }
-    pushUndo(now ? `set where to "${now}"` : 'cleared where', async () => {
-      await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: was });
+  // The field takes the second line's place (a slot, since a span with no
+  // location has no line to replace). Blank CLEARS, so it is allowed.
+  const slot = document.createElement('span');
+  el.appendChild(slot);
+  const input = inlineEdit(slot, {
+    value: was,
+    className: 'tl-plan-loc-input',
+    allowBlank: true,
+    onCancel: () => renderTimeline(),
+    onCommit: async now => {
+      const res = await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: now });
+      if (!res.ok) { toast('Could not save where'); renderTimeline(); return; }
+      pushUndo(now ? `set where to "${now}"` : 'cleared where', async () => {
+        await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: was });
+        await refreshPlan(span.date);
+        renderTimeline();
+      });
       await refreshPlan(span.date);
       renderTimeline();
-    });
-    await refreshPlan(span.date);
-    renderTimeline();
-  }
-  input.addEventListener('keydown', e => {
-    // Handled HERE and stopped: Esc on the document would peel the calendar
-    // overlay out from under the box, and Enter means nothing else in it.
-    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+    },
   });
-  input.addEventListener('blur', () => finish(true));
-  // A click in the box belongs to the box, not to the span's menu door.
-  input.addEventListener('click', e => e.stopPropagation());
+  input.placeholder = 'where?';
+  input.setAttribute('aria-label', 'Where this span happens');
 }
 
 registerObjectVerbs('timeline-plan-span', (kind, id) => {
@@ -7223,23 +7275,13 @@ function renderRef() {
         await refreshRef();
       },
     }));
-    body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span => {
-      let t = null;
-      span.addEventListener('click', () => {
-        clearTimeout(t);
-        t = setTimeout(() => {
-          const lid = parseInt(span.closest('.ref-row').dataset.id);
-          if (SETTINGS_WIDE.matches) { refPeekToggle('list', lid); return; }
-          refView.open = lid;
-          renderRef();
-        }, 220);
-      });
-      span.addEventListener('dblclick', () => {
-        clearTimeout(t);
-        refRename(span, id => name =>
-          apiSend(`/api/ref/lists/${id}`, 'PATCH', { name }));
-      });
-    });
+    body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span =>
+      onTapOrDouble(span, () => {
+        const lid = parseInt(span.closest('.ref-row').dataset.id);
+        if (SETTINGS_WIDE.matches) { refPeekToggle('list', lid); return; }
+        refView.open = lid;
+        renderRef();
+      }, () => refListRename(span)));
     body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
       const id = parseInt(b.dataset.id);
       const l = refView.lists.find(x => x.id === id);
@@ -7307,21 +7349,11 @@ function renderRef() {
     },
   }));
   // Child-list rows: same gestures as the index rows.
-  body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span => {
-    let t = null;
-    span.addEventListener('click', () => {
-      clearTimeout(t);
-      t = setTimeout(() => {
-        refView.open = parseInt(span.closest('.ref-row').dataset.id);
-        renderRef();
-      }, 220);
-    });
-    span.addEventListener('dblclick', () => {
-      clearTimeout(t);
-      refRename(span, id => name =>
-        apiSend(`/api/ref/lists/${id}`, 'PATCH', { name }));
-    });
-  });
+  body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span =>
+    onTapOrDouble(span, () => {
+      refView.open = parseInt(span.closest('.ref-row').dataset.id);
+      renderRef();
+    }, () => refListRename(span)));
   body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
     const id = parseInt(b.dataset.id);
     const l = refView.lists.find(x => x.id === id);
@@ -7349,9 +7381,13 @@ function renderRef() {
   body.querySelectorAll('.ref-row[data-item] .ref-text').forEach(span => {
     span.addEventListener('dblclick', () => {
       const id = parseInt(span.closest('.ref-row').dataset.item);
-      refRenameEl(span, async content => {
-        await apiSend(`/api/ref/items/${id}`, 'PATCH', { content });
-        await refreshRef();
+      inlineEdit(span, {
+        value: span.textContent,
+        onCancel: refreshRef,
+        onCommit: async content => {
+          await apiSend(`/api/ref/items/${id}`, 'PATCH', { content });
+          await refreshRef();
+        },
       });
     });
   });
@@ -7436,29 +7472,6 @@ async function refreshMetricsSettings() {
   if (settingsView.section == null) renderSettingsIndex();
 }
 
-// Same inline-rename gesture with a plain save callback (flow steps).
-function refRenameEl(span, save) {
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 's2-rename-input';
-  input.value = span.textContent;
-  span.replaceWith(input);
-  input.focus();
-  input.select();
-  let settled = false;
-  const finish = async ok2 => {
-    if (settled) return;
-    settled = true;
-    const v = input.value.trim();
-    if (ok2 && v && v !== span.textContent) await save(v);
-    else await refreshRef();
-  };
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
-  });
-  input.addEventListener('blur', () => finish(true));
-}
 
 // ── New calendar event: the write half of the gcal mirror ─────
 //
@@ -8223,30 +8236,17 @@ async function endExperiment(ex, day, note, next, drop, after) {
   return true;
 }
 
-// Shared inline rename for ref rows — same gesture as MAP's, same Esc rule
-// (stopPropagation, or the keydown peels the overlay behind the editor).
-function refRename(span, patchFor) {
+// A list's name, renamed in place — the index rows and a list's child rows.
+function refListRename(span) {
   const id = parseInt(span.closest('.ref-row').dataset.id);
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 's2-rename-input';
-  input.value = span.textContent;
-  span.replaceWith(input);
-  input.focus();
-  input.select();
-  let settled = false;
-  const finish = async save => {
-    if (settled) return;
-    settled = true;
-    const v = input.value.trim();
-    if (save && v && v !== span.textContent) await patchFor(id)(v);
-    await refreshRef();
-  };
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  inlineEdit(span, {
+    value: span.textContent,
+    onCancel: refreshRef,
+    onCommit: async name => {
+      await apiSend(`/api/ref/lists/${id}`, 'PATCH', { name });
+      await refreshRef();
+    },
   });
-  input.addEventListener('blur', () => finish(true));
 }
 
 async function flushLogSave() {
@@ -9288,27 +9288,12 @@ async function logDraftCommit() {
 function logRenameEl(span, name) {
   const meta = logsView.logs.find(l => l.name === name);
   const was = meta ? meta.title : span.textContent;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 's2-rename-input lg-rename';
-  input.value = was;
-  span.replaceWith(input);
-  input.focus();
-  input.select();
-  let settled = false;
-  const finish = async ok => {
-    if (settled) return;
-    settled = true;
-    const v = input.value.trim();
-    if (ok && v && v !== was) await renameLog(name, v, was);
-    else renderLogs();
-  };
-  input.addEventListener('click', e => e.stopPropagation());
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  inlineEdit(span, {
+    value: was,
+    className: 's2-rename-input lg-rename',
+    onCancel: () => renderLogs(),
+    onCommit: v => renameLog(name, v, was),
   });
-  input.addEventListener('blur', () => finish(true));
 }
 
 async function renameLog(name, title, was) {
@@ -9441,29 +9426,23 @@ function renderLogs() {
     e.stopPropagation();
     deleteLog(x.dataset.del);
   }));
-  // A double-click renames. The single click waits out the double-click
-  // window before it opens the log (MAP's and Lists' rule), or the open would
-  // repaint the row out from under the rename.
-  let openTimer = null;
-  body.querySelectorAll('.log-row[data-name] .log-row-name').forEach(span =>
-    span.addEventListener('dblclick', e => {
-      e.stopPropagation();
-      clearTimeout(openTimer);
-      logRenameEl(span, span.closest('.log-row').dataset.name);
-    }));
+  // A double-click on the NAME renames. The single click waits out the
+  // double-click window before it opens the log (MAP's and Lists' rule), or
+  // the open would repaint the row out from under the rename.
   const head = body.querySelector('.lg-title');
   if (head) head.addEventListener('dblclick', () => logRenameEl(head, logsView.open));
   body.querySelectorAll('.log-row').forEach(row => {
-    row.addEventListener('click', async e => {
-      if (e.detail > 1 || row.querySelector('.lg-rename')) return;
-      clearTimeout(openTimer);
-      await new Promise(z => { openTimer = setTimeout(z, 220); });
+    onTapOrDouble(row, async () => {
+      if (row.querySelector('.lg-rename')) return;
       // A log is open BESIDE the list now, so picking another is the moment
       // the open one is put down — its pending save (or the blank log's
       // first write) goes first.
       await logDraftCommit();
       await flushLogSave();
       openLog(row.dataset.name);
+    }, e => {
+      const span = e.target.closest('.log-row-name');
+      if (span && row.dataset.name) logRenameEl(span, row.dataset.name);
     });
   });
   // THE LOG YOU ARE WRITING (2026-10-01, Quentin's instruction): the session
@@ -11669,46 +11648,24 @@ function wireMapRows(body, byId, afterFn) {
   // dblclick always fires a click first, so the single-click action waits out
   // the double-click window before committing.
   body.querySelectorAll('.map-text').forEach(span => {
-    let clickTimer = null;
-    span.addEventListener('click', () => {
-      clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        const item = byId[parseInt(span.closest('.map-row').dataset.id)];
-        if (item) openClarifyForItem(item, after);
-      }, 220);
-    });
-    span.addEventListener('dblclick', () => {
-      clearTimeout(clickTimer);
+    onTapOrDouble(span, () => {
+      const item = byId[parseInt(span.closest('.map-row').dataset.id)];
+      if (item) openClarifyForItem(item, after);
+    }, () => {
       const row = span.closest('.map-row');
       const id = parseInt(row.dataset.id);
       const item = byId[id];
       if (!item) return;
-      row.draggable = false;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 's2-rename-input';
-      input.value = item.content;
-      span.replaceWith(input);
-      input.focus();
-      input.select();
-      let settled = false;
-      const finish = async save => {
-        if (settled) return;
-        settled = true;
-        const content = input.value.trim();
-        row.draggable = true;
-        if (!save || !content || content === item.content) { await after(); return; }
-        undoablePatch(item, ['content'], `renamed "${item.content}"`);
-        await apiSend(`/api/inbox/${id}`, 'PATCH', { content });
-        await after();
-      };
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-        // stopPropagation, or this same keydown also reaches initHub's handler
-        // and closes the overlay behind the editor — Esc peels innermost-first.
-        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      inlineEdit(span, {
+        value: item.content,
+        row,
+        onCancel: after,
+        onCommit: async content => {
+          undoablePatch(item, ['content'], `renamed "${item.content}"`);
+          await apiSend(`/api/inbox/${id}`, 'PATCH', { content });
+          await after();
+        },
       });
-      input.addEventListener('blur', () => finish(true));
     });
   });
 
@@ -14128,27 +14085,14 @@ function renderEngage() {
         const id = parseInt(span.dataset.rt);
         const item = engageView.routineItems.find(i => i.id === id);
         if (!item) return;
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 's2-rename-input';
-        input.value = item.content;
-        span.replaceWith(input);
-        input.focus();
-        input.select();
-        let settled = false;
-        const finish = async save => {
-          if (settled) return;
-          settled = true;
-          const content = input.value.trim();
-          if (!save || !content || content === item.content) { renderEngage(); return; }
-          await apiSend(`/api/routine-items/${id}`, 'PATCH', { content });
-          await refreshEngage();
-        };
-        input.addEventListener('keydown', e => {
-          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        inlineEdit(span, {
+          value: item.content,
+          onCancel: () => renderEngage(),
+          onCommit: async content => {
+            await apiSend(`/api/routine-items/${id}`, 'PATCH', { content });
+            await refreshEngage();
+          },
         });
-        input.addEventListener('blur', () => finish(true));
       });
     });
     const rtAdd = pop.querySelector('.eg-rt-add');
@@ -14280,55 +14224,33 @@ function renderEngage() {
     // A DOUBLE-CLICK RENAMES (2026-10-02, Quentin's instruction) — MAP's
     // gesture, so the single click waits out the double-click window first.
     // The pool may write wording; it is the one structural thing it may not.
-    let clickTimer = null;
-    row.addEventListener('click', e => {
-      if (!e.target.classList.contains('eg-text')) return;
-      // Same race as the checkbox: a long press on the row re-renders, taking
-      // its own click guard with it, and the synthesized click would then open
-      // clarify on top of the ◐ you just set.
-      if (justLongPressed()) return;
-      if (e.detail > 1) return;
-      clearTimeout(clickTimer);
-      clickTimer = setTimeout(() => {
-        const id = parseInt(row.dataset.id);
-        const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
-        if (item) openClarifyForItem(item, after);
-      }, 220);
-    });
-    row.addEventListener('dblclick', e => {
-      const span = e.target.closest('.eg-text');
-      if (!span) return;
-      clearTimeout(clickTimer);
+    // (onTapOrDouble turns away the click a long press synthesizes — the same
+    // race as the checkbox: the press re-renders, taking its own click guard
+    // with it, and clarify would open on top of the ◐ you just set.)
+    const poolItem = () => {
       const id = parseInt(row.dataset.id);
-      const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+      return [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+    };
+    onTapOrDouble(row, () => {
+      const item = poolItem();
+      if (item) openClarifyForItem(item, after);
+    }, e => {
+      const item = poolItem();
       if (!item) return;
-      row.draggable = false;
-      const input = document.createElement('input');
-      input.type = 'text';
-      // eg-renaming is what renderEngage's guard looks for.
-      input.className = 's2-rename-input eg-renaming';
-      input.value = item.content;
-      span.replaceWith(input);
-      input.focus();
-      input.select();
-      let settled = false;
-      const finish = async save => {
-        if (settled) return;
-        settled = true;
-        input.classList.remove('eg-renaming');
-        const content = input.value.trim();
-        if (!save || !content || content === item.content) { renderEngage(); return; }
-        undoablePatch(item, ['content'], `renamed "${item.content}"`);
-        await patchInboxItem(id, { content });
-        await after();
-      };
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-        // stopPropagation, or initHub's Esc peels the page behind the field.
-        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      // eg-renaming is what renderEngage's guard looks for while the field
+      // holds focus (inlineEdit lets go before either end repaints).
+      inlineEdit(e.target.closest('.eg-text'), {
+        value: item.content,
+        className: 's2-rename-input eg-renaming',
+        row,
+        onCancel: () => renderEngage(),
+        onCommit: async content => {
+          undoablePatch(item, ['content'], `renamed "${item.content}"`);
+          await patchInboxItem(item.id, { content });
+          await after();
+        },
       });
-      input.addEventListener('blur', () => finish(true));
-    });
+    }, '.eg-text');
   });
 
   dragEdgeScroll(body);   // a drag can reach gaps above/below the fold
