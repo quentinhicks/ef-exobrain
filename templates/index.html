@@ -32,24 +32,17 @@
       <button class="tn-tab" data-nav="calendar">Calendar</button>
       <button class="tn-tab" data-nav="map">Projects</button>
       <button class="tn-tab" data-nav="lists" id="tn-lists">Lists</button>
-      <button class="tn-tab" data-nav="logs">Log</button>
       <button class="tn-tab hidden" data-nav="social" id="tn-social">Social</button>
     </div>
     <!-- EACH PAGE'S OWN SELECTOR AND SEARCH (2026-10-01, Quentin's
          instruction): one group per page that has them, shown only while that
          page is open (paintTopNav). Same place on every page, a different
-         question on each — what Projects shows, which logs, what the calendar
-         draws. Their menus hang under the strip (.tn-menu). -->
+         question on each — what Projects shows, what the calendar draws. Their menus hang under the strip (.tn-menu). -->
     <div class="tn-tools hidden" data-page="map">
       <button id="map-filter" class="tn-pill"></button>
       <label class="tn-search" title="Search the projects"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input type="text" id="map-q" placeholder="Search" autocomplete="off"></label>
       <span id="map-q-count" class="count tn-count"></span>
-    </div>
-    <div class="tn-tools hidden" data-page="logs">
-      <button id="logs-filter" class="tn-pill"></button>
-      <label class="tn-search" title="Search what you wrote"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input type="text" id="logs-q" placeholder="Search what you wrote" autocomplete="off"></label>
     </div>
     <div class="tn-tools hidden" data-page="calendar">
       <button id="cal-filter" class="tn-pill"></button>
@@ -182,26 +175,6 @@
       <button class="modal-close-btn m-close" data-close="tab-social">✕</button>
     </div>
     <div id="social-body"></div>
-  </div>
-
-  <!-- Dangerous writing: stop typing and the draft is destroyed. The ONE
-       surface that covers the global bar (z 240) — capture during a session
-       is exactly the task-switch the mechanic exists to punish. -->
-  <div id="dw-session" class="dock-panel hidden"></div>
-
-  <!-- Logs modal -->
-  <div id="logs-overlay" class="hidden">
-    <div id="logs-modal">
-      <!-- One filter menu behind one pill, same shape as MAP's (23a): the pill
-           names what the list is showing, the menu is transient chrome and
-           peels before the overlay. -->
-      <div class="modal-header">
-        <span class="modal-title" id="logs-title">Logs</span>
-        <button id="logs-close" class="modal-close-btn">✕</button>
-      </div>
-      <div id="logs-filter-menu" class="tn-menu hidden"></div>
-      <div id="logs-body"></div>
-    </div>
   </div>
 
   <!-- Person detail panel -->
@@ -385,14 +358,9 @@
        Clarify and the ≡ hub are one tap from anywhere — no floating chips.
        The input's MODE morphs (renderBar): bare inbox capture by default, a
        project/area target when a + affordance selects one (the ◉ chip names
-       it; tap the chip to revert), "new log" on the Logs list. -->
+       it; tap the chip to revert). -->
   <div id="global-bar"></div>
 
-  <!-- A log's photos, full screen. Out here rather than inside #logs-overlay
-       because it covers that overlay (and the global bar) whole: a photo taken
-       on a phone is read by filling the screen with it, not by peering at it
-       inside a panel. Empty until a thumbnail is tapped. -->
-  <div id="log-photo-view" class="hidden"></div>
 
 
   <script src="/static/common.js"></script>
