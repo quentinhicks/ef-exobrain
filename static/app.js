@@ -2094,6 +2094,7 @@ function clearCalPin() {
   if (!calPin.cat) return false;
   calPin.cat = null;
   paintCalPin();
+  hideBlockHover();
   return true;
 }
 
@@ -2157,11 +2158,20 @@ function initCalBlockPin() {
     if (justPointerDragged() || justLongPressed()) return;
     e.stopPropagation();
     toggleCalPin(el);
-    // NO BAR (2026-10-04, Quentin: the strip naming the block was
-    // unnecessary). It held the stretch's menu and Edit, the only doors on a
-    // calendar whose right-click removes — so the click opens that menu here,
-    // at the pointer, for a weekly block and a one-off alike.
-    if (!calPin.cat) return;
+    // A CLICK HIGHLIGHTS AND NAMES, NOTHING ELSE (2026-10-05, Quentin: keep
+    // the highlighted block's name, not the popup with items). The label is
+    // the one the hover shows, kept up for the stretch that was clicked — on a
+    // phone, with no hover, this is how a block is read.
+    if (calPin.cat) showBlockHover(el); else hideBlockHover();
+  });
+  // The block's menu (its day verbs and Edit) moved to a DOUBLE-click: on a
+  // calendar whose right-click removes, it is the remaining door to them.
+  cal.addEventListener('dblclick', e => {
+    const el = e.target.closest('.tl-block[data-cat]');
+    if (!el || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.stopPropagation();
+    if (!calPin.cat) toggleCalPin(el);
+    hideBlockHover();
     const [kind, id] = (el.dataset.obj || '').split(':');
     if (kind && id) openObjectMenu(e.clientX, e.clientY + 4, kind, id, verbsFor(kind, id, el));
   });
