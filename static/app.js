@@ -194,6 +194,52 @@ const objectVerbProviders = new Map();
 // provider per repaint, each answering for a day that has since moved.
 function registerObjectVerbs(name, fn) { objectVerbProviders.set(name, fn); }
 
+// ── ONE SHEET LIFECYCLE (2026-10-05) ──────────────────────────
+// Eight sheets each hand-wrote the same four things: show `#x` and
+// `#x-backdrop`, hide both, wire the backdrop's tap-off, and add a rung to
+// initHub's Esc ladder. Three of them wired the backdrop INSIDE their render,
+// so every repaint stacked one more click listener on it (the entry sheet's
+// date form set `onclick` on top as well), and the schedule picker had no
+// tap-off and no rung at all — Esc went past it and closed the settings sheet
+// it was standing on. Now a sheet is DEFINED once: `defineSheet(id, {rank,
+// isOpen, close})` wires its backdrop once and puts its rung on the ladder;
+// `showSheet` / `hideSheet` are the class toggling. client_rules_test holds
+// that every `.sheet` in index.html is defined here.
+//
+// THE ESC LADDER IS ONE RANKED LIST. A rung is `peel()` → true when it took
+// the key. Sheets register theirs through defineSheet; initHub registers the
+// non-sheet rungs (read-outs, menus, overlays) on the same scale, so the whole
+// peel order reads in one place — the table above initHub. Declared here for
+// objectVerbProviders' reason: the definitions are top-level statements beside
+// their sheets, and run long before initHub.
+const SHEETS = {};
+const ESC_RUNGS = [];
+
+function escRung(rank, peel) {
+  ESC_RUNGS.push({ rank, peel });
+  ESC_RUNGS.sort((a, b) => a.rank - b.rank);   // stable: equal ranks keep their order
+}
+
+function defineSheet(id, spec) {
+  SHEETS[id] = spec;
+  document.getElementById(id + '-backdrop').addEventListener('click', () => spec.close());
+  escRung(spec.rank, () => {
+    if (!spec.isOpen()) return false;
+    spec.close();
+    return true;
+  });
+}
+
+function showSheet(id) {
+  document.getElementById(id).classList.remove('hidden');
+  document.getElementById(id + '-backdrop').classList.remove('hidden');
+}
+
+function hideSheet(id) {
+  document.getElementById(id).classList.add('hidden');
+  document.getElementById(id + '-backdrop').classList.add('hidden');
+}
+
 // THE GATES DASHBOARD IS WHERE A GATE IS CHANGED (2026-09-29, Quentin's
 // instruction). Its configuration, its day-level moves and call-offs, its
 // tags and the money switches all live on /gates (templates/gates.html +
@@ -4310,8 +4356,7 @@ function openSeSheet(kind, item, returnTo, seed) {
   // Folded on open: the steps are for the one evening you program a tag, not
   // for every visit to the gate that uses it.
   seSheet.infoOpen = {};
-  document.getElementById('se-sheet').classList.remove('hidden');
-  document.getElementById('se-sheet-backdrop').classList.remove('hidden');
+  showSheet('se-sheet');
   // The LAYER is the sheet, not the instance: a sheet handing over to another
   // sheet (a gate's routine, a gate's tag) is still one thing raised over the
   // index, so it must not stack a second time and need closing twice.
@@ -4340,10 +4385,15 @@ function closeSeSheet() {
   seSheet.item = null;
   seSheet.values = null;
   seSheet.returnTo = null;
-  document.getElementById('se-sheet').classList.add('hidden');
-  document.getElementById('se-sheet-backdrop').classList.add('hidden');
+  hideSheet('se-sheet');
   closeOver('se-sheet');
 }
+
+// A SETTINGS SHEET IS ALWAYS INNERMOST among what opens it. It is z-200
+// against the read-out's 190, and a gate's sheet opens FROM the read-out, so
+// checking the popup first would close the surface the open sheet is standing
+// on. Settings peels the way it navigates (11a): sheet, section, panel.
+defineSheet('se-sheet', { rank: 10, isOpen: () => !!seSheet.kind, close: closeSeSheet });
 
 function seFieldHtml(f, v) {
   // A DISCLOSURE, not a tooltip: there is no hover on a phone, so the ⓘ is a
@@ -5572,7 +5622,7 @@ function initBlockEditor() {
   document.getElementById('be-back').addEventListener('click', backToSettingsIndex);
   // No click-outside-to-close: Settings is a column beside the page, and the
   // page stays usable while it is up. The gear, ✕ and Esc are the ways out.
-  document.getElementById('se-sheet-backdrop').addEventListener('click', closeSeSheet);
+
 
   // The block calendar, built by the server from the same resolved days the
   // timeline draws, saved on THIS device through the one download door.
@@ -6482,56 +6532,45 @@ function initHub() {
   document.querySelectorAll('.m-close').forEach(btn => {
     btn.addEventListener('click', () => closeM(btn.dataset.close));
   });
-  document.addEventListener('keydown', e => {
-    if (e.key !== 'Escape') return;
-    // The clarify sheet is the innermost layer wherever it was opened from —
-    // initEngage's handler peels it. This listener is registered first, so
-    // without this bail it would close the overlay out from under it.
-    if (clarifyView.open) return;
-    flushOpenNotes();
-    // A SETTINGS SHEET IS ALWAYS INNERMOST. It is z-200 against the read-out's
-    // 190, and now that a gate's sheet opens FROM the read-out (see
-    // openSeSheetOver), checking the popup first would close the surface the
-    // open sheet is standing on. Settings peels the way it navigates (11a):
-    // sheet, then section, then the panel itself.
-    if (seSheet.kind) { closeSeSheet(); return; }
-    // The gate read-out is the next layer in (a popup beside its pill, over
-    // the calendar), so it peels before anything under it.
-    if (gatePop.nodeId != null) { closeGatePop(); return; }
-    // The event read-out shares the gate read-out's layer, so it peels on the
-    // same rung — before the occasion sheet it can open, which sits above.
-    if (eventPop.key != null) { closeEventPop(); return; }
-    // A menu is always the innermost thing on screen and closing it is free,
-    // so it peels before anything else Esc could reach.
-    if (objMenu.open) { closeObjectMenu(); return; }
-    // A selected gate is transient state over the calendar — it peels after the
-    // read-out it opens and before the overlay it is drawn on.
-    if (clearGateSel()) return;
-    // The week's legend and range panel are transient over the calendar too.
-    if (closeCalWeekPops()) return;
-    // So is a category lit up on it.
-    if (clearCalPin()) return;
-    // (MAP's rows open the clarify sheet, and the bail above lets the sheet
-    // peel first; its filter menu peels just above, before the overlay loop.
-    // The settings sheet itself peels at the TOP of this ladder.)
-    // MAP's filter menu is a transient layer again (23a) — it peels before the
-    // MAP overlay in the loop below, the way every sheet peels before what
-    // opened it.
-    if (closeMapFilter()) return;
-    // A photo fills the screen over the logs overlay, so it peels first — before
-    // that overlay's own filter menu, the way every raised layer does.
-    if (logsView.photo != null) { closeLogPhoto(); return; }
-    if (closeLogsFilter()) return;
-    if (closeCalFilter()) return;
-    // The occasion sheet peels before whatever it was opened from — and that is
-    // Settings as often as it is the day, so it has to sit ABOVE the overlay
-    // loop below or Esc would close Settings out from under an open sheet.
-    if (occasionView.open) { closeOccasionSheet(); return; }
-    // Legacy modal overlays first (they sit above the m-overlays), innermost
-    // wins; the person-detail/bucket/add trio stack over People.
-    // Innermost first, and the order here IS the z-order: Settings (155) sits
-    // above map/logs (150) and the .m-overlay band (140) because it opens over
-    // whatever you already had up, so it peels before them.
+  // THE PEEL ORDER, innermost first. Sheets put their own rungs on this
+  // scale through defineSheet (their ranks are beside them); these are the
+  // rest. A rung returns true when it took the key.
+  //   -10 schedule picker   0 clarify   5 flush notes (never takes the key)
+  //    10 settings sheet   20–29 read-outs, menus, transient calendar state
+  //    30 occasion sheet   40 legacy overlays   50–53 ctx / event / entry /
+  //    ending sheets       60 dangerous writing   70–71 Social, Lists
+  //    80 the .m-overlay band   90 Engage's routine card
+  escRung(5, () => { flushOpenNotes(); return false; });
+  // The gate read-out is the next layer in (a popup beside its pill, over
+  // the calendar), so it peels before anything under it.
+  escRung(20, () => { if (gatePop.nodeId == null) return false; closeGatePop(); return true; });
+  // The event read-out shares the gate read-out's layer, so it peels on the
+  // same rung — before the occasion sheet it can open, which sits above.
+  escRung(21, () => { if (eventPop.key == null) return false; closeEventPop(); return true; });
+  // A menu is always the innermost thing on screen and closing it is free,
+  // so it peels before anything else Esc could reach.
+  escRung(22, () => { if (!objMenu.open) return false; closeObjectMenu(); return true; });
+  // A selected gate is transient state over the calendar — it peels after the
+  // read-out it opens and before the overlay it is drawn on.
+  escRung(23, () => clearGateSel());
+  // The week's legend and range panel are transient over the calendar too.
+  escRung(24, () => closeCalWeekPops());
+  // So is a category lit up on it.
+  escRung(25, () => clearCalPin());
+  // MAP's filter menu is a transient layer again (23a) — it peels before the
+  // MAP overlay in the loop below, the way every sheet peels before what
+  // opened it.
+  escRung(26, () => closeMapFilter());
+  // A photo fills the screen over the logs overlay, so it peels first — before
+  // that overlay's own filter menu, the way every raised layer does.
+  escRung(27, () => { if (logsView.photo == null) return false; closeLogPhoto(); return true; });
+  escRung(28, () => closeLogsFilter());
+  escRung(29, () => closeCalFilter());
+  // Legacy modal overlays (they sit above the m-overlays), innermost wins; the
+  // person-detail/bucket/add trio stack over People. The order here IS the
+  // z-order: Settings (155) sits above map/logs (150) and the .m-overlay band
+  // (140) because it opens over whatever you already had up.
+  escRung(40, () => {
     for (const id of ['person-add-overlay', 'bucket-mgr-overlay', 'person-detail-overlay',
                       'modal-overlay', 'map-overlay', 'logs-overlay']) {
       const el = document.getElementById(id);
@@ -6543,41 +6582,43 @@ function initHub() {
         else if (id === 'modal-overlay' && settingsView.section) backToSettingsIndex();
         else if (id === 'modal-overlay') closeBlockEditor();
         else el.classList.add('hidden');
-        return;
+        return true;
       }
     }
-    if (ctxSheet.tag) { closeCtxSheet(); return; }
-    // The new-event sheet peels before the Calendar overlay it opened from
-    // (the focused-input case stopPropagates and never reaches here).
-    if (evSheet.open) { closeEvSheet(); return; }
-    // The entry sheet likewise peels before whatever surface opened it.
-    if (entrySheet.open) { closeEntrySheet(); return; }
-    // The ending sheet, the same way — it peels before Tracking under it.
-    if (endSheet.open) { closeEndSheet(); return; }
-    // A dangerous-writing session swallows Esc entirely — its own keydown
-    // handler treats Esc as the abort, and nothing underneath may act on it.
-    if (dwView.open) return;
-    // Social peels an open spec/log form before ANYTHING that closes the
-    // surface under it. (The focused-input case stopPropagates and never
-    // reaches here.)
+    return false;
+  });
+  // A dangerous-writing session swallows Esc entirely — its own keydown
+  // handler treats Esc as the abort, and nothing underneath may act on it.
+  escRung(60, () => dwView.open);
+  // Social peels an open spec/log form before ANYTHING that closes the
+  // surface under it. (The focused-input case stopPropagates and never
+  // reaches here.)
+  escRung(70, () => {
     const soEl = document.getElementById('tab-social');
-    if (soEl && !soEl.classList.contains('hidden') && socialView.form) {
-      socialView.form = null;
-      renderSocial();
-      return;
-    }
-    // Lists peels an open list back one LEVEL first — a nested list goes to
-    // its parent, everything else to the index.
+    if (!soEl || soEl.classList.contains('hidden') || !socialView.form) return false;
+    socialView.form = null;
+    renderSocial();
+    return true;
+  });
+  // Lists peels an open list back one LEVEL first — a nested list goes to
+  // its parent, everything else to the index.
+  escRung(71, () => {
     const refEl = document.getElementById('tab-lists');
-    if (refEl && !refEl.classList.contains('hidden')
-        && refView.open != null) {
-      const openList = refView.lists.find(l => l.id === refView.open);
-      refView.open = (openList && openList.parent_id) || null;
-      renderRef();
-      return;
-    }
+    if (!refEl || refEl.classList.contains('hidden') || refView.open == null) return false;
+    const openList = refView.lists.find(l => l.id === refView.open);
+    refView.open = (openList && openList.parent_id) || null;
+    renderRef();
+    return true;
+  });
+  escRung(80, () => {
     const open = [...document.querySelectorAll('.m-overlay:not(.hidden)')].pop();
-    if (open) closeM(open.id);
+    if (!open) return false;
+    closeM(open.id);
+    return true;
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    for (const rung of ESC_RUNGS) if (rung.peel()) return;
   });
 }
 
@@ -7406,9 +7447,12 @@ function openEvSheet() {
 
 function closeEvSheet() {
   evSheet.open = false;
-  document.getElementById('ev-sheet').classList.add('hidden');
-  document.getElementById('ev-sheet-backdrop').classList.add('hidden');
+  hideSheet('ev-sheet');
 }
+
+// It peels before the Calendar overlay it opened from (the focused-input
+// case stopPropagates and never reaches the ladder).
+defineSheet('ev-sheet', { rank: 51, isOpen: () => evSheet.open, close: closeEvSheet });
 
 // Re-read the local mirror and repaint both surfaces that draw it.
 async function reloadGcal() {
@@ -7420,9 +7464,7 @@ async function reloadGcal() {
 
 function renderEvSheet() {
   const sheet = document.getElementById('ev-sheet');
-  const back = document.getElementById('ev-sheet-backdrop');
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
+  showSheet('ev-sheet');
   sheet.innerHTML = `
     <div class="cl-head">
       <span class="cl-eyebrow">new calendar event</span>
@@ -7487,7 +7529,6 @@ function renderEvSheet() {
     if (e.key === 'Enter') { e.stopPropagation(); save(); }
     else if (e.key === 'Escape') { e.stopPropagation(); closeEvSheet(); }
   }));
-  back.addEventListener('click', closeEvSheet);
   sheet.querySelector('#ev-summary').focus();
 }
 
@@ -7555,8 +7596,7 @@ function closeOccasionSheet() {
   const was = occasionView.open;
   occasionView.open = false;
   occasionView.occ = null;
-  document.getElementById('oc-sheet').classList.add('hidden');
-  document.getElementById('oc-sheet-backdrop').classList.add('hidden');
+  hideSheet('oc-sheet');
   if (!was) return;
   refreshEngage();
   // Settings may be the surface underneath, and its list states the name, the
@@ -7585,11 +7625,14 @@ async function refreshOccasionSheet() {
   await refreshEngage();
 }
 
+// It peels before whatever it was opened from — and that is Settings as often
+// as it is the day, so its rung sits ABOVE the overlay loop, or Esc would
+// close Settings out from under an open sheet.
+defineSheet('oc-sheet', { rank: 30, isOpen: () => occasionView.open, close: closeOccasionSheet });
+
 function renderOccasionSheet() {
   const sheet = document.getElementById('oc-sheet');
-  const back = document.getElementById('oc-sheet-backdrop');
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
+  showSheet('oc-sheet');
   const o = occasionView.occ;
   const areaName = id => (state.areas.find(a => a.id === id) || {}).name || '';
 
@@ -7650,7 +7693,6 @@ function renderOccasionSheet() {
     </div>`}`;
 
   sheet.querySelector('#oc-close').addEventListener('click', closeOccasionSheet);
-  back.onclick = closeOccasionSheet;
 
   const newBtn = sheet.querySelector('#oc-new');
   if (newBtn) newBtn.addEventListener('click', async () => {
@@ -7768,17 +7810,17 @@ function openEntrySheet(spec) {
 function closeEntrySheet() {
   entrySheet.open = false;
   entrySheet.spec = null;
-  document.getElementById('en-sheet').classList.add('hidden');
-  document.getElementById('en-sheet-backdrop').classList.add('hidden');
+  hideSheet('en-sheet');
 }
+
+// It peels before whatever surface opened it.
+defineSheet('en-sheet', { rank: 52, isOpen: () => entrySheet.open, close: closeEntrySheet });
 
 function renderEntrySheet() {
   const sheet = document.getElementById('en-sheet');
-  const back = document.getElementById('en-sheet-backdrop');
   const spec = entrySheet.spec;
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
-  if (spec.when) { renderEntryWhen(sheet, back, spec); return; }
+  showSheet('en-sheet');
+  if (spec.when) { renderEntryWhen(sheet, spec); return; }
   sheet.innerHTML = `
     <div class="cl-head">
       <span class="cl-eyebrow">${escHtml(spec.title)}</span>
@@ -7865,7 +7907,6 @@ function renderEntrySheet() {
       closeEntrySheet();
     }
   });
-  back.addEventListener('click', closeEntrySheet);
   input.focus();
 }
 
@@ -7877,7 +7918,7 @@ function renderEntrySheet() {
 // Arrows move the day (←→ one, ↑↓ a week), Enter saves, Esc closes — each
 // stopped here, or the same key would also reach the surface underneath.
 // `spec.save({ date, minute })`: date '' clears, minute is null without a time.
-function renderEntryWhen(sheet, back, spec) {
+function renderEntryWhen(sheet, spec) {
   const w = entrySheet.when;
   const today = wallDay();
   const first = w.month + '-01';
@@ -7960,7 +8001,6 @@ function renderEntryWhen(sheet, back, spec) {
   sheet.querySelector('#en-close').addEventListener('click', closeEntrySheet);
   sheet.querySelector('#en-done').addEventListener('click', closeEntrySheet);
   sheet.querySelector('#en-add').addEventListener('click', save);
-  back.onclick = closeEntrySheet;
   sheet.tabIndex = -1;
   sheet.focus();
 }
@@ -8033,16 +8073,16 @@ function openEndSheet(spec) {
 function closeEndSheet() {
   endSheet.open = false;
   endSheet.spec = null;
-  document.getElementById('ex-sheet').classList.add('hidden');
-  document.getElementById('ex-sheet-backdrop').classList.add('hidden');
+  hideSheet('ex-sheet');
 }
+
+// It peels before the surface under it.
+defineSheet('ex-sheet', { rank: 53, isOpen: () => endSheet.open, close: closeEndSheet });
 
 function renderEndSheet() {
   const sheet = document.getElementById('ex-sheet');
-  const back = document.getElementById('ex-sheet-backdrop');
   const spec = endSheet.spec;
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
+  showSheet('ex-sheet');
   sheet.innerHTML = `
     <div class="cl-head">
       <span class="cl-eyebrow">${escHtml(spec.title)}</span>
@@ -8081,7 +8121,6 @@ function renderEndSheet() {
     b.addEventListener('click', () => run(parseInt(b.dataset.exdo))));
   sheet.querySelector('#ex-close').addEventListener('click', closeEndSheet);
   sheet.querySelector('#ex-cancel').addEventListener('click', closeEndSheet);
-  back.addEventListener('click', closeEndSheet);
   [note, nextField].forEach(f => {
     if (!f) return;
     f.addEventListener('keydown', e => {
@@ -12540,17 +12579,21 @@ async function openPicker(opts) {
   pickerView.wantName = !opts.onSaved
     && (!!opts.wantName || !!opts.wantSchedule
         || !!(src && (src.kind !== 'rule' || src.title)));
-  document.getElementById('sp-sheet').classList.remove('hidden');
-  document.getElementById('sp-sheet-backdrop').classList.remove('hidden');
+  showSheet('sp-sheet');
   renderPicker();
 }
 
 function closePicker() {
   pickerView.open = false;
   pickerView.draft = null;
-  document.getElementById('sp-sheet').classList.add('hidden');
-  document.getElementById('sp-sheet-backdrop').classList.add('hidden');
+  hideSheet('sp-sheet');
 }
+
+// THE INNERMOST RUNG. The picker opens OVER the sheet that asked for a
+// schedule, and it had no rung and no tap-off until it was defined here: Esc
+// reached past it and closed the settings sheet it was standing on, leaving
+// the picker floating over nothing.
+defineSheet('sp-sheet', { rank: -10, isOpen: () => pickerView.open, close: closePicker });
 
 function pickerKind() {
   const d = pickerView.draft;
@@ -13123,9 +13166,10 @@ function openCtxSheet(tag) {
 
 function closeCtxSheet() {
   ctxSheet.tag = null;
-  document.getElementById('ctx-sheet').classList.add('hidden');
-  document.getElementById('ctx-sheet-backdrop').classList.add('hidden');
+  hideSheet('ctx-sheet');
 }
+
+defineSheet('ctx-sheet', { rank: 50, isOpen: () => !!ctxSheet.tag, close: closeCtxSheet });
 
 async function ctxSheetRefresh() {
   const [devs, times, sources, daily] = await Promise.all([
@@ -13144,12 +13188,10 @@ async function ctxSheetRefresh() {
 
 function renderCtxSheet() {
   const sheet = document.getElementById('ctx-sheet');
-  const back = document.getElementById('ctx-sheet-backdrop');
   if (!sheet) return;
   const tag = ctxSheet.tag;
   if (!tag) { closeCtxSheet(); return; }
-  sheet.classList.remove('hidden');
-  back.classList.remove('hidden');
+  showSheet('ctx-sheet');
 
   const boundDev = (state.tagDevices || []).find(b => b.tag === tag);
   const dev = boundDev ? boundDev.device : (DEVICE_TAGS.includes(tag) ? tag : null);
@@ -13230,7 +13272,6 @@ function renderCtxSheet() {
   }));
   sheet.querySelector('#ctx-sheet-close').addEventListener('click', closeCtxSheet);
   sheet.querySelector('#ctx-sheet-done').addEventListener('click', closeCtxSheet);
-  back.onclick = closeCtxSheet;
 
   sheet.querySelectorAll('[data-dev]').forEach(b => b.addEventListener('click', async () => {
     if (b.dataset.dev === 'none') {
@@ -13321,16 +13362,19 @@ function initEngage() {
       closeClarify();
     }
   };
-  document.addEventListener('keydown', e => {
-    if (e.key !== 'Escape') return;
-    if (clarifyView.open) { peelClarify(); return; }
-    if (engageView.routinePop != null) {
-      engageView.routinePop = null;
-      renderEngage();
-    }
+  // The clarify sheet is the innermost layer wherever it was opened from (only
+  // the picker it can raise sits over it), and tapping off it is the touch Esc
+  // — the same peel, innermost first.
+  defineSheet('clarify-sheet', { rank: 0, isOpen: () => clarifyView.open, close: peelClarify });
+  // The routine card is the LAST rung: it is drawn on the day itself, under
+  // every overlay. (It used to close on its own listener, in the same keypress
+  // as whatever layer the ladder peeled above it.)
+  escRung(90, () => {
+    if (engageView.routinePop == null) return false;
+    engageView.routinePop = null;
+    renderEngage();
+    return true;
   });
-  // Tapping off the sheet is the touch Esc — same ladder, innermost first.
-  document.getElementById('clarify-backdrop').addEventListener('click', peelClarify);
 }
 
 async function openEngage() {
@@ -14923,8 +14967,7 @@ function closeClarify() {
   clarifyView.forOccasion = null;
   clarifyView.forRecurring = null;
   clarifyView.after = null;
-  document.getElementById('clarify-sheet').classList.add('hidden');
-  document.getElementById('clarify-backdrop').classList.add('hidden');
+  hideSheet('clarify-sheet');
   document.getElementById('engage-body').classList.remove('eg-dimmed');
   renderInbox();
   if (after) after();
@@ -15244,8 +15287,7 @@ function renderClarify() {
     closeClarify(); return;
   }
   document.getElementById('engage-body').classList.add('eg-dimmed');
-  document.getElementById('clarify-backdrop').classList.remove('hidden');
-  sheet.classList.remove('hidden');
+  showSheet('clarify-sheet');
   if (clarifyView.compose) { renderClarifyCompose(sheet); return; }
   if (clarifyView.projSearch != null) { renderClarifyProjSearch(sheet, item); return; }
 
@@ -16036,8 +16078,7 @@ function renderClarifyCompose(sheet) {
         clarifyView.compose = { ...saved, actions: [], arm: null };
         clarifyView.open = true;
         clarifyView.single = false;
-        document.getElementById('clarify-sheet').classList.remove('hidden');
-        document.getElementById('clarify-backdrop').classList.remove('hidden');
+        showSheet('clarify-sheet');
         document.getElementById('engage-body').classList.add('eg-dimmed');
         await refreshCompose();
       });

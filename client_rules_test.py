@@ -235,6 +235,36 @@ def dock_panel_fails():
             if not re.search(r'class="[^"]*(?<![\w-])dock-panel(?![\w-])', rest)]
 
 
+# ONE SHEET LIFECYCLE (2026-10-05). Eight sheets each hand-wired their own
+# backdrop and Esc rung; three re-wired the backdrop on every repaint, and the
+# schedule picker had neither, so Esc closed the sheet UNDER it. A sheet is
+# now `.sheet` in the shell and `defineSheet('<id>', …)` in app.js, which
+# wires its `#<id>-backdrop` once and ranks its rung. Scanned, not listed: a
+# sheet added to index.html without a definition would have no tap-off and no
+# place on the ladder, which is the bug this replaced.
+SHEET_EL = re.compile(r'<[a-z]+ id="([a-z-]+)"\s+class="([^"]*)"')
+
+
+def sheet_registry_fails(body):
+    with open(INDEX_HTML, encoding='utf-8') as f:
+        html = f.read()
+    ids = {i for i, cls in SHEET_EL.findall(html) if 'sheet' in cls.split()}
+    backs = {i for i, cls in SHEET_EL.findall(html) if 'sheet-backdrop' in cls.split()}
+    defined = set(re.findall(r"defineSheet\('([a-z-]+)'", body))
+    out = []
+    for i in sorted(ids - defined):
+        out.append((0, '#' + i, "defineSheet('%s', {rank, isOpen, close}) — or it "
+                                'has no tap-off and no Esc rung' % i))
+    for i in sorted(ids):
+        if i + '-backdrop' not in backs:
+            out.append((0, '#' + i, '<div id="%s-backdrop" class="sheet-backdrop '
+                                    'hidden"> — defineSheet wires it' % i))
+    for i in sorted(defined - ids):
+        out.append((0, "defineSheet('%s'" % i, 'no .sheet element with that id '
+                                               'in index.html'))
+    return out, len(ids)
+
+
 def main():
     with open(APP_JS, encoding='utf-8') as f:
         body = f.read()
@@ -245,6 +275,8 @@ def main():
     fails = object_door_fails(body)
     fails += settings_refresh_fails(lines)
     fails += dock_panel_fails()
+    sheet_fails, n_sheets = sheet_registry_fails(body)
+    fails += sheet_fails
     for n, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('//') or stripped.startswith('*'):
@@ -297,6 +329,8 @@ midnight, a paused row, or a config change.""")
           % len(STATE_RENDERERS))
     print('  docked panels %d in the shell, each one makes the page give up its width'
           % len(DOCKED.findall(open(INDEX_HTML, encoding='utf-8').read())))
+    print('  sheets        %d in the shell, each defined once (tap-off + Esc rung)'
+          % n_sheets)
     return 0
 
 

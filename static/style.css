@@ -5069,14 +5069,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    closes it (via the flush-on-close path) rather than reaching the surface
    behind. No scrim — the day already dims via .eg-dimmed; this is behaviour,
    not look. */
-#clarify-backdrop,
-#ctx-sheet-backdrop,
-#se-sheet-backdrop,
-#sp-sheet-backdrop,
-#ev-sheet-backdrop,
-#en-sheet-backdrop,
-#ex-sheet-backdrop,
-#oc-sheet-backdrop {
+/* ONE CLASS, not a list of ids (2026-10-05): a sheet carries `.sheet` and its
+   catcher `.sheet-backdrop` in index.html, and defineSheet in app.js wires
+   both — client_rules_test holds that every .sheet is defined. */
+.sheet-backdrop {
   position: fixed;
   inset: 0;
     z-index: 199;
@@ -5086,14 +5082,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* The routine-step settings sheet is the same object as the clarify sheet,
    one datatype over: a list row decides nothing, the sheet decides everything.
    Same geometry, same layer — they are never open at once. */
-#clarify-sheet,
-#ctx-sheet,
-#se-sheet,
-#sp-sheet,
-#ev-sheet,
-#en-sheet,
-#ex-sheet,
-#oc-sheet {
+.sheet {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -6319,10 +6308,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    (plus the bar being fixed at z 170) is the entire replacement for the old
    floating capture/undo chips. Same specificity as each block's own
    inset/bottom declaration, so position in the cascade is what makes it win —
-   #clarify-sheet's bottom: 0 sits late in the file. Listed by id because a
+   .sheet's bottom: 0 sits earlier in the file. Listed by name because a
    few non-overlay fixed elements (toast, stale banner) legitimately keep
    inset: 0. Theme-independent, hence after the light appendix. */
-.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, #clarify-backdrop, #clarify-sheet, #ctx-sheet-backdrop, #ctx-sheet, #se-sheet-backdrop, #se-sheet, #sp-sheet-backdrop, #sp-sheet, #ev-sheet-backdrop, #ev-sheet, #en-sheet-backdrop, #en-sheet, #ex-sheet-backdrop, #ex-sheet, #oc-sheet-backdrop, #oc-sheet {
+.m-overlay, #logs-overlay, #map-overlay, #modal-overlay, .sheet-backdrop, .sheet {
   /* Above the bar, AND above whatever the browser chrome or the keyboard is
      covering: 100% is the viewport, --vvh is what you can see, so the
      difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
