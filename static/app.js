@@ -2259,7 +2259,7 @@ async function setCalView(week) {
   calWeek.on = on;
   calWeek.pop = null;
   document.getElementById('cal-overlay').classList.toggle('cal-wk', on);
-  renderCalFilter();
+  calFilter.render();
   if (on) {
     // Both are DAY-view states, and neither has a meaning across seven days.
     state.planMode = false;
@@ -2591,10 +2591,10 @@ function renderCalWeek() {
   // THE WEEK'S TOOLS LIVE IN THE CALENDAR'S SELECTOR (2026-10-01, Quentin's
   // instruction): its pill names the week, and its menu holds the arrows,
   // Today (only off this week), Day | Week, the hours, Plan and refresh,
-  // above what the calendar draws. renderCalFilter reads this.
+  // above what the calendar draws. calFilter (stripMenu) reads this.
   calWeek.tools = { title, rangeLabel, fetchFailed,
                     thisWeek: calWeek.start === weekStartOf(wallDay()) };
-  renderCalFilter();
+  calFilter.render();
 
   host.innerHTML = `
     ${rangePop}
@@ -2739,81 +2739,71 @@ function paintCalShowClasses() {
 
 const calFilterView = { open: false };
 
-function closeCalFilter() {
-  if (!calFilterView.open) return false;
-  calFilterView.open = false;
-  renderCalFilter();
-  return true;
+function calShowOff() {
+  const cals = (state.calendars || []).filter(c => c.active !== 0);
+  return ['blocks', 'gates', 'events'].filter(k => calShow[k] === false).length
+    + cals.filter(c => (calShow.cals || {})[c.id] === false).length;
 }
 
-function renderCalFilter() {
-  const pill = document.getElementById('cal-filter');
-  const menu = document.getElementById('cal-filter-menu');
-  if (!pill || !menu) return;
-  const cals = (state.calendars || []).filter(c => c.active !== 0);
-  const off = ['blocks', 'gates', 'events'].filter(k => calShow[k] === false).length
-    + cals.filter(c => (calShow.cals || {})[c.id] === false).length;
-  const t = calWeek.on && calWeek.tools;
-  const day = state.currentDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-  pill.textContent = `${t ? t.title : day}${off ? ` · ${off} off` : ''} ▾`;
-  pill.classList.toggle('map-filter-on', !!off);
-  pill.title = 'The week, its hours, and what the calendar draws';
-  paintCalShowClasses();
-  menu.classList.toggle('hidden', !calFilterView.open);
-  if (!calFilterView.open) { menu.innerHTML = ''; return; }
-  const chip = (on, attr, label) => `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" ${attr}>${escHtml(label)}</button>`;
-  menu.innerHTML = `
-    ${t ? `<div class="map-filter-sec">Week</div>
-    <div class="cf-week">
-      <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
-      <span class="wk-title">${escHtml(t.title)}</span>
-      <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
-      ${t.thisWeek ? '' : '<button class="ctx-chip" data-wk="today">Today</button>'}
-    </div>
-    <div class="map-filter-chips cf-tools">
-      <button class="ctx-chip wk-mono${calWeek.pop === 'range' ? ' ctx-req' : ''}" data-wk="range"
-        title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
-      <button class="ctx-chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
-      <button class="ctx-chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
-      ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
-    </div>` : ''}
-    <div class="map-filter-sec">View</div>
-    <div class="map-filter-chips">
-      <button class="ctx-chip ${calWeek.on ? 'ctx-off' : 'ctx-req'}" data-cal-view="day">Day</button>
-      <button class="ctx-chip ${calWeek.on ? 'ctx-req' : 'ctx-off'}" data-cal-view="week">Week</button>
-    </div>
-    <div class="map-filter-sec">Draw</div>
-    <div class="map-filter-chips">
-      ${chip(calShow.blocks !== false, 'data-calshow="blocks"', 'Blocks')}
-      ${chip(calShow.gates !== false, 'data-calshow="gates"', 'Gates')}
-      ${chip(calShow.events !== false, 'data-calshow="events"', 'Events')}
-    </div>
-    ${cals.length ? `<div class="map-filter-sec">Calendars</div>
-    <div class="map-filter-chips">${cals.map(c =>
-      chip((calShow.cals || {})[c.id] !== false, `data-calsrc="${c.id}"`, c.name || 'Calendar')).join('')}</div>` : ''}
-    ${off ? '<div class="map-filter-foot"><button class="ctx-chip" id="cal-filter-clear">⟳ show everything</button></div>' : ''}`;
-  const redraw = () => {
+const calFilter = stripMenu({
+  pill: 'cal-filter',
+  menu: 'cal-filter-menu',
+  title: 'The week, its hours, and what the calendar draws',
+  isOpen: () => calFilterView.open,
+  setOpen: on => { calFilterView.open = on; },
+  pillText: () => {
+    const t = calWeek.on && calWeek.tools;
+    const day = state.currentDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    const off = calShowOff();
+    return { text: `${t ? t.title : day}${off ? ` · ${off} off` : ''}`, narrowed: !!off };
+  },
+  sections: () => {
+    const t = calWeek.on && calWeek.tools;
+    const cals = (state.calendars || []).filter(c => c.active !== 0);
+    return [
+      t && { title: 'Week', html: `
+        <div class="cf-week">
+          <button class="wk-icon" data-wk="prev" title="Previous week">${WK_SVG.prev}</button>
+          <span class="wk-title">${escHtml(t.title)}</span>
+          <button class="wk-icon" data-wk="next" title="Next week">${WK_SVG.next}</button>
+          ${t.thisWeek ? '' : '<button class="ctx-chip" data-wk="today">Today</button>'}
+        </div>
+        <div class="tn-menu-chips cf-tools">
+          <button class="ctx-chip wk-mono${calWeek.pop === 'range' ? ' ctx-req' : ''}" data-wk="range"
+            title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
+          <button class="ctx-chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
+          <button class="ctx-chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
+          ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
+        </div>` },
+      { title: 'View', chips: pickChipsHtml([{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }],
+                                            calWeek.on ? 'week' : 'day', 'data-cal-view') },
+      { title: 'Draw', chips: ['blocks', 'gates', 'events'].map(k =>
+          toggleChipHtml(calShow[k] !== false, `data-calshow="${k}"`, k[0].toUpperCase() + k.slice(1))).join('') },
+      cals.length && { title: 'Calendars', chips: cals.map(c =>
+          toggleChipHtml((calShow.cals || {})[c.id] !== false, `data-calsrc="${c.id}"`, c.name || 'Calendar')).join('') },
+    ];
+  },
+  clear: () => { calShow = {}; },
+  // What it draws changed: the layers' classes, the day, and the week.
+  onChange: () => {
     saveCalShow();
-    renderCalFilter();
+    paintCalShowClasses();
+    calFilter.render();
     renderTimeline();
     if (calWeek.on) renderCalWeek();
-  };
-  menu.querySelectorAll('[data-calshow]').forEach(b => b.addEventListener('click', e => {
-    e.stopPropagation();
-    const k = b.dataset.calshow;
-    calShow[k] = calShow[k] === false ? true : false;
-    redraw();
-  }));
-  menu.querySelectorAll('[data-calsrc]').forEach(b => b.addEventListener('click', e => {
-    e.stopPropagation();
-    calShow.cals = calShow.cals || {};
-    const id = b.dataset.calsrc;
-    calShow.cals[id] = calShow.cals[id] === false ? true : false;
-    redraw();
-  }));
-  const clear = menu.querySelector('#cal-filter-clear');
-  if (clear) clear.addEventListener('click', e => { e.stopPropagation(); calShow = {}; redraw(); });
-}
+  },
+  wire: (menu, stay) => {
+    menu.querySelectorAll('[data-calshow]').forEach(b => stay(b, () => {
+      const k = b.dataset.calshow;
+      calShow[k] = calShow[k] === false ? true : false;
+    }));
+    menu.querySelectorAll('[data-calsrc]').forEach(b => stay(b, () => {
+      calShow.cals = calShow.cals || {};
+      const id = b.dataset.calsrc;
+      calShow.cals[id] = calShow.cals[id] === false ? true : false;
+    }));
+  },
+});
 
 function initCalWeek() {
   const host = document.getElementById('cal-week');
@@ -2831,18 +2821,6 @@ function initCalWeek() {
   };
   overlay.addEventListener('click', viewSwitch);
   strip.addEventListener('click', viewSwitch);
-  document.getElementById('cal-filter').addEventListener('click', e => {
-    e.stopPropagation();
-    calFilterView.open = !calFilterView.open;
-    renderCalFilter();
-  });
-  // composedPath, not closest: a control in the menu repaints the menu, so by
-  // the time the click reaches the document its target is detached.
-  document.addEventListener('click', e => {
-    if (!calFilterView.open) return;
-    const inside = e.composedPath().some(n => n.id === 'cal-filter-menu' || n.id === 'cal-filter');
-    if (!inside) closeCalFilter();
-  });
   paintCalShowClasses();
 
   // Pressing a gate says which DAY its menu is about.
@@ -6560,12 +6538,12 @@ function initHub() {
   // MAP's filter menu is a transient layer again (23a) — it peels before the
   // MAP overlay in the loop below, the way every sheet peels before what
   // opened it.
-  escRung(26, () => closeMapFilter());
+  escRung(26, () => mapFilter.close());
   // A photo fills the screen over the logs overlay, so it peels first — before
   // that overlay's own filter menu, the way every raised layer does.
   escRung(27, () => { if (logsView.photo == null) return false; closeLogPhoto(); return true; });
-  escRung(28, () => closeLogsFilter());
-  escRung(29, () => closeCalFilter());
+  escRung(28, () => logsFilter.close());
+  escRung(29, () => calFilter.close());
   // Legacy modal overlays (they sit above the m-overlays), innermost wins; the
   // person-detail/bucket/add trio stack over People. The order here IS the
   // z-order: Settings (155) sits above map/logs (150) and the .m-overlay band
@@ -6671,6 +6649,97 @@ function initTopNav() {
   paintTopNav();
 }
 
+// ── THE STRIP'S MENUS: ONE COMPONENT (2026-10-05) ─────────────
+// Projects, Log and Calendar each wrote their selector out in full: the pill's
+// text and ▾ and narrowed state, the menu shown or emptied, section titles over
+// chip rows, the same ∧-required tag chips, the same Order pair, the same
+// "show everything" foot, a close() for the Esc ladder, and a document tap-off.
+// Two of the tap-offs asked `closest()` of the click's target, which a chip's
+// own repaint had already detached — so they leaned on every chip remembering
+// to stopPropagation, and Projects' menu was placed by a stale
+// `#map-filter-menu` rule that outranked `.tn-menu`. One component now: the
+// pill and the document are wired ONCE here, and the tap-off reads
+// composedPath(), which still holds a node that has since been replaced.
+//
+// spec: pill / menu (ids), title, isOpen(), setOpen(on), pillText() →
+// {text, narrowed}, sections() → [{title, chips | html}] (falsy skipped),
+// foot() → html, clear() (offered as "show everything" while narrowed),
+// onChange() after a pick, wire(menu, stay) for the surface's own controls.
+// `stay(el, fn)` runs fn then onChange; the menu stays open across picks.
+function stripMenu(spec) {
+  const pill = document.getElementById(spec.pill);
+  const menu = document.getElementById(spec.menu);
+  // stopPropagation still, though the tap-off no longer needs it: a menu sits
+  // inside a page whose own click handlers have no business with its chips.
+  const stay = (el, fn) => el.addEventListener('click', e => {
+    e.stopPropagation();
+    fn();
+    spec.onChange();
+  });
+  function render() {
+    const p = spec.pillText();
+    pill.textContent = `${p.text} ▾`;
+    pill.classList.toggle('tn-pill-on', !!p.narrowed);
+    pill.title = spec.title;
+    menu.classList.toggle('hidden', !spec.isOpen());
+    if (!spec.isOpen()) { menu.innerHTML = ''; return; }
+    const foot = (p.narrowed && spec.clear
+      ? '<button class="ctx-chip" data-tn-clear>⟳ show everything</button>' : '')
+      + (spec.foot ? spec.foot() : '');
+    menu.innerHTML = spec.sections().filter(Boolean).map(s =>
+      `<div class="tn-menu-sec">${escHtml(s.title)}</div>${
+        s.chips != null ? `<div class="tn-menu-chips">${s.chips}</div>` : s.html}`).join('')
+      + (foot ? `<div class="tn-menu-foot">${foot}</div>` : '');
+    const clear = menu.querySelector('[data-tn-clear]');
+    if (clear) stay(clear, spec.clear);
+    spec.wire(menu, stay);
+  }
+  function close() {
+    if (!spec.isOpen()) return false;
+    spec.setOpen(false);
+    render();
+    return true;
+  }
+  pill.addEventListener('click', e => {
+    e.stopPropagation();
+    spec.setOpen(!spec.isOpen());
+    render();
+  });
+  document.addEventListener('click', e => {
+    if (spec.isOpen() && !e.composedPath().some(n => n === menu || n === pill)) close();
+  });
+  return { render, close };
+}
+
+// A menu's tag vocabulary: every selected tag REQUIRED, said the same way
+// wherever tags narrow a list (∧ on the chip, the title saying which).
+function tagChipsHtml(vocab, selected, attr, empty) {
+  if (!vocab.length) return empty ? `<span class="cl-hint">${escHtml(empty)}</span>` : '';
+  return vocab.map(t => {
+    const on = selected.has(t);
+    return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" ${attr}="${escHtml(t)}"
+      title="${on ? 'required — click to clear' : 'click to require'}"
+      >${on ? '∧' : ''}${escHtml(t)}</button>`;
+  }).join('');
+}
+
+// One of several, exactly one lit (a lens, an order, Day | Week).
+function pickChipsHtml(opts, current, attr) {
+  return opts.map(o => `<button class="ctx-chip ${o.value === current ? 'ctx-req' : 'ctx-off'}"
+    ${attr}="${escHtml(o.value)}"${o.title ? ` title="${escHtml(o.title)}"` : ''}
+    >${escHtml(o.label)}</button>`).join('');
+}
+
+// An independent on/off.
+function toggleChipHtml(on, attrs, label) {
+  return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" ${attrs}>${escHtml(label)}</button>`;
+}
+
+function toggleInSet(set, v) {
+  if (set.has(v)) set.delete(v);
+  else set.add(v);
+}
+
 // TEXT FADES AT A BAR'S EDGE (2026-10-02, Quentin's instruction): the strip's
 // tabs and the bars' fields used to stop dead mid-word. Whichever side has
 // more text past it fades (.fade-l / .fade-r), so the cut says "there is
@@ -6697,11 +6766,11 @@ function paintTopNav() {
   document.querySelectorAll('#top-nav [data-nav]').forEach(btn => {
     btn.classList.toggle('on', btn.dataset.nav === lit);
   });
-  renderCalFilter();
+  calFilter.render();
   // Each page's selector and search, shown only while it is that page.
   document.querySelectorAll('#top-nav .tn-tools').forEach(g =>
     g.classList.toggle('hidden', g.dataset.page !== lit));
-  if (lit === 'calendar') renderCalFilter();
+  if (lit === 'calendar') calFilter.render();
   // The page's tools just took (or gave back) the tabs' width.
   document.querySelectorAll('#top-nav .edge-fade').forEach(paintEdgeFade);
 }
@@ -6714,9 +6783,9 @@ async function closeSurfaces() {
     return !!el && !el.classList.contains('hidden');
   };
   flushOpenNotes();
-  closeMapFilter();
-  closeLogsFilter();
-  closeCalFilter();
+  mapFilter.close();
+  logsFilter.close();
+  calFilter.close();
   if (seSheet.kind) closeSeSheet();
   if (occasionView.open) closeOccasionSheet();
   // Not awaited: each hides itself FIRST and then finishes its writes and
@@ -6971,74 +7040,37 @@ function logTagVocab() {
   return [...new Set([...logsView.logs.flatMap(l => l.tags || []), ...logsView.tags])].sort();
 }
 
-function closeLogsFilter() {
-  if (!logsView.menuOpen) return false;
-  logsView.menuOpen = false;
-  renderLogsFilter();
-  return true;
-}
-
-// Mirrors renderMapFilter: the pill NAMES what is showing, the menu is one tap
-// away and shows exactly what is on.
-function renderLogsFilter() {
-  const pill = document.getElementById('logs-filter');
-  const menu = document.getElementById('logs-filter-menu');
-  if (!pill || !menu) return;
-  const on = logsView.tags.size;
-  pill.textContent = `${on ? `${on} tag${on === 1 ? '' : 's'}` : 'All logs'} ▾`;
-  pill.classList.toggle('map-filter-on', !!on);
-  pill.title = 'What the list is showing';
-
-  menu.classList.toggle('hidden', !logsView.menuOpen);
-  if (!logsView.menuOpen) { menu.innerHTML = ''; return; }
-  const vocab = logTagVocab();
-  menu.innerHTML = `
-    <div class="map-filter-sec">Tags — every selected one required</div>
-    <div class="map-filter-chips">
-      ${vocab.length ? vocab.map(t => {
-        const sel = logsView.tags.has(t);
-        return `<button class="ctx-chip ${sel ? 'ctx-req' : 'ctx-off'}" data-logtag="${escHtml(t)}"
-          title="${sel ? 'required — click to clear' : 'click to require'}"
-          >${sel ? '∧' : ''}${escHtml(t)}</button>`;
-      }).join('') : '<span class="cl-hint">no tags on any log yet</span>'}
-    </div>
-    <div class="map-filter-sec">Order</div>
-    <div class="map-filter-chips">
-      <button class="ctx-chip ${logsView.desc ? 'ctx-req' : 'ctx-off'}" data-logdesc="1">newest first</button>
-      <button class="ctx-chip ${logsView.desc ? 'ctx-off' : 'ctx-req'}" data-logdesc="">oldest first</button>
-    </div>
-    ${on ? `<div class="map-filter-foot">
-      <button class="ctx-chip" id="logs-filter-clear">⟳ show everything</button>
-    </div>` : ''}`;
-  // stopPropagation for the same reason MAP's menu does it: these handlers
-  // re-render the menu, so the click would bubble to a target that no longer
-  // exists and the menu would put itself away on its own chips.
-  const stay = (el, fn) => el.addEventListener('click', e => {
-    e.stopPropagation();
-    fn();
-    renderLogs();
-  });
-  menu.querySelectorAll('[data-logtag]').forEach(b => stay(b, () => {
-    const t = b.dataset.logtag;
-    if (logsView.tags.has(t)) logsView.tags.delete(t);
-    else logsView.tags.add(t);
-  }));
-  menu.querySelectorAll('[data-logdesc]').forEach(b =>
-    stay(b, () => { logsView.desc = !!b.dataset.logdesc; }));
-  const clear = menu.querySelector('#logs-filter-clear');
-  if (clear) stay(clear, () => logsView.tags.clear());
-}
+// The pill NAMES what is showing, the menu is one tap away and shows exactly
+// what is on — Projects' selector, on the logs.
+const logsFilter = stripMenu({
+  pill: 'logs-filter',
+  menu: 'logs-filter-menu',
+  title: 'What the list is showing',
+  isOpen: () => logsView.menuOpen,
+  setOpen: on => { logsView.menuOpen = on; },
+  pillText: () => {
+    const on = logsView.tags.size;
+    return { text: on ? `${on} tag${on === 1 ? '' : 's'}` : 'All logs', narrowed: !!on };
+  },
+  sections: () => [
+    { title: 'Tags — every selected one required',
+      chips: tagChipsHtml(logTagVocab(), logsView.tags, 'data-logtag', 'no tags on any log yet') },
+    { title: 'Order', chips: pickChipsHtml([{ value: '1', label: 'newest first' },
+                                            { value: '', label: 'oldest first' }],
+                                           logsView.desc ? '1' : '', 'data-logdesc') },
+  ],
+  clear: () => logsView.tags.clear(),
+  onChange: () => renderLogs(),
+  wire: (menu, stay) => {
+    menu.querySelectorAll('[data-logtag]').forEach(b =>
+      stay(b, () => toggleInSet(logsView.tags, b.dataset.logtag)));
+    menu.querySelectorAll('[data-logdesc]').forEach(b =>
+      stay(b, () => { logsView.desc = !!b.dataset.logdesc; }));
+  },
+});
 
 function initLogsView() {
   document.getElementById('logs-close').addEventListener('click', closeLogsView);
-  document.getElementById('logs-filter').addEventListener('click', e => {
-    e.stopPropagation();
-    logsView.menuOpen = !logsView.menuOpen;
-    renderLogsFilter();
-  });
-  document.addEventListener('click', e => {
-    if (logsView.menuOpen && !e.target.closest('#logs-filter-menu, #logs-filter')) closeLogsFilter();
-  });
   // The search lives in the strip now, so it is wired ONCE and survives every
   // repaint of the list under it.
   const q = document.getElementById('logs-q');
@@ -7839,11 +7871,8 @@ function renderEntrySheet() {
     ${spec.tags ? `
     <div class="cl-sec"><span class="cl-label">Tags</span></div>
     <div class="cl-chips" id="en-tag-chips">
-      ${[...new Set([...(spec.tagVocab || []), ...entrySheet.tags])].sort().map(t => {
-        const on = entrySheet.tags.has(t);
-        return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-entag="${escHtml(t)}"
-          >${on ? '∧' : ''}${escHtml(t)}</button>`;
-      }).join('')}
+      ${tagChipsHtml([...new Set([...(spec.tagVocab || []), ...entrySheet.tags])].sort(),
+                     entrySheet.tags, 'data-entag')}
       <input type="text" class="cl-action en-tag-new" id="en-tag-new"
         placeholder="+ tag" autocomplete="off">
     </div>` : ''}
@@ -7858,9 +7887,7 @@ function renderEntrySheet() {
     // already typed — half-typed text is data (renderBar's rule).
     sheet.querySelectorAll('[data-entag]').forEach(b =>
       b.addEventListener('click', () => {
-        const t = b.dataset.entag;
-        if (entrySheet.tags.has(t)) entrySheet.tags.delete(t);
-        else entrySheet.tags.add(t);
+        toggleInSet(entrySheet.tags, b.dataset.entag);
         const typed = input.value;
         renderEntrySheet();
         const again = document.getElementById('en-input');
@@ -9408,7 +9435,7 @@ function renderLogs() {
       </div>
     </div>`;
 
-  renderLogsFilter();
+  logsFilter.render();
 
   body.querySelectorAll('.lg-del[data-del]').forEach(x => x.addEventListener('click', e => {
     e.stopPropagation();
@@ -11379,16 +11406,6 @@ async function openMap() {
       mapView.sel = parseInt(row.dataset.id);
       mapSelSync();
     });
-    document.getElementById('map-filter').addEventListener('click', e => {
-      e.stopPropagation();
-      mapView.menuOpen = !mapView.menuOpen;
-      renderMapFilter();
-    });
-    // Tapping anywhere else puts the menu away — it is transient chrome, which
-    // is the whole point of 23a over a permanent rail.
-    document.addEventListener('click', e => {
-      if (mapView.menuOpen && !e.target.closest('#map-filter-menu, #map-filter')) closeMapFilter();
-    });
     // The index follows the scroll, the way Settings' does.
     const mapBody = document.getElementById('map-body');
     let spy = 0;
@@ -11423,83 +11440,52 @@ async function openMap() {
 // The pill NAMES the lens, and counts the domain/tag terms rather than listing
 // them — unlike Engage's context button, which is the receipt for items the
 // POOL is hiding and must name every term. MAP hides nothing permanently: the
-// menu is one tap away and shows exactly what is on.
-function renderMapFilter() {
-  const pill = document.getElementById('map-filter');
-  const menu = document.getElementById('map-filter-menu');
-  if (!pill || !menu) return;
-  const extras = mapFilterExtras();
-  pill.textContent = `${mapLens().name}${extras ? ` · ${extras}` : ''} ▾`;
-  pill.classList.toggle('map-filter-on', mapView.lens !== 'all' || !!extras);
-  pill.title = 'What the list is showing — lens and tags';
-
-  menu.classList.toggle('hidden', !mapView.menuOpen);
-  if (!mapView.menuOpen) { menu.innerHTML = ''; return; }
-
+// menu is one tap away and shows exactly what is on. The menu stays open
+// across a pick on purpose: narrowing is usually several taps (a lens, then a
+// tag).
+const mapFilter = stripMenu({
+  pill: 'map-filter',
+  menu: 'map-filter-menu',
+  title: 'What the list is showing — lens and tags',
+  isOpen: () => mapView.menuOpen,
+  setOpen: on => { mapView.menuOpen = on; },
+  pillText: () => {
+    const extras = mapFilterExtras();
+    return { text: `${mapLens().name}${extras ? ` · ${extras}` : ''}`,
+             narrowed: mapView.lens !== 'all' || !!extras };
+  },
   // Tags offered are the ones the inventory actually carries, plus any already
   // required — narrowing to a tag must never make its own chip disappear.
-  const vocab = [...new Set([
-    ...(state.mapItems || []).flatMap(itemTags), ...mapView.tags,
-  ])].sort();
-  menu.innerHTML = `
-    <div class="map-filter-sec">List — showing</div>
-    <div class="map-filter-chips">
-      ${MAP_LENSES.map(l => `<button class="ctx-chip ${
-        l.key === mapView.lens ? 'ctx-req' : 'ctx-off'}" data-lens="${l.key}"
-        >${escHtml(l.name)}</button>`).join('')}
-    </div>
-    <div class="map-filter-sec">Tags — every selected one required</div>
-    <div class="map-filter-chips">
-      ${vocab.length ? vocab.map(t => {
-        const on = mapView.tags.has(t);
-        return `<button class="ctx-chip ${on ? 'ctx-req' : 'ctx-off'}" data-maptag="${escHtml(t)}"
-          title="${on ? 'required — click to clear' : 'click to require'}"
-          >${on ? '∧' : ''}${escHtml(t)}</button>`;
-      }).join('') : '<span class="cl-hint">no tags in the inventory yet</span>'}
-    </div>
-    <div class="map-filter-sec">Order</div>
-    <div class="map-filter-chips">
-      <button class="ctx-chip ${mapSortOn() ? 'ctx-req' : 'ctx-off'}" data-mapsort="on"
-        title="Due dates first, then deferred by how soon they return">due first</button>
-      <button class="ctx-chip ${mapSortOn() ? 'ctx-off' : 'ctx-req'}" data-mapsort="off">tree order</button>
-    </div>
-    <div class="map-filter-foot">
-      ${mapView.lens !== 'all' || mapFilterExtras()
-        ? '<button class="ctx-chip" id="map-filter-clear">⟳ show everything</button>' : ''}
-      <button class="ctx-chip" id="map-export" title="Downloads it and copies it">⤓ Download Markdown</button>
-    </div>`;
-
-  // stopPropagation on every one of these: the handler RE-RENDERS the menu, so
-  // by the time the click bubbles to the modal's tap-off handler its target has
-  // been replaced and `closest('#map-filter-menu')` no longer finds it — the
-  // menu would put itself away on its own chips. The menu stays open across a
-  // pick on purpose: narrowing is usually several taps (a lens, then a tag).
-  const stay = (el, fn) => el.addEventListener('click', e => {
-    e.stopPropagation();
-    fn();
-    renderMap();
-  });
-  menu.querySelectorAll('[data-lens]').forEach(b =>
-    stay(b, () => { mapView.lens = b.dataset.lens; }));
-  menu.querySelectorAll('[data-maptag]').forEach(b => stay(b, () => {
-    const t = b.dataset.maptag;
-    if (mapView.tags.has(t)) mapView.tags.delete(t);
-    else mapView.tags.add(t);
-  }));
-  menu.querySelectorAll('[data-mapsort]').forEach(b => stay(b, () => {
-    if (b.dataset.mapsort === 'off') localStorage.setItem('mapSort', 'off');
-    else localStorage.removeItem('mapSort');   // absent = on, one default
-  }));
-  const clear = menu.querySelector('#map-filter-clear');
-  if (clear) stay(clear, () => {
-    mapView.lens = 'all';
-    mapView.tags.clear();
-  });
-  menu.querySelector('#map-export').addEventListener('click', e => {
-    e.stopPropagation();
-    exportMap();
-  });
-}
+  sections: () => [
+    { title: 'List — showing',
+      chips: pickChipsHtml(MAP_LENSES.map(l => ({ value: l.key, label: l.name })),
+                           mapView.lens, 'data-lens') },
+    { title: 'Tags — every selected one required',
+      chips: tagChipsHtml([...new Set([...(state.mapItems || []).flatMap(itemTags), ...mapView.tags])].sort(),
+                          mapView.tags, 'data-maptag', 'no tags in the inventory yet') },
+    { title: 'Order',
+      chips: pickChipsHtml([
+        { value: 'on', label: 'due first', title: 'Due dates first, then deferred by how soon they return' },
+        { value: 'off', label: 'tree order' }], mapSortOn() ? 'on' : 'off', 'data-mapsort') },
+  ],
+  foot: () => '<button class="ctx-chip" id="map-export" title="Downloads it and copies it">⤓ Download Markdown</button>',
+  clear: () => { mapView.lens = 'all'; mapView.tags.clear(); },
+  onChange: () => renderMap(),
+  wire: (menu, stay) => {
+    menu.querySelectorAll('[data-lens]').forEach(b =>
+      stay(b, () => { mapView.lens = b.dataset.lens; }));
+    menu.querySelectorAll('[data-maptag]').forEach(b =>
+      stay(b, () => toggleInSet(mapView.tags, b.dataset.maptag)));
+    menu.querySelectorAll('[data-mapsort]').forEach(b => stay(b, () => {
+      if (b.dataset.mapsort === 'off') localStorage.setItem('mapSort', 'off');
+      else localStorage.removeItem('mapSort');   // absent = on, one default
+    }));
+    menu.querySelector('#map-export').addEventListener('click', e => {
+      e.stopPropagation();
+      exportMap();
+    });
+  },
+});
 
 // MAP PAGE, 9a (2026-10-01, Quentin's design): the Now page's shell — the
 // area's name in the left column where the date sits on Now, pinned while its
@@ -11562,12 +11548,6 @@ function wireMapIndex(body) {
   mapIndexSpy(body);
 }
 
-function closeMapFilter() {
-  if (!mapView.menuOpen) return false;
-  mapView.menuOpen = false;
-  renderMapFilter();
-  return true;
-}
 
 async function refreshMap() {
   // Areas and domains come along because MAP now RENDERS them (the roster at
@@ -11750,7 +11730,7 @@ function renderMap() {
   const body = document.getElementById('map-body');
   if (!body) return;
   const todayStr = wallDay();
-  renderMapFilter();
+  mapFilter.render();
   // Everything below reads the NARROWED set, search included — a search inside
   // "Waiting & deferred" must not turn up an action you are not asking about.
   const items = mapVisibleItems(state.mapItems || [], todayStr);

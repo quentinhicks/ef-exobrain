@@ -3688,68 +3688,28 @@ body.np-body {
    mode (the ladder inverts there — see the theme section of CLAUDE.md). */
 #map-modal { background: var(--surface-mid); }
 
-/* ── MAP's one filter menu (23a) ─────────────────────────────
-   The lens joins domain and tags in the header's menu, so there is ONE place
-   that narrows the list and no permanent band of chrome. The pill names what
-   you are looking at; the menu is transient and hangs under the header.
-   Chips reuse .ctx-chip / .ctx-req / .ctx-off — the same grammar the Engage
-   context picker uses, so "required" looks the same everywhere it is said. */
-.map-filter-pill {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font: 13px var(--font-ui);
-  color: var(--text-primary);
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 7px;
-  padding: 5px 10px;
-  margin-left: auto;
-  margin-right: 10px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.map-filter-pill:hover { border-color: var(--accent); }
-/* Non-default only: a pill that is always accented says nothing. */
-.map-filter-pill.map-filter-on {
-  background: var(--gold);
-  border-color: var(--gold);
-  color: var(--on-accent);
-  font-weight: 500;
-}
-#map-filter-menu {
-  position: absolute;
-  top: 50px;
-  right: 12px;
-  z-index: 3;
-  width: 300px;
-  max-width: calc(100% - 24px);
-  max-height: 70%;
-  overflow-y: auto;
-  background: var(--surface-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.map-filter-sec {
+/* ── The strip's selector menus (23a, one component since 2026-10-05) ───
+   The lens joins domain and tags in one menu, so there is ONE place that
+   narrows a list and no permanent band of chrome. The pill (.tn-pill) names
+   what you are looking at; the menu is transient and hangs under the strip.
+   Chips reuse .ctx-chip / .ctx-req / .ctx-off — the same grammar everywhere
+   "required" is said. */
+/* The strip menus' inside (stripMenu): section titles over chip rows, and a
+   foot. Placed by .tn-menu, the one rule for all three. */
+.tn-menu-sec {
   font: 10px var(--font-mono);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-secondary);
   font-weight: 600;
 }
-.map-filter-sec:not(:first-child) { margin-top: 4px; }
-.map-filter-chips { display: flex; flex-wrap: wrap; gap: 7px; }
-.map-filter-foot {
+.tn-menu-sec:not(:first-child) { margin-top: 4px; }
+.tn-menu-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.tn-menu-foot {
   margin-top: 6px;
   padding-top: 9px;
   border-top: 1px solid var(--border-soft);
 }
-/* The menu is positioned against the modal, not the viewport. */
 #map-modal { position: relative; }
 
 /* MAP search: fixed above the scrolling body, so the query stays put while
@@ -7070,7 +7030,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   white-space: nowrap;
 }
 .tn-pill:hover { background: var(--surface-2); color: var(--text-primary); }
-.tn-pill.map-filter-on { color: var(--gold); font-weight: 600; }
+.tn-pill.tn-pill-on { color: var(--gold); font-weight: 600; }
 .tn-search {
   display: flex;
   align-items: center;
@@ -7133,7 +7093,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .tn-menu.hidden { display: none; }
 .lg-count { font: 12px var(--font-mono); color: var(--text-secondary); }
 
-/* The calendar's selector switching a layer off (renderCalFilter). */
+/* The calendar's selector switching a layer off (calFilter, a stripMenu). */
 #cal-overlay.cal-hide-blocks .tl-block,
 #cal-overlay.cal-hide-blocks #tl-blocks-layer { display: none; }
 #cal-overlay.cal-hide-gates .wk-gate,
@@ -7269,7 +7229,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
 }
 
-/* The calendar selector's week row (renderCalFilter). */
+/* The calendar selector's week row (calFilter, a stripMenu). */
 .cf-week { display: flex; align-items: center; gap: 6px; }
 .cf-week .wk-icon { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; }
 .cf-week .wk-title { flex: 1; text-align: center; font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
