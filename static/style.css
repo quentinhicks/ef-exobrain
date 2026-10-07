@@ -6458,6 +6458,67 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   .mp-add-foot { display: none; }
 }
 
+/* ── HORIZONS (2026-10-07, Quentin's design "Horizons Page") ─────────────
+   The four horizons above Projects. Areas and Goals are documents in the Now
+   column (the Projects page's shell, no index); Purpose one sentence in the
+   middle of the page; Vision photographs edge to edge. */
+.hz-doc {
+  outline: none;
+  min-height: 300px;
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--text-primary);
+}
+.hz-main { padding-top: 30px; }
+.hz-doc:empty::before { content: attr(data-ph); color: var(--text-secondary); pointer-events: none; }
+.hz-doc h3 { font-size: 16px; font-weight: 600; margin: 22px 0 4px; }
+.hz-doc h3:first-child { margin-top: 0; }
+.hz-doc p { margin: 0 0 6px; }
+.hz-doc ul { margin: 0 0 6px; padding-left: 20px; }
+.hz-purpose {
+  min-height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 16px;
+  box-sizing: border-box;
+}
+.hz-doc.hz-doc-purpose {
+  width: 100%;
+  max-width: 760px;
+  min-height: 0;
+  text-align: center;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-wrap: balance;
+}
+.hz-vision { display: flex; flex-direction: column; gap: 2px; padding-bottom: 14px; }
+.hz-photo {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.hz-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hz-slot {
+  border: none;
+  font: 13.5px var(--font-mono);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.hz-slot:hover, .hz-slot-over { color: var(--text-primary); }
+.hz-add {
+  align-self: center;
+  margin-top: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+.hz-add:hover { background: var(--surface-2); color: var(--text-primary); }
+
 /* ── EACH PAGE'S SELECTOR AND SEARCH, in the strip (2026-10-01) ───────────
    Right of the page tools, before undo: a quiet pill that names what the
    page shows, and a search field that opens out from its icon on a phone.

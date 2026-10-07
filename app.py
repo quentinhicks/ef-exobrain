@@ -252,7 +252,7 @@ def index():
 # /projects, /lists/12, /settings/areas, /run/3 … are the same static shell;
 # app.js reads the path and opens that page. Still no data in the template —
 # the path is only an address.
-APP_PAGES = ('now', 'calendar', 'projects', 'lists', 'tracking', 'social',
+APP_PAGES = ('now', 'calendar', 'horizons', 'projects', 'lists', 'tracking', 'social',
              'settings', 'run')
 
 
@@ -1601,6 +1601,38 @@ def patch_settings():
     # state would otherwise lose qr_worker_url until the next full load.
     return jsonify(dict(storage.get_settings(), gate_scan_url=_gate_scan_url(),
                         app_url=_app_url()))
+
+
+# THE VISION HORIZON'S PHOTOS (2026-10-07): a photo arrives as a data URL,
+# so the one JSON door (apiSend) carries it; `name` is an undo putting one
+# back where it was.
+@app.route('/api/vision', methods=['GET'])
+def get_vision():
+    return jsonify(storage.vision_photos())
+
+
+@app.route('/api/vision', methods=['POST'])
+def post_vision():
+    data = request.get_json() or {}
+    m = re.match(r'^data:([\w/+.-]+);base64,(.*)$', data.get('data') or '', re.S)
+    name = m and storage.vision_add(base64.b64decode(m.group(2)), m.group(1), data.get('name'))
+    if not name:
+        return jsonify({'error': 'That is not a JPEG, PNG, WebP or GIF image'}), 400
+    return jsonify({'name': name})
+
+
+@app.route('/api/vision/<name>', methods=['DELETE'])
+def delete_vision(name):
+    if not storage.vision_remove(name):
+        return jsonify({'error': 'No such photo'}), 404
+    return jsonify({'ok': True})
+
+
+@app.route('/vision/<name>')
+def vision_file(name):
+    if not storage.VISION_NAME.match(name):
+        return jsonify({'error': 'No such photo'}), 404
+    return send_from_directory(os.path.abspath(storage.VISION_DIR), name)
 
 
 @app.route('/api/timezones')

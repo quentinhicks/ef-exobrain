@@ -4142,6 +4142,42 @@ def set_setting(key, value):
     conn.close()
 
 
+# THE VISION HORIZON'S PHOTOS (2026-10-07): files in the data dir, not rows —
+# the db is dumped into backups/ and a photo is megabytes. The name is the
+# order (a stamp first) and the only key; an undo puts a photo back under the
+# name it had, so it lands where it was.
+VISION_DIR = 'vision'
+VISION_TYPES = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif'}
+VISION_NAME = re.compile(r'^\d{14}-[0-9a-f]{6}\.(jpg|png|webp|gif)$')
+
+
+def vision_photos():
+    if not os.path.isdir(VISION_DIR):
+        return []
+    return sorted(n for n in os.listdir(VISION_DIR) if VISION_NAME.match(n))
+
+
+def vision_add(data, mime, name=None):
+    ext = VISION_TYPES.get(mime)
+    if not ext:
+        return None
+    if not (name and VISION_NAME.match(name) and name.endswith('.' + ext)
+            and not os.path.exists(os.path.join(VISION_DIR, name))):
+        name = '%s-%s.%s' % (datetime.now().strftime('%Y%m%d%H%M%S'), uuid.uuid4().hex[:6], ext)
+    os.makedirs(VISION_DIR, exist_ok=True)
+    with open(os.path.join(VISION_DIR, name), 'wb') as f:
+        f.write(data)
+    return name
+
+
+def vision_remove(name):
+    path = os.path.join(VISION_DIR, name)
+    if not VISION_NAME.match(name) or not os.path.exists(path):
+        return False
+    os.remove(path)
+    return True
+
+
 def delete_block(id):
     conn = get_conn()
     conn.execute('DELETE FROM recurring_block WHERE id = ?', (id,))

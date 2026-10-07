@@ -30,7 +30,7 @@
     <div class="tn-tabs">
       <button class="tn-tab" data-nav="">Now</button>
       <button class="tn-tab" data-nav="calendar">Calendar</button>
-      <button class="tn-tab" data-nav="map">Projects</button>
+      <button class="tn-tab" data-nav="map">Horizons</button>
       <button class="tn-tab" data-nav="lists" id="tn-lists">Lists</button>
       <button class="tn-tab hidden" data-nav="social" id="tn-social">Social</button>
     </div>
@@ -39,8 +39,12 @@
          page is open (paintTopNav). Same place on every page, a different
          question on each — what Projects shows, what the calendar draws. Their menus hang under the strip (.tn-menu). -->
     <div class="tn-tools hidden" data-page="map">
+      <!-- HORIZONS (2026-10-07, Quentin's design "Horizons Page"): the page
+           is GTD's five horizons, one at a time; Projects keeps its lens and
+           search, the other four have none. -->
+      <button id="hz-pill" class="tn-pill"></button>
       <button id="map-filter" class="tn-pill"></button>
-      <label class="tn-search" title="Search the projects"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <label class="tn-search" id="map-search" title="Search the projects"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input type="text" id="map-q" placeholder="Search" autocomplete="off"></label>
       <span id="map-q-count" class="count tn-count"></span>
     </div>
@@ -178,7 +182,7 @@
   </div>
 
   <!-- Person detail panel -->
-  <!-- Projects manager (GTD Horizon 1) -->
+  <!-- Horizons: Projects (GTD Horizon 1) and the four above it -->
   <div id="map-overlay" class="hidden">
     <div id="map-modal">
       <!-- Its selector and search are in the top strip (.tn-tools). The close
@@ -186,6 +190,7 @@
            through it, so nothing is skipped on the way down. -->
       <button id="map-close" class="modal-close-btn hidden">✕</button>
       <div id="map-filter-menu" class="tn-menu hidden"></div>
+      <div id="hz-menu" class="tn-menu hidden"></div>
       <div id="map-body"></div>
     </div>
   </div>

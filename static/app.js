@@ -6428,7 +6428,7 @@ function initHub() {
   // MAP's filter menu is a transient layer again (23a) — it peels before the
   // MAP overlay in the loop below, the way every sheet peels before what
   // opened it.
-  escRung(26, () => mapFilter.close());
+  escRung(26, () => mapFilter.close() || hzMenu.close());
   escRung(29, () => calFilter.close());
   // Legacy modal overlays (they sit above the m-overlays), innermost wins; the
   // person-detail/bucket/add trio stack over People. The order here IS the
@@ -6666,6 +6666,7 @@ async function closeSurfaces() {
   };
   flushOpenNotes();
   mapFilter.close();
+  hzMenu.close();
   calFilter.close();
   if (seSheet.kind) closeSeSheet();
   if (occasionView.open) closeOccasionSheet();
@@ -6739,7 +6740,7 @@ async function openSurface(dest, sub) {
     openM('tab-lists');
     refreshRef();
   }
-  else if (dest === 'map') { openMap(); }
+  else if (dest === 'map') { openMap(sub.horizon); }
   else if (dest === 'tracking') { await openSurface('settings', { section: 'tracking' }); }
   else if (dest === 'gates') { await openSurface('settings', { section: 'qr' }); }
   else if (dest === 'social') {
@@ -6778,7 +6779,7 @@ function currentRoute() {
     return !!el && !el.classList.contains('hidden');
   };
   if (shown('modal-overlay')) return settingsView.section ? `settings/${settingsView.section}` : 'settings';
-  if (shown('map-overlay')) return 'map';
+  if (shown('map-overlay')) return mapView.horizon === 'projects' ? 'map' : `map/${mapView.horizon}`;
   if (shown('tab-lists')) {
     return refView.open != null ? `lists/${refView.open}` : 'lists';
   }
@@ -6796,7 +6797,9 @@ const routeView = { ready: false, saved: null, timer: null, moving: false, targe
 // differently out there, after its tab. Flask serves the shell at every one
 // of these (APP_PAGES in app.py). The Log left for ef-writing (2026-10-06):
 // an old `logs` route or `/log` path opens nothing, which lands on Now.
-const ROUTE_PATHS = { map: 'projects' };
+const ROUTE_PATHS = { map: 'horizons' };
+// An address from before the page was renamed (2026-10-07) still opens it.
+const OLD_ROUTE_PATHS = { projects: 'map' };
 
 function routePath(route) {
   if (!route) return '/';
@@ -6807,7 +6810,8 @@ function routePath(route) {
 function pathRoute(path) {
   const [top, ...rest] = String(path || '').replace(/^\/+|\/+$/g, '').split('/');
   if (!top || top === 'now') return '';
-  const name = Object.keys(ROUTE_PATHS).find(k => ROUTE_PATHS[k] === top) || top;
+  const name = Object.keys(ROUTE_PATHS).find(k => ROUTE_PATHS[k] === top)
+    || OLD_ROUTE_PATHS[top] || top;
   return [name, ...rest].join('/');
 }
 
@@ -6844,7 +6848,8 @@ async function openRoute(route) {
     await openSurface('calendar', { view: a === 'week' ? 'week' : null,
                                     say: routeView.fromAddress && a === 'week' });
   }
-  else if (['map', 'tracking', 'social'].includes(top)) await openSurface(top);
+  else if (top === 'map') await openSurface('map', { horizon: a });
+  else if (['tracking', 'social'].includes(top)) await openSurface(top);
 }
 
 async function initRoutes() {
@@ -10029,7 +10034,8 @@ const MAP_LENSES = [
 // KEYBOARD below.
 // `delArm` is a project waiting for its second ⌫.
 const mapView = { q: '', lens: 'all', tags: new Set(), menuOpen: false,
-                  sel: null, tMode: false, delArm: null, todo: new Set() };
+                  sel: null, tMode: false, delArm: null, todo: new Set(),
+                  horizon: 'projects' };
 
 function mapLens() {
   return MAP_LENSES.find(l => l.key === mapView.lens) || MAP_LENSES[0];
@@ -10063,7 +10069,9 @@ function mapInboxItems() {
     ? (state.inbox || []) : [];
 }
 
-async function openMap() {
+async function openMap(horizon) {
+  mapView.horizon = HORIZONS.some(h => h.key === horizon) ? horizon : 'projects';
+  hzView.slots = 0;
   if (!mapWired) {
     const overlay = document.getElementById('map-overlay');
     const shut = () => {
@@ -10161,6 +10169,287 @@ const mapFilter = stripMenu({
   },
 });
 
+// ── HORIZONS (2026-10-07, Quentin's design "Horizons Page") ──────────────
+//
+// The Projects page became GTD's five horizons, one at a time behind one pill
+// in the strip: Projects is the page it always was (lens, search, keys), and
+// the four above it are what the projects are FOR. Areas and Goals are short
+// documents in the Now column, Purpose one sentence in the middle of the page,
+// Vision photographs edge to edge. The documents are settings rows (one each,
+// HZ_DOC_KEYS), the photos files in the data dir (storage.VISION_DIR). The
+// horizon is in the address (`/horizons/goals`), so a reload lands on it.
+const HORIZONS = [
+  { key: 'projects', name: 'Projects' },
+  { key: 'areas', name: 'Areas of accountability' },
+  { key: 'goals', name: 'Goals' },
+  { key: 'vision', name: 'Vision' },
+  { key: 'purpose', name: 'Purpose' },
+];
+const HZ_DOC_KEYS = { areas: 'horizon_areas', goals: 'horizon_goals', purpose: 'horizon_purpose' };
+const HZ_PLACEHOLDER = {
+  areas: 'The areas you keep up, and the standard each is held to. Start a line with ### for a heading, - for a list.',
+  goals: 'What you mean to have done in a year or two. Start a line with ### for a heading, - for a list.',
+  purpose: 'Write your purpose in one sentence.',
+};
+// `slots` is the empty photo frames "+ Add photo" asked for; with no photos
+// there is always one, so the page is never blank.
+const hzView = { menuOpen: false, slots: 0 };
+
+function horizonName(key) {
+  return (HORIZONS.find(h => h.key === key) || HORIZONS[0]).name;
+}
+
+const hzMenu = stripMenu({
+  pill: 'hz-pill',
+  menu: 'hz-menu',
+  title: 'Which horizon — 1–5, or ← →',
+  isOpen: () => hzView.menuOpen,
+  setOpen: on => { hzView.menuOpen = on; if (on) mapFilter.close(); },
+  pillText: () => ({ text: horizonName(mapView.horizon), narrowed: false }),
+  sections: () => [{ title: 'Horizon',
+    chips: pickChipsHtml(HORIZONS.map(h => ({ value: h.key, label: h.name })),
+                         mapView.horizon, 'data-hz-pick') }],
+  onChange: () => {},
+  wire: (menu, stay) => menu.querySelectorAll('[data-hz-pick]').forEach(b =>
+    stay(b, () => setHorizon(b.dataset.hzPick))),
+});
+
+function setHorizon(key) {
+  if (!HORIZONS.some(h => h.key === key)) return;
+  flushOpenNotes();
+  hzView.menuOpen = false;
+  hzView.slots = 0;
+  mapView.horizon = key;
+  renderMap();
+  document.getElementById('map-body').scrollTop = 0;
+  syncRoute();
+}
+
+// ← → step through the horizons from anywhere on the page; 1–5 pick one,
+// except on Projects, where 1–3 were already its rows' priorities.
+document.addEventListener('keydown', e => {
+  const ov = document.getElementById('map-overlay');
+  if (!ov || ov.classList.contains('hidden') || e.defaultPrevented) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+            || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  const settings = document.getElementById('modal-overlay');
+  if ((settings && !settings.classList.contains('hidden')) || clarifyView.open
+      || entrySheet.open || seSheet.kind || objMenu.open || mapView.tMode) return;
+  const i = HORIZONS.findIndex(h => h.key === mapView.horizon);
+  let to = -1;
+  if (e.key === 'ArrowRight') to = i + 1;
+  else if (e.key === 'ArrowLeft') to = i - 1;
+  else if (/^[1-5]$/.test(e.key) && mapView.horizon !== 'projects') to = +e.key - 1;
+  if (to < 0 || to >= HORIZONS.length || to === i) return;
+  e.preventDefault();
+  setHorizon(HORIZONS[to].key);
+});
+
+async function saveHorizonDoc(key, value) {
+  state.settings = state.settings || {};
+  state.settings[key] = value;
+  const res = await apiSendData('/api/settings', 'PATCH', { [key]: value || null });
+  if (!res.ok) toast(res.data.error || 'Could not save that');
+}
+
+// A HORIZON DOCUMENT IS A NOTES FIELD in everything but its shape: it saves
+// on the notes debounce, joins openNotes so every close flushes it, pushes ONE
+// undo per editing session, and pastes as text. Half-typed text is data, so a
+// repaint leaves a focused document alone (renderHorizon).
+function wireHorizonDoc(el, h) {
+  const key = HZ_DOC_KEYS[h];
+  const plain = h === 'purpose';
+  const read = () => {
+    const text = el.textContent.trim();
+    return plain ? text : (text ? el.innerHTML : '');
+  };
+  let timer = null, pending = false, undoPushed = false;
+  const flush = async () => {
+    clearTimeout(timer);
+    timer = null;
+    if (!pending) return;
+    pending = false;
+    const value = read();
+    const prev = (state.settings || {})[key] || '';
+    if (value === prev) return;
+    if (!undoPushed) {
+      undoPushed = true;
+      pushUndo(`edited ${horizonName(h)}`, async () => {
+        await saveHorizonDoc(key, prev);
+        renderMap();
+      });
+    }
+    await saveHorizonDoc(key, value);
+  };
+  el.addEventListener('input', () => {
+    pending = true;
+    clearTimeout(timer);
+    timer = setTimeout(flush, NOTES_SAVE_MS);
+  });
+  el.addEventListener('blur', () => {
+    if (!plain && !el.textContent.trim() && !el.querySelector('li')) el.innerHTML = '';
+    flush();
+  });
+  // Every line is a block, so a line's shape can change (below); the first one
+  // is made on focus, and an empty document is emptied again on blur so its
+  // placeholder comes back.
+  el.addEventListener('focus', () => {
+    document.execCommand('defaultParagraphSeparator', false, 'p');
+    if (plain || el.firstChild) return;
+    el.innerHTML = '<p><br></p>';
+    const r = document.createRange();
+    r.setStart(el.firstChild, 0);
+    r.collapse(true);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+  });
+  el.addEventListener('paste', e => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    document.execCommand('insertText', false, plain ? text.replace(/\s*\n\s*/g, ' ') : text);
+  });
+  el.addEventListener('keydown', e => {
+    // Escape means done, never revert, and it stops here: the page stays up.
+    if (e.key === 'Escape') { e.stopPropagation(); el.blur(); return; }
+    if (plain) {
+      if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+      return;
+    }
+    // `### ` makes a heading and `- ` a list, typed at the start of a line —
+    // the markdown the notes fields already speak, turned into the shape.
+    // Done on the DOM: execCommand's formatBlock/delete pair merged lines.
+    if (e.key !== ' ') return;
+    const sel = getSelection();
+    if (!sel.rangeCount || !sel.isCollapsed) return;
+    const node = sel.anchorNode;
+    if (!node || node.nodeType !== 3 || node.previousSibling) return;
+    const before = node.textContent.slice(0, sel.anchorOffset);
+    const heading = /^#{1,3}$/.test(before), list = /^[-*]$/.test(before);
+    if (!heading && !list) return;
+    let line = node.parentNode;
+    if (line === el) {
+      line = document.createElement('p');
+      el.insertBefore(line, node);
+      line.appendChild(node);
+    }
+    if (line.parentNode !== el || !/^(P|DIV|H3)$/.test(line.tagName)) return;
+    e.preventDefault();
+    node.textContent = node.textContent.slice(before.length);
+    let into = document.createElement(heading ? 'h3' : 'li');
+    while (line.firstChild) into.appendChild(line.firstChild);
+    if (!into.textContent) into.innerHTML = '<br>';
+    if (heading) line.replaceWith(into);
+    else {
+      const prev = line.previousElementSibling;
+      if (prev && prev.tagName === 'UL') { prev.appendChild(into); line.remove(); }
+      else { const ul = document.createElement('ul'); ul.appendChild(into); line.replaceWith(ul); }
+    }
+    const r = document.createRange();
+    r.setStart(into.firstChild, 0);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    el.dispatchEvent(new Event('input'));
+  });
+  el.__flushNotes = flush;
+  openNotes.push(el);
+}
+
+function readDataUrl(blob) {
+  return new Promise(res => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = () => res(null);
+    r.readAsDataURL(blob);
+  });
+}
+
+async function addVisionPhoto(file) {
+  if (!file || !/^image\//.test(file.type)) { toast('That is not an image'); return; }
+  const res = await apiSendData('/api/vision', 'POST', { data: await readDataUrl(file) });
+  if (!res.ok) { toast(res.data.error || 'Could not add that photo'); return; }
+  const name = res.data.name;
+  pushUndo('added a photo', async () => {
+    await apiSend(`/api/vision/${encodeURIComponent(name)}`, 'DELETE');
+    await refreshMap();
+  });
+  if (hzView.slots) hzView.slots--;
+  await refreshMap();
+}
+
+// The undo puts the same bytes back under the same name, so the photo returns
+// to where it was in the order.
+async function removeVisionPhoto(name) {
+  const url = encodeURIComponent(name);
+  const blob = await fetch(`/vision/${url}`).then(r => (r.ok ? r.blob() : null)).catch(() => null);
+  const res = await apiSendData(`/api/vision/${url}`, 'DELETE');
+  if (!res.ok) { toast(res.data.error || 'Could not remove that photo'); return; }
+  const data = blob && await readDataUrl(blob);
+  if (data) {
+    pushUndo('removed a photo', async () => {
+      await apiSend('/api/vision', 'POST', { data, name });
+      await refreshMap();
+    });
+  }
+  await refreshMap();
+}
+
+function renderHorizon(body) {
+  const h = mapView.horizon;
+  // A document being written in is not repainted under the cursor.
+  const live = body.querySelector(`.hz-doc[data-hz="${h}"]`);
+  if (live && live === document.activeElement) return;
+  if (HZ_DOC_KEYS[h]) {
+    const editor = `<div class="hz-doc${h === 'purpose' ? ' hz-doc-purpose' : ''}" contenteditable="true"
+      data-hz="${h}" data-ph="${escHtml(HZ_PLACEHOLDER[h])}" spellcheck="true"></div>`;
+    body.innerHTML = h === 'purpose'
+      ? `<div class="hz-purpose">${editor}</div>`
+      : `<div class="mp-page"><nav class="mp-index"></nav><div class="mp-main hz-main">${editor}</div></div>`;
+    const el = body.querySelector('.hz-doc');
+    const saved = (state.settings || {})[HZ_DOC_KEYS[h]] || '';
+    if (h === 'purpose') el.textContent = saved; else el.innerHTML = saved;
+    wireHorizonDoc(el, h);
+    return;
+  }
+  // Vision: the photos edge to edge, then the empty frames, then + Add photo.
+  const photos = state.vision || [];
+  const slots = photos.length ? hzView.slots : Math.max(1, hzView.slots);
+  body.innerHTML = `<div class="hz-vision">${photos.map(n => `<div class="hz-photo" data-photo="${escHtml(n)}"
+      title="Right-click or hold to remove"><img src="/vision/${encodeURIComponent(n)}" alt=""></div>`).join('')}${
+    Array.from({ length: slots }, () => `<button class="hz-photo hz-slot">Drop a 1920 × 1200 photo</button>`).join('')}
+    <button class="hz-add">+ Add photo</button>
+    <input type="file" accept="image/*" class="hidden" id="hz-file">
+  </div>`;
+  const file = body.querySelector('#hz-file');
+  file.addEventListener('change', () => { if (file.files[0]) addVisionPhoto(file.files[0]); file.value = ''; });
+  body.querySelectorAll('.hz-slot').forEach(slot => {
+    slot.addEventListener('click', () => file.click());
+    slot.addEventListener('dragover', e => { e.preventDefault(); slot.classList.add('hz-slot-over'); });
+    slot.addEventListener('dragleave', () => slot.classList.remove('hz-slot-over'));
+    slot.addEventListener('drop', e => {
+      e.preventDefault();
+      slot.classList.remove('hz-slot-over');
+      const f = e.dataTransfer.files[0];
+      if (f) addVisionPhoto(f);
+    });
+  });
+  body.querySelector('.hz-add').addEventListener('click', () => {
+    hzView.slots = (photos.length ? hzView.slots : Math.max(1, hzView.slots)) + 1;
+    renderMap();
+  });
+  body.querySelectorAll('.hz-photo[data-photo]').forEach(ph => {
+    const menu = (x, y) => openObjectMenu(x, y, 'vision', ph.dataset.photo, [
+      { label: 'Remove photo', danger: true, run: () => removeVisionPhoto(ph.dataset.photo) }]);
+    ph.addEventListener('contextmenu', e => { e.preventDefault(); menu(e.clientX, e.clientY); });
+    onLongPress(ph, () => {
+      const r = ph.getBoundingClientRect();
+      menu(r.left + r.width / 2, r.top + r.height / 2);
+    });
+  });
+}
+
 // MAP PAGE, 9a (2026-10-01, Quentin's design): the Now page's shell — the
 // area's name in the left column where the date sits on Now, pinned while its
 // projects scroll past in the middle one, the right column empty. One section
@@ -10229,14 +10518,19 @@ async function refreshMap() {
   // to load state.areas last is how an area added here fails to appear until
   // something unrelated refreshes. Every fetch falls back to CURRENT state, not
   // [] — Promise.all rejects as a unit, and one dead endpoint used to blank it.
-  const [items, projects, inbox, areas, todo] = await Promise.all([
+  const [items, projects, inbox, areas, todo, vision, settings] = await Promise.all([
     apiGet('/api/map', state.mapItems || []),
     apiGet('/api/projects', state.projects || []),
     apiGet('/api/inbox', state.inbox || []),
     apiGet('/api/areas', state.areas || []),
     // The to-do list's own read, so Projects leaves out exactly what it shows.
     apiGet('/api/inbox/active', null),
+    // The horizons above Projects: their photos and their documents.
+    apiGet('/api/vision', state.vision || []),
+    apiGet('/api/settings', null),
   ]);
+  state.vision = vision;
+  if (settings) state.settings = settings;
   state.mapItems = items;
   state.projects = projects;
   state.inbox = inbox;
@@ -10382,6 +10676,12 @@ function renderMap() {
   const body = document.getElementById('map-body');
   if (!body) return;
   const todayStr = wallDay();
+  hzMenu.render();
+  // Projects keeps its lens and search; the horizons above it have neither.
+  const onProjects = mapView.horizon === 'projects';
+  ['map-filter', 'map-search', 'map-q-count'].forEach(id =>
+    document.getElementById(id).classList.toggle('hidden', !onProjects));
+  if (!onProjects) { renderHorizon(body); return; }
   mapFilter.render();
   // Everything below reads the NARROWED set, search included — a search inside
   // "Waiting & deferred" must not turn up an action you are not asking about.
@@ -10688,7 +10988,8 @@ function mapKeysLive() {
   return !!ov && !ov.classList.contains('hidden')
     && !(settings && !settings.classList.contains('hidden'))
     && !clarifyView.open && !entrySheet.open && !seSheet.kind && !objMenu.open
-    && !mapView.menuOpen && !occasionView.open && !ctxSheet.tag;
+    && !mapView.menuOpen && !occasionView.open && !ctxSheet.tag
+    && mapView.horizon === 'projects' && !hzView.menuOpen;
 }
 
 async function mapAfterWrite() {

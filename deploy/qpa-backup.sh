@@ -60,6 +60,8 @@ TARGETS=("$STAGE/tracker.db")
 # daybook.py. It is the copy that stays readable when neither restic nor this
 # app is around, so it is backed up like the logs are.
 [ -d "$APP_DIR/daybook" ] && TARGETS+=("$APP_DIR/daybook")
+# vision/ holds the Vision horizon's photos — files, not rows.
+[ -d "$APP_DIR/vision" ] && TARGETS+=("$APP_DIR/vision")
 [ -f "$APP_DIR/config.json" ] && TARGETS+=("$APP_DIR/config.json")
 
 # ── The escape hatch ────────────────────────────────────────────────────────
