@@ -6690,14 +6690,24 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    tapping the page puts it down exactly as before; Esc peels it the same way.
    A phone keeps its sheets: it has no right column. --dock-w is the column,
    never narrower than a form — measured from the WINDOW, not from --view-w,
-   which it decides. */
+   which it decides.
+
+   THE PANEL TAKES THE RIGHT SECTION, NOT A NEW ONE (2026-10-08, Quentin's
+   instruction: popups end up on the right panel instead of expanding to fit).
+   A laptop page is three sections — side, measure, side — and the dock IS the
+   right one, so the page gives up only what the panel needs BEYOND it (the
+   340px form floor on a narrow window, else nothing): opening a sheet no
+   longer squeezes the day. The Calendar takes the whole width and has no
+   right section to give, so it still makes room for all of it. */
 :root { --view-w: 100vw; }
 @media (min-width: 900px) {
   :root {
-    --dock-w: max(340px, calc((100vw - clamp(460px, calc(100vw - 440px), 720px)) / 2));
+    --side-w-full: calc((100vw - clamp(460px, calc(100vw - 440px), 720px)) / 2);
+    --dock-w: max(340px, var(--side-w-full));
     --view-w: calc(100vw - var(--dock-open, 0px));
   }
-  :root:has(.dock-panel:not(.hidden)) { --dock-open: var(--dock-w); }
+  :root:has(.dock-panel:not(.hidden)) { --dock-open: max(0px, calc(var(--dock-w) - var(--side-w-full))); }
+  :root:has(.dock-panel:not(.hidden)):has(#cal-overlay:not(.hidden)) { --dock-open: var(--dock-w); }
   #app { padding-right: var(--dock-open, 0px); }
   .m-overlay, #map-overlay, #modal-overlay { right: var(--dock-open, 0px); }
 
