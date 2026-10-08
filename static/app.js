@@ -6892,62 +6892,7 @@ async function initRoutes() {
 }
 
 
-const refView = { lists: [], open: null,
-                  // The row whose contents stand in the right column (wide
-                  // only): { kind: 'list', id } or null. ROUTINES ARE LISTS
-                  // (2026-10-05): there is no second kind of row here.
-                  peek: null };
-
-// THE LISTS PAGE'S EXPANSION (2026-10-01, Quentin's design): on a wide window
-// a tap on a list shows what is in it in the right column, level with the
-// row, and a second tap puts it away; Edit opens the full list. A phone has no
-// right column, so a tap opens the list as it always did. READ-ONLY.
-function refPeekToggle(kind, id) {
-  const on = refView.peek && refView.peek.kind === kind && refView.peek.id === id;
-  refView.peek = on ? null : { kind, id };
-  renderRef();
-}
-
-function refPeekHtml() {
-  const pk = refView.peek;
-  if (!pk || !SETTINGS_WIDE.matches) return '';
-  const l = refView.lists.find(x => x.id === pk.id);
-  if (!l) return '';
-  const subs = l.kind === 'dir' ? refChildren(refView.lists, l.id) : [];
-  const inner = l.kind === 'dir'
-    ? subs.map(x => `<div class="ref-peek-row ref-peek-sub"><span>${escHtml(x.name)}${x.kind === 'dir' ? '/' : ''}</span></div>`).join('')
-    : l.kind === 'doc'
-      ? (l.body || '').split('\n').filter(t => t.trim()).map(t =>
-        `<div class="ref-peek-row"><span>${escHtml(t)}</span></div>`).join('')
-      : l.items.map(i => `<div class="ref-peek-row${i.done ? ' ref-peek-done' : ''}"><span class="ref-peek-dot"></span><span>${
-        escHtml(i.content)}</span></div>`).join('');
-  return `<div id="ref-peek" class="ref-peek">
-    <div class="ref-peek-head"><span class="ref-peek-name">${escHtml(l.name)}${l.kind === 'dir' ? '/' : ''}</span>
-      <span class="ref-peek-n">${l.kind === 'dir' ? subs.length : l.kind === 'doc' ? 'doc' : l.items.filter(i => !i.done).length}</span>
-      <button class="ref-peek-open" data-peek-list="${l.id}">Open ›</button></div>
-    ${inner || emptyHtml('Nothing in it yet.')}
-  </div>`;
-}
-
-// Level with its row, kept inside the page: it scrolls with the list.
-function wireRefPeek(body) {
-  const peek = body.querySelector('#ref-peek');
-  const pk = refView.peek;
-  body.querySelectorAll('.ref-row').forEach(r => r.classList.toggle('ref-on', !!pk
-    && r.dataset.id === String(pk.id)));
-  if (!peek) return;
-  const row = body.querySelector(`.ref-row[data-id="${pk.id}"]`);
-  if (row) {
-    const top = row.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop;
-    const max = Math.max(8, body.scrollHeight - peek.offsetHeight - 8);
-    peek.style.top = `${Math.max(8, Math.min(top - 6, max))}px`;
-  }
-  peek.querySelectorAll('[data-peek-list]').forEach(b => b.addEventListener('click', () => {
-    refView.open = parseInt(b.dataset.peekList);
-    refView.peek = null;
-    renderRef();
-  }));
-}
+const refView = { lists: [], open: null };
 
 async function refreshRef() {
   refView.lists = await apiGet('/api/ref', refView.lists);
@@ -6962,10 +6907,21 @@ async function refreshRef() {
 // tree, asked by this page and by clarify's Reference browser alike.
 const REF_KIND_WORD = { dir: 'directory', list: 'list', doc: 'document' };
 
+// The three kinds' marks (Quentin's "Lists File System" design): a folder, a
+// bulleted list, a page. Stroke only, so they take the text's colour.
+const REF_ICON = {
+  dir: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2h8.4A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="2.8"/>',
+  doc: '<path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3v5h5"/>',
+};
+const refIcon = kind => `<svg class="ref-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+  stroke-linecap="round" stroke-linejoin="round">${REF_ICON[kind]}</svg>`;
+
 // What a directory holds, directories first, each group in its own order.
 function refChildren(lists, pid) {
   const here = lists.filter(l => (l.parent_id || null) === (pid || null));
-  return [...here.filter(l => l.kind === 'dir'), ...here.filter(l => l.kind !== 'dir')];
+  return [...here.filter(l => l.kind === 'dir'), ...here.filter(l => l.kind === 'list'),
+          ...here.filter(l => l.kind === 'doc')];
 }
 
 // "~/Books/" — the path to a directory (null is home).
@@ -6977,15 +6933,17 @@ function refPath(lists, id) {
   return '~/' + names.map(n => n + '/').join('');
 }
 
-// One row, whatever its kind: a directory's name carries the slash and how
-// much is in it, a list its open items, a document the word for what it is.
-function refEntryRow(l) {
+// One row, whatever its kind: its mark, its name, a quiet count (what a
+// directory holds, a list's open items), and a directory's chevron. `on` is
+// the row whose contents stand in the next column.
+function refEntryRow(l, on) {
   const tail = l.kind === 'dir' ? refChildren(refView.lists, l.id).length
-    : l.kind === 'doc' ? 'doc'
-    : l.items.filter(i => !i.done).length;
-  return `<div class="ref-row" data-id="${l.id}">
-    <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}${l.kind === 'dir' ? '/' : ''}</span>
+    : l.kind === 'list' ? l.items.filter(i => !i.done).length : '';
+  return `<div class="ref-row${on ? ' ref-on' : ''}" data-id="${l.id}">
+    ${refIcon(l.kind)}
+    <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}</span>
     <span class="count">${tail}</span>
+    ${l.kind === 'dir' ? '<span class="ref-chev">›</span>' : ''}
     <button class="ref-del" data-id="${l.id}" title="Delete ${REF_KIND_WORD[l.kind]}">×</button>
   </div>`;
 }
@@ -6996,37 +6954,50 @@ function refAddButtonsHtml() {
     <button class="map-add-btn" data-ref-add="doc">+ document</button>`;
 }
 
-// The rows and add buttons of a directory (home included): the same gestures
-// wherever a directory is drawn.
-function wireRefEntries(body, pid) {
-  const where = pid ? (refView.lists.find(l => l.id === pid) || {}).name : null;
-  body.querySelectorAll('[data-ref-add]').forEach(b => b.addEventListener('click', () => {
-    const kind = b.dataset.refAdd;
-    openEntrySheet({
-      title: `New ${REF_KIND_WORD[kind]}${where ? ` in ${where}` : ''}`,
-      placeholder: `Name the ${REF_KIND_WORD[kind]}…`, button: 'Create', closeOnAdd: true,
-      add: async name => {
-        const res = await apiSend('/api/ref/lists', 'POST', { name, kind, parent_id: pid });
-        const created = await res.json();
-        if (!res.ok) { toast(created.error || 'Could not create it'); return; }
-        pushUndo(`created ${REF_KIND_WORD[kind]} "${name}"`, async () => {
-          await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
-          await refreshAfterUndo();
-        });
-        refView.open = created.id;
-        await refreshRef();
-      },
+// A directory's rows and its add buttons, `onId` lit.
+function refDirHtml(pid, onId) {
+  return `<div class="ref-list" data-ref-dir="${pid || ''}">${
+    refChildren(refView.lists, pid).map(l => refEntryRow(l, l.id === onId)).join('')
+    || emptyHtml(pid ? 'Empty.' : 'Nothing here yet.')}
+    ${refAddButtonsHtml()}</div>`;
+}
+
+// The rows and add buttons of every directory drawn inside `scope`: the same
+// gestures wherever a directory is drawn, each filing into its own.
+function wireRefEntries(scope) {
+  scope.querySelectorAll('[data-ref-dir]').forEach(dirEl => {
+    const pid = dirEl.dataset.refDir ? parseInt(dirEl.dataset.refDir) : null;
+    const where = pid ? (refView.lists.find(l => l.id === pid) || {}).name : null;
+    dirEl.querySelectorAll('[data-ref-add]').forEach(b => b.addEventListener('click', () => {
+      const kind = b.dataset.refAdd;
+      openEntrySheet({
+        title: `New ${REF_KIND_WORD[kind]}${where ? ` in ${where}` : ''}`,
+        placeholder: `Name the ${REF_KIND_WORD[kind]}…`, button: 'Create', closeOnAdd: true,
+        add: async name => {
+          const res = await apiSend('/api/ref/lists', 'POST', { name, kind, parent_id: pid });
+          const created = await res.json();
+          if (!res.ok) { toast(created.error || 'Could not create it'); return; }
+          pushUndo(`created ${REF_KIND_WORD[kind]} "${name}"`, async () => {
+            await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
+            await refreshAfterUndo();
+          });
+          refView.open = created.id;
+          await refreshRef();
+        },
+      });
+    }));
+    dirEl.querySelectorAll('.ref-row[data-id]').forEach(row => {
+      const span = row.querySelector('.ref-name');
+      onTapOrDouble(row, () => {
+        refView.open = parseInt(row.dataset.id);
+        renderRef();
+      }, () => refListRename(span));
     });
-  }));
-  body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span =>
-    onTapOrDouble(span, () => {
-      const lid = parseInt(span.closest('.ref-row').dataset.id);
-      if (!pid && SETTINGS_WIDE.matches) { refPeekToggle('list', lid); return; }
-      refView.open = lid;
-      renderRef();
-    }, () => refListRename(span)));
-  body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', () =>
-    refDelete(parseInt(b.dataset.id))));
+    dirEl.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation();
+      refDelete(parseInt(b.dataset.id));
+    }));
+  });
 }
 
 // Delete, with the inverse. New ids are fine — nothing outside Lists holds a
@@ -7052,49 +7023,39 @@ async function refDelete(id) {
   await refreshRef();
 }
 
-function renderRef() {
-  const body = document.getElementById('ref-body');
-  const title = document.getElementById('ref-title');
-  if (!body) return;
-  syncRoute();
-
-  const open = refView.lists.find(l => l.id === refView.open);
-  // LISTS PAGE (2026-10-01, Quentin's design): the index wears the Now shell
-  // — the section's name in the left column, its rows in the middle — and
-  // needs no header of its own; one entry keeps its head (it carries the
-  // name and the way back).
-  document.getElementById('tab-lists').classList.toggle('ref-index', !open);
-
-  if (!open) {
-    title.textContent = 'Lists';
-    body.innerHTML = mpSection('Home', '', `<div class="ref-list">${
-      refChildren(refView.lists, null).map(refEntryRow).join('')
-      || emptyHtml('Nothing here yet.')}
-      ${refAddButtonsHtml()}</div>`)
-      + refPeekHtml();
-    requestAnimationFrame(() => wireRefPeek(body));
-    wireRefEntries(body, null);
-    return;
+// An open list or document — the same pane in the phone's one column and in
+// the laptop's last one: a list's name over its items, a document's title over
+// its body.
+function refPaneHtml(open) {
+  if (open.kind === 'doc') {
+    return `<div class="ref-pane"><div class="ref-doc-title" title="Double-click to rename">${escHtml(open.name)}</div>
+      <textarea class="ref-doc" data-ref-doc="${open.id}" placeholder="Write…"
+        spellcheck="true">${escHtml(open.body || '')}</textarea></div>`;
   }
+  return `<div class="ref-pane"><div class="ref-pane-head"><span class="ref-pane-name">${escHtml(open.name)}</span>
+      <span class="count">${open.items.filter(i => !i.done).length}</span></div>
+    <div class="ref-list">${open.items.map(i => `
+      <div class="ref-row ref-item" data-item="${i.id}">
+        <span class="eg-check ref-check${i.done ? ' ref-checked' : ''}" data-item="${i.id}"
+          title="${i.done ? 'Uncheck' : 'Check off'}">${i.done ? '✓' : ''}</span>
+        <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
+        <button class="ref-del" data-item="${i.id}" title="Remove">×</button>
+      </div>`).join('') || emptyHtml('Empty.')}
+    <button class="map-add-btn" data-ref-add-item>+ item</button></div></div>`;
+}
 
-  // A document being written in is not repainted under the cursor — half-typed
-  // text is data (the renderBar rule).
-  const live = body.querySelector('[data-ref-doc]');
-  if (live && live === document.activeElement && live.dataset.refDoc === String(open.id)) return;
-
-  title.textContent = open.name;
-  const parent = open.parent_id ? refView.lists.find(l => l.id === open.parent_id) : null;
-  const back = `<button id="ref-back" class="log-back-btn">‹ ${parent ? escHtml(parent.name) + '/' : 'Home'}</button>`;
-
-  if (open.kind === 'dir') {
-    body.innerHTML = `${back}<div class="ref-list">${
-      refChildren(refView.lists, open.id).map(refEntryRow).join('') || emptyHtml('Empty.')}
-      ${refAddButtonsHtml()}</div>`;
-    wireRefEntries(body, open.id);
-  } else if (open.kind === 'doc') {
-    body.innerHTML = `${back}<textarea class="cl-notes" rows="12" data-ref-doc="${open.id}"
-      placeholder="Write…" spellcheck="true">${escHtml(open.body || '')}</textarea>`;
-    const ta = body.querySelector('[data-ref-doc]');
+function wireRefPane(scope, open) {
+  if (open.kind === 'doc') {
+    const ta = scope.querySelector('[data-ref-doc]');
+    const title = scope.querySelector('.ref-doc-title');
+    title.addEventListener('dblclick', () => inlineEdit(title, {
+      value: open.name,
+      onCancel: refreshRef,
+      onCommit: async name => {
+        await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { name });
+        await refreshRef();
+      },
+    }));
     // A document is a notes field: the notes debounce, every close flushes
     // it, and ONE undo per editing session.
     let undoPushed = false;
@@ -7111,30 +7072,9 @@ function renderRef() {
       await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { body: value });
       open.body = value;
     });
-  } else {
-    body.innerHTML = `${back}<div class="ref-list">${open.items.map(i => `
-      <div class="ref-row" data-item="${i.id}">
-        <span class="eg-check ref-check${i.done ? ' ref-checked' : ''}" data-item="${i.id}"
-          title="${i.done ? 'Uncheck' : 'Check off'}">${i.done ? '✓' : ''}</span>
-        <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
-        <button class="ref-del" data-item="${i.id}" title="Remove">×</button>
-      </div>`).join('') || emptyHtml('Empty.')}
-    <button id="ref-add-item" class="map-add-btn">+ item</button></div>`;
-    wireRefListItems(body, open);
+    return;
   }
-
-  // Back peels one LEVEL, not to the index — nesting made "up" and "out"
-  // different things.
-  document.getElementById('ref-back').addEventListener('click', async () => {
-    const ta = body.querySelector('[data-ref-doc]');
-    if (ta && ta.__flushNotes) await ta.__flushNotes();
-    refView.open = open.parent_id || null;
-    renderRef();
-  });
-}
-
-function wireRefListItems(body, open) {
-  document.getElementById('ref-add-item').addEventListener('click', () => openEntrySheet({
+  scope.querySelector('[data-ref-add-item]').addEventListener('click', () => openEntrySheet({
     title: open.name, placeholder: `Add to ${open.name}…`,
     add: async raw => {
       const created = await apiSend('/api/ref/items', 'POST', { list_id: open.id, content: raw }).then(r => r.json());
@@ -7145,7 +7085,7 @@ function wireRefListItems(body, open) {
       await refreshRef();
     },
   }));
-  body.querySelectorAll('.ref-check').forEach(c => c.addEventListener('click', async () => {
+  scope.querySelectorAll('.ref-check').forEach(c => c.addEventListener('click', async () => {
     const id = parseInt(c.dataset.item);
     const it = open.items.find(x => x.id === id);
     const to = it.done ? 0 : 1;
@@ -7156,7 +7096,7 @@ function wireRefListItems(body, open) {
     });
     await refreshRef();
   }));
-  body.querySelectorAll('.ref-row[data-item] .ref-text').forEach(span => {
+  scope.querySelectorAll('.ref-row[data-item] .ref-text').forEach(span => {
     span.addEventListener('dblclick', () => {
       const id = parseInt(span.closest('.ref-row').dataset.item);
       inlineEdit(span, {
@@ -7169,7 +7109,7 @@ function wireRefListItems(body, open) {
       });
     });
   });
-  body.querySelectorAll('.ref-del[data-item]').forEach(b => b.addEventListener('click', async () => {
+  scope.querySelectorAll('.ref-del[data-item]').forEach(b => b.addEventListener('click', async () => {
     const id = parseInt(b.dataset.item);
     const it = open.items.find(x => x.id === id);
     await apiSend(`/api/ref/items/${id}`, 'DELETE');
@@ -7180,6 +7120,100 @@ function wireRefListItems(body, open) {
     await refreshRef();
   }));
 }
+
+// Flush a document being written before the page moves off it.
+async function refFlushDoc(body) {
+  const ta = body.querySelector('[data-ref-doc]');
+  if (ta && ta.__flushNotes) await ta.__flushNotes();
+}
+
+// THE LAPTOP'S LISTS ARE COLUMNS (2026-10-08, Quentin's pick of design 1a):
+// a directory on the left, what is open in it in the middle, and the list or
+// document opened from THAT on the right — the page's own three sections.
+// Everything is read off refView.open, so the address still names one thing:
+//   nothing open        home on the left
+//   a directory         its parent on the left, it in the middle
+//   a list/doc at home  home on the left, it in the middle
+//   a list/doc deeper   its directory's parent, its directory, it
+// Deeper than the left column, a back row at its top steps up a level.
+function renderRefColumns(body, open) {
+  let leftDir = null, midDir, midPane = null, rightPane = null, leftOn = null;
+  if (open && open.kind === 'dir') {
+    leftDir = open.parent_id || null; midDir = open.id; leftOn = open.id;
+  } else if (open && !open.parent_id) {
+    midPane = open; leftOn = open.id;
+  } else if (open) {
+    const dir = refView.lists.find(l => l.id === open.parent_id);
+    leftDir = dir ? dir.parent_id || null : null; midDir = open.parent_id; leftOn = open.parent_id;
+    rightPane = open;
+  }
+  const upTo = leftDir ? refView.lists.find(l => l.id === leftDir) : null;
+  body.innerHTML = `<div class="ref-cols">
+    <div class="ref-col">${upTo ? `<button id="ref-back" class="log-back-btn">‹ ${
+      upTo.parent_id ? escHtml((refView.lists.find(l => l.id === upTo.parent_id) || {}).name || '') : 'Home'}</button>` : ''}
+      ${refDirHtml(leftDir, leftOn)}</div>
+    <div class="ref-col ref-col-mid">${midDir !== undefined ? refDirHtml(midDir, rightPane && rightPane.id)
+      : midPane ? refPaneHtml(midPane) : emptyHtml('Open a directory, list or document.')}</div>
+    <div class="ref-col">${rightPane ? refPaneHtml(rightPane) : ''}</div>
+  </div>`;
+  wireRefEntries(body);
+  const pane = midPane || rightPane;
+  if (pane) wireRefPane(body.querySelector('.ref-pane').parentElement, pane);
+  const back = body.querySelector('#ref-back');
+  if (back) back.addEventListener('click', async () => {
+    await refFlushDoc(body);
+    refView.open = leftDir;
+    renderRef();
+  });
+}
+
+function renderRef() {
+  const body = document.getElementById('ref-body');
+  const title = document.getElementById('ref-title');
+  if (!body) return;
+  syncRoute();
+
+  const open = refView.lists.find(l => l.id === refView.open);
+  const wide = SETTINGS_WIDE.matches;
+  // LISTS PAGE (2026-10-01, Quentin's design): the index wears the Now shell
+  // and needs no header of its own; on a phone one open entry keeps its head
+  // (it carries the name and the way back). The laptop's columns never do.
+  document.getElementById('tab-lists').classList.toggle('ref-index', wide || !open);
+
+  // A document being written in is not repainted under the cursor — half-typed
+  // text is data (the renderBar rule).
+  const live = body.querySelector('[data-ref-doc]');
+  if (live && live === document.activeElement && open && live.dataset.refDoc === String(open.id)) return;
+
+  if (wide) { renderRefColumns(body, open); return; }
+
+  if (!open) {
+    title.textContent = 'Lists';
+    body.innerHTML = mpSection('', '', refDirHtml(null, null));
+    wireRefEntries(body);
+    return;
+  }
+
+  title.textContent = open.name;
+  const parent = open.parent_id ? refView.lists.find(l => l.id === open.parent_id) : null;
+  body.innerHTML = `<button id="ref-back" class="log-back-btn">‹ ${parent ? escHtml(parent.name) : 'Home'}</button>
+    ${open.kind === 'dir' ? refDirHtml(open.id, null) : refPaneHtml(open)}`;
+  if (open.kind === 'dir') wireRefEntries(body); else wireRefPane(body, open);
+
+  // Back peels one LEVEL, not to the index — nesting made "up" and "out"
+  // different things.
+  document.getElementById('ref-back').addEventListener('click', async () => {
+    await refFlushDoc(body);
+    refView.open = open.parent_id || null;
+    renderRef();
+  });
+}
+
+// The page's shape follows the window, so crossing 900px redraws it.
+SETTINGS_WIDE.addEventListener('change', () => {
+  const tab = document.getElementById('tab-lists');
+  if (tab && !tab.classList.contains('hidden')) renderRef();
+});
 
 // CLARIFY'S REFERENCE EXIT FILES INTO THE TREE: a directory gets a NEW
 // document (the capture is its title, the notes its body); an existing list

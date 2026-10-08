@@ -6641,33 +6641,51 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* The range button is in the selector's menu; its panel opens at the right. */
 .wk-range-pop { top: 8px; }
 
-/* ── The Lists page's expansion (2026-10-01, Quentin's design) ───────────
-   What a routine or list holds, in the right column level with its row. */
-.ref-peek { display: none; }
+/* ── LISTS ARE A FILE SYSTEM (2026-10-08, Quentin's design "Lists File
+   System", 1a) ─────────────────────────────────────────────────────────
+   Every row wears its kind's mark (folder / list / page) and a directory its
+   chevron; the row whose contents stand in the next column is lit. On a laptop
+   the page is the three sections every wide page shares — a directory, what
+   is open in it, the list or document opened from that — measured from the
+   same tokens as Engage and Projects, so a docked sheet still takes the right
+   one. The phone keeps one column. */
+.ref-ico { width: 15px; height: 15px; flex: none; color: var(--text-secondary); }
+.ref-chev { flex: none; font-size: 15px; line-height: 1; color: var(--text-secondary); }
+.ref-row.ref-on { background: var(--surface-2); }
+.ref-row[data-id] { cursor: pointer; }
+.ref-pane-head { display: flex; align-items: center; gap: 8px; padding: 6px 0 10px; }
+.ref-pane-name { flex: 1; min-width: 0; font-size: 16px; font-weight: 600; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-doc-title { font-size: 24px; font-weight: 600; line-height: 1.3; color: var(--text-primary);
+  padding: 4px 0 12px; }
+.ref-doc {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  font: 15px/1.65 var(--font-ui);
+  color: var(--text-primary);
+}
+.ref-doc::placeholder { color: var(--text-secondary); }
+#tab-lists .ref-item { border-bottom: none; align-items: flex-start; }
+/* On a phone the page's own head already names what is open. */
+@media (max-width: 899.98px) { .ref-pane-head, .ref-doc-title { display: none; } }
 @media (min-width: 900px) {
-  #tab-lists.ref-index #ref-body { position: relative; }
-  #tab-lists.ref-index .ref-row { cursor: pointer; }
-  #tab-lists.ref-index .ref-row.ref-on { background: var(--surface-2); }
-  .ref-peek {
-    display: block;
-    position: absolute;
-    left: calc(50% + var(--eg-measure) / 2 + 24px);
-    right: 24px;
-    padding-bottom: 12px;
+  #tab-lists.ref-index #ref-body { background: none; overflow: hidden; }
+  .ref-cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--eg-measure) minmax(0, 1fr);
+    height: 100%;
   }
-  .ref-peek-head { display: flex; align-items: center; gap: 8px; padding: 6px 0 8px; }
-  .ref-peek-name { flex: 1; min-width: 0; font-size: 16px; font-weight: 600; color: var(--text-primary);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ref-peek-n { font: 12px var(--font-mono); color: var(--text-secondary); }
-  .ref-peek-open { font-size: 12.5px; color: var(--text-secondary); padding: 3px 6px; border-radius: 6px; }
-  .ref-peek-open:hover { background: var(--surface-2); color: var(--text-primary); }
-
-  .ref-peek-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px;
-    line-height: 1.4; color: var(--text-primary); }
-  .ref-peek-dot { width: 4px; height: 4px; margin: 8px 6px 0; flex: none; border-radius: 50%; background: var(--text-secondary); }
-  .ref-peek-done { color: var(--text-secondary); text-decoration: line-through; }
-  .ref-peek-sub { color: var(--text-secondary); }
-
+  .ref-col { padding: 22px 24px; overflow-y: auto; scrollbar-width: none; min-height: 0; }
+  .ref-col-mid { padding: 22px 28px; border-left: 1px solid var(--border-soft); border-right: 1px solid var(--border-soft); }
+  .ref-cols .ref-row { padding: 6px 8px; gap: 9px; }
+  .ref-cols .ref-name { font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ref-cols .log-back-btn { margin-bottom: 8px; }
 }
 
 /* ── NO POPUPS: every sheet DOCKS INTO THE RIGHT COLUMN, AND THE PAGE MAKES
