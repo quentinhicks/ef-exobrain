@@ -6709,6 +6709,9 @@ async function navigateTo(dest) {
 // and nothing the switch does on the way (the old page going down, the day
 // showing for a moment) gets to write one of its own.
 async function goRoute(route, push) {
+  // Leaving the Calendar mid-pick gives the pick up: clarify comes back.
+  const pickLeft = clarifyView.picking && !String(route).startsWith('calendar');
+  if (pickLeft) clarifyView.picking = null;
   routeView.moving = true;
   routeView.target = String(route || '').split('/')[0];
   paintTopNav();
@@ -6727,6 +6730,7 @@ async function goRoute(route, push) {
     routeView.moving = false;
   }
   syncRoute();
+  if (pickLeft && clarifyView.open) renderClarify();
 }
 
 // THE ONE OPENER for a hub surface, asked by the hub's buttons and by the
@@ -12471,7 +12475,10 @@ function initEngage() {
   // The clarify sheet is the innermost layer wherever it was opened from (only
   // the picker it can raise sits over it), and tapping off it is the touch Esc
   // — the same peel, innermost first.
-  defineSheet('clarify-sheet', { rank: 0, isOpen: () => clarifyView.open, close: peelClarify });
+  defineSheet('clarify-sheet', { rank: 0, isOpen: () => clarifyView.open && !clarifyView.picking, close: peelClarify });
+  // Picking a block or event on the Calendar for it: Esc gives up the pick and
+  // puts clarify back as it was.
+  escRung(1, () => { if (!clarifyView.picking) return false; endClarifyCalPick(null); return true; });
   // The routine card is the LAST rung: it is drawn on the day itself, under
   // every overlay. (It used to close on its own listener, in the same keypress
   // as whatever layer the ladder peeled above it.)
@@ -13512,8 +13519,8 @@ async function renderNowFull() {
 const clarifyView = {
   open: false, queue: [], total: 0, verb: 'defer',
   action: '', tags: new Set(), showDate: '', showTime: '', showDateFrom: '',
-  // Add to calendar: the picker's day, and that day's blocks once read.
-  calOpen: false, calDate: '', calSegs: [],
+  // Add to calendar: the pick in progress ({ from }), and what was picked.
+  picking: null, calPick: '',
   projectId: null, projectName: '', who: '', chase: '',
   notes: '',          // support material, saved with the item on file
   due: '',            // hard deadline (YMD) — real ones only; '' = none
@@ -13878,7 +13885,7 @@ function clarifyResetItem() {
   clarifyView.showDate = '';
   clarifyView.showTime = '';
   clarifyView.showDateFrom = '';
-  clarifyView.calOpen = false;
+  clarifyView.calPick = '';
   // A project's start date is a standing property, not a fresh decision, so
   // it is prefilled from the ROW where an action's is only ever a suggestion — "Active" is then the explicit act of
   // clearing it, and re-filing a parked project can't silently un-park it.
@@ -14271,56 +14278,84 @@ async function fileClarifyOccasion() {
 }
 
 
-// ADD TO CALENDAR (2026-10-08, Quentin's instruction: add a task to a specific
-// block or event). A day's blocks (the SERVED answer, /api/blocks/day) and its
-// events, as chips; picking one fills Show on with that day and that start, so
-// File it places the task at the start of what you picked — the agenda draws
-// it inside that block or under that event. No second writer: it is the
-// show-on date + time the sheet already writes, filled for you.
+// ADD TO CALENDAR (2026-10-08, Quentin's instructions: add a task to a
+// specific block or event — by picking it ON the week calendar). The button
+// puts clarify aside (still open, its half-made decisions kept) and opens the
+// Calendar, the week where the window has one; a click on a block or an event
+// there picks it and brings clarify back with Show on filled to that day and
+// its start, so File it writes the placement it always writes for a date +
+// time and the agenda draws the task inside that block or under that event.
+// No second writer. Esc, or leaving the Calendar, puts clarify back unchanged.
 function clarifyCalHtml() {
-  if (!clarifyView.calOpen) {
-    return `<div class="cl-row"><span class="cl-label">Calendar</span>
-      <button id="cl-cal" class="cl-pill">Add to calendar</button></div>`;
-  }
-  const day = clarifyView.calDate;
-  const picks = [
-    ...clarifyView.calSegs.filter(g => g.start >= 0)
-      .map(g => ({ minute: g.start, label: g.label, kind: 'block' })),
-    ...dayTimedEvents(new Date(day + 'T12:00:00'))
-      .map(e => ({ minute: isoMin(e.start), label: e.summary || 'Event', kind: 'event' })),
-  ].sort((a, b) => a.minute - b.minute);
-  const on = p => clarifyView.showDate === day && clarifyView.showTime === clockHHMM(p.minute);
+  const pick = clarifyView.calPick;
   return `<div class="cl-row"><span class="cl-label">Calendar</span>
-      <button id="cl-cal" class="cl-pill cl-pill-on">Add to calendar</button>
-      <input type="date" id="cl-cal-date" class="cl-date" value="${day}"></div>
-    <div class="cl-chips">${picks.map(p => `<button class="chip chip-sm${on(p) ? ' on' : ''}"
-        data-cal-min="${p.minute}" title="${p.kind === 'block' ? 'Block' : 'Event'} — place this at its start">${
-        clockHHMM(p.minute)} ${escHtml(p.label)}</button>`).join('')
-      || '<span class="cl-hint">Nothing on this day.</span>'}</div>`;
-}
-
-async function clarifyCalLoad(day) {
-  clarifyView.calDate = day;
-  clarifyView.calSegs = await apiGet(`/api/blocks/day?date=${day}`, []);
-  renderClarify();
+    <button id="cl-cal" class="cl-pill${pick ? ' cl-pill-on' : ''}">${pick ? escHtml(pick) : 'Add to calendar'}</button>
+    ${pick ? '<button id="cl-cal-x" class="cl-x" title="Take it off that block or event">✕</button>' : ''}</div>`;
 }
 
 function wireClarifyCal(sheet) {
   const btn = sheet.querySelector('#cl-cal');
-  if (btn) btn.addEventListener('click', () => {
-    clarifyView.calOpen = !clarifyView.calOpen;
-    if (clarifyView.calOpen) clarifyCalLoad(clarifyView.showDate || wallDay());
-    else renderClarify();
-  });
-  const date = sheet.querySelector('#cl-cal-date');
-  if (date) date.addEventListener('change', e => { if (e.target.value) clarifyCalLoad(e.target.value); });
-  sheet.querySelectorAll('[data-cal-min]').forEach(b => b.addEventListener('click', () => {
-    clarifyView.showDate = clarifyView.calDate;
-    clarifyView.showTime = clockHHMM(parseInt(b.dataset.calMin));
-    clarifyView.showDateFrom = '';
+  if (btn) btn.addEventListener('click', startClarifyCalPick);
+  const x = sheet.querySelector('#cl-cal-x');
+  if (x) x.addEventListener('click', () => {
+    clarifyView.showDate = '';
+    clarifyView.showTime = '';
+    clarifyView.calPick = '';
     renderClarify();
-  }));
+  });
 }
+
+async function startClarifyCalPick() {
+  clarifyView.picking = { from: currentRoute() };
+  hideSheet('clarify-sheet');
+  document.getElementById('engage-body').classList.remove('eg-dimmed');
+  await goRoute(calWeekAvailable() ? 'calendar/week' : 'calendar', true);
+  toast(`Pick a block or event for “${clarifyView.action.trim() || 'this'}” · Esc to cancel`);
+}
+
+async function endClarifyCalPick(pick) {
+  const from = clarifyView.picking && clarifyView.picking.from;
+  clarifyView.picking = null;
+  if (pick) {
+    clarifyView.verb = 'defer';
+    clarifyView.showDate = pick.date;
+    clarifyView.showTime = clockHHMM(pick.minute);
+    clarifyView.showDateFrom = '';
+    const day = new Date(pick.date + 'T12:00:00');
+    clarifyView.calPick = `${pick.label} · ${weekdayOf(day).name} ${day.getDate()} ${hhmmToAmPm(clockHHMM(pick.minute))}`;
+  }
+  // Back where the pick began — '' is the day itself, which is a route too.
+  if (from != null && from !== currentRoute()) await goRoute(from, true);
+  if (clarifyView.open) renderClarify();
+}
+
+// What a click on the Calendar picked: an event by its key (its real start,
+// moved or not, and its own date — a next-day event drawn past midnight is
+// that next day's), a block by its column's date and its drawn start.
+function calPickFrom(el) {
+  if (el.classList.contains('tl-gcal-event')) {
+    const e = state.gcalEvents.find(x => eventKey(x) === el.dataset.evKey);
+    if (!e) return null;
+    return { date: formatDateYMD(new Date(e.start)), minute: isoMin(e.start), label: e.summary || 'Event' };
+  }
+  const label = el.querySelector('.tl-block-label');
+  const minute = Math.max(0, parseInt(el.dataset.startMin) || 0) % DAY_MIN;
+  return { date: el.dataset.date || viewDay(), minute,
+           label: (label && label.textContent.trim()) || 'Block' };
+}
+
+// While picking, a click on a block or event is the pick and nothing else:
+// on the WINDOW in the capture phase, ahead of the Calendar's own handlers
+// (its menus and the category pin listen on the document).
+window.addEventListener('click', e => {
+  if (!clarifyView.picking) return;
+  const el = e.target.closest('#cal-overlay .tl-block, #cal-overlay .tl-gcal-event');
+  if (!el) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const pick = calPickFrom(el);
+  if (pick) endClarifyCalPick(pick);
+}, true);
 
 // THE TWO EXITS THAT MEAN "AVAILABLE NOW": start it now, and To-do (2026-10-08,
 // Quentin's instruction: one button that sends a task straight to the to-do
@@ -14422,6 +14457,7 @@ function renderClarify() {
   if (!clarifyView.open || (!item && !clarifyView.external && !clarifyView.forRecurring)) {
     closeClarify(); return;
   }
+  if (clarifyView.picking) return;
   document.getElementById('engage-body').classList.add('eg-dimmed');
   showSheet('clarify-sheet');
   if (clarifyView.compose) { renderClarifyCompose(sheet); return; }
@@ -14776,6 +14812,7 @@ function renderClarify() {
   const showDate = sheet.querySelector('#cl-show-date');
   if (showDate) showDate.addEventListener('change', e => {
     clarifyView.showDate = e.target.value;
+    clarifyView.calPick = '';
     // Typed over: it is this item's date now, not a carried-over suggestion.
     if (clarifyView.showDateFrom) { clarifyView.showDateFrom = ''; renderClarify(); }
   });
@@ -14788,6 +14825,7 @@ function renderClarify() {
   const showTime = sheet.querySelector('#cl-show-time');
   if (showTime) showTime.addEventListener('change', e => {
     clarifyView.showTime = e.target.value;
+    clarifyView.calPick = '';
     if (e.target.value && !clarifyView.showDate) clarifyView.showDate = wallDay();
     renderClarify();  // date autofill + the clear ✕ appearing/going
   });
@@ -14795,6 +14833,7 @@ function renderClarify() {
   const showTimeX = sheet.querySelector('#cl-show-time-x');
   if (showTimeX) showTimeX.addEventListener('click', () => {
     clarifyView.showTime = '';
+    clarifyView.calPick = '';
     renderClarify();
   });
   const chase = sheet.querySelector('#cl-chase');
@@ -15297,7 +15336,7 @@ function closeCompose() {
 // Keyboard: the whole inbox can be emptied without the mouse. Typing fields
 // keep their keys; Enter files from the main sheet.
 document.addEventListener('keydown', e => {
-  if (!clarifyView.open) return;
+  if (!clarifyView.open || clarifyView.picking) return;
   const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
   // Both sub-views own their own keys — the composer's Enter adds an action.
   if (clarifyView.projSearch != null || clarifyView.compose) return;
