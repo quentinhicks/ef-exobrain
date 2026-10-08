@@ -1538,9 +1538,17 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE ref_list ADD COLUMN parent_id INTEGER')
         conn.commit()
+    for col, decl in (('kind', "TEXT NOT NULL DEFAULT 'list'"), ('body', "TEXT NOT NULL DEFAULT ''")):
+        try:
+            conn.execute('SELECT %s FROM ref_list LIMIT 1' % col)
+        except Exception:
+            conn.execute('ALTER TABLE ref_list ADD COLUMN %s %s' % (col, decl))
+            conn.commit()
     # AFTER the ref_list migrations above: this WRITES ref_lists (and nests
     # them), so it must run against the finished table.
     _routines_to_lists(conn)
+    # And this after THAT: the routines it made nest, so they are directories.
+    _lists_to_files(conn)
     # Habits v2 (2026-08-11). An EXPERIMENT is an object with an ending: it
     # runs (one at a time), resolves with a note, and is EVALUATED only at the
     # weekly review — extend / habit / drop. A HABIT is a standing commitment
@@ -3114,11 +3122,44 @@ def get_ref_lists():
     return lists
 
 
-def create_ref_list(name, parent_id=None):
+# LISTS ARE A FILE SYSTEM (2026-10-08, Quentin's instruction): a ref_list row
+# is a DIRECTORY, a LIST (checkable ref_items) or a DOCUMENT (a title and a
+# body). Only a directory holds anything — a list holds items and a document
+# holds text — and the root, parent_id NULL, is the home directory. These are
+# the two refusals that keep it a tree of that shape: a parent that is not a
+# directory, and (on a move) a directory filed under itself.
+REF_KINDS = ('dir', 'list', 'doc')
+
+
+def _ref_parent_error(conn, parent_id, moving_id=None):
+    if not parent_id:
+        return None
+    seen = set()
+    cur = parent_id
+    while cur:
+        if cur == moving_id or cur in seen:
+            return 'a directory cannot go inside itself'
+        seen.add(cur)
+        row = conn.execute('SELECT kind, parent_id FROM ref_list WHERE id = ?', (cur,)).fetchone()
+        if not row:
+            return 'no such directory'
+        if cur == parent_id and row['kind'] != 'dir':
+            return 'only a directory can hold lists and documents'
+        cur = row['parent_id']
+    return None
+
+
+def create_ref_list(name, parent_id=None, kind='list', body=''):
+    if kind not in REF_KINDS:
+        raise ValueError('kind must be dir, list or doc')
     conn = get_conn()
+    err = _ref_parent_error(conn, parent_id)
+    if err:
+        conn.close()
+        raise ValueError(err)
     row = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM ref_list').fetchone()
-    cur = conn.execute('INSERT INTO ref_list (name, position, parent_id) VALUES (?, ?, ?)',
-                       (name, row['p'], parent_id or None))
+    cur = conn.execute('INSERT INTO ref_list (name, position, parent_id, kind, body) VALUES (?, ?, ?, ?, ?)',
+                       (name, row['p'], parent_id or None, kind, body or ''))
     out = conn.execute('SELECT * FROM ref_list WHERE id = ?', (cur.lastrowid,)).fetchone()
     conn.commit()
     conn.close()
@@ -3127,13 +3168,39 @@ def create_ref_list(name, parent_id=None):
     return d
 
 
-def update_ref_list(id, name):
+def update_ref_list(id, name=None, body=None, parent_id=_UNSET):
     conn = get_conn()
-    conn.execute('UPDATE ref_list SET name = ? WHERE id = ?', (name, id))
+    if parent_id is not _UNSET:
+        err = _ref_parent_error(conn, parent_id, moving_id=id)
+        if err:
+            conn.close()
+            raise ValueError(err)
+        conn.execute('UPDATE ref_list SET parent_id = ? WHERE id = ?', (parent_id or None, id))
+    if name is not None:
+        conn.execute('UPDATE ref_list SET name = ? WHERE id = ?', (name, id))
+    if body is not None:
+        conn.execute("UPDATE ref_list SET body = ? WHERE id = ? AND kind = 'doc'", (body, id))
     conn.commit()
     row = conn.execute('SELECT * FROM ref_list WHERE id = ?', (id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# Clarify's Reference exit can add a capture to the END of a document: a
+# paragraph of its own, so two filings never run together into one line.
+def append_ref_doc(id, text):
+    conn = get_conn()
+    row = conn.execute('SELECT kind, body FROM ref_list WHERE id = ?', (id,)).fetchone()
+    if not row or row['kind'] != 'doc':
+        conn.close()
+        raise ValueError('only a document can be added to this way')
+    prev = (row['body'] or '').rstrip()
+    conn.execute('UPDATE ref_list SET body = ? WHERE id = ?',
+                 ((prev + '\n\n' if prev else '') + text, id))
+    conn.commit()
+    out = conn.execute('SELECT * FROM ref_list WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(out)
 
 
 def delete_ref_list(id):
@@ -3151,6 +3218,10 @@ def delete_ref_list(id):
 
 def create_ref_item(list_id, content, done=0):
     conn = get_conn()
+    owner = conn.execute('SELECT kind FROM ref_list WHERE id = ?', (list_id,)).fetchone()
+    if not owner or owner['kind'] != 'list':
+        conn.close()
+        raise ValueError('only a list holds items')
     row = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM ref_item WHERE list_id = ?',
                        (list_id,)).fetchone()
     cur = conn.execute('INSERT INTO ref_item (list_id, content, done, position) VALUES (?, ?, ?, ?)',
@@ -5692,6 +5763,38 @@ def _routines_to_lists(conn):
     conn.commit()
     if lists:
         print('routines: %d list(s), %d item(s) - routines are lists now' % (lists, steps))
+
+
+# Lists became a file system (2026-10-08) ONCE, recorded in
+# setting.lists_to_files — never clear it, or a list you later nested by hand
+# would be split again. Before, a list could hold both lists and items; now
+# only a directory holds anything. A list with lists inside becomes a
+# directory, and if it also had items they move to a list of the SAME name
+# first inside it, so nothing is lost and nothing changes name.
+def _lists_to_files(conn):
+    if conn.execute("SELECT value FROM setting WHERE key = 'lists_to_files'").fetchone():
+        return
+    dirs = moved = 0
+    parents = [r['parent_id'] for r in conn.execute(
+        'SELECT DISTINCT parent_id FROM ref_list WHERE parent_id IS NOT NULL').fetchall()]
+    for pid in parents:
+        row = conn.execute('SELECT name FROM ref_list WHERE id = ?', (pid,)).fetchone()
+        if not row:
+            continue
+        conn.execute("UPDATE ref_list SET kind = 'dir' WHERE id = ?", (pid,))
+        dirs += 1
+        if conn.execute('SELECT 1 FROM ref_item WHERE list_id = ?', (pid,)).fetchone():
+            keep = conn.execute(
+                "INSERT INTO ref_list (name, position, parent_id, kind) VALUES (?, 0, ?, 'list')",
+                (row['name'], pid)).lastrowid
+            moved += conn.execute('UPDATE ref_item SET list_id = ? WHERE list_id = ?',
+                                  (keep, pid)).rowcount
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('lists_to_files', ?)",
+        (date_cls.today().isoformat(),))
+    conn.commit()
+    if dirs:
+        print('lists: %d list(s) became directories, %d item(s) moved into a list inside' % (dirs, moved))
 
 
 def step_due_on(step, day):

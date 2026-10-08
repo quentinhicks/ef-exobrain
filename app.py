@@ -1065,16 +1065,38 @@ def post_ref_list():
     name = (data.get('name') or '').strip()
     if not name:
         return jsonify({'error': 'name is required'}), 400
-    return jsonify(storage.create_ref_list(name, data.get('parent_id'))), 201
+    try:
+        return jsonify(storage.create_ref_list(name, data.get('parent_id'),
+                                               data.get('kind') or 'list', data.get('body') or '')), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/ref/lists/<int:id>', methods=['PATCH'])
 def patch_ref_list(id):
     data = request.get_json()
-    name = (data.get('name') or '').strip()
-    if not name:
-        return jsonify({'error': 'name is required'}), 400
-    return jsonify(storage.update_ref_list(id, name))
+    name = data.get('name')
+    if name is not None:
+        name = name.strip()
+        if not name:
+            return jsonify({'error': 'name is required'}), 400
+    try:
+        return jsonify(storage.update_ref_list(
+            id, name=name, body=data.get('body'),
+            parent_id=data['parent_id'] if 'parent_id' in data else storage._UNSET))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/ref/lists/<int:id>/append', methods=['POST'])
+def post_ref_doc_append(id):
+    text = ((request.get_json() or {}).get('text') or '').strip()
+    if not text:
+        return jsonify({'error': 'text is required'}), 400
+    try:
+        return jsonify(storage.append_ref_doc(id, text))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/ref/lists/<int:id>', methods=['DELETE'])
@@ -1089,7 +1111,10 @@ def post_ref_item():
     content = (data.get('content') or '').strip()
     if not content:
         return jsonify({'error': 'content is required'}), 400
-    return jsonify(storage.create_ref_item(data['list_id'], content, data.get('done', 0))), 201
+    try:
+        return jsonify(storage.create_ref_item(data['list_id'], content, data.get('done', 0))), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/ref/items/<int:id>', methods=['PATCH'])

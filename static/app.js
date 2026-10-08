@@ -6900,15 +6900,19 @@ function refPeekHtml() {
   if (!pk || !SETTINGS_WIDE.matches) return '';
   const l = refView.lists.find(x => x.id === pk.id);
   if (!l) return '';
-  const subs = refView.lists.filter(x => x.parent_id === l.id);
+  const subs = l.kind === 'dir' ? refChildren(refView.lists, l.id) : [];
+  const inner = l.kind === 'dir'
+    ? subs.map(x => `<div class="ref-peek-row ref-peek-sub"><span>${escHtml(x.name)}${x.kind === 'dir' ? '/' : ''}</span></div>`).join('')
+    : l.kind === 'doc'
+      ? (l.body || '').split('\n').filter(t => t.trim()).map(t =>
+        `<div class="ref-peek-row"><span>${escHtml(t)}</span></div>`).join('')
+      : l.items.map(i => `<div class="ref-peek-row${i.done ? ' ref-peek-done' : ''}"><span class="ref-peek-dot"></span><span>${
+        escHtml(i.content)}</span></div>`).join('');
   return `<div id="ref-peek" class="ref-peek">
-    <div class="ref-peek-head"><span class="ref-peek-name">${escHtml(l.name)}</span>
-      <span class="ref-peek-n">${l.items.filter(i => !i.done).length}</span>
-      <button class="ref-peek-open" data-peek-list="${l.id}">Edit ›</button></div>
-    ${subs.map(x => `<div class="ref-peek-row ref-peek-sub"><span>▸ ${escHtml(x.name)}</span></div>`).join('')}
-    ${l.items.map(i => `<div class="ref-peek-row${i.done ? ' ref-peek-done' : ''}"><span class="ref-peek-dot"></span><span>${
-      escHtml(i.content)}</span></div>`).join('')
-      || (subs.length ? '' : emptyHtml('Nothing in it yet.'))}
+    <div class="ref-peek-head"><span class="ref-peek-name">${escHtml(l.name)}${l.kind === 'dir' ? '/' : ''}</span>
+      <span class="ref-peek-n">${l.kind === 'dir' ? subs.length : l.kind === 'doc' ? 'doc' : l.items.filter(i => !i.done).length}</span>
+      <button class="ref-peek-open" data-peek-list="${l.id}">Open ›</button></div>
+    ${inner || emptyHtml('Nothing in it yet.')}
   </div>`;
 }
 
@@ -6937,16 +6941,102 @@ async function refreshRef() {
   renderRef();
 }
 
-// One list row, used by the index (root lists) and by an open list (its
-// children): name, open-items count, a ▸n marker when it holds sublists.
-function refListRow(l) {
-  const subs = refView.lists.filter(x => x.parent_id === l.id).length;
+// LISTS ARE A FILE SYSTEM (2026-10-08, Quentin's instruction): every row is a
+// DIRECTORY (holds the other two and more directories), a LIST (checkable
+// items) or a DOCUMENT (a title and a body). The index is the HOME directory —
+// parent_id null. Only a directory holds anything; the server refuses the
+// rest (storage._ref_parent_error). These helpers are the one reading of the
+// tree, asked by this page and by clarify's Reference browser alike.
+const REF_KIND_WORD = { dir: 'directory', list: 'list', doc: 'document' };
+
+// What a directory holds, directories first, each group in its own order.
+function refChildren(lists, pid) {
+  const here = lists.filter(l => (l.parent_id || null) === (pid || null));
+  return [...here.filter(l => l.kind === 'dir'), ...here.filter(l => l.kind !== 'dir')];
+}
+
+// "~/Books/" — the path to a directory (null is home).
+function refPath(lists, id) {
+  const names = [];
+  for (let cur = lists.find(l => l.id === id); cur; cur = lists.find(l => l.id === cur.parent_id)) {
+    names.unshift(cur.name);
+  }
+  return '~/' + names.map(n => n + '/').join('');
+}
+
+// One row, whatever its kind: a directory's name carries the slash and how
+// much is in it, a list its open items, a document the word for what it is.
+function refEntryRow(l) {
+  const tail = l.kind === 'dir' ? refChildren(refView.lists, l.id).length
+    : l.kind === 'doc' ? 'doc'
+    : l.items.filter(i => !i.done).length;
   return `<div class="ref-row" data-id="${l.id}">
-    <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}</span>
-    ${subs ? `<span class="count" title="${subs} list${subs === 1 ? '' : 's'} inside">▸${subs}</span>` : ''}
-    <span class="count">${l.items.filter(i => !i.done).length}</span>
-    <button class="ref-del" data-id="${l.id}" title="Delete list">×</button>
+    <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}${l.kind === 'dir' ? '/' : ''}</span>
+    <span class="count">${tail}</span>
+    <button class="ref-del" data-id="${l.id}" title="Delete ${REF_KIND_WORD[l.kind]}">×</button>
   </div>`;
+}
+
+function refAddButtonsHtml() {
+  return `<button class="map-add-btn" data-ref-add="dir">+ directory</button>
+    <button class="map-add-btn" data-ref-add="list">+ list</button>
+    <button class="map-add-btn" data-ref-add="doc">+ document</button>`;
+}
+
+// The rows and add buttons of a directory (home included): the same gestures
+// wherever a directory is drawn.
+function wireRefEntries(body, pid) {
+  const where = pid ? (refView.lists.find(l => l.id === pid) || {}).name : null;
+  body.querySelectorAll('[data-ref-add]').forEach(b => b.addEventListener('click', () => {
+    const kind = b.dataset.refAdd;
+    openEntrySheet({
+      title: `New ${REF_KIND_WORD[kind]}${where ? ` in ${where}` : ''}`,
+      placeholder: `Name the ${REF_KIND_WORD[kind]}…`, button: 'Create', closeOnAdd: true,
+      add: async name => {
+        const res = await apiSend('/api/ref/lists', 'POST', { name, kind, parent_id: pid });
+        const created = await res.json();
+        if (!res.ok) { toast(created.error || 'Could not create it'); return; }
+        pushUndo(`created ${REF_KIND_WORD[kind]} "${name}"`, async () => {
+          await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
+          await refreshAfterUndo();
+        });
+        refView.open = created.id;
+        await refreshRef();
+      },
+    });
+  }));
+  body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span =>
+    onTapOrDouble(span, () => {
+      const lid = parseInt(span.closest('.ref-row').dataset.id);
+      if (!pid && SETTINGS_WIDE.matches) { refPeekToggle('list', lid); return; }
+      refView.open = lid;
+      renderRef();
+    }, () => refListRename(span)));
+  body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', () =>
+    refDelete(parseInt(b.dataset.id))));
+}
+
+// Delete, with the inverse. New ids are fine — nothing outside Lists holds a
+// ref id (unlike inbox restore). A directory's contents splice up a level on
+// the server, so its undo files them back into the recreated directory.
+async function refDelete(id) {
+  const l = refView.lists.find(x => x.id === id);
+  if (!l) return;
+  const inside = refView.lists.filter(x => x.parent_id === id).map(x => x.id);
+  await apiSend(`/api/ref/lists/${id}`, 'DELETE');
+  pushUndo(`deleted ${REF_KIND_WORD[l.kind]} "${l.name}"`, async () => {
+    const nl = await apiSend('/api/ref/lists', 'POST', {
+      name: l.name, kind: l.kind, body: l.body || '', parent_id: l.parent_id }).then(r => r.json());
+    for (const it of l.items) {
+      await apiSend('/api/ref/items', 'POST', { list_id: nl.id, content: it.content, done: it.done });
+    }
+    for (const cid of inside) {
+      await apiSend(`/api/ref/lists/${cid}`, 'PATCH', { parent_id: nl.id });
+    }
+    await refreshAfterUndo();
+  });
+  if (refView.open === id) refView.open = l.parent_id || null;
+  await refreshRef();
 }
 
 function renderRef() {
@@ -6958,86 +7048,79 @@ function renderRef() {
   const open = refView.lists.find(l => l.id === refView.open);
   // LISTS PAGE (2026-10-01, Quentin's design): the index wears the Now shell
   // — the section's name in the left column, its rows in the middle — and
-  // needs no header of its own; one list keeps its head (it carries the name
-  // and the way back).
+  // needs no header of its own; one entry keeps its head (it carries the
+  // name and the way back).
   document.getElementById('tab-lists').classList.toggle('ref-index', !open);
 
   if (!open) {
     title.textContent = 'Lists';
-    // The index shows lists at the ROOT; nested lists live inside their
-    // parent (2026-08-11), the same split-at-the-root MAP's someday pile uses.
-    const rootLists = refView.lists.filter(l => !l.parent_id);
-    // ROUTINES ARE LISTS (2026-10-05): what was the Routines section is
-    // ordinary lists now, so the index is one section.
-    body.innerHTML = mpSection('Lists', '', `<div class="ref-list">${rootLists.map(l => refListRow(l)).join('')
-      || emptyHtml('No lists yet.')}
-      <button id="ref-new" class="map-add-btn">+ list</button></div>`)
+    body.innerHTML = mpSection('Home', '', `<div class="ref-list">${
+      refChildren(refView.lists, null).map(refEntryRow).join('')
+      || emptyHtml('Nothing here yet.')}
+      ${refAddButtonsHtml()}</div>`)
       + refPeekHtml();
     requestAnimationFrame(() => wireRefPeek(body));
-
-    const refNew = body.querySelector('#ref-new');
-    if (refNew) refNew.addEventListener('click', () => openEntrySheet({
-      title: 'New list', placeholder: 'Name the list…', button: 'Create',
-      closeOnAdd: true,
-      add: async name => {
-        const created = await apiSend('/api/ref/lists', 'POST', { name }).then(r => r.json());
-        pushUndo(`created list "${name}"`, async () => {
-          await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
-          await refreshAfterUndo();
-        });
-        refView.open = created.id;
-        await refreshRef();
-      },
-    }));
-    body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span =>
-      onTapOrDouble(span, () => {
-        const lid = parseInt(span.closest('.ref-row').dataset.id);
-        if (SETTINGS_WIDE.matches) { refPeekToggle('list', lid); return; }
-        refView.open = lid;
-        renderRef();
-      }, () => refListRename(span)));
-    body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
-      const id = parseInt(b.dataset.id);
-      const l = refView.lists.find(x => x.id === id);
-      await apiSend(`/api/ref/lists/${id}`, 'DELETE');
-      // Recreate replays name + items; new ids are fine — nothing references
-      // a ref id from outside (unlike inbox restore).
-      pushUndo(`deleted list "${l.name}"`, async () => {
-        const nl = await apiSend('/api/ref/lists', 'POST', { name: l.name }).then(r => r.json());
-        for (const it of l.items) {
-          await apiSend('/api/ref/items', 'POST', { list_id: nl.id, content: it.content, done: it.done });
-        }
-        await refreshAfterUndo();
-      });
-      await refreshRef();
-    }));
+    wireRefEntries(body, null);
     return;
   }
 
+  // A document being written in is not repainted under the cursor — half-typed
+  // text is data (the renderBar rule).
+  const live = body.querySelector('[data-ref-doc]');
+  if (live && live === document.activeElement && live.dataset.refDoc === String(open.id)) return;
+
   title.textContent = open.name;
   const parent = open.parent_id ? refView.lists.find(l => l.id === open.parent_id) : null;
-  const children = refView.lists.filter(l => l.parent_id === open.id);
-  body.innerHTML = `
-    <button id="ref-back" class="log-back-btn">‹ ${parent ? escHtml(parent.name) : 'All lists'}</button>
-    ${children.length ? `<div class="ref-list ref-sublists">${
-      children.map(l => refListRow(l)).join('')}</div>` : ''}
-    <div class="ref-list">${open.items.map(i => `
+  const back = `<button id="ref-back" class="log-back-btn">‹ ${parent ? escHtml(parent.name) + '/' : 'Home'}</button>`;
+
+  if (open.kind === 'dir') {
+    body.innerHTML = `${back}<div class="ref-list">${
+      refChildren(refView.lists, open.id).map(refEntryRow).join('') || emptyHtml('Empty.')}
+      ${refAddButtonsHtml()}</div>`;
+    wireRefEntries(body, open.id);
+  } else if (open.kind === 'doc') {
+    body.innerHTML = `${back}<textarea class="cl-notes" rows="12" data-ref-doc="${open.id}"
+      placeholder="Write…" spellcheck="true">${escHtml(open.body || '')}</textarea>`;
+    const ta = body.querySelector('[data-ref-doc]');
+    // A document is a notes field: the notes debounce, every close flushes
+    // it, and ONE undo per editing session.
+    let undoPushed = false;
+    const before = open.body || '';
+    wireNotesAutosave(ta, async value => {
+      if (value === (open.body || '')) return;
+      if (!undoPushed) {
+        undoPushed = true;
+        pushUndo(`edited "${open.name}"`, async () => {
+          await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { body: before });
+          await refreshAfterUndo();
+        });
+      }
+      await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { body: value });
+      open.body = value;
+    });
+  } else {
+    body.innerHTML = `${back}<div class="ref-list">${open.items.map(i => `
       <div class="ref-row" data-item="${i.id}">
         <span class="eg-check ref-check${i.done ? ' ref-checked' : ''}" data-item="${i.id}"
           title="${i.done ? 'Uncheck' : 'Check off'}">${i.done ? '✓' : ''}</span>
         <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
         <button class="ref-del" data-item="${i.id}" title="Remove">×</button>
-      </div>`).join('')
-      || (children.length ? '' : emptyHtml('Empty.'))}
-    <button id="ref-add-item" class="map-add-btn">+ item</button>
-    <button id="ref-add-sub" class="map-add-btn">+ list inside</button></div>`;
+      </div>`).join('') || emptyHtml('Empty.')}
+    <button id="ref-add-item" class="map-add-btn">+ item</button></div>`;
+    wireRefListItems(body, open);
+  }
 
   // Back peels one LEVEL, not to the index — nesting made "up" and "out"
   // different things.
-  document.getElementById('ref-back').addEventListener('click', () => {
+  document.getElementById('ref-back').addEventListener('click', async () => {
+    const ta = body.querySelector('[data-ref-doc]');
+    if (ta && ta.__flushNotes) await ta.__flushNotes();
     refView.open = open.parent_id || null;
     renderRef();
   });
+}
+
+function wireRefListItems(body, open) {
   document.getElementById('ref-add-item').addEventListener('click', () => openEntrySheet({
     title: open.name, placeholder: `Add to ${open.name}…`,
     add: async raw => {
@@ -7048,38 +7131,6 @@ function renderRef() {
       });
       await refreshRef();
     },
-  }));
-  document.getElementById('ref-add-sub').addEventListener('click', () => openEntrySheet({
-    title: `List inside ${open.name}`, placeholder: 'Name the list…', button: 'Create',
-    closeOnAdd: true,
-    add: async name => {
-      const created = await apiSend('/api/ref/lists', 'POST', { name, parent_id: open.id }).then(r => r.json());
-      pushUndo(`created list "${name}" in ${open.name}`, async () => {
-        await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
-        await refreshAfterUndo();
-      });
-      refView.open = created.id;
-      await refreshRef();
-    },
-  }));
-  // Child-list rows: same gestures as the index rows.
-  body.querySelectorAll('.ref-row[data-id] .ref-name').forEach(span =>
-    onTapOrDouble(span, () => {
-      refView.open = parseInt(span.closest('.ref-row').dataset.id);
-      renderRef();
-    }, () => refListRename(span)));
-  body.querySelectorAll('.ref-del[data-id]').forEach(b => b.addEventListener('click', async () => {
-    const id = parseInt(b.dataset.id);
-    const l = refView.lists.find(x => x.id === id);
-    await apiSend(`/api/ref/lists/${id}`, 'DELETE');
-    pushUndo(`deleted list "${l.name}"`, async () => {
-      const nl = await apiSend('/api/ref/lists', 'POST', { name: l.name, parent_id: l.parent_id }).then(r => r.json());
-      for (const it of l.items) {
-        await apiSend('/api/ref/items', 'POST', { list_id: nl.id, content: it.content, done: it.done });
-      }
-      await refreshAfterUndo();
-    });
-    await refreshRef();
   }));
   body.querySelectorAll('.ref-check').forEach(c => c.addEventListener('click', async () => {
     const id = parseInt(c.dataset.item);
@@ -7115,6 +7166,80 @@ function renderRef() {
     });
     await refreshRef();
   }));
+}
+
+// CLARIFY'S REFERENCE EXIT FILES INTO THE TREE: a directory gets a NEW
+// document (the capture is its title, the notes its body); an existing list
+// gets the capture as an item; an existing document gets it at its end. ONE
+// writer for the inbox and external doors alike, returning its own inverse —
+// the caller's undo runs it beside whatever else it reverses.
+async function refFileCapture(target, content, notes) {
+  const undo = await refFileWrite(target, content, (notes || '').trim());
+  // The sheet stays open for the next capture: it must see what was just
+  // made, and a document's undo must restore the body as it now stands.
+  clarifyView.refLists = await apiGet('/api/ref', clarifyView.refLists);
+  return undo;
+}
+
+async function refFileWrite(target, content, extra) {
+  if (target.kind === 'new') {
+    const res = await apiSend('/api/ref/lists', 'POST',
+      { name: content, kind: 'doc', body: extra, parent_id: target.dir });
+    const created = await res.json();
+    if (!res.ok) throw new Error(created.error || 'could not file it');
+    return () => apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
+  }
+  const l = (clarifyView.refLists || []).find(x => x.id === target.id);
+  if (target.kind === 'doc') {
+    const prev = l ? l.body || '' : '';
+    await apiSend(`/api/ref/lists/${target.id}/append`, 'POST',
+      { text: extra ? `${content}\n${extra}` : content });
+    return () => apiSend(`/api/ref/lists/${target.id}`, 'PATCH', { body: prev });
+  }
+  const created = await apiSend('/api/ref/items', 'POST', { list_id: target.id, content }).then(r => r.json());
+  return () => apiSend(`/api/ref/items/${created.id}`, 'DELETE');
+}
+
+// The browser the Reference pill opens: the HOME directory first, a
+// directory's rows to walk down, `‹` to walk up, and the two ways to file —
+// tap a list or document to add to it, or make a new document right here.
+function clarifyRefHtml() {
+  const lists = clarifyView.refLists || [];
+  const dir = clarifyView.refDir;
+  const chips = refChildren(lists, dir).map(l => l.kind === 'dir'
+    ? `<button class="chip chip-sm" data-ref-into="${l.id}">${escHtml(l.name)}/</button>`
+    : `<button class="chip chip-sm" data-ref-file="${l.id}" data-ref-kind="${l.kind}"
+        title="Add this to the end of the ${REF_KIND_WORD[l.kind]}">${escHtml(l.name)}</button>`).join('');
+  return `<div class="cl-chips cl-ref-row">
+    <span class="cl-label">${escHtml(refPath(lists, dir))}</span>
+    ${dir ? `<button class="chip chip-sm" id="cl-ref-up" title="Up a directory">‹ up</button>` : ''}
+    ${chips}
+    <button class="chip chip-sm" id="cl-ref-here">+ new document here</button>
+  </div>`;
+}
+
+// Reference opens on the HOME directory, every time (Quentin's instruction):
+// where you last filed is not where this capture belongs.
+function clarifyToggleRef() {
+  clarifyView.refOpen = !clarifyView.refOpen;
+  clarifyView.refDir = null;
+  renderClarify();
+}
+
+function wireClarifyRef(sheet) {
+  const into = id => { clarifyView.refDir = id; renderClarify(); };
+  sheet.querySelectorAll('[data-ref-into]').forEach(b => b.addEventListener('click', () =>
+    into(parseInt(b.dataset.refInto))));
+  const up = sheet.querySelector('#cl-ref-up');
+  if (up) up.addEventListener('click', () => {
+    const cur = (clarifyView.refLists || []).find(l => l.id === clarifyView.refDir);
+    into(cur ? cur.parent_id || null : null);
+  });
+  sheet.querySelectorAll('[data-ref-file]').forEach(b => b.addEventListener('click', () =>
+    fileClarify('reference', { kind: b.dataset.refKind, id: parseInt(b.dataset.refFile) })));
+  const here = sheet.querySelector('#cl-ref-here');
+  if (here) here.addEventListener('click', () =>
+    fileClarify('reference', { kind: 'new', dir: clarifyView.refDir || null }));
 }
 
 
@@ -13345,7 +13470,8 @@ const clarifyView = {
   projectId: null, projectName: '', who: '', chase: '',
   notes: '',          // support material, saved with the item on file
   due: '',            // hard deadline (YMD) — real ones only; '' = none
-  refOpen: false,     // the Reference exit's list picker (R toggles)
+  refOpen: false,     // the Reference exit's browser (R toggles)
+  refDir: null,       // the directory it is showing; null is home
   refLists: [],       // loaded with the sheet's other vocab
   projNotesOpen: false, // the chosen PROJECT's notes editor (✎ by the pill)
   areaId: null,       // filed under this area — or …
@@ -13921,7 +14047,7 @@ async function handOffToDevice(dev) {
   renderClarify();
 }
 
-async function fileClarify(bucket, refListId) {
+async function fileClarify(bucket, refTarget) {
   if (clarifyView.filing) return;          // in flight — ignore the double click
   // A project's "Active" IS the defer exit with no start date — the same
   // write, so it is a label on this surface rather than a bucket of its own.
@@ -13934,20 +14060,20 @@ async function fileClarify(bucket, refListId) {
   // before anything else so a stray keyboard exit (S, R, ⌫) can't file one.
   if (clarifyView.forRecurring) { await saveClarifyRecurring(); return; }
   if (clarifyView.forOccasion) { await fileClarifyOccasion(); return; }
-  if (clarifyView.external) { await fileClarifyExternal(bucket, refListId); return; }
+  if (clarifyView.external) { await fileClarifyExternal(bucket, refTarget); return; }
   const startNow = bucket === 'do' && clarifyView.doVariant === 'progress';
   if (startNow) { clarifyView.showDate = ''; clarifyView.showTime = ''; bucket = 'defer'; }
   const item = clarifyView.queue[0];
   if (!item) { closeClarify(); return; }
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
-  if (bucket === 'reference' && !refListId) return;
+  if (bucket === 'reference' && !refTarget) return;
   // Read before clarifyResetItem clears it — the post-file composer hook
   // below needs to know where this action landed.
   const filedProjectId = (bucket !== 'trash' && bucket !== 'reference')
     ? clarifyView.projectId : null;
   clarifyView.filing = true;
   paintClarifyBusy(true);
-  let refCreated = null;
+  let refUndo = null;
   try {
     // Filing is one-way by GTD design, but a misfile should still be
     // recoverable: snapshot the item exactly as it sat in "in".
@@ -13969,7 +14095,7 @@ async function fileClarify(bucket, refListId) {
     } else if (bucket === 'reference') {
       // The other non-actionable keep: the text moves to a reference list and
       // the item leaves the action inventory entirely.
-      refCreated = await apiSend('/api/ref/items', 'POST', { list_id: refListId, content }).then(r => r.json());
+      refUndo = await refFileCapture(refTarget, content, clarifyView.notes);
       await apiSend(`/api/inbox/${item.id}`, 'DELETE');
     } else if (bucket === 'someday') {
       // No due input on this exit, but the prefilled value rides along so
@@ -14016,7 +14142,7 @@ async function fileClarify(bucket, refListId) {
                      reference: 'referenced' }[bucket] || 'filed';
       pushUndo(`${verb} "${item.content}"`, async () => {
         // A reference filing has TWO effects; undo reverses both.
-        if (refCreated) await apiSend(`/api/ref/items/${refCreated.id}`, 'DELETE');
+        if (refUndo) await refUndo();
         await apiSend('/api/inbox/restore', 'POST', snap);
         // Put it back at the head of the queue if the sheet is still open.
         if (clarifyView.open) {
@@ -14101,7 +14227,7 @@ async function fileClarifyOccasion() {
 // thread, a pile of paper). The typed next physical action is the content;
 // filing creates the item and then routes it exactly like an inbox row.
 // Do now / Trash store nothing: the thing happened (or died) outside the app.
-async function fileClarifyExternal(bucket, refListId) {
+async function fileClarifyExternal(bucket, refTarget) {
   const content = clarifyView.action.trim();
   // Same as fileClarify: starting it keeps the item, so it takes the active
   // path rather than the do-now delete.
@@ -14109,15 +14235,15 @@ async function fileClarifyExternal(bucket, refListId) {
   if (startNow) { clarifyView.showDate = ''; clarifyView.showTime = ''; bucket = 'defer'; }
   if (!content && bucket !== 'trash') return;
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
-  if (bucket === 'reference' && !refListId) return;
+  if (bucket === 'reference' && !refTarget) return;
   clarifyView.filing = true;
   paintClarifyBusy(true);
   try {
     if (bucket === 'reference') {
       // Straight to the list — reference never touches the action inventory.
-      const created = await apiSend('/api/ref/items', 'POST', { list_id: refListId, content }).then(r => r.json());
+      const refUndo = await refFileCapture(refTarget, content, clarifyView.notes);
       pushUndo(`referenced "${content}"`, async () => {
-        await apiSend(`/api/ref/items/${created.id}`, 'DELETE');
+        await refUndo();
         await refreshAfterUndo();
       });
     } else if (bucket !== 'trash' && bucket !== 'do') {
@@ -14419,10 +14545,7 @@ function renderClarify() {
       <button class="cl-pill" id="cl-someday">Someday <span class="cl-key">S</span></button>
       <button class="cl-pill${clarifyView.refOpen ? ' cl-pill-on' : ''}" id="cl-reference">Reference <span class="cl-key">R</span></button>
     </div>`}
-    ${clarifyView.refOpen && !tpl && !rec ? `<div class="cl-chips cl-ref-row">
-      ${clarifyView.refLists.map(l => `<button class="chip chip-sm" data-reflist="${l.id}">${escHtml(l.name)}</button>`).join('')}
-      <input type="text" id="cl-ref-new" class="cl-chip-input" placeholder="+ new list">
-    </div>` : ''}
+    ${clarifyView.refOpen && !tpl && !rec ? clarifyRefHtml() : ''}
     <div class="cl-foot">
       <span class="cl-then">${rec ? `First one ${escHtml(rec.anchor || '—')}`
         : tpl ? `Every ${escHtml(clarifyView.forOccasion.name)}`
@@ -14659,10 +14782,7 @@ function renderClarify() {
   // chips; tapping a chip files immediately (exits are one gesture), and the
   // + input creates the list and files into it in the same stroke.
   const reference = sheet.querySelector('#cl-reference');
-  if (reference) reference.addEventListener('click', () => {
-    clarifyView.refOpen = !clarifyView.refOpen;
-    renderClarify();
-  });
+  if (reference) reference.addEventListener('click', clarifyToggleRef);
   const occDel = sheet.querySelector('#cl-occ-del');
   if (occDel) occDel.addEventListener('click', async () => {
     await apiSend(`/api/occasions/items/${item.id}`, 'DELETE');
@@ -14670,19 +14790,7 @@ function renderClarify() {
     closeClarify();
     if (back) back();
   });
-  sheet.querySelectorAll('.chip[data-reflist]').forEach(b => b.addEventListener('click', () => {
-    fileClarify('reference', parseInt(b.dataset.reflist));
-  }));
-  const refNew = sheet.querySelector('#cl-ref-new');
-  if (refNew) refNew.addEventListener('keydown', async e => {
-    if (e.key !== 'Enter') return;
-    e.stopPropagation();
-    const name = refNew.value.trim();
-    if (!name) return;
-    const nl = await apiSend('/api/ref/lists', 'POST', { name }).then(r => r.json());
-    clarifyView.refLists.push(nl);
-    fileClarify('reference', nl.id);
-  });
+  wireClarifyRef(sheet);
   sheet.querySelector('#cl-file').addEventListener('click', () => fileClarify(clarifyView.verb));
   const extDone = sheet.querySelector('#cl-ext-done');
   if (extDone) extDone.addEventListener('click', closeClarify);
@@ -15099,7 +15207,7 @@ document.addEventListener('keydown', e => {
     else if (k === 'f') { clarifyView.verb = 'defer'; renderClarify(); }
     else if (e.key === 'Backspace') { e.preventDefault(); clarifyView.verb = 'trash'; renderClarify(); }
     else if (k === 's') { fileClarify('someday'); }
-    else if (k === 'r') { clarifyView.refOpen = !clarifyView.refOpen; renderClarify(); }
+    else if (k === 'r') clarifyToggleRef();
     return;
   }
   if (k === 'd') { clarifyView.verb = 'do'; clarifyView.doVariant = 'done'; renderClarify(); }
@@ -15107,7 +15215,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'g') { clarifyView.verb = 'delegate'; renderClarify(); }
   else if (k === 'f') { clarifyView.verb = 'defer'; renderClarify(); }
   else if (k === 's') { fileClarify('someday'); }
-  else if (k === 'r') { clarifyView.refOpen = !clarifyView.refOpen; renderClarify(); }
+  else if (k === 'r') clarifyToggleRef();
   else if (e.key === 'Backspace') { e.preventDefault(); fileClarify('trash'); }
 });
 
