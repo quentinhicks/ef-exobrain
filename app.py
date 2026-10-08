@@ -649,6 +649,7 @@ def get_inbox():
 def get_inbox_active():
     domain_id = request.args.get('domain_id', type=int)
     storage.seed_recurring_tasks()
+    storage.clear_stale_started()
     # No filter = every available item across domains: the Engage context
     # picker narrows client-side so switching contexts costs no round trip.
     # (?area_id was a third branch nothing has called since the pool became

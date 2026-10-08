@@ -3445,6 +3445,32 @@ def _md_on_or_after(md, day):
     return None
 
 
+# THE DOT IS A STATEMENT ABOUT TODAY (2026-10-08, Quentin's instruction: the
+# to-do list resets daily). A started_at stamped before today is cleared, so
+# every row comes back undotted in the morning; the row itself stays put. Run
+# beside seed_recurring_tasks, on the read that builds the pool, so every
+# reader sees the same answer. The client stamps with toISOString (UTC, 'Z'),
+# so the day is the stamp's LOCAL date, never its first ten characters — a
+# dot set at 21:00 EDT would otherwise read as tomorrow's and survive a day.
+def clear_stale_started():
+    today = date_cls.today()
+    conn = get_conn()
+    stale = []
+    for r in conn.execute('SELECT id, started_at FROM inbox_item WHERE started_at IS NOT NULL'):
+        try:
+            stamp = datetime.fromisoformat(r['started_at'])
+        except ValueError:
+            continue
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone()
+        if stamp.date() < today:
+            stale.append((r['id'],))
+    if stale:
+        conn.executemany('UPDATE inbox_item SET started_at = NULL WHERE id = ?', stale)
+        conn.commit()
+    conn.close()
+
+
 def seed_recurring_tasks():
     today = date_cls.today()
     today_str = today.isoformat()
