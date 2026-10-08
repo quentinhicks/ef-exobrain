@@ -5336,8 +5336,14 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .wk-task-add { border: none; outline: none; background: transparent; padding: 7px 0; font: 13px var(--font-ui);
   color: var(--text-primary); }
 .wk-task-add::placeholder { color: var(--text-secondary); }
-.wk-block > .wk-task-n { position: absolute; top: 3px; right: 3px; }
-.wk-ev .wk-task-n { flex: none; margin-left: 4px; }
+/* The tasks, read in the item itself: one very small line each. A block's sit
+   over its hatching past the drag band; an event's run under its name. */
+.wk-tasks { pointer-events: none; overflow: hidden; }
+.wk-task { font-size: 9.5px; line-height: 1.3; color: var(--text-primary); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.wk-task::before { content: '· '; color: var(--text-secondary); }
+.wk-block > .wk-tasks { position: absolute; top: 3px; left: 13px; right: 3px; bottom: 2px; }
+.wk-ev .wk-tasks { padding-top: 1px; }
 .wk-pop-head { display: flex; align-items: center; justify-content: space-between; font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .wk-pop-note { font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
 .wk-roles { display: flex; flex-direction: column; }

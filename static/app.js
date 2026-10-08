@@ -2213,12 +2213,12 @@ function initCalBlockPin() {
     if (justPointerDragged() || justLongPressed()) return;
     e.stopPropagation();
     toggleCalPin(el);
-    // A CLICK HIGHLIGHTS AND NAMES (2026-10-05). The label is the one the
-    // hover shows, kept up for the stretch that was clicked — on a phone, with
-    // no hover, this is how a block is read. On the WEEK the click also opens
-    // the block's task card (2026-10-08, "Calendar Tasks" 7a, which reverses
-    // "not the popup with items"), and the card names it instead.
-    if (calPin.cat && calWeek.pop !== 'tasks') showBlockHover(el); else hideBlockHover();
+    // A CLICK HIGHLIGHTS AND NAMES, NOTHING ELSE (2026-10-05, Quentin: keep
+    // the highlighted block's name, not the popup with items). The label is
+    // the one the hover shows, kept up for the stretch that was clicked — on a
+    // phone, with no hover, this is how a block is read. A block's tasks are
+    // written inside it; its card is a double-click (wkTaskDbl).
+    if (calPin.cat) showBlockHover(el); else hideBlockHover();
   });
   // The block's menu (its day verbs and Edit) moved to a DOUBLE-click: on a
   // calendar whose right-click removes, it is the remaining door to them.
@@ -2249,10 +2249,15 @@ function wkTasksAt(date, minute) {
   return (calWeek.tasks || []).filter(t => t.date === date && Math.round(t.minute) === Math.round(minute));
 }
 
-function wkTaskCount(date, minute, cont) {
+// THE TASKS ARE READ IN THE ITEM ITSELF (2026-10-08, Quentin: "just list the
+// tasks in very small font in the block/event as the primary way to view"):
+// each open task one tiny line inside what it is on. The card is the second
+// way in — a double-click, and only where there is something to show.
+function wkTaskList(date, minute, cont) {
   if (cont) return '';
-  const n = wkTasksAt(date, minute).length;
-  return n ? `<span class="count wk-task-n" title="${n} task${n === 1 ? '' : 's'} here">✓${n}</span>` : '';
+  const tasks = wkTasksAt(date, minute);
+  return tasks.length ? `<div class="wk-tasks">${tasks.map(t =>
+    `<div class="wk-task">${escHtml(t.content)}</div>`).join('')}</div>` : '';
 }
 
 async function refreshCalTasks(start) {
@@ -2304,28 +2309,36 @@ function wkTaskPopHtml() {
   </div>`;
 }
 
-// The week's click, first: an event or a block opens (or, again, closes) its
-// card; inside the card, its own controls. Returns whether it took the click.
+// The week's click, first: inside the card, its own controls. A single click
+// on an item is what it always was (a block's highlight, an event's read-out).
+// Returns whether it took the click.
 async function wkTaskClick(e) {
-  if (!calWeek.on) return false;
-  if (e.target.closest('.wk-task-pop')) {
-    const done = e.target.closest('[data-task-done]');
-    if (done) await wkTaskDone(parseInt(done.dataset.taskDone));
-    else if (e.target.closest('[data-task-close]')) { calWeek.pop = null; calWeek.taskPop = null; renderCalWeek(); }
-    else if (e.target.closest('[data-task-more]')) wkTaskMore(e);
-    return true;
-  }
+  if (!calWeek.on || !e.target.closest('.wk-task-pop')) return false;
+  const done = e.target.closest('[data-task-done]');
+  if (done) await wkTaskDone(parseInt(done.dataset.taskDone));
+  else if (e.target.closest('[data-task-close]')) { calWeek.pop = null; calWeek.taskPop = null; renderCalWeek(); }
+  else if (e.target.closest('[data-task-more]')) wkTaskMore(e);
+  return true;
+}
+
+// A DOUBLE-click opens (or, again, closes) an item's card — only when it holds
+// an open task. With none, the double-click is what it was: a block's menu.
+function wkTaskDbl(e) {
+  if (!calWeek.on) return;
   const el = e.target.closest('.wk-block[data-cat], .wk-ev');
-  if (!el || el.classList.contains('tl-block-cont')) return false;
-  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false;
-  if (justPointerDragged() || justLongPressed()) return false;
+  if (!el || el.classList.contains('tl-block-cont')) return;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const occ = wkOccOf(el);
-  if (!occ) return false;
+  if (!occ || !wkTasksAt(occ.date, occ.minute).length) return;
+  e.stopPropagation();
+  clearTimeout(calWeek.evTap);
+  hideBlockHover();
+  if (eventPop.key != null) closeEventPop();
   const cur = calWeek.pop === 'tasks' && calWeek.taskPop;
   if (cur && cur.key === occ.key) {
     calWeek.pop = null; calWeek.taskPop = null;
     renderCalWeek();
-    return true;
+    return;
   }
   // Beside the column, on the side with room, level with the click.
   const colEl = el.closest('.wk-col');
@@ -2337,7 +2350,6 @@ async function wkTaskClick(e) {
   calWeek.pop = 'tasks';
   calWeek.taskPop = { ...occ, x, y, draft: '', focus: false };
   renderCalWeek();
-  return true;
 }
 
 async function wkTaskDone(id) {
@@ -2641,7 +2653,7 @@ function renderCalWeek() {
           data-purpose="${escHtml(blockPurpose(s))}" ${blockCatAttrs(s)}
           style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
           <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
-            escHtml(s.label)}</span></div>${wkTaskCount(d, s.startMin, s.cont)}</div>`;
+            escHtml(s.label)}</span></div>${wkTaskList(d, s.startMin, s.cont)}</div>`;
       }).join('');
 
     // Next-day events count when the week runs past midnight — the day view's
@@ -2671,7 +2683,8 @@ function renderCalWeek() {
           : h < 30 ? `title="${escHtml(`${e.summary || 'Event'} · ${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"` : ''}
         style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${e.color || '#888888'}">
         <div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${
-          escHtml(e.summary || '')}</span>${wkTaskCount(formatDateYMD(new Date(e.start)), isoMin(e.start))}${h >= 30 ? `<span class="tl-event-time">${escHtml(time)}</span>` : ''}</div></div>`;
+          escHtml(e.summary || '')}</span>${h >= 30 ? `<span class="tl-event-time">${escHtml(time)}</span>` : ''}</div>${
+          wkTaskList(formatDateYMD(new Date(e.start)), isoMin(e.start))}</div>`;
     }).join('');
 
     const gates = wkDayGates(d).filter(g => g.window.end_min >= start && g.window.end_min <= end)
@@ -3054,13 +3067,25 @@ function initCalWeek() {
     } else if (act === 'refresh') {
       await refreshCalendar();
     } else if (act === 'event') {
-      openEventPop(a.dataset.evKey, a);
+      // An event holding tasks has a double-click (its card), and the read-out
+      // docks and shifts the grid under the pointer — so its single click
+      // waits out the double-click, the onTapOrDouble rule. Others open now.
+      const occ = a.classList.contains('wk-ev') && wkOccOf(a);
+      if (!occ || !wkTasksAt(occ.date, occ.minute).length) { openEventPop(a.dataset.evKey, a); return; }
+      if (e.detail > 1) return;
+      const key = a.dataset.evKey;
+      clearTimeout(calWeek.evTap);
+      calWeek.evTap = setTimeout(() => {
+        const live = document.querySelector(`#cal-week .wk-ev[data-ev-key="${CSS.escape(key)}"]`);
+        openEventPop(key, live || a);
+      }, DBL_WAIT_MS);
     }
   };
   // ONE handler for the week's controls wherever they stand — the grid, and
   // the selector's menu.
   host.addEventListener('click', weekClick);
   strip.addEventListener('click', weekClick);
+  host.addEventListener('dblclick', wkTaskDbl);
 
   // Narrowed past the week's width: back to the day, which fits.
   // The window was resized across the week's width: follow it, both ways.
