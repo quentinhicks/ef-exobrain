@@ -920,6 +920,15 @@ def get_engage_placements_route():
     return jsonify(storage.get_engage_placements(date))
 
 
+@app.route('/api/calendar/tasks')
+def get_calendar_tasks_route():
+    frm = request.args.get('from')
+    to = request.args.get('to')
+    if not frm or not to:
+        return jsonify({'error': 'from and to are required'}), 400
+    return jsonify(storage.get_placed_tasks(frm, to))
+
+
 @app.route('/api/engage/placements', methods=['POST'])
 def post_engage_placement():
     data = request.get_json()

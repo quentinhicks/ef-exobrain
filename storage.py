@@ -2646,6 +2646,22 @@ def get_engage_placements_from(date):
     return [dict(r) for r in rows]
 
 
+# THE TASKS ON A CALENDAR OCCURRENCE (2026-10-08, Quentin's design "Calendar
+# Tasks" 7a): what is placed on each day of a range, with the action's own
+# words, so the week can count and list what sits at a block's or event's
+# start without a second read per item. Only live actions: a completed one is
+# deleted, and a parked one is not a task on that day any more.
+def get_placed_tasks(frm, to):
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT p.date, p.minute, i.id, i.content
+             FROM engage_placement p JOIN inbox_item i ON i.id = p.item_id
+            WHERE p.date >= ? AND p.date <= ? AND i.status = 'active'
+            ORDER BY p.date, p.minute, i.id""", (frm, to)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def set_engage_placement(date, item_id, minute):
     conn = get_conn()
     conn.execute('INSERT OR REPLACE INTO engage_placement (date, item_id, minute) VALUES (?, ?, ?)',

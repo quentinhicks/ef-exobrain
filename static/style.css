@@ -5327,6 +5327,17 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .wk-range-pop { right: 20px; top: 58px; width: 380px; max-width: calc(100% - 40px); padding: 16px 18px; gap: 12px; }
 .wk-legend-pop { left: 12px; top: 112px; width: 230px; padding: 14px 16px; gap: 14px; font-size: 12.5px; }
+/* TASKS ON A BLOCK OR AN EVENT (2026-10-08, design "Calendar Tasks" 7a): the
+   week's own pop, placed beside the clicked column (left/top inline, in the
+   viewport, so the grid's scroll cannot carry it off its item), with the
+   sheet's rows and boxes inside. Only the add field and the count are new. */
+.wk-task-pop { position: fixed; width: 260px; padding: 14px 14px 10px; gap: 8px; z-index: 60; }
+.wk-task-pop .ref-item { padding: 5px 0; gap: 8px; }
+.wk-task-add { border: none; outline: none; background: transparent; padding: 7px 0; font: 13px var(--font-ui);
+  color: var(--text-primary); }
+.wk-task-add::placeholder { color: var(--text-secondary); }
+.wk-block > .wk-task-n { position: absolute; top: 3px; right: 3px; }
+.wk-ev .wk-task-n { flex: none; margin-left: 4px; }
 .wk-pop-head { display: flex; align-items: center; justify-content: space-between; font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .wk-pop-note { font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
 .wk-roles { display: flex; flex-direction: column; }

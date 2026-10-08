@@ -2217,7 +2217,7 @@ function initCalBlockPin() {
     // the highlighted block's name, not the popup with items). The label is
     // the one the hover shows, kept up for the stretch that was clicked — on a
     // phone, with no hover, this is how a block is read.
-    if (calPin.cat) showBlockHover(el); else hideBlockHover();
+    if (calPin.cat && calWeek.pop !== 'tasks') showBlockHover(el); else hideBlockHover();
   });
   // The block's menu (its day verbs and Edit) moved to a DOUBLE-click: on a
   // calendar whose right-click removes, it is the remaining door to them.
@@ -2232,6 +2232,165 @@ function initCalBlockPin() {
   });
 
 }
+
+// ── TASKS ON A BLOCK OR AN EVENT (2026-10-08, Quentin's design "Calendar
+// Tasks", 7a) ─────────────────────────────────────────────────────────────
+// A task is ON an occurrence when it is placed at that occurrence's start on
+// that day — what clarify's Calendar flow writes (one block, that day; never
+// every block of its kind, Quentin's call). The week counts the open ones on
+// each event and block, and a click opens a card BESIDE the item — the week's
+// own .wk-pop, positioned at the column, so nothing else on the page moves —
+// listing them with a box to finish each and a field to add another. The
+// tasks are the SERVER's read (/api/calendar/tasks), cached per week with the
+// days. Its foot keeps the doors the click used to be: an event's read-out,
+// a block's menu (also still on double-click).
+function wkTasksAt(date, minute) {
+  return (calWeek.tasks || []).filter(t => t.date === date && Math.round(t.minute) === Math.round(minute));
+}
+
+function wkTaskCount(date, minute, cont) {
+  if (cont) return '';
+  const n = wkTasksAt(date, minute).length;
+  return n ? `<span class="count wk-task-n" title="${n} task${n === 1 ? '' : 's'} here">✓${n}</span>` : '';
+}
+
+async function refreshCalTasks(start) {
+  const wk = start || calWeek.start;
+  const dates = weekDates();
+  const rows = await apiGet(`/api/calendar/tasks?from=${dates[0]}&to=${dates[6]}`, null);
+  if (calWeek.start !== wk) return;   // paged on while this was out
+  if (Array.isArray(rows)) calWeek.tasks = rows;
+  renderCalWeek();
+}
+
+// The occurrence a week element stands for: its date, its own start (not the
+// clipped top it is drawn from), a name, its span, and a key to toggle by.
+function wkOccOf(el) {
+  if (el.classList.contains('wk-ev')) {
+    const ev = state.gcalEvents.find(x => eventKey(x) === el.dataset.evKey);
+    if (!ev) return null;
+    return { key: `e:${el.dataset.evKey}`, evKey: el.dataset.evKey, isBlock: false,
+             date: formatDateYMD(new Date(ev.start)), minute: isoMin(ev.start), name: ev.summary || 'Event',
+             span: `${isoToAmPm(ev.start)}–${isoToAmPm(ev.end)}` };
+  }
+  const minute = parseInt(el.dataset.occMin);
+  if (Number.isNaN(minute)) return null;
+  const label = el.querySelector('.tl-block-label');
+  return { key: `b:${el.dataset.obj}:${el.dataset.date}:${minute}`, obj: el.dataset.obj, isBlock: true,
+           date: el.dataset.date, minute, name: (label && label.textContent.trim()) || el.dataset.name || 'Block',
+           span: `${hhmmToAmPm(clockHHMM(minute))}–${hhmmToAmPm(clockHHMM(parseInt(el.dataset.endMin)))}` };
+}
+
+function wkTaskPopHtml() {
+  const t = calWeek.pop === 'tasks' && calWeek.taskPop;
+  if (!t) return '';
+  // Read while the old card is still in the page: a field being typed in is
+  // handed its focus back once the week has been redrawn.
+  const a = document.activeElement;
+  t.focus = !!(a && a.matches && a.matches('.wk-task-add'));
+  const day = new Date(t.date + 'T12:00:00');
+  const tasks = wkTasksAt(t.date, t.minute);
+  return `<div class="wk-pop wk-task-pop" style="left:${t.x}px;top:${t.y}px">
+    <div class="wk-pop-head"><span>${escHtml(t.name)}</span>
+      <button class="wk-icon" data-task-close title="Close">${WK_SVG.close}</button></div>
+    <div class="wk-pop-note">${weekdayOf(day).name} ${day.getDate()} · ${escHtml(t.span)}</div>
+    <div class="ref-list">${tasks.map(x => `<div class="ref-row ref-item">
+        <span class="eg-check" data-task-done="${x.id}" title="Done"></span>
+        <span class="ref-text">${escHtml(x.content)}</span></div>`).join('')}
+      <input type="text" class="wk-task-add" placeholder="Add a task" value="${escHtml(t.draft || '')}"></div>
+    <div class="wk-pop-foot"><span></span>
+      <button class="wk-link" data-task-more>${t.isBlock ? 'Block menu…' : 'Event details ›'}</button></div>
+  </div>`;
+}
+
+// The week's click, first: an event or a block opens (or, again, closes) its
+// card; inside the card, its own controls. Returns whether it took the click.
+async function wkTaskClick(e) {
+  if (!calWeek.on) return false;
+  if (e.target.closest('.wk-task-pop')) {
+    const done = e.target.closest('[data-task-done]');
+    if (done) await wkTaskDone(parseInt(done.dataset.taskDone));
+    else if (e.target.closest('[data-task-close]')) { calWeek.pop = null; calWeek.taskPop = null; renderCalWeek(); }
+    else if (e.target.closest('[data-task-more]')) wkTaskMore(e);
+    return true;
+  }
+  const el = e.target.closest('.wk-block[data-cat], .wk-ev');
+  if (!el || el.classList.contains('tl-block-cont')) return false;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false;
+  if (justPointerDragged() || justLongPressed()) return false;
+  const occ = wkOccOf(el);
+  if (!occ) return false;
+  const cur = calWeek.pop === 'tasks' && calWeek.taskPop;
+  if (cur && cur.key === occ.key) {
+    calWeek.pop = null; calWeek.taskPop = null;
+    renderCalWeek();
+    return true;
+  }
+  // Beside the column, on the side with room, level with the click.
+  const colEl = el.closest('.wk-col');
+  const col = colEl.getBoundingClientRect();
+  const i = weekDates().indexOf(colEl.dataset.date);
+  const W = 260;
+  const x = i >= 4 || col.right + 6 + W > window.innerWidth ? Math.max(8, col.left - W - 6) : col.right + 6;
+  const y = Math.max(56, Math.min(e.clientY - 24, window.innerHeight - 320));
+  calWeek.pop = 'tasks';
+  calWeek.taskPop = { ...occ, x, y, draft: '', focus: false };
+  renderCalWeek();
+  return true;
+}
+
+async function wkTaskDone(id) {
+  const t = (calWeek.tasks || []).find(x => x.id === id);
+  calWeek.tasks = (calWeek.tasks || []).filter(x => x.id !== id);
+  renderCalWeek();
+  await undoableDelete(id, `completed "${(t && t.content) || 'task'}"`);
+  await refreshCalTasks();
+}
+
+// A task added here is an ordinary action, placed where the card is — the
+// same three writes clarify's Calendar flow makes, and one undo for them.
+async function wkTaskAdd(text) {
+  const t = calWeek.taskPop;
+  const content = text.trim();
+  if (!t || !content) return;
+  const created = await apiSend('/api/inbox', 'POST', { content }).then(r => r.json());
+  await apiSend(`/api/inbox/${created.id}`, 'PATCH', { status: 'active', defer_until: t.date });
+  await apiSend('/api/engage/placements', 'POST', { item_id: created.id, date: t.date, minute: t.minute });
+  pushUndo(`added "${content}" to ${t.name}`, async () => {
+    await apiSend(`/api/inbox/${created.id}`, 'DELETE');
+    await refreshAfterUndo();
+  });
+  t.draft = '';
+  await refreshCalTasks();
+}
+
+function wkTaskMore(e) {
+  const t = calWeek.taskPop;
+  calWeek.pop = null;
+  calWeek.taskPop = null;
+  renderCalWeek();
+  const host = document.getElementById('cal-week');
+  if (t.isBlock) {
+    const el = host.querySelector(`.wk-block[data-obj="${CSS.escape(t.obj)}"][data-date="${t.date}"]`);
+    const [kind, id] = t.obj.split(':');
+    if (el) openObjectMenu(e.clientX, e.clientY + 4, kind, id, verbsFor(kind, id, el));
+  } else {
+    const el = host.querySelector(`.wk-ev[data-ev-key="${CSS.escape(t.evKey)}"]`);
+    openEventPop(t.evKey, el);
+  }
+}
+
+// The field's half-typed text survives a repaint (the week re-renders whole),
+// and Enter adds — delegated, since the card is drawn fresh each time.
+document.addEventListener('input', e => {
+  if (e.target.matches && e.target.matches('.wk-task-add') && calWeek.taskPop) calWeek.taskPop.draft = e.target.value;
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || !(e.target.matches && e.target.matches('.wk-task-add'))) return;
+  e.preventDefault();
+  e.stopPropagation();
+  wkTaskAdd(e.target.value);
+}, true);
 
 // ── THE WEEK (2026-09-29, Quentin's "Calendar Week" design) ──────────────
 //
@@ -2323,6 +2482,7 @@ async function refreshCalWeek() {
       .then(fill('overrides', r => (Array.isArray(r) ? r : null))),
     Promise.all(dates.map(d => apiGet(`/api/gates/day?date=${d}`, null)))
       .then(fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))),
+    refreshCalTasks(start),
   ]);
   // A lit-up category's count is of these segments, so it is re-counted.
   if (calPin.cat) paintCalPin();
@@ -2476,11 +2636,11 @@ function renderCalWeek() {
         if (!s.cancelled) legendBlocks.set(s.label.replace(/ \(cont\.\)$/, ''), s.b.color);
         return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}${s.dayBlockId ? ' tl-block-day' : ''}"
           ${blockObjAttrs(s)}
-          data-date="${d}" data-start-min="${a}" data-end-min="${b}"
+          data-date="${d}" data-start-min="${a}" data-end-min="${b}" data-occ-min="${s.startMin}"
           data-purpose="${escHtml(blockPurpose(s))}" ${blockCatAttrs(s)}
           style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
           <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
-            escHtml(s.label)}</span></div></div>`;
+            escHtml(s.label)}</span></div>${wkTaskCount(d, s.startMin, s.cont)}</div>`;
       }).join('');
 
     // Next-day events count when the week runs past midnight — the day view's
@@ -2510,7 +2670,7 @@ function renderCalWeek() {
           : h < 30 ? `title="${escHtml(`${e.summary || 'Event'} · ${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"` : ''}
         style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${e.color || '#888888'}">
         <div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${
-          escHtml(e.summary || '')}</span>${h >= 30 ? `<span class="tl-event-time">${escHtml(time)}</span>` : ''}</div></div>`;
+          escHtml(e.summary || '')}</span>${wkTaskCount(formatDateYMD(new Date(e.start)), isoMin(e.start))}${h >= 30 ? `<span class="tl-event-time">${escHtml(time)}</span>` : ''}</div></div>`;
     }).join('');
 
     const gates = wkDayGates(d).filter(g => g.window.end_min >= start && g.window.end_min <= end)
@@ -2619,6 +2779,7 @@ function renderCalWeek() {
     </div>
     ${hasAllday ? `<div class="wk-grid wk-allday-row"><div></div>${alldayRow.join('')}</div>` : ''}
     ${legendPop}
+    ${wkTaskPopHtml()}
     <div class="wk-scroll">
       <div class="wk-grid wk-body">
         <div class="wk-gutter" style="height:${H}px">${hours.map(m =>
@@ -2628,6 +2789,8 @@ function renderCalWeek() {
     </div>`;
 
   calWeek.range = { start, end };
+  const taskIn = calWeek.taskPop && calWeek.taskPop.focus && host.querySelector('.wk-task-add');
+  if (taskIn) { taskIn.focus(); taskIn.setSelectionRange(taskIn.value.length, taskIn.value.length); }
   host.querySelectorAll('.wk-col[data-date]').forEach(col => {
     const d = col.dataset.date;
     const geo = {
@@ -2843,6 +3006,7 @@ function initCalWeek() {
   }, true);
 
   const weekClick = async e => {
+    if (await wkTaskClick(e)) return;
     const a = e.target.closest('[data-wk]');
     const act = a ? a.dataset.wk : null;
     // A click anywhere off an open popover puts it down, and does nothing else
@@ -6967,30 +7131,63 @@ function refDirHtml(pid, onId) {
     ${refAddButtonsHtml()}</div>`;
 }
 
+// Create a directory, list or document in `pid` (null is home): the one
+// opener behind the + buttons and the right-click menu.
+function refCreate(kind, pid) {
+  const where = pid ? (refView.lists.find(l => l.id === pid) || {}).name : null;
+  openEntrySheet({
+    title: `New ${REF_KIND_WORD[kind]}${where ? ` in ${where}` : ''}`,
+    placeholder: `Name the ${REF_KIND_WORD[kind]}…`, button: 'Create', closeOnAdd: true,
+    add: async name => {
+      const res = await apiSend('/api/ref/lists', 'POST', { name, kind, parent_id: pid });
+      const created = await res.json();
+      if (!res.ok) { toast(created.error || 'Could not create it'); return; }
+      pushUndo(`created ${REF_KIND_WORD[kind]} "${name}"`, async () => {
+        await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
+        await refreshAfterUndo();
+      });
+      refView.open = created.id;
+      await refreshRef();
+    },
+  });
+}
+
+// RIGHT-CLICK CREATES (2026-10-08, Quentin's instruction): on a directory's
+// rows or the space under them, the menu offers the three kinds — inside the
+// directory that was pressed, else in the one being shown — and, on a row,
+// that row's Rename and Delete. The 550ms hold is the same menu on a finger.
+function refMenu(x, y, dirPid, row) {
+  const l = row && refView.lists.find(v => String(v.id) === row.dataset.id);
+  const into = l && l.kind === 'dir' ? l.id : dirPid;
+  const name = into ? (refView.lists.find(v => v.id === into) || {}).name : 'Home';
+  const items = ['dir', 'list', 'doc'].map(kind => ({
+    label: `New ${REF_KIND_WORD[kind]}${into !== dirPid ? ` in ${name}` : ''}`, run: () => refCreate(kind, into) }));
+  if (l) {
+    items.push({ label: 'Rename', run: () => refListRename(row.querySelector('.ref-name')) },
+               { label: `Delete ${REF_KIND_WORD[l.kind]}`, danger: true, run: () => refDelete(l.id) });
+  }
+  openObjectMenu(x, y, 'ref', into || 0, items);
+}
+
 // The rows and add buttons of every directory drawn inside `scope`: the same
 // gestures wherever a directory is drawn, each filing into its own.
 function wireRefEntries(scope) {
   scope.querySelectorAll('[data-ref-dir]').forEach(dirEl => {
     const pid = dirEl.dataset.refDir ? parseInt(dirEl.dataset.refDir) : null;
-    const where = pid ? (refView.lists.find(l => l.id === pid) || {}).name : null;
-    dirEl.querySelectorAll('[data-ref-add]').forEach(b => b.addEventListener('click', () => {
-      const kind = b.dataset.refAdd;
-      openEntrySheet({
-        title: `New ${REF_KIND_WORD[kind]}${where ? ` in ${where}` : ''}`,
-        placeholder: `Name the ${REF_KIND_WORD[kind]}…`, button: 'Create', closeOnAdd: true,
-        add: async name => {
-          const res = await apiSend('/api/ref/lists', 'POST', { name, kind, parent_id: pid });
-          const created = await res.json();
-          if (!res.ok) { toast(created.error || 'Could not create it'); return; }
-          pushUndo(`created ${REF_KIND_WORD[kind]} "${name}"`, async () => {
-            await apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
-            await refreshAfterUndo();
-          });
-          refView.open = created.id;
-          await refreshRef();
-        },
-      });
-    }));
+    dirEl.querySelectorAll('[data-ref-add]').forEach(b => b.addEventListener('click', () =>
+      refCreate(b.dataset.refAdd, pid)));
+    // The whole column, not just the rows: the empty space under them is
+    // where a new thing goes.
+    const area = dirEl.closest('.ref-col') || dirEl;
+    area.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      refMenu(e.clientX, e.clientY, pid, e.target.closest('.ref-row[data-id]'));
+    });
+    let press = null;
+    area.addEventListener('pointerdown', e => { press = { x: e.clientX, y: e.clientY, t: e.target }; });
+    onLongPress(area, () => {
+      if (press) refMenu(press.x, press.y, pid, press.t.closest('.ref-row[data-id]'));
+    });
     dirEl.querySelectorAll('.ref-row[data-id]').forEach(row => {
       const span = row.querySelector('.ref-name');
       onTapOrDouble(row, () => {
