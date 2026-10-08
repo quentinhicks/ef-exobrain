@@ -2213,10 +2213,11 @@ function initCalBlockPin() {
     if (justPointerDragged() || justLongPressed()) return;
     e.stopPropagation();
     toggleCalPin(el);
-    // A CLICK HIGHLIGHTS AND NAMES, NOTHING ELSE (2026-10-05, Quentin: keep
-    // the highlighted block's name, not the popup with items). The label is
-    // the one the hover shows, kept up for the stretch that was clicked — on a
-    // phone, with no hover, this is how a block is read.
+    // A CLICK HIGHLIGHTS AND NAMES (2026-10-05). The label is the one the
+    // hover shows, kept up for the stretch that was clicked — on a phone, with
+    // no hover, this is how a block is read. On the WEEK the click also opens
+    // the block's task card (2026-10-08, "Calendar Tasks" 7a, which reverses
+    // "not the popup with items"), and the card names it instead.
     if (calPin.cat && calWeek.pop !== 'tasks') showBlockHover(el); else hideBlockHover();
   });
   // The block's menu (its day verbs and Edit) moved to a DOUBLE-click: on a
