@@ -6710,7 +6710,8 @@ async function navigateTo(dest) {
 // showing for a moment) gets to write one of its own.
 async function goRoute(route, push) {
   // Leaving the Calendar mid-pick gives the pick up: clarify comes back.
-  const pickLeft = clarifyView.picking && !String(route).startsWith('calendar');
+  const pk = clarifyView.picking && CLARIFY_FLOWS.find(f => f.key === clarifyView.picking.flow);
+  const pickLeft = !!pk && String(route).split('/')[0] !== pk.route().split('/')[0];
   if (pickLeft) clarifyView.picking = null;
   routeView.moving = true;
   routeView.target = String(route || '').split('/')[0];
@@ -12475,10 +12476,10 @@ function initEngage() {
   // The clarify sheet is the innermost layer wherever it was opened from (only
   // the picker it can raise sits over it), and tapping off it is the touch Esc
   // — the same peel, innermost first.
-  defineSheet('clarify-sheet', { rank: 0, isOpen: () => clarifyView.open && !clarifyView.picking, close: peelClarify });
-  // Picking a block or event on the Calendar for it: Esc gives up the pick and
-  // puts clarify back as it was.
-  escRung(1, () => { if (!clarifyView.picking) return false; endClarifyCalPick(null); return true; });
+  // While a flow is picking its place, the first Esc gives the pick up (back
+  // where clarify was opened); the next one puts the sheet down.
+  escRung(0, () => { if (!clarifyView.picking) return false; endClarifyPick(); return true; });
+  defineSheet('clarify-sheet', { rank: 1, isOpen: () => clarifyView.open, close: peelClarify });
   // The routine card is the LAST rung: it is drawn on the day itself, under
   // every overlay. (It used to close on its own listener, in the same keypress
   // as whatever layer the ladder peeled above it.)
@@ -13519,8 +13520,9 @@ async function renderNowFull() {
 const clarifyView = {
   open: false, queue: [], total: 0, verb: 'defer',
   action: '', tags: new Set(), showDate: '', showTime: '', showDateFrom: '',
-  // Add to calendar: the pick in progress ({ from }), and what was picked.
-  picking: null, calPick: '',
+  // The five flows (clarifyFlowsHtml): which one, a pick in progress
+  // ({ flow, from, hidden }), and what the calendar / a list picked.
+  flow: 'todo', picking: null, calPick: '', refPick: null,
   projectId: null, projectName: '', who: '', chase: '',
   notes: '',          // support material, saved with the item on file
   due: '',            // hard deadline (YMD) — real ones only; '' = none
@@ -13886,6 +13888,7 @@ function clarifyResetItem() {
   clarifyView.showTime = '';
   clarifyView.showDateFrom = '';
   clarifyView.calPick = '';
+  clarifyView.refPick = null;
   // A project's start date is a standing property, not a fresh decision, so
   // it is prefilled from the ROW where an action's is only ever a suggestion — "Active" is then the explicit act of
   // clearing it, and re-filing a parked project can't silently un-park it.
@@ -14039,6 +14042,12 @@ function closeClarify() {
     item.notes = clarifyView.notes;
   }
   const after = clarifyView.after;
+  if (clarifyView.picking) {
+    const from = clarifyView.picking.from;
+    clarifyView.picking = null;
+    if (from != null && from !== currentRoute()) goRoute(from, true);
+  }
+  clarifyView.flow = 'todo';
   clarifyView.open = false;
   clarifyView.single = false;
   clarifyView.external = false;
@@ -14278,84 +14287,203 @@ async function fileClarifyOccasion() {
 }
 
 
-// ADD TO CALENDAR (2026-10-08, Quentin's instructions: add a task to a
-// specific block or event — by picking it ON the week calendar). The button
-// puts clarify aside (still open, its half-made decisions kept) and opens the
-// Calendar, the week where the window has one; a click on a block or an event
-// there picks it and brings clarify back with Show on filled to that day and
-// its start, so File it writes the placement it always writes for a date +
-// time and the agenda draws the task inside that block or under that event.
-// No second writer. Esc, or leaving the Calendar, puts clarify back unchanged.
-function clarifyCalHtml() {
-  const pick = clarifyView.calPick;
-  return `<div class="cl-row"><span class="cl-label">Calendar</span>
-    <button id="cl-cal" class="cl-pill${pick ? ' cl-pill-on' : ''}">${pick ? escHtml(pick) : 'Add to calendar'}</button>
-    ${pick ? '<button id="cl-cal-x" class="cl-x" title="Take it off that block or event">✕</button>' : ''}</div>`;
+// CLARIFY IS FIVE FLOWS (2026-10-08, Quentin's design "Clarify Flow"): an
+// action is done now, put on the to-do list, filed into a project, put on the
+// calendar or put in a list — and nothing else (Delegate, Defer, contexts and
+// Someday went; notes stay; Show on and Due are the Project flow's). The three
+// flows that need a PLACE show that place's own page beside the sheet — the
+// Projects page, the week, the Lists page — and a click there picks it; on a
+// phone the sheet steps aside while you pick. File it then writes through the
+// exits that already existed: do, todo, defer (+ project or placement) and
+// reference. No second writer for any of them. A project's own sheet and the
+// two template sheets are not flows and keep their own.
+const CLARIFY_FLOWS = [
+  { key: 'now', name: 'Do now', k: 'N' },
+  { key: 'todo', name: 'To-do', k: 'T' },
+  { key: 'project', name: 'Project', k: 'P', route: () => 'map', what: 'a project' },
+  { key: 'calendar', name: 'Calendar', k: 'C', what: 'a block, an event or a time',
+    route: () => (calWeekAvailable() ? 'calendar/week' : 'calendar') },
+  { key: 'list', name: 'List', k: 'L', route: () => 'lists', what: 'a list or document' },
+];
+const CLARIFY_FLOW_HINT = {
+  now: 'Marks it done and moves to the next item. Nothing is filed.',
+  todo: 'Goes on the to-do list, available now.',
+  project: 'Click a project on the Projects page to file it there.',
+  calendar: 'Click a block or an event to add it there, or an empty time to put it at that time.',
+  list: 'Click a list or document on the Lists page to add it there.',
+};
+
+function clarifyFlowMode() {
+  return !clarifyView.forRecurring && !clarifyView.forOccasion
+    && !(clarifyView.project && !clarifyView.external);
 }
 
-function wireClarifyCal(sheet) {
-  const btn = sheet.querySelector('#cl-cal');
-  if (btn) btn.addEventListener('click', startClarifyCalPick);
-  const x = sheet.querySelector('#cl-cal-x');
-  if (x) x.addEventListener('click', () => {
-    clarifyView.showDate = '';
-    clarifyView.showTime = '';
-    clarifyView.calPick = '';
-    renderClarify();
-  });
+function clarifyFlowDest(key) {
+  if (key === 'now') return 'mark done';
+  if (key === 'todo') return 'to-do list';
+  if (key === 'project') return clarifyView.projectName || '';
+  if (key === 'calendar') return clarifyView.calPick || '';
+  return clarifyView.refPick ? clarifyView.refPick.label : '';
 }
 
-async function startClarifyCalPick() {
-  clarifyView.picking = { from: currentRoute() };
-  hideSheet('clarify-sheet');
-  document.getElementById('engage-body').classList.remove('eg-dimmed');
-  await goRoute(calWeekAvailable() ? 'calendar/week' : 'calendar', true);
-  toast(`Pick a block or event for “${clarifyView.action.trim() || 'this'}” · Esc to cancel`);
+function clarifyFlowsHtml() {
+  const flow = clarifyView.flow;
+  const rows = CLARIFY_FLOWS.map(f => `<button class="cl-flow${flow === f.key ? ' cl-flow-on' : ''}" data-flow="${f.key}">
+      <span class="cl-key">${f.k}</span><span class="cl-flow-name">${f.name}</span>
+      <span class="cl-flow-dest">${flow === f.key ? escHtml(clarifyFlowDest(f.key)) : ''}</span></button>`).join('');
+  const project = flow !== 'project' ? '' : `
+    <div class="cl-row">
+      <span class="cl-label">Project</span>
+      <button id="cl-proj" class="cl-pill${clarifyView.projectId ? ' cl-pill-on' : ''}">${clarifyView.projectId ? escHtml(clarifyView.projectName) : 'search'} ⌕</button>
+    </div>
+    <div class="cl-row">
+      <span class="cl-label">Show on</span>
+      <input type="date" id="cl-show-date" class="cl-date" title="Held back until this day" value="${clarifyView.showDate}">
+      ${clarifyView.showDateFrom === 'sticky' ? '<button id="cl-show-date-x" class="cl-x" title="Carried over from the last item — tap to clear">✕ carried</button>' : ''}
+      <span class="cl-label">Due</span>
+      <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
+    </div>`;
+  return `<div class="cl-flows">${rows}</div>${project}
+    <div class="cl-row"><span class="cl-hint">${CLARIFY_FLOW_HINT[flow]}</span></div>`;
 }
 
-async function endClarifyCalPick(pick) {
+function wireClarifyFlows(sheet) {
+  sheet.querySelectorAll('[data-flow]').forEach(b => b.addEventListener('click', () => setClarifyFlow(b.dataset.flow)));
+}
+
+// Picking a flow clears what the LAST flow picked — a placement or a list
+// left behind would otherwise ride along into the new one.
+async function setClarifyFlow(key) {
+  const prev = clarifyView.flow;
+  clarifyView.flow = key;
+  if (prev !== key) {
+    if (prev === 'calendar') { clarifyView.showDate = ''; clarifyView.showTime = ''; clarifyView.calPick = ''; }
+    if (prev === 'list') clarifyView.refPick = null;
+  }
+  const f = CLARIFY_FLOWS.find(x => x.key === key);
+  if (f.route) { await startClarifyPick(f); return; }
+  if (clarifyView.picking) { await endClarifyPick(); return; }
+  renderClarify();
+}
+
+// A pick in progress: { flow, from, hidden }. `from` is where clarify was
+// opened, kept across flows, so putting the sheet down puts the page back.
+async function startClarifyPick(f) {
+  const from = clarifyView.picking ? clarifyView.picking.from : currentRoute();
+  const phone = !SETTINGS_WIDE.matches;
+  clarifyView.picking = { flow: f.key, from, hidden: phone };
+  if (phone) hideSheet('clarify-sheet');
+  await goRoute(f.route(), true);
+  renderClarify();
+  if (phone) toast(`Pick ${f.what} for “${clarifyView.action.trim() || 'this'}” · Esc to cancel`);
+}
+
+// Give the pick up: back where clarify was opened, on the to-do flow.
+async function endClarifyPick() {
   const from = clarifyView.picking && clarifyView.picking.from;
   clarifyView.picking = null;
-  if (pick) {
-    clarifyView.verb = 'defer';
-    clarifyView.showDate = pick.date;
-    clarifyView.showTime = clockHHMM(pick.minute);
-    clarifyView.showDateFrom = '';
-    const day = new Date(pick.date + 'T12:00:00');
-    clarifyView.calPick = `${pick.label} · ${weekdayOf(day).name} ${day.getDate()} ${hhmmToAmPm(clockHHMM(pick.minute))}`;
-  }
-  // Back where the pick began — '' is the day itself, which is a route too.
+  if (clarifyView.flow !== 'now' && clarifyView.flow !== 'todo') clarifyView.flow = 'todo';
   if (from != null && from !== currentRoute()) await goRoute(from, true);
   if (clarifyView.open) renderClarify();
 }
 
-// What a click on the Calendar picked: an event by its key (its real start,
-// moved or not, and its own date — a next-day event drawn past midnight is
-// that next day's), a block by its column's date and its drawn start.
-function calPickFrom(el) {
-  if (el.classList.contains('tl-gcal-event')) {
-    const e = state.gcalEvents.find(x => eventKey(x) === el.dataset.evKey);
-    if (!e) return null;
-    return { date: formatDateYMD(new Date(e.start)), minute: isoMin(e.start), label: e.summary || 'Event' };
-  }
-  const label = el.querySelector('.tl-block-label');
-  const minute = Math.max(0, parseInt(el.dataset.startMin) || 0) % DAY_MIN;
-  return { date: el.dataset.date || viewDay(), minute,
-           label: (label && label.textContent.trim()) || 'Block' };
+function clarifyPicked() {
+  if (clarifyView.picking) clarifyView.picking.hidden = false;
+  renderClarify();
 }
 
-// While picking, a click on a block or event is the pick and nothing else:
-// on the WINDOW in the capture phase, ahead of the Calendar's own handlers
-// (its menus and the category pin listen on the document).
+// What a click on the Calendar picked: an event by its key (its real start,
+// moved or not, and its own date — a next-day event drawn past midnight is
+// that next day's), a block by its column's date and its drawn start, empty
+// time by where the pointer is in the column, to the quarter hour.
+function calPickFrom(el, e) {
+  if (el.classList.contains('tl-gcal-event')) {
+    const ev = state.gcalEvents.find(x => eventKey(x) === el.dataset.evKey);
+    if (!ev) return null;
+    return { date: formatDateYMD(new Date(ev.start)), minute: isoMin(ev.start), label: ev.summary || 'Event' };
+  }
+  if (el.classList.contains('tl-block')) {
+    const label = el.querySelector('.tl-block-label');
+    return { date: el.dataset.date || viewDay(), minute: Math.max(0, parseInt(el.dataset.startMin) || 0) % DAY_MIN,
+             label: (label && label.textContent.trim()) || 'Block' };
+  }
+  let date, minute;
+  if (el.classList.contains('wk-col')) {
+    const r = el.getBoundingClientRect(), rg = calWeek.range;
+    minute = rg.start + Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) * (rg.end - rg.start);
+    date = el.dataset.date;
+  } else {
+    minute = planMinuteAt(e.clientY);
+    date = viewDay();
+  }
+  minute = Math.round(minute / 15) * 15;
+  if (minute >= DAY_MIN) { date = localDatePlusDays(date, 1); minute -= DAY_MIN; }
+  return { date, minute, label: 'At' };
+}
+
+// While picking, a click on what the flow picks is the pick and nothing else:
+// on the WINDOW in the capture phase, ahead of each page's own handlers (the
+// Calendar's menus, a project row's clarify, a list row's opening). Anything
+// else on the page — a directory, the week's paging — works as it always does.
+const CLARIFY_PICK_TARGETS = {
+  calendar: '#cal-overlay .tl-block, #cal-overlay .tl-gcal-event, #cal-overlay .wk-col[data-date], #cal-overlay #tl-body',
+  project: '#map-overlay .map-row-project[data-id]',
+  list: '#tab-lists .ref-row[data-id]',
+};
 window.addEventListener('click', e => {
-  if (!clarifyView.picking) return;
-  const el = e.target.closest('#cal-overlay .tl-block, #cal-overlay .tl-gcal-event');
+  const pk = clarifyView.picking;
+  if (!pk || !CLARIFY_PICK_TARGETS[pk.flow]) return;
+  if (e.target.closest('#clarify-sheet')) return;
+  const el = e.target.closest(CLARIFY_PICK_TARGETS[pk.flow]);
   if (!el) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const pick = calPickFrom(el);
-  if (pick) endClarifyCalPick(pick);
+  if (pk.flow === 'list') {
+    const l = refView.lists.find(x => String(x.id) === el.dataset.id);
+    if (!l || l.kind === 'dir') return;            // a directory still opens
+    e.preventDefault(); e.stopPropagation();
+    clarifyView.refPick = { kind: l.kind, id: l.id, label: l.name };
+    clarifyPicked();
+    return;
+  }
+  e.preventDefault(); e.stopPropagation();
+  if (pk.flow === 'project') {
+    const p = (state.projects || []).find(x => String(x.id) === el.dataset.id);
+    const text = el.querySelector('.map-text');
+    clarifyView.projectId = parseInt(el.dataset.id);
+    clarifyView.projectName = p ? p.content : (text ? text.textContent.trim() : '');
+    clarifyPicked();
+    return;
+  }
+  const pick = calPickFrom(el.closest('.tl-block, .tl-gcal-event') || el, e);
+  if (!pick) return;
+  clarifyView.showDate = pick.date;
+  clarifyView.showTime = clockHHMM(pick.minute);
+  clarifyView.showDateFrom = '';
+  const day = new Date(pick.date + 'T12:00:00');
+  clarifyView.calPick = `${pick.label === 'At' ? '' : pick.label + ' · '}${weekdayOf(day).name} ${day.getDate()} ${hhmmToAmPm(clockHHMM(pick.minute))}`;
+  clarifyPicked();
 }, true);
+
+// File it, for a flow: the exit the flow means, refused in words (toasted —
+// the foot is where a phone's keyboard sits) until it has its place.
+function fileClarifyFlow() {
+  const flow = clarifyView.flow;
+  if (flow === 'now') { clarifyView.doVariant = 'done'; return fileClarify('do'); }
+  if (flow === 'todo') return fileClarify('todo');
+  if (flow === 'project') {
+    if (!clarifyView.projectId) { toast('Pick a project first'); return; }
+    return fileClarify('defer');
+  }
+  if (flow === 'calendar') {
+    if (!clarifyView.showDate || !clarifyView.showTime) { toast('Pick a block, an event or a time first'); return; }
+    return fileClarify('defer');
+  }
+  if (!clarifyView.refPick) { toast('Pick a list or document first'); return; }
+  return fileClarify('reference', { kind: clarifyView.refPick.kind, id: clarifyView.refPick.id });
+}
+
+function clarifyFile() {
+  return clarifyFlowMode() ? fileClarifyFlow() : fileClarify(clarifyView.verb);
+}
 
 // THE TWO EXITS THAT MEAN "AVAILABLE NOW": start it now, and To-do (2026-10-08,
 // Quentin's instruction: one button that sends a task straight to the to-do
@@ -14457,9 +14585,10 @@ function renderClarify() {
   if (!clarifyView.open || (!item && !clarifyView.external && !clarifyView.forRecurring)) {
     closeClarify(); return;
   }
-  if (clarifyView.picking) return;
-  document.getElementById('engage-body').classList.add('eg-dimmed');
+  if (clarifyView.picking && clarifyView.picking.hidden) return;
+  if (!clarifyView.picking) document.getElementById('engage-body').classList.add('eg-dimmed');
   showSheet('clarify-sheet');
+  if (clarifyView.picking) document.getElementById('clarify-sheet-backdrop').classList.add('hidden');
   if (clarifyView.compose) { renderClarifyCompose(sheet); return; }
   if (clarifyView.projSearch != null) { renderClarifyProjSearch(sheet, item); return; }
 
@@ -14471,6 +14600,7 @@ function renderClarify() {
   const rec = clarifyView.forRecurring;
   const isProj = clarifyView.project && !clarifyView.external && (!!item || !!rec);
   const tpl = !!clarifyView.forOccasion;
+  const flowMode = clarifyFlowMode();
   // "Do now" means two different things and only one of them was buildable:
   // FINISH it (the two-minute rule — filing deletes it) or START it. Starting
   // it is the ACTIVE exit plus a started_at stamp — no new column, no new
@@ -14589,7 +14719,6 @@ function renderClarify() {
         <span class="cl-label">Due</span>
         <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
       </div>`}
-      ${tpl || doProgress ? '' : clarifyCalHtml()}
       <div class="cl-row">
         <span class="cl-label">Project</span>
         <button id="cl-proj" class="cl-pill${clarifyView.projectId ? ' cl-pill-on' : ''}">${clarifyView.projectId ? escHtml(clarifyView.projectName) : 'none'} ⌕</button>
@@ -14625,10 +14754,11 @@ function renderClarify() {
       </div>` : ''}`;
   }
 
+  if (flowMode) middle = clarifyFlowsHtml();
   const next = clarifyView.queue[1];
   const ext = clarifyView.external;
   // Support material rides along on every keep-it exit; do/trash discard it.
-  const notesHtml = (verb === 'do' && !doProgress) || verb === 'trash' ? '' : `
+  const notesHtml = (flowMode ? clarifyView.flow === 'now' : (verb === 'do' && !doProgress) || verb === 'trash') ? '' : `
     <div class="cl-sec"><span class="cl-label">Notes</span><span class="cl-hint">support material — optional</span></div>
     <textarea id="cl-notes" class="cl-notes" rows="2"
       placeholder="Links, thinking… markdown ok">${escHtml(clarifyView.notes)}</textarea>`;
@@ -14683,12 +14813,12 @@ function renderClarify() {
     <div class="cl-sec"><span class="cl-q">${isProj
       ? "What's the outcome?" : "What's the next physical action?"}</span></div>
     <div class="cl-action-wrap"><input type="text" id="cl-action" class="cl-action" value="${escHtml(clarifyView.action)}" autocomplete="off"${ext ? ' placeholder="e.g. Reply to Sam about the venue"' : ''}></div>
-    ${tpl || rec ? '' : `<div class="cl-verbs">${isProj
+    ${tpl || rec || flowMode ? '' : `<div class="cl-verbs">${isProj
       ? `${verbBtn('active', 'Active', 'A')}${verbBtn('defer', 'Defer', 'F')}${verbBtn('trash', 'Trash', '⌫')}`
       : `${verbBtn('do', 'Do now', 'D')}${verbBtn('delegate', 'Delegate', 'G')}${verbBtn('defer', 'Defer', 'F')}`}</div>`}
     ${middle}
     ${notesHtml}
-    ${tpl || rec ? '' : `<div class="cl-row cl-or">
+    ${tpl || rec || flowMode ? '' : `<div class="cl-row cl-or">
       <span class="cl-label">Or</span>
       ${isProj ? '' : `<button class="cl-pill" id="cl-todo" title="File it as an action, available now">To-do <span class="cl-key">T</span></button>`}
       ${ext || isProj ? '' : `<button class="cl-pill" id="cl-trash">Trash <span class="cl-key">⌫</span></button>`}
@@ -14704,16 +14834,19 @@ function renderClarify() {
         : clarifyView.single ? 'Then: back to the day' : 'Then: anything outside the app'}</span>
       ${tpl && item ? '<button id="cl-occ-del" class="cl-pill oc-del">Delete</button>' : ''}
       ${rec && rec.id ? '<button id="cl-rec-del" class="cl-pill oc-del">Delete</button>' : ''}
+      ${flowMode && !ext ? '<button class="cl-pill" id="cl-trash">Trash <span class="cl-key">⌫</span></button>' : ''}
       ${ext && !tpl ? '<button id="cl-ext-done" class="cl-pill">Done</button>' : ''}
       <button id="cl-file">${rec ? (rec.id ? 'Save ⏎' : 'Add it ⏎')
-        : tpl ? (item ? 'Save ⏎' : 'Add it ⏎') : ext ? 'Add it ⏎' : 'File it ⏎'}</button>
+        : tpl ? (item ? 'Save ⏎' : 'Add it ⏎') : flowMode && clarifyView.flow === 'now' ? 'Done ⏎'
+        : ext ? 'Add it ⏎' : 'File it ⏎'}</button>
     </div>`;
 
   sheet.querySelectorAll('[data-dovar]').forEach(b => b.addEventListener('click', () => {
     clarifyView.doVariant = b.dataset.dovar;
     renderClarify();
   }));
-  sheet.querySelectorAll('.cl-verb').forEach(b => b.addEventListener('click', () => {
+  wireClarifyFlows(sheet);
+  sheet.querySelectorAll('.cl-verb[data-verb]').forEach(b => b.addEventListener('click', () => {
     clarifyView.verb = b.dataset.verb;
     // Active is "no start date" — picking it after Defer has to clear the one
     // that was chosen, or the project files back into the same parked state.
@@ -14829,7 +14962,6 @@ function renderClarify() {
     if (e.target.value && !clarifyView.showDate) clarifyView.showDate = wallDay();
     renderClarify();  // date autofill + the clear ✕ appearing/going
   });
-  wireClarifyCal(sheet);
   const showTimeX = sheet.querySelector('#cl-show-time-x');
   if (showTimeX) showTimeX.addEventListener('click', () => {
     clarifyView.showTime = '';
@@ -14947,7 +15079,7 @@ function renderClarify() {
     if (back) back();
   });
   wireClarifyRef(sheet);
-  sheet.querySelector('#cl-file').addEventListener('click', () => fileClarify(clarifyView.verb));
+  sheet.querySelector('#cl-file').addEventListener('click', clarifyFile);
   const extDone = sheet.querySelector('#cl-ext-done');
   if (extDone) extDone.addEventListener('click', closeClarify);
   // ("Place in day" retired 2026-08-06: Show-on date+TIME is the one way a
@@ -15336,7 +15468,7 @@ function closeCompose() {
 // Keyboard: the whole inbox can be emptied without the mouse. Typing fields
 // keep their keys; Enter files from the main sheet.
 document.addEventListener('keydown', e => {
-  if (!clarifyView.open || clarifyView.picking) return;
+  if (!clarifyView.open || (clarifyView.picking && clarifyView.picking.hidden)) return;
   const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
   // Both sub-views own their own keys — the composer's Enter adds an action.
   if (clarifyView.projSearch != null || clarifyView.compose) return;
@@ -15346,7 +15478,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     if (e.target && e.target.tagName === 'TEXTAREA') return;
     e.preventDefault();
-    fileClarify(clarifyView.verb);
+    clarifyFile();
     return;
   }
   if (typing) return;
@@ -15355,6 +15487,12 @@ document.addEventListener('keydown', e => {
   // button. Enter (above) is the one key it keeps, and that IS the Save.
   if (clarifyView.forOccasion) return;
   const k = e.key.toLowerCase();
+  if (clarifyFlowMode()) {
+    const f = CLARIFY_FLOWS.find(x => x.k.toLowerCase() === k);
+    if (f && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); setClarifyFlow(f.key); }
+    else if (e.key === 'Backspace' && !clarifyView.external) { e.preventDefault(); fileClarify('trash'); }
+    return;
+  }
   // A project's keys mirror its verbs. Backspace SELECTS trash rather than
   // firing it: deleting a project takes its actions with it a level up, which
   // is more than one keystroke should do on its own.
