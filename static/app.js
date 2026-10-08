@@ -1610,7 +1610,6 @@ function renderGcalLayer(bodyH = 600) {
   const layer = document.getElementById('tl-gcal-layer');
   if (!layer) return;
   layer.style.pointerEvents = 'none';
-  const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
   const nextDate = new Date(state.currentDate.getTime() + 86400000);
   // Next-day events count when the view runs past midnight (sleep +1d)
   const dayEvents = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e) &&
@@ -2442,7 +2441,6 @@ function renderCalWeek() {
     : `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()} – ${_MONTHS_SHORT[last.getMonth()]} ${last.getDate()}`;
   const rangeLabel = `${wkClock(start)}–${wkClock(end)}`;
 
-  const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
   const legendBlocks = new Map();
 
   const heads = dates.map((d, i) => {
@@ -3729,6 +3727,21 @@ function hhmmToAmPm(hhmmStr) {
   const period = h < 12 ? 'am' : 'pm';
   const hour = h % 12 || 12;
   return `${hour}:${String(m).padStart(2, '0')}${period}`;
+}
+
+// An ISO instant's local minute of the day — one helper, where three
+// surfaces each carried their own copy.
+function isoMin(iso) {
+  const d = new Date(iso);
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+// A day's timed events as the day draws them: the feed, minus what was
+// dismissed from that day. Engage's agenda and clarify's calendar picker ask
+// the same question, so they ask it here.
+function dayTimedEvents(date) {
+  return state.gcalEvents.filter(e => !e.allday && sameDay(date, e.start)
+    && !state.tlHidden.event[eventKey(e)]);
 }
 
 function sameDay(date, isoStr) {
@@ -12669,8 +12682,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
 
   // Same dismissal set as the timeline: a right-clicked-away (or ⌘-clicked,
   // below) event is gone from the DAY, whichever surface shows it.
-  state.gcalEvents.filter(e => !e.allday && sameDay(viewDate, e.start)
-      && !state.tlHidden.event[eventKey(e)]).forEach(e => {
+  dayTimedEvents(viewDate).forEach(e => {
     rows.push({ kind: 'event', minute: isoMin(e.start), endMin: isoMin(e.end),
                 label: e.summary || 'Event', ekey: eventKey(e),
                 moved: !!e.moved, color: e.color });
@@ -12784,7 +12796,6 @@ function renderEngage() {
   // (which has room for one and picks by priority) the timeline can say so.
   const isNow = r => r.endMin > r.minute && r.minute <= nowMin && nowMin < r.endMin;
   const nowAttrs = r => ` data-s="${r.minute}" data-e="${r.endMin}"`;
-  const isoMin = iso => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
 
   const { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds } =
     engageDayRows(now, dateStr, viewDate, isToday, isoMin);
@@ -13467,6 +13478,8 @@ async function renderNowFull() {
 const clarifyView = {
   open: false, queue: [], total: 0, verb: 'defer',
   action: '', tags: new Set(), showDate: '', showTime: '', showDateFrom: '',
+  // Add to calendar: the picker's day, and that day's blocks once read.
+  calOpen: false, calDate: '', calSegs: [],
   projectId: null, projectName: '', who: '', chase: '',
   notes: '',          // support material, saved with the item on file
   due: '',            // hard deadline (YMD) — real ones only; '' = none
@@ -13831,6 +13844,7 @@ function clarifyResetItem() {
   clarifyView.showDate = '';
   clarifyView.showTime = '';
   clarifyView.showDateFrom = '';
+  clarifyView.calOpen = false;
   // A project's start date is a standing property, not a fresh decision, so
   // it is prefilled from the ROW where an action's is only ever a suggestion — "Active" is then the explicit act of
   // clearing it, and re-filing a parked project can't silently un-park it.
@@ -14223,6 +14237,57 @@ async function fileClarifyOccasion() {
 }
 
 
+// ADD TO CALENDAR (2026-10-08, Quentin's instruction: add a task to a specific
+// block or event). A day's blocks (the SERVED answer, /api/blocks/day) and its
+// events, as chips; picking one fills Show on with that day and that start, so
+// File it places the task at the start of what you picked — the agenda draws
+// it inside that block or under that event. No second writer: it is the
+// show-on date + time the sheet already writes, filled for you.
+function clarifyCalHtml() {
+  if (!clarifyView.calOpen) {
+    return `<div class="cl-row"><span class="cl-label">Calendar</span>
+      <button id="cl-cal" class="cl-pill">Add to calendar</button></div>`;
+  }
+  const day = clarifyView.calDate;
+  const picks = [
+    ...clarifyView.calSegs.filter(g => g.start >= 0)
+      .map(g => ({ minute: g.start, label: g.label, kind: 'block' })),
+    ...dayTimedEvents(new Date(day + 'T12:00:00'))
+      .map(e => ({ minute: isoMin(e.start), label: e.summary || 'Event', kind: 'event' })),
+  ].sort((a, b) => a.minute - b.minute);
+  const on = p => clarifyView.showDate === day && clarifyView.showTime === clockHHMM(p.minute);
+  return `<div class="cl-row"><span class="cl-label">Calendar</span>
+      <button id="cl-cal" class="cl-pill cl-pill-on">Add to calendar</button>
+      <input type="date" id="cl-cal-date" class="cl-date" value="${day}"></div>
+    <div class="cl-chips">${picks.map(p => `<button class="chip chip-sm${on(p) ? ' on' : ''}"
+        data-cal-min="${p.minute}" title="${p.kind === 'block' ? 'Block' : 'Event'} — place this at its start">${
+        clockHHMM(p.minute)} ${escHtml(p.label)}</button>`).join('')
+      || '<span class="cl-hint">Nothing on this day.</span>'}</div>`;
+}
+
+async function clarifyCalLoad(day) {
+  clarifyView.calDate = day;
+  clarifyView.calSegs = await apiGet(`/api/blocks/day?date=${day}`, []);
+  renderClarify();
+}
+
+function wireClarifyCal(sheet) {
+  const btn = sheet.querySelector('#cl-cal');
+  if (btn) btn.addEventListener('click', () => {
+    clarifyView.calOpen = !clarifyView.calOpen;
+    if (clarifyView.calOpen) clarifyCalLoad(clarifyView.showDate || wallDay());
+    else renderClarify();
+  });
+  const date = sheet.querySelector('#cl-cal-date');
+  if (date) date.addEventListener('change', e => { if (e.target.value) clarifyCalLoad(e.target.value); });
+  sheet.querySelectorAll('[data-cal-min]').forEach(b => b.addEventListener('click', () => {
+    clarifyView.showDate = clarifyView.calDate;
+    clarifyView.showTime = clockHHMM(parseInt(b.dataset.calMin));
+    clarifyView.showDateFrom = '';
+    renderClarify();
+  }));
+}
+
 // THE TWO EXITS THAT MEAN "AVAILABLE NOW": start it now, and To-do (2026-10-08,
 // Quentin's instruction: one button that sends a task straight to the to-do
 // list). Both are the ACTIVE exit with no show-on date — a date, even a
@@ -14454,6 +14519,7 @@ function renderClarify() {
         <span class="cl-label">Due</span>
         <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
       </div>`}
+      ${tpl || doProgress ? '' : clarifyCalHtml()}
       <div class="cl-row">
         <span class="cl-label">Project</span>
         <button id="cl-proj" class="cl-pill${clarifyView.projectId ? ' cl-pill-on' : ''}">${clarifyView.projectId ? escHtml(clarifyView.projectName) : 'none'} ⌕</button>
@@ -14691,6 +14757,7 @@ function renderClarify() {
     if (e.target.value && !clarifyView.showDate) clarifyView.showDate = wallDay();
     renderClarify();  // date autofill + the clear ✕ appearing/going
   });
+  wireClarifyCal(sheet);
   const showTimeX = sheet.querySelector('#cl-show-time-x');
   if (showTimeX) showTimeX.addEventListener('click', () => {
     clarifyView.showTime = '';
