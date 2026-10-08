@@ -14062,7 +14062,7 @@ async function fileClarify(bucket, refTarget) {
   if (clarifyView.forOccasion) { await fileClarifyOccasion(); return; }
   if (clarifyView.external) { await fileClarifyExternal(bucket, refTarget); return; }
   const startNow = bucket === 'do' && clarifyView.doVariant === 'progress';
-  if (startNow) { clarifyView.showDate = ''; clarifyView.showTime = ''; bucket = 'defer'; }
+  bucket = clarifyActiveNow(bucket, startNow);
   const item = clarifyView.queue[0];
   if (!item) { closeClarify(); return; }
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
@@ -14223,6 +14223,19 @@ async function fileClarifyOccasion() {
 }
 
 
+// THE TWO EXITS THAT MEAN "AVAILABLE NOW": start it now, and To-do (2026-10-08,
+// Quentin's instruction: one button that sends a task straight to the to-do
+// list). Both are the ACTIVE exit with no show-on date — a date, even a
+// remembered default, would hold it back from the list — so they ride the
+// defer bucket rather than growing a second active writer beside it. Start it
+// now adds the started_at stamp on top; To-do adds nothing.
+function clarifyActiveNow(bucket, startNow) {
+  if (!startNow && bucket !== 'todo') return bucket;
+  clarifyView.showDate = '';
+  clarifyView.showTime = '';
+  return 'defer';
+}
+
 // External mode: no source row — YOU hold the item (a sticky note, an email
 // thread, a pile of paper). The typed next physical action is the content;
 // filing creates the item and then routes it exactly like an inbox row.
@@ -14232,7 +14245,7 @@ async function fileClarifyExternal(bucket, refTarget) {
   // Same as fileClarify: starting it keeps the item, so it takes the active
   // path rather than the do-now delete.
   const startNow = bucket === 'do' && clarifyView.doVariant === 'progress';
-  if (startNow) { clarifyView.showDate = ''; clarifyView.showTime = ''; bucket = 'defer'; }
+  bucket = clarifyActiveNow(bucket, startNow);
   if (!content && bucket !== 'trash') return;
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
   if (bucket === 'reference' && !refTarget) return;
@@ -14541,6 +14554,7 @@ function renderClarify() {
     ${notesHtml}
     ${tpl || rec ? '' : `<div class="cl-row cl-or">
       <span class="cl-label">Or</span>
+      ${isProj ? '' : `<button class="cl-pill" id="cl-todo" title="File it as an action, available now">To-do <span class="cl-key">T</span></button>`}
       ${ext || isProj ? '' : `<button class="cl-pill" id="cl-trash">Trash <span class="cl-key">⌫</span></button>`}
       <button class="cl-pill" id="cl-someday">Someday <span class="cl-key">S</span></button>
       <button class="cl-pill${clarifyView.refOpen ? ' cl-pill-on' : ''}" id="cl-reference">Reference <span class="cl-key">R</span></button>
@@ -14776,6 +14790,8 @@ function renderClarify() {
   if (trash) trash.addEventListener('click', () => fileClarify('trash'));
   // Guarded like #cl-trash above: template mode drops the whole Or row, and an
   // unguarded querySelector here would throw before the sheet finished wiring.
+  const todo = sheet.querySelector('#cl-todo');
+  if (todo) todo.addEventListener('click', () => fileClarify('todo'));
   const someday = sheet.querySelector('#cl-someday');
   if (someday) someday.addEventListener('click', () => fileClarify('someday'));
   // Reference: the OTHER non-actionable keep. The pill reveals the list
@@ -15215,6 +15231,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'g') { clarifyView.verb = 'delegate'; renderClarify(); }
   else if (k === 'f') { clarifyView.verb = 'defer'; renderClarify(); }
   else if (k === 's') { fileClarify('someday'); }
+  else if (k === 't') { fileClarify('todo'); }
   else if (k === 'r') clarifyToggleRef();
   else if (e.key === 'Backspace') { e.preventDefault(); fileClarify('trash'); }
 });
