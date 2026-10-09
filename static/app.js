@@ -14273,7 +14273,6 @@ function clarifyResetItem() {
   }
   clarifyView.projectId = null;
   clarifyView.projectName = '';
-  clarifyView.loose = false;
   // AN ITEM ALREADY FILED KEEPS ITS PROJECT ON SCREEN (2026-08-12). The sheet
   // used to open saying "Project: none" for an action sitting inside one, which
   // misreported where the thing lives, hid the ⛓ and the project's own notes
@@ -14546,7 +14545,7 @@ async function fileClarify(bucket, refTarget) {
       // just floats the row to the top of the pool and accents it.
       if (startNow) body.started_at = new Date().toISOString();
       if (clarifyView.projectId) body.project_id = clarifyView.projectId;
-      else if (clarifyView.loose && clarifyOnProjects()) body.project_id = null;
+      else if (clarifyOnProjects()) body.project_id = null;
       body.on_projects = clarifyOnProjects();
       await patch(body);
       // The date that was actually WRITTEN teaches the next item — a value
@@ -14672,7 +14671,7 @@ const CLARIFY_FLOWS = [
 const CLARIFY_FLOW_HINT = {
   now: 'Marks it done and moves to the next item. Nothing is filed.',
   todo: 'Goes on the to-do list, available now.',
-  project: 'Click a project on the Projects page to file it there, or an area’s heading (or No project) to keep it there as an action. Either way it leaves the to-do list.',
+  project: 'No project unless you click one on the Projects page; an area’s heading files it under that area. Either way it leaves the to-do list.',
   calendar: 'Click a block or an event to add it there, or an empty time to put it at that time.',
   list: 'Click a list or document on the Lists page to add it there.',
 };
@@ -14688,12 +14687,12 @@ function clarifyOnProjects() {
   return clarifyFlowMode() && clarifyView.flow === 'project' ? 1 : 0;
 }
 
-// "No project" is a pick too — an area's heading on Projects, or the sheet's
-// button — so an empty Project flow still refuses rather than filing loose.
+// NO PROJECT IS THE DEFAULT (2026-10-08, Quentin's instruction): the Project
+// flow files an action loose on Projects unless a project is picked. An
+// area's heading, or the sheet's No project button, puts the pick back.
 function clarifyPickLoose(areaId) {
   clarifyView.projectId = null;
   clarifyView.projectName = '';
-  clarifyView.loose = true;
   if (areaId !== undefined) { clarifyView.areaId = areaId; clarifyView.domainId = null; }
 }
 
@@ -14702,7 +14701,6 @@ function clarifyFlowDest(key) {
   if (key === 'todo') return 'to-do list';
   if (key === 'project') {
     if (clarifyView.projectId) return clarifyView.projectName || '';
-    if (!clarifyView.loose) return '';
     const a = clarifyView.areaId && (state.areas || []).find(x => x.id === clarifyView.areaId);
     return `No project · ${a ? a.name : 'no area'}`;
   }
@@ -14719,7 +14717,7 @@ function clarifyFlowsHtml() {
     <div class="cl-row">
       <span class="cl-label">Project</span>
       <button id="cl-proj" class="cl-pill${clarifyView.projectId ? ' cl-pill-on' : ''}">${clarifyView.projectId ? escHtml(clarifyView.projectName) : 'search'} ⌕</button>
-      <button id="cl-loose" class="cl-pill${!clarifyView.projectId && clarifyView.loose ? ' cl-pill-on' : ''}" title="An action on Projects, in no project">No project</button>
+      <button id="cl-loose" class="cl-pill${!clarifyView.projectId ? ' cl-pill-on' : ''}" title="An action on Projects, in no project">No project</button>
     </div>
     <div class="cl-row">
       <span class="cl-label">Show on</span>
@@ -14862,10 +14860,7 @@ function fileClarifyFlow() {
   const flow = clarifyView.flow;
   if (flow === 'now') { clarifyView.doVariant = 'done'; return fileClarify('do'); }
   if (flow === 'todo') return fileClarify('todo');
-  if (flow === 'project') {
-    if (!clarifyView.projectId && !clarifyView.loose) { toast('Pick a project, or No project'); return; }
-    return fileClarify('defer');
-  }
+  if (flow === 'project') return fileClarify('defer');
   if (flow === 'calendar') {
     if (!clarifyView.showDate || !clarifyView.showTime) { toast('Pick a block, an event or a time first'); return; }
     return fileClarify('defer');
