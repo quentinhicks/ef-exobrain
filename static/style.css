@@ -115,6 +115,12 @@ html, body {
   font-weight: 400;
   line-height: 1.5;
 }
+/* NO TEXT RUNS OFF AN EDGE (2026-10-08, Quentin's instruction, every page):
+   a word too long for its box breaks rather than spilling past it. break-word
+   only acts on overflow, so nothing that already fits moves. A flex item that
+   holds text still needs its own min-width: 0, or it will not shrink to let
+   the break happen. */
+body { overflow-wrap: break-word; }
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -342,7 +348,7 @@ select option {
   flex: none;
   background: var(--surface);
 }
-.m-title { flex: 1; font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.m-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 
 .tab-btn {
   display: flex;
@@ -4352,8 +4358,8 @@ body.np-body {
   padding: 8px 2px;
   border-bottom: 1px solid var(--grid-line);
 }
-.ref-name { flex: 1; font-size: 14px; color: var(--text-primary); cursor: pointer; }
-.ref-text { flex: 1; font-size: 13px; color: var(--text-primary); }
+.ref-name { flex: 1; min-width: 0; font-size: 14px; color: var(--text-primary); cursor: pointer; }
+.ref-text { flex: 1; min-width: 0; font-size: 13px; color: var(--text-primary); }
 .ref-done { color: var(--text-secondary); text-decoration: line-through; }
 .ref-bullet { flex: none; width: 5px; height: 5px; margin: 0.6em 4px 0 6px; border-radius: 50%;
   background: var(--text-secondary); }
@@ -6747,8 +6753,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: var(--text-secondary); }
 .md code { font-family: var(--font-mono); font-size: 0.9em; background: var(--surface-2);
   padding: 1px 4px; border-radius: 3px; }
-.md pre { background: var(--surface-2); padding: 10px 12px; border-radius: 6px; overflow-x: auto;
-  margin: 0.4em 0 0.8em; }
+.md pre { background: var(--surface-2); padding: 10px 12px; border-radius: 6px;
+  margin: 0.4em 0 0.8em; white-space: pre-wrap; overflow-wrap: anywhere; }
 .md pre code { background: none; padding: 0; }
 .md hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
 .md a { color: var(--accent); }
