@@ -3864,37 +3864,60 @@ const _MONTHS_SHORT   = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug',
 const _MONTHS_LONG    = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 
-// Tiny markdown for project notes (support material is written in prose, so
-// plain <pre> text wasted it). Escape FIRST, then decorate — the input is
-// user text, never trusted HTML. Line-level: # ## ### headings, - and 1.
-// lists, blank-line paragraphs. Inline: **bold**, *italic*, `code`,
-// [text](http/https url). That's the whole grammar; anything fancier belongs
-// in a real document, not a notes field.
+// Markdown, rendered — what a Lists DOCUMENT shows when it is not being
+// written (2026-10-08, Quentin's instruction: write it in markdown, read it
+// formatted). Escape FIRST, then decorate — the input is user text, never
+// trusted HTML. Line-level: # to ###### headings, - * and 1. lists, - [ ] /
+// - [x] tasks, > quotes, ``` fenced code, --- rules, blank-line paragraphs.
+// Inline: **bold**, *italic*, ~~struck~~, `code`, [text](http/https url).
 function mdHtml(src) {
   const inline = s => escHtml(s)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener">$1</a>');
   const out = [];
-  let list = null; // 'ul' | 'ol' | null
+  let list = null;  // 'ul' | 'ol' | null
+  let code = null;  // lines of an open ``` block
+  let quote = false;
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  const closeQuote = () => { if (quote) { out.push('</blockquote>'); quote = false; } };
   for (const raw of String(src).split('\n')) {
     const line = raw.trimEnd();
-    const h = line.match(/^(#{1,3}) +(.*)/);
+    if (code) {
+      if (/^```/.test(line)) { out.push(`<pre><code>${escHtml(code.join('\n'))}</code></pre>`); code = null; }
+      else code.push(raw);
+      continue;
+    }
+    if (/^```/.test(line)) { closeList(); closeQuote(); code = []; continue; }
+    const q = line.match(/^> ?(.*)/);
+    if (q) {
+      closeList();
+      if (!quote) { out.push('<blockquote>'); quote = true; }
+      if (q[1].trim()) out.push(`<p>${inline(q[1])}</p>`);
+      continue;
+    }
+    closeQuote();
+    const h = line.match(/^(#{1,6}) +(.*)/);
+    const task = line.match(/^[-*] +\[([ xX])\] +(.*)/);
     const li = line.match(/^[-*] +(.*)/);
     const ol = line.match(/^\d+[.)] +(.*)/);
     if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); }
+    else if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) { closeList(); out.push('<hr>'); }
     else if (li || ol) {
       const kind = li ? 'ul' : 'ol';
       if (list !== kind) { closeList(); out.push(`<${kind}>`); list = kind; }
-      out.push(`<li>${inline((li || ol)[1])}</li>`);
+      out.push(task
+        ? `<li class="md-task${task[1] === ' ' ? '' : ' md-done'}"><span class="md-box">${task[1] === ' ' ? '' : '✓'}</span>${inline(task[2])}</li>`
+        : `<li>${inline((li || ol)[1])}</li>`);
     }
     else if (!line.trim()) closeList();
     else { closeList(); out.push(`<p>${inline(line)}</p>`); }
   }
-  closeList();
+  if (code) out.push(`<pre><code>${escHtml(code.join('\n'))}</code></pre>`);
+  closeList(); closeQuote();
   return out.join('');
 }
 
@@ -7331,7 +7354,8 @@ async function refDelete(id) {
 function refPaneHtml(open) {
   if (open.kind === 'doc') {
     return `<div class="ref-pane"><div class="ref-doc-title" title="Double-click to rename">${escHtml(open.name)}</div>
-      <textarea class="ref-doc" data-ref-doc="${open.id}" placeholder="Write…"
+      <div class="ref-doc-view md${open.body ? '' : ' hidden'}" title="Double-click to write">${mdHtml(open.body || '')}</div>
+      <textarea class="ref-doc${open.body ? ' hidden' : ''}" data-ref-doc="${open.id}" placeholder="Write in markdown…"
         spellcheck="true">${escHtml(open.body || '')}</textarea></div>`;
   }
   return `<div class="ref-pane"><div class="ref-pane-head"><span class="ref-pane-name">${escHtml(open.name)}</span>
@@ -7373,6 +7397,31 @@ function wireRefPane(scope, open) {
       }
       await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { body: value });
       open.body = value;
+    });
+    // READ FORMATTED, WRITE MARKDOWN: a double-click (a double tap on a
+    // finger) swaps the rendered view for the markdown; leaving the field —
+    // blur, or Esc, which here means "done", never "revert" — swaps back.
+    // An empty document opens straight in markdown: there is nothing to read.
+    const view = scope.querySelector('.ref-doc-view');
+    const write = e => {
+      if (!ta.classList.contains('hidden')) return;
+      if (e.target.closest('a')) return;
+      view.classList.add('hidden');
+      ta.classList.remove('hidden');
+      autoGrowNotes(ta);
+      ta.focus();
+    };
+    view.addEventListener('dblclick', write);
+    view.addEventListener('click', e => { if (e.detail >= 2) write(e); });
+    ta.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ta.blur(); }
+    });
+    ta.addEventListener('blur', async () => {
+      await ta.__flushNotes();
+      if (!ta.value.trim()) return;
+      view.innerHTML = mdHtml(ta.value);
+      ta.classList.add('hidden');
+      view.classList.remove('hidden');
     });
     return;
   }
