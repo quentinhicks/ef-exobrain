@@ -3606,7 +3606,9 @@ const openNotes = [];
 // means the same thing on a phone and on the desktop window.
 function autoGrowNotes(ta) {
   if (!ta) return;
-  const cap = Math.max(120, Math.round(window.innerHeight * 0.4));
+  // A field marked data-grow="full" (a Lists document) is the page, not a
+  // box on it: it grows to its text and the page around it scrolls.
+  const cap = ta.dataset.grow === 'full' ? Infinity : Math.max(120, Math.round(window.innerHeight * 0.4));
   ta.style.height = 'auto';                 // measure the content, not the box
   ta.style.height = Math.min(ta.scrollHeight, cap) + 'px';
   // Only the capped case needs to scroll; below the cap there is nothing to
@@ -7180,9 +7182,11 @@ const REF_ICON = {
 const refIcon = kind => `<svg class="ref-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
   stroke-linecap="round" stroke-linejoin="round">${REF_ICON[kind]}</svg>`;
 
-// What a directory holds, directories first, each group in its own order.
+// What a directory holds, directories first, each group ALPHABETICAL
+// (2026-10-08, Quentin's instruction — not the order they were made in).
 function refChildren(lists, pid) {
-  const here = lists.filter(l => (l.parent_id || null) === (pid || null));
+  const here = lists.filter(l => (l.parent_id || null) === (pid || null))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   return [...here.filter(l => l.kind === 'dir'), ...here.filter(l => l.kind === 'list'),
           ...here.filter(l => l.kind === 'doc')];
 }
@@ -7211,18 +7215,12 @@ function refEntryRow(l, on) {
   </div>`;
 }
 
-function refAddButtonsHtml() {
-  return `<button class="map-add-btn" data-ref-add="dir">+ directory</button>
-    <button class="map-add-btn" data-ref-add="list">+ list</button>
-    <button class="map-add-btn" data-ref-add="doc">+ document</button>`;
-}
-
 // A directory's rows and its add buttons, `onId` lit.
 function refDirHtml(pid, onId) {
   return `<div class="ref-list" data-ref-dir="${pid || ''}">${
     refChildren(refView.lists, pid).map(l => refEntryRow(l, l.id === onId)).join('')
-    || emptyHtml(pid ? 'Empty.' : 'Nothing here yet.')}
-    ${refAddButtonsHtml()}</div>`;
+    || emptyHtml('Empty — right-click, or hold, to make something here.')}
+</div>`;
 }
 
 // Create a directory, list or document in `pid` (null is home): the one
@@ -7305,8 +7303,6 @@ async function refMove(id, pid) {
 function wireRefEntries(scope) {
   scope.querySelectorAll('[data-ref-dir]').forEach(dirEl => {
     const pid = dirEl.dataset.refDir ? parseInt(dirEl.dataset.refDir) : null;
-    dirEl.querySelectorAll('[data-ref-add]').forEach(b => b.addEventListener('click', () =>
-      refCreate(b.dataset.refAdd, pid)));
     // The whole column, not just the rows: the empty space under them is
     // where a new thing goes.
     const area = dirEl.closest('.ref-col') || dirEl;
@@ -7400,19 +7396,18 @@ function refPaneHtml(open) {
   if (open.kind === 'doc') {
     return `<div class="ref-pane"><div class="ref-doc-title" title="Double-click to rename">${escHtml(open.name)}</div>
       <div class="ref-doc-view md${open.body ? '' : ' hidden'}" title="Double-click to write">${mdHtml(open.body || '')}</div>
-      <textarea class="ref-doc${open.body ? ' hidden' : ''}" data-ref-doc="${open.id}" placeholder="Write in markdown…"
+      <textarea class="ref-doc${open.body ? ' hidden' : ''}" data-ref-doc="${open.id}" data-grow="full" placeholder="Write in markdown…"
         spellcheck="true">${escHtml(open.body || '')}</textarea></div>`;
   }
   return `<div class="ref-pane"><div class="ref-pane-head"><span class="ref-pane-name">${escHtml(open.name)}</span>
       <span class="count">${open.items.filter(i => !i.done).length}</span></div>
     <div class="ref-list">${open.items.map(i => `
       <div class="ref-row ref-item" data-item="${i.id}">
-        <span class="eg-check ref-check${i.done ? ' ref-checked' : ''}" data-item="${i.id}"
-          title="${i.done ? 'Uncheck' : 'Check off'}">${i.done ? '✓' : ''}</span>
+        <span class="ref-bullet"></span>
         <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
         <button class="ref-del" data-item="${i.id}" title="Remove">×</button>
-      </div>`).join('') || emptyHtml('Empty.')}
-    <button class="map-add-btn" data-ref-add-item>+ item</button></div></div>`;
+      </div>`).join('')}</div>
+    ${addZoneHtml(`Add to ${open.name}`, '<span class="ref-bullet"></span>')}</div>`;
 }
 
 function wireRefPane(scope, open) {
@@ -7470,28 +7465,23 @@ function wireRefPane(scope, open) {
     });
     return;
   }
-  scope.querySelector('[data-ref-add-item]').addEventListener('click', () => openEntrySheet({
-    title: open.name, placeholder: `Add to ${open.name}…`,
-    add: async raw => {
-      const created = await apiSend('/api/ref/items', 'POST', { list_id: open.id, content: raw }).then(r => r.json());
-      pushUndo(`added "${raw}" to ${open.name}`, async () => {
-        await apiSend(`/api/ref/items/${created.id}`, 'DELETE');
-        await refreshAfterUndo();
-      });
-      await refreshRef();
-    },
-  }));
-  scope.querySelectorAll('.ref-check').forEach(c => c.addEventListener('click', async () => {
-    const id = parseInt(c.dataset.item);
-    const it = open.items.find(x => x.id === id);
-    const to = it.done ? 0 : 1;
-    await apiSend(`/api/ref/items/${id}`, 'PATCH', { done: to });
-    pushUndo(`${to ? 'checked' : 'unchecked'} "${it.content}"`, async () => {
-      await apiSend(`/api/ref/items/${id}`, 'PATCH', { done: it.done });
+  // A LIST IS BULLETS, added in the blank space under it (2026-10-08,
+  // Quentin's instruction): no checkboxes, no + item. An item marked done
+  // before then still reads struck through.
+  wireAddZone(scope.querySelector('.add-zone'), async (raw, keepOpen) => {
+    const res = await apiSend('/api/ref/items', 'POST', { list_id: open.id, content: raw }).catch(() => null);
+    if (!res || !res.ok) { toast('Could not add that — it is still in the box'); return null; }
+    const created = await res.json();
+    pushUndo(`added "${raw}" to ${open.name}`, async () => {
+      await apiSend(`/api/ref/items/${created.id}`, 'DELETE');
       await refreshAfterUndo();
     });
     await refreshRef();
-  }));
+    // The repaint took the field with it; put a fresh one where it was.
+    const zone = keepOpen && document.querySelector('#tab-lists .ref-pane .add-zone');
+    if (zone) zone.querySelector('.add-zone-fill').click();
+    return created;
+  });
   scope.querySelectorAll('.ref-row[data-item] .ref-text').forEach(span => {
     span.addEventListener('dblclick', () => {
       const id = parseInt(span.closest('.ref-row').dataset.item);
@@ -13249,20 +13239,33 @@ function setEgAgendaOpen(on) {
 // Enter or Esc closes it, and leaving it with text in it adds that text. A
 // failed write keeps the text. Wired ONCE: the row lives outside #eg-main,
 // which is what every repaint replaces.
-function wireEgAdd(body) {
-  const row = body.querySelector('.eg-add-row');
-  const input = body.querySelector('#eg-add-input');
+// THE BLANK SPACE UNDER A LIST ADDS TO IT (the to-do list's gesture, shared
+// 2026-10-08 with Lists and Projects' areas): a click opens a row with a field,
+// Enter adds and keeps it open, an empty Enter or Esc puts it away, and
+// leaving with text in it adds that text. `add(content, keepOpen)` returns
+// truthy once written; a refusal puts the text back (half-typed text is data).
+// A surface whose add repaints the zone reopens it when keepOpen says so.
+function addZoneHtml(placeholder, mark, attrs) {
+  return `<div class="add-zone"${attrs ? ' ' + attrs : ''}>
+    <div class="add-zone-row hidden">${mark || ''}
+      <input type="text" class="add-zone-input" placeholder="${escHtml(placeholder)}" autocomplete="off"></div>
+    <div class="add-zone-fill" title="Click to add"></div></div>`;
+}
+
+function wireAddZone(zone, add) {
+  const row = zone.querySelector('.add-zone-row');
+  const input = zone.querySelector('.add-zone-input');
   const close = () => { input.value = ''; row.classList.add('hidden'); };
-  body.querySelector('#eg-add-fill').addEventListener('click', () => {
+  zone.querySelector('.add-zone-fill').addEventListener('click', () => {
     row.classList.remove('hidden');
     input.focus();
   });
-  const add = async keepOpen => {
+  const commit = async keepOpen => {
     const content = input.value.trim();
     if (!content) { close(); return; }
     input.value = '';
     if (!keepOpen) row.classList.add('hidden');
-    if (!(await addEngageTodo(content))) {
+    if (!(await add(content, keepOpen))) {
       input.value = content;
       row.classList.remove('hidden');
     }
@@ -13275,10 +13278,11 @@ function wireEgAdd(body) {
       input.blur();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (!input.value.trim()) { close(); input.blur(); } else add(true);
+      e.stopPropagation();
+      if (!input.value.trim()) { close(); input.blur(); } else commit(true);
     }
   });
-  input.addEventListener('blur', () => { if (input.value.trim()) add(false); else close(); });
+  input.addEventListener('blur', () => { if (input.value.trim()) commit(false); else close(); });
 }
 
 async function addEngageTodo(content) {
@@ -13552,12 +13556,8 @@ function renderEngage() {
   let main = body.querySelector('#eg-main');
   if (!main) {
     body.innerHTML = `<div id="eg-main"></div>
-      <div id="eg-add-zone">
-        <div class="eg-row eg-add-row hidden"><span class="eg-check eg-check-ghost"></span>
-          <input type="text" id="eg-add-input" placeholder="New to-do" autocomplete="off"></div>
-        <div id="eg-add-fill" title="Click to add a to-do"></div>
-      </div>`;
-    wireEgAdd(body);
+      ${addZoneHtml('New to-do', '<span class="eg-check eg-check-ghost"></span>', 'id="eg-add-zone"')}`;
+    wireAddZone(body.querySelector('#eg-add-zone'), addEngageTodo);
     main = body.querySelector('#eg-main');
   }
   main.innerHTML = `

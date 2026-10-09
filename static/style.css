@@ -4355,15 +4355,11 @@ body.np-body {
 .ref-name { flex: 1; font-size: 14px; color: var(--text-primary); cursor: pointer; }
 .ref-text { flex: 1; font-size: 13px; color: var(--text-primary); }
 .ref-done { color: var(--text-secondary); text-decoration: line-through; }
-.ref-check {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  line-height: 1;
-}
-.ref-checked { color: var(--success); border-color: var(--success); }
+.ref-bullet { flex: none; width: 5px; height: 5px; margin: 0.6em 4px 0 6px; border-radius: 50%;
+  background: var(--text-secondary); }
+.ref-pane .add-zone-row { padding: 6px 0; }
+.ref-pane .add-zone-input { flex: 1; border: none; outline: none; background: transparent;
+  font: inherit; color: var(--text-primary); padding: 0; }
 .ref-del {
   color: var(--text-secondary);
   font-size: 14px;
@@ -5751,7 +5747,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
   #engage-body #eg-main { flex: none; }
   #eg-add-zone { flex: 1; display: flex; flex-direction: column; }
-  #eg-add-fill { flex: 1; }
+  #eg-add-zone .add-zone-fill { flex: 1; }
   #engage-body .eg-side {
     position: fixed;
     top: calc(var(--eg-col-top) + var(--eg-day-h) + 12px);
@@ -5798,11 +5794,11 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   #global-bar #eg-clarify { font-size: 13px; }
 }
 
-/* The add row, and the space under the list that opens it. */
+/* The add row, and the space under a list that opens it (addZoneHtml). */
 #eg-add-zone { padding: 0 8px; }
-#engage-body .eg-add-row { gap: 12px; padding: 8px; align-items: flex-start; }
+.add-zone-row { display: flex; gap: 12px; padding: 8px; align-items: flex-start; }
 #engage-body .eg-check-ghost { cursor: default; }
-#eg-add-input {
+.add-zone-input {
   flex: 1;
   border: none;
   outline: none;
@@ -5812,7 +5808,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: var(--text-primary);
   padding: 0;
 }
-#eg-add-fill { min-height: 120px; cursor: text; }
+.add-zone-fill { min-height: 120px; cursor: text; }
 
 /* ---- Light theme ---- */
 
@@ -6715,7 +6711,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .ref-doc {
   display: block;
   width: 100%;
-  min-height: 240px;
+  /* A document takes the page's height, never a share of it (2026-10-08):
+     the column scrolls, the document does not. */
+  min-height: calc(100dvh - 200px);
   resize: none;
   border: none;
   outline: none;
@@ -6726,7 +6724,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .ref-doc::placeholder { color: var(--text-secondary); }
 /* A document read formatted (mdHtml); double-click writes it in markdown. */
-.ref-doc-view { min-height: 240px; font: 15px/1.65 var(--font-ui); color: var(--text-primary);
+.ref-doc-view { min-height: calc(100dvh - 200px); font: 15px/1.65 var(--font-ui); color: var(--text-primary);
   cursor: text; overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; }
 .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 1.1em 0 0.4em; line-height: 1.3; font-weight: 600; }
