@@ -2249,14 +2249,34 @@ function wkTasksAt(date, minute) {
   return (calWeek.tasks || []).filter(t => t.date === date && Math.round(t.minute) === Math.round(minute));
 }
 
+// WHERE A BLOCK'S TASKS GO, in px from its top (2026-10-08, Quentin: never
+// covered). Events draw OVER a block, so the lines take the first stretch of
+// it no event covers that holds them all — else the largest one — starting a
+// label-row down, so the hover label (#blk-hover, at the block's top) sits
+// above them rather than on them. `spans` are the column's events in px.
+const WK_TASK_LINE = 12.4, WK_TASK_LABEL = 23;
+function wkTaskTop(top, bottom, spans, n) {
+  const need = n * WK_TASK_LINE + 2;
+  const gaps = [];
+  let at = top + WK_TASK_LABEL;
+  spans.filter(([s, e]) => e > at && s < bottom).sort((p, q) => p[0] - q[0]).forEach(([s, e]) => {
+    if (s > at) gaps.push([at, s]);
+    at = Math.max(at, e + 2);
+  });
+  if (at < bottom - 2) gaps.push([at, bottom - 2]);
+  const fit = gaps.find(([s, e]) => e - s >= need)
+    || gaps.sort((p, q) => (q[1] - q[0]) - (p[1] - p[0]))[0];
+  return (fit ? fit[0] : top + WK_TASK_LABEL) - top;
+}
+
 // THE TASKS ARE READ IN THE ITEM ITSELF (2026-10-08, Quentin: "just list the
 // tasks in very small font in the block/event as the primary way to view"):
 // each open task one tiny line inside what it is on. The card is the second
 // way in — a double-click, and only where there is something to show.
-function wkTaskList(date, minute, cont) {
+function wkTaskList(date, minute, cont, top) {
   if (cont) return '';
   const tasks = wkTasksAt(date, minute);
-  return tasks.length ? `<div class="wk-tasks">${tasks.map(t =>
+  return tasks.length ? `<div class="wk-tasks"${top != null ? ` style="top:${top}px"` : ''}>${tasks.map(t =>
     `<div class="wk-task">${escHtml(t.content)}</div>`).join('')}</div>` : '';
 }
 
@@ -2639,6 +2659,23 @@ function renderCalWeek() {
     const next = new Date(localDatePlusDays(d, 1) + 'T12:00:00');
     const day = calWeek.days[d] || { segments: [], gates: [] };
 
+    // Next-day events count when the week runs past midnight — the day view's
+    // rule, for the same reason: the column IS that night.
+    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e)
+        && (sameDay(dt, e.start) || (end > DAY_MIN && sameDay(next, e.start))))
+      .map(e => {
+        const base = sameDay(next, e.start) ? DAY_MIN : 0;
+        const s = base + isoMin(e.start);
+        let en = base + isoMin(e.end);
+        if (en <= s) en += DAY_MIN;
+        const [a, b] = clip(s, en);
+        return { ev: e, s: a, e: b };
+      }).filter(x => x.e > x.s);
+    // Where an event box is drawn — asked by the box and by the block tasks
+    // that must stay out from under it.
+    const evGeo = x => ({ top: y(x.s) + 1, h: Math.max(14, y(x.e) - y(x.s) - 2) });
+    const evSpans = boxes.map(x => { const g = evGeo(x); return [g.top, g.top + g.h]; });
+
     // The DAY VIEW'S OWN block element (tl-block + its bar), so the day's drag,
     // menu and styles are this column's too — one element, two surfaces.
     const blocks = drawnSegments(day.segments).map(segmentRow)
@@ -2653,25 +2690,13 @@ function renderCalWeek() {
           data-purpose="${escHtml(blockPurpose(s))}" ${blockCatAttrs(s)}
           style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
           <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
-            escHtml(s.label)}</span></div>${wkTaskList(d, s.startMin, s.cont)}</div>`;
+            escHtml(s.label)}</span></div>${wkTaskList(d, s.startMin, s.cont,
+            wkTaskTop(y(a), y(b), evSpans, wkTasksAt(d, s.startMin).length))}</div>`;
       }).join('');
 
-    // Next-day events count when the week runs past midnight — the day view's
-    // rule, for the same reason: the column IS that night.
-    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e)
-        && (sameDay(dt, e.start) || (end > DAY_MIN && sameDay(next, e.start))))
-      .map(e => {
-        const base = sameDay(next, e.start) ? DAY_MIN : 0;
-        const s = base + isoMin(e.start);
-        let en = base + isoMin(e.end);
-        if (en <= s) en += DAY_MIN;
-        const [a, b] = clip(s, en);
-        return { ev: e, s: a, e: b };
-      }).filter(x => x.e > x.s);
     const evs = wkLanes(boxes).map(x => {
       const e = x.ev;
-      const top = y(x.s) + 1;
-      const h = Math.max(14, y(x.e) - y(x.s) - 2);
+      const { top, h } = evGeo(x);
       const w = 100 / x.lanes;
       const time = isoToAmPm(e.start);
       // The day view's own event element too, for the same reason.
