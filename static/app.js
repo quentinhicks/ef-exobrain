@@ -600,6 +600,25 @@ function onTapOrDouble(el, tap, dbl, within) {
   });
 }
 
+// A finger's swipe to the right across `el` — quick, mostly sideways, and a
+// real distance — runs fn. Touch only: a mouse has its keys. The row keeps
+// vertical panning (touch-action: pan-y), so a scroll is never a swipe.
+function onSwipeRight(el, fn) {
+  let start = null;
+  el.style.touchAction = 'pan-y';
+  el.addEventListener('pointerdown', e => {
+    start = e.pointerType === 'mouse' ? null : { x: e.clientX, y: e.clientY, t: Date.now() };
+  });
+  el.addEventListener('pointerup', e => {
+    if (!start) return;
+    const dx = e.clientX - start.x, dy = Math.abs(e.clientY - start.y);
+    const quick = Date.now() - start.t < 600;
+    start = null;
+    if (quick && dx > 60 && dy < dx / 2) fn();
+  });
+  el.addEventListener('pointercancel', () => { start = null; });
+}
+
 function onLongPress(el, fn) {
   let t = null, sx = 0, sy = 0, fired = false;
   el.addEventListener('pointerdown', e => {
@@ -10814,7 +10833,7 @@ function setHorizon(key) {
 document.addEventListener('keydown', e => {
   const ov = document.getElementById('map-overlay');
   if (!ov || ov.classList.contains('hidden') || e.defaultPrevented) return;
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
   if (typingIn(e.target)) return;
   if (!noSurfaceOver() || mapView.tMode) return;
   const i = HORIZONS.findIndex(h => h.key === mapView.horizon);
@@ -11092,6 +11111,71 @@ function wireMapIndex(body) {
 }
 
 
+// ADDING ON PROJECTS (2026-10-08, Quentin's instruction: as on the to-do
+// list). The blank strip under an area adds an action filed there, ON
+// PROJECTS (on_projects — off the to-do list, like the Project flow); a row's
+// swipe right (Shift+→) opens the same row inside it, and the first action
+// added inside an item
+// makes it a project (storage.update_inbox_item's rule, not a second one).
+async function mapAddItem(content, patch) {
+  const res = await apiSend('/api/inbox', 'POST', { content, status: 'active' }).catch(() => null);
+  if (!res || !res.ok) { toast('Could not add that — it is still in the box'); return null; }
+  const item = await res.json();
+  await apiSend(`/api/inbox/${item.id}`, 'PATCH', { status: 'active', on_projects: 1, ...patch });
+  pushUndo(`added "${content}"`, async () => {
+    await apiSend(`/api/inbox/${item.id}`, 'DELETE');
+    await refreshAfterUndo();
+  });
+  await refreshMap();
+  return item;
+}
+
+function wireMapAdds(body) {
+  body.querySelectorAll('.add-zone[data-add-area]').forEach(zone => {
+    const areaId = zone.dataset.addArea ? parseInt(zone.dataset.addArea) : null;
+    const sec = zone.closest('.mp-sec').dataset.sec;
+    wireAddZone(zone, async (content, keepOpen) => {
+      const item = await mapAddItem(content, { area_id: areaId });
+      const again = keepOpen && document.querySelector(`#map-overlay .mp-sec[data-sec="${sec}"] > .add-zone`);
+      if (item && again) again.querySelector('.add-zone-fill').click();
+      return item;
+    });
+  });
+  // INSIDE AN ITEM is a gesture, not a button (Quentin's instruction): a
+  // swipe right on a row (Shift+→ on the selected one, in the row keys).
+  body.querySelectorAll('.map-row[data-id]:not(.map-row-in)').forEach(row =>
+    onSwipeRight(row, () => mapOpenKidZone(parseInt(row.dataset.id))));
+}
+
+// The add row inside an item: under its children, open at once, gone when
+// put away. Reopened after each add's repaint while Enter keeps it going.
+function mapOpenKidZone(id) {
+  const open = document.querySelector('#map-overlay .add-zone[data-add-kid] .add-zone-input');
+  if (open) { open.focus(); return; }
+  const row = document.querySelector(`#map-overlay .map-row[data-id="${id}"]`);
+  if (!row) return;
+  const kids = row.nextElementSibling && row.nextElementSibling.classList.contains('map-kids')
+    ? row.nextElementSibling : null;
+  const holder = document.createElement('div');
+  holder.className = 'map-kids';
+  holder.innerHTML = addZoneHtml('Add an action inside', '', 'data-add-kid');
+  const zone = holder.firstElementChild;
+  let gone = false;
+  if (kids) kids.appendChild(zone); else row.after(holder);
+  wireAddZone(zone, async (content, keepOpen) => {
+    const item = await mapAddItem(content, { project_id: id });
+    if (item && keepOpen) mapOpenKidZone(id);
+    return item;
+  }, () => {
+    // Removing the focused field fires its blur, which puts it away again
+    // from inside this removal: once is enough.
+    if (gone) return;
+    gone = true;
+    (kids ? zone : holder).remove();
+  });
+  zone.querySelector('.add-zone-fill').click();
+}
+
 async function refreshMap() {
   // Areas and domains come along because MAP now RENDERS them (the roster at
   // its foot). A surface reads what it draws: leaving them to whoever happened
@@ -11330,9 +11414,6 @@ function renderMap() {
     </div>`;
   };
 
-  // No add affordance here any more: MAP is a reading surface, and "give
-  // this project a next action" already has a home on GTD's Projects list
-  // (the same + that puts the global bar in the project's mode).
   const areaTreeHtml = (areaItems, wantSomeday) => {
     const forest = mapAreaForest(areaItems, wantSomeday, todayStr);
     const subtree = item => {
@@ -11427,7 +11508,8 @@ function renderMap() {
       <h2 class="mp-sec-title"${sec.obj ? ` data-obj="${sec.obj}"` : ''}>${escHtml(sec.name)}${
         sec.paused ? '<span class="mp-sub">paused</span>' : ''}${
         sec.sub ? `<span class="mp-sub">${escHtml(sec.sub)}</span>` : ''}</h2>
-      ${rows || emptyHtml('Nothing filed here.')}
+      ${sec.inbox ? rows : `${rows}${addZoneHtml(`Add to ${sec.name}`, '',
+        `data-add-area="${sec.obj && sec.obj.startsWith('area:') ? sec.obj.slice(5) : ''}"`)}`}
     </section>`;
   };
   const empty = `<div class="empty mp-none">${
@@ -11450,6 +11532,7 @@ function renderMap() {
 
   wireMapRows(body, byId);
   wireMapIndex(body);
+  wireMapAdds(body);
 
   // Drag one row onto another to file it there — the same act as the filing
   // target, so the destination becomes a project by the usual invariant. The
@@ -11735,6 +11818,11 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (!item) return;
+  if (e.key === 'ArrowRight' && e.shiftKey && item.status) {
+    e.preventDefault();
+    mapOpenKidZone(item.id);
+    return;
+  }
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (k === 'Enter') { e.preventDefault(); openClarifyForItem(item, mapAfterWrite); }
   else if (k === '1' || k === '2' || k === '3') {
@@ -13252,10 +13340,10 @@ function addZoneHtml(placeholder, mark, attrs) {
     <div class="add-zone-fill" title="Click to add"></div></div>`;
 }
 
-function wireAddZone(zone, add) {
+function wireAddZone(zone, add, onClose) {
   const row = zone.querySelector('.add-zone-row');
   const input = zone.querySelector('.add-zone-input');
-  const close = () => { input.value = ''; row.classList.add('hidden'); };
+  const close = () => { input.value = ''; row.classList.add('hidden'); if (onClose) onClose(); };
   zone.querySelector('.add-zone-fill').addEventListener('click', () => {
     row.classList.remove('hidden');
     input.focus();

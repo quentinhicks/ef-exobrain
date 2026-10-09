@@ -5809,6 +5809,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   padding: 0;
 }
 .add-zone-fill { min-height: 120px; cursor: text; }
+/* On Projects: a short strip under each area, an add row inside an item. */
+.mp-sec .add-zone-fill { min-height: 30px; }
+.mp-sec .add-zone-row { padding: 6px 8px; }
+.mp-sec .add-zone-input { flex: 1; border: none; outline: none; background: transparent;
+  font: inherit; font-size: 14px; color: var(--text-primary); padding: 0; }
+.add-zone[data-add-kid] .add-zone-fill { display: none; }
 
 /* ---- Light theme ---- */
 
