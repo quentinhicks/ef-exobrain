@@ -1920,6 +1920,27 @@ async function refreshExternal() {
   refreshEngage();
 }
 
+// One week back or forward: the Week menu's ‹ › and the arrow keys.
+function calStepWeek(dir) {
+  state.currentDate = new Date(localDatePlusDays(viewDay(), dir * 7) + 'T12:00:00');
+  return refreshCalWeek();
+}
+
+// ← → PAGE THE CALENDAR (2026-10-08, Quentin's instruction): a week at a
+// time on the week (calStepWeek, the menu's own step), a day on the day view
+// (its own ‹ › buttons, pressed) — never a second way to move.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  if (!currentRoute().startsWith('calendar') || !noSurfaceOver()) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || typingIn(e.target)) return;
+  const prev = e.key === 'ArrowLeft';
+  if (calWeek.on) { e.preventDefault(); calStepWeek(prev ? -1 : 1); return; }
+  const btn = document.getElementById(prev ? 'nav-prev' : 'nav-next');
+  if (!btn || btn.disabled) return;
+  e.preventDefault();
+  btn.click();
+});
+
 function initTimeline() {
   document.getElementById('tl-nav').addEventListener('click', async e => {
     const b = e.target.closest('button');
@@ -3058,8 +3079,7 @@ function initCalWeek() {
     }
     if (!a) return;
     if (act === 'prev' || act === 'next') {
-      state.currentDate = new Date(localDatePlusDays(viewDay(), act === 'prev' ? -7 : 7) + 'T12:00:00');
-      await refreshCalWeek();
+      await calStepWeek(act === 'prev' ? -1 : 1);
     } else if (act === 'today') {
       state.currentDate = new Date();
       await refreshCalWeek();
