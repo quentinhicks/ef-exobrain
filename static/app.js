@@ -9936,6 +9936,30 @@ function undoableGateWindow(nodeId, dateStr, prev, label) {
 // 550ms and then drags, and a hold released WITHOUT moving is the finger's
 // right-click. A called-off day has no deadline to move.
 //   place(min)  draw the mark at a deadline while it is being dragged
+// WHAT A DRAG IS AT, while it moves (2026-10-08, Quentin: see the hour while
+// dragging a gate). A title tooltip never shows mid-drag, so a drag names
+// its value here: one fixed tip beside the element, gone on the drop.
+function dragTip(el, text) {
+  let tip = document.getElementById('drag-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'drag-tip';
+    document.body.appendChild(tip);
+  }
+  tip.textContent = text;
+  tip.classList.remove('hidden');
+  const r = el.getBoundingClientRect();
+  const w = tip.offsetWidth;
+  const left = r.right + 8 + w > window.innerWidth - 8 ? r.left - 8 - w : r.right + 8;
+  tip.style.left = `${Math.max(8, left)}px`;
+  tip.style.top = `${r.top + r.height / 2 - tip.offsetHeight / 2}px`;
+}
+
+function dragTipHide() {
+  const tip = document.getElementById('drag-tip');
+  if (tip) tip.classList.add('hidden');
+}
+
 function initGateDrag(handle, g, dateStr, geo, place) {
   if (g.skipped || !g.window || g.window.start_min == null || g.window.end_min == null) return;
   const s0 = g.window.start_min, e0 = g.window.end_min;
@@ -9960,11 +9984,13 @@ function initGateDrag(handle, g, dateStr, geo, place) {
         const at = e0 + delta;
         place(at);
         handle.title = `${g.label} → ${hhmmToAmPm(clockHHMM(at))}${at >= DAY_MIN ? ' +1d' : ''}`;
+        dragTip(handle, `${hhmmToAmPm(clockHHMM(at))}${at >= DAY_MIN ? ' +1d' : ''}`);
         document.body.style.cursor = 'grabbing';
       },
       async end() {
         document.body.style.cursor = '';
         handle.title = title;
+        dragTipHide();
         if (!moved) {
           if (touch) toggleCalGateSkip(g.node_id, g.label, dateStr, !!g.skipped);
           return;

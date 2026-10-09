@@ -5483,6 +5483,19 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   overflow: hidden;
   pointer-events: none;
 }
+/* A drag's value while it moves (dragTip). */
+#drag-tip {
+  position: fixed;
+  z-index: 260;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  font: 600 12px var(--font-mono);
+  color: var(--text-primary);
+  white-space: nowrap;
+  pointer-events: none;
+}
 #blk-hover b { font-weight: 600; color: var(--text-primary); }
 #blk-hover span:last-child { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
 
