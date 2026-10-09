@@ -804,6 +804,7 @@ def patch_inbox(id):
     started_at = data.get('started_at', _s)
     deadline = data.get('deadline', _s)
     after_id = data.get('after_id', _s)
+    on_projects = data.get('on_projects', _s)
     if status is not _s and status not in VALID_INBOX_STATUSES:
         return jsonify({'error': 'status must be null, active, waiting, or on_hold'}), 400
     kwargs = {}
@@ -835,6 +836,8 @@ def patch_inbox(id):
         kwargs['deadline'] = deadline
     if after_id is not _s:
         kwargs['after_id'] = after_id
+    if on_projects is not _s:
+        kwargs['on_projects'] = on_projects
     item = storage.update_inbox_item(id, **kwargs)
     _touch_and_sync_inbox()
     return jsonify(item)

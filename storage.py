@@ -667,6 +667,15 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE inbox_item ADD COLUMN started_at TEXT')
         conn.commit()
+    # SENT TO PROJECTS (2026-10-08, Quentin's instruction): an available
+    # action that lives on Projects instead of the to-do list. Not
+    # availability — the pool's queries are unchanged — only the list's own
+    # rule (onTodoList) reads it. Clarify's Project flow sets it, To-do clears it.
+    try:
+        conn.execute('SELECT on_projects FROM inbox_item LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE inbox_item ADD COLUMN on_projects INTEGER NOT NULL DEFAULT 0')
+        conn.commit()
     # Delegation (Allen: date everything you hand off): who has it and when to
     # chase. chase_on may stay blank — the date is optional by design.
     try:
@@ -3270,7 +3279,7 @@ def delete_ref_item(id):
 def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_until=_UNSET,
                       project_id=_UNSET, tags=_UNSET, waiting_on=_UNSET, chase_on=_UNSET,
                       notes=_UNSET, pushed=_UNSET, started_at=_UNSET, deadline=_UNSET,
-                      after_id=_UNSET, domain_id=_UNSET):
+                      after_id=_UNSET, domain_id=_UNSET, on_projects=_UNSET):
     # Projects nest, so filing must not close a loop: an item can't land under
     # itself or under anything in its own subtree. A cycle-making file is a
     # silent no-op (the client refuses it too; this is the backstop).
@@ -3327,6 +3336,8 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
         updates['started_at'] = started_at
     if deadline is not _UNSET:
         updates['deadline'] = deadline
+    if on_projects is not _UNSET:
+        updates['on_projects'] = 1 if on_projects else 0
     if after_id is not _UNSET:
         # A chain may not loop: walking after_id from the target must never
         # reach this item. A loop-making link is a silent no-op — same policy

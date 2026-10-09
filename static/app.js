@@ -10631,12 +10631,8 @@ document.addEventListener('keydown', e => {
   const ov = document.getElementById('map-overlay');
   if (!ov || ov.classList.contains('hidden') || e.defaultPrevented) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
-            || t.tagName === 'SELECT' || t.isContentEditable)) return;
-  const settings = document.getElementById('modal-overlay');
-  if ((settings && !settings.classList.contains('hidden')) || clarifyView.open
-      || entrySheet.open || seSheet.kind || objMenu.open || mapView.tMode) return;
+  if (typingIn(e.target)) return;
+  if (!noSurfaceOver() || mapView.tMode) return;
   const i = HORIZONS.findIndex(h => h.key === mapView.horizon);
   let to = -1;
   if (e.key === 'ArrowRight') to = i + 1;
@@ -11372,24 +11368,41 @@ function mapSelItem() {
     || (state.inbox || []).find(i => i.id === id) || null;
 }
 
-function mapMoveSel(step) {
-  const rows = mapRows();
-  if (!rows.length) return;
-  const at = rows.findIndex(r => r.dataset.id === String(mapView.sel));
-  const next = rows[Math.max(0, Math.min(rows.length - 1, at + step))];
-  mapView.sel = parseInt(next.dataset.id);
-  mapSelSync();
+// A KEYBOARD ROW CURSOR, shared by Projects and the to-do list: the id one
+// step from `id` among `rows` (the first row when none is selected yet).
+function rowCursorStep(rows, id, step) {
+  if (!rows.length) return null;
+  const at = rows.findIndex(r => r.dataset.id === String(id));
+  const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + step))];
   next.scrollIntoView({ block: 'nearest' });
+  return parseInt(next.dataset.id);
+}
+
+// Nothing stands over the page — no Settings, sheet, menu or read-out — so a
+// page's own keys may act. Asked by every page's key handler.
+function noSurfaceOver() {
+  const settings = document.getElementById('modal-overlay');
+  return !(settings && !settings.classList.contains('hidden'))
+    && !clarifyView.open && !entrySheet.open && !seSheet.kind && !objMenu.open
+    && !occasionView.open && !ctxSheet.tag;
+}
+
+function typingIn(t) {
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+                 || t.tagName === 'SELECT' || t.isContentEditable);
+}
+
+function mapMoveSel(step) {
+  const id = rowCursorStep(mapRows(), mapView.sel, step);
+  if (id == null) return;
+  mapView.sel = id;
+  mapSelSync();
 }
 
 function mapKeysLive() {
   const ov = document.getElementById('map-overlay');
-  const settings = document.getElementById('modal-overlay');
-  return !!ov && !ov.classList.contains('hidden')
-    && !(settings && !settings.classList.contains('hidden'))
-    && !clarifyView.open && !entrySheet.open && !seSheet.kind && !objMenu.open
-    && !mapView.menuOpen && !occasionView.open && !ctxSheet.tag
-    && mapView.horizon === 'projects' && !hzView.menuOpen;
+  return !!ov && !ov.classList.contains('hidden') && noSurfaceOver()
+    && !mapView.menuOpen && mapView.horizon === 'projects' && !hzView.menuOpen;
 }
 
 async function mapAfterWrite() {
@@ -11511,9 +11524,7 @@ function mapPromptLocation(item) {
 document.addEventListener('keydown', e => {
   if (!mapKeysLive()) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
-            || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  if (typingIn(e.target)) return;
   if (e.key === 'Shift') return;
   const item = mapSelItem();
   // A project armed for deletion is disarmed by any key but the second ⌫.
@@ -12643,6 +12654,10 @@ function renderCtxSheet() {
 // never a property of the item — the item stays an ordinary next action, and
 // unplaced actions sit in the "Not scheduled" pool at the bottom.
 const engageView = { placements: [], pool: [], allItems: [], overrides: [],
+                     // The keyboard cursor on the to-do list (egCursorSync):
+                     // a row's id, and its index so a row filed away hands
+                     // the cursor to the one that took its place.
+                     cursor: null, cursorAt: 0,
                      // The viewed day (YMD). null = today, and the header's ‹ ›
                      // move it. Session-local, like every other view state —
                      // the label always says which day you are looking at.
@@ -12679,6 +12694,51 @@ function initPrivacyHotkey() {
     togglePrivacy();
   });
 }
+
+// THE TO-DO LIST BY KEYBOARD (2026-10-08, Quentin's instruction): ↑↓ or j/k
+// walk the rows, and the letters are clarify's own flow keys — P sends a row
+// to Projects (a project, or none), C to the calendar, L to a list — so one
+// key opens the sheet already in that flow. Enter opens it plain, Esc puts
+// the cursor away. It appears on the first key, never on its own.
+function egRows() {
+  return [...document.querySelectorAll('#engage-body .eg-pool .eg-pool-item[data-id]:not(.eg-defer-row)')];
+}
+
+function egCursorSync() {
+  if (engageView.cursor == null) return null;
+  const rows = egRows();
+  let at = rows.findIndex(r => r.dataset.id === String(engageView.cursor));
+  if (at < 0) at = Math.min(engageView.cursorAt, rows.length - 1);
+  const row = rows[at] || null;
+  engageView.cursor = row ? parseInt(row.dataset.id) : null;
+  engageView.cursorAt = Math.max(0, at);
+  rows.forEach(r => r.classList.toggle('eg-row-sel', r === row));
+  return row;
+}
+
+document.addEventListener('keydown', e => {
+  if (currentRoute() !== '' || !noSurfaceOver()) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target)) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const step = { ArrowDown: 1, j: 1, ArrowUp: -1, k: -1 }[k];
+  if (step) {
+    const id = rowCursorStep(egRows(), engageView.cursor, engageView.cursor == null ? 0 : step);
+    if (id == null) return;
+    e.preventDefault();
+    engageView.cursor = id;
+    egCursorSync();
+    return;
+  }
+  const row = egCursorSync();
+  if (!row) return;
+  if (k === 'Escape') { engageView.cursor = null; row.classList.remove('eg-row-sel'); return; }
+  const flow = CLARIFY_FLOWS.find(f => f.route && f.k.toLowerCase() === k);
+  if (k !== 'Enter' && !flow) return;
+  const item = engageView.pool.find(i => i.id === engageView.cursor);
+  if (!item) return;
+  e.preventDefault();
+  openClarifyForItem(item, refreshEngage).then(() => { if (flow) setClarifyFlow(flow.key); });
+});
 
 function initEngage() {
   // Engage IS the home screen now (9c) — nothing to open or close. Esc peels
@@ -12772,8 +12832,11 @@ async function refreshEngage() {
 // and by Projects — which shows what is NOT on the list (2026-10-01, Quentin:
 // "these are entirely separate"). Placements, the routine areas and the
 // context gates only decide where on the day a listed row is drawn.
+// SENT TO PROJECTS (2026-10-08, Quentin's instruction): an action sent there
+// (`on_projects`, written by clarify's Project flow, cleared by To-do) is
+// available and on Projects instead — this one rule is how both pages know.
 function onTodoList(i) {
-  return (i.kind || 'item') === 'item';
+  return (i.kind || 'item') === 'item' && !i.on_projects;
 }
 
 // THE FOUR POOL GATES, in one place.
@@ -13324,6 +13387,7 @@ function renderEngage() {
     ${popHtml}
     </div>
   `;
+  egCursorSync();
   main.querySelector('#eg-agenda-btn').addEventListener('click', () => {
     setEgAgendaOpen(!egAgendaOpen());
     renderEngage();
@@ -14135,6 +14199,7 @@ function clarifyResetItem() {
   }
   clarifyView.projectId = null;
   clarifyView.projectName = '';
+  clarifyView.loose = false;
   // AN ITEM ALREADY FILED KEEPS ITS PROJECT ON SCREEN (2026-08-12). The sheet
   // used to open saying "Project: none" for an action sitting inside one, which
   // misreported where the thing lives, hid the ⛓ and the project's own notes
@@ -14407,6 +14472,8 @@ async function fileClarify(bucket, refTarget) {
       // just floats the row to the top of the pool and accents it.
       if (startNow) body.started_at = new Date().toISOString();
       if (clarifyView.projectId) body.project_id = clarifyView.projectId;
+      else if (clarifyView.loose && clarifyOnProjects()) body.project_id = null;
+      body.on_projects = clarifyOnProjects();
       await patch(body);
       // The date that was actually WRITTEN teaches the next item — a value
       // left on screen and then cleared by the exit never learned anything.
@@ -14531,7 +14598,7 @@ const CLARIFY_FLOWS = [
 const CLARIFY_FLOW_HINT = {
   now: 'Marks it done and moves to the next item. Nothing is filed.',
   todo: 'Goes on the to-do list, available now.',
-  project: 'Click a project on the Projects page to file it there.',
+  project: 'Click a project on the Projects page to file it there, or an area’s heading (or No project) to keep it there as an action. Either way it leaves the to-do list.',
   calendar: 'Click a block or an event to add it there, or an empty time to put it at that time.',
   list: 'Click a list or document on the Lists page to add it there.',
 };
@@ -14541,10 +14608,30 @@ function clarifyFlowMode() {
     && !(clarifyView.project && !clarifyView.external);
 }
 
+// The Project flow sends an action to Projects and off the to-do list; every
+// other active exit puts it (back) on the list.
+function clarifyOnProjects() {
+  return clarifyFlowMode() && clarifyView.flow === 'project' ? 1 : 0;
+}
+
+// "No project" is a pick too — an area's heading on Projects, or the sheet's
+// button — so an empty Project flow still refuses rather than filing loose.
+function clarifyPickLoose(areaId) {
+  clarifyView.projectId = null;
+  clarifyView.projectName = '';
+  clarifyView.loose = true;
+  if (areaId !== undefined) { clarifyView.areaId = areaId; clarifyView.domainId = null; }
+}
+
 function clarifyFlowDest(key) {
   if (key === 'now') return 'mark done';
   if (key === 'todo') return 'to-do list';
-  if (key === 'project') return clarifyView.projectName || '';
+  if (key === 'project') {
+    if (clarifyView.projectId) return clarifyView.projectName || '';
+    if (!clarifyView.loose) return '';
+    const a = clarifyView.areaId && (state.areas || []).find(x => x.id === clarifyView.areaId);
+    return `No project · ${a ? a.name : 'no area'}`;
+  }
   if (key === 'calendar') return clarifyView.calPick || '';
   return clarifyView.refPick ? clarifyView.refPick.label : '';
 }
@@ -14558,6 +14645,7 @@ function clarifyFlowsHtml() {
     <div class="cl-row">
       <span class="cl-label">Project</span>
       <button id="cl-proj" class="cl-pill${clarifyView.projectId ? ' cl-pill-on' : ''}">${clarifyView.projectId ? escHtml(clarifyView.projectName) : 'search'} ⌕</button>
+      <button id="cl-loose" class="cl-pill${!clarifyView.projectId && clarifyView.loose ? ' cl-pill-on' : ''}" title="An action on Projects, in no project">No project</button>
     </div>
     <div class="cl-row">
       <span class="cl-label">Show on</span>
@@ -14572,6 +14660,8 @@ function clarifyFlowsHtml() {
 
 function wireClarifyFlows(sheet) {
   sheet.querySelectorAll('[data-flow]').forEach(b => b.addEventListener('click', () => setClarifyFlow(b.dataset.flow)));
+  const loose = sheet.querySelector('#cl-loose');
+  if (loose) loose.addEventListener('click', () => { clarifyPickLoose(); clarifyPicked(); });
 }
 
 // Picking a flow clears what the LAST flow picked — a placement or a list
@@ -14650,7 +14740,7 @@ function calPickFrom(el, e) {
 // else on the page — a directory, the week's paging — works as it always does.
 const CLARIFY_PICK_TARGETS = {
   calendar: '#cal-overlay .tl-block, #cal-overlay .tl-gcal-event, #cal-overlay .wk-col[data-date], #cal-overlay #tl-body',
-  project: '#map-overlay .map-row-project[data-id]',
+  project: '#map-overlay .map-row-project[data-id], #map-overlay .mp-sec:not([data-sec="in"]) > .mp-sec-title',
   list: '#tab-lists .ref-row[data-id]',
 };
 window.addEventListener('click', e => {
@@ -14668,6 +14758,12 @@ window.addEventListener('click', e => {
     return;
   }
   e.preventDefault(); e.stopPropagation();
+  if (pk.flow === 'project' && el.classList.contains('mp-sec-title')) {
+    const obj = el.dataset.obj || '';
+    clarifyPickLoose(obj.startsWith('area:') ? parseInt(obj.slice(5)) : null);
+    clarifyPicked();
+    return;
+  }
   if (pk.flow === 'project') {
     const p = (state.projects || []).find(x => String(x.id) === el.dataset.id);
     const text = el.querySelector('.map-text');
@@ -14693,7 +14789,7 @@ function fileClarifyFlow() {
   if (flow === 'now') { clarifyView.doVariant = 'done'; return fileClarify('do'); }
   if (flow === 'todo') return fileClarify('todo');
   if (flow === 'project') {
-    if (!clarifyView.projectId) { toast('Pick a project first'); return; }
+    if (!clarifyView.projectId && !clarifyView.loose) { toast('Pick a project, or No project'); return; }
     return fileClarify('defer');
   }
   if (flow === 'calendar') {
@@ -14766,6 +14862,7 @@ async function fileClarifyExternal(bucket, refTarget) {
                        defer_until: clarifyView.showDate || null };
         if (startNow) body.started_at = new Date().toISOString();
         if (clarifyView.projectId) body.project_id = clarifyView.projectId;
+        body.on_projects = clarifyOnProjects();
         await patch(body);
         stickyRemember('showDate', clarifyView.showDate);
         if (clarifyView.showDate && clarifyView.showTime) {

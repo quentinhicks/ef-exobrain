@@ -3692,6 +3692,7 @@ body.np-body {
 .map-row-p3 { background: var(--prio-3); }
 .map-row-p1, .map-row-p2, .map-row-p3, .map-row-sel { border-radius: 4px; }
 .map-row-sel { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.eg-row-sel { border-radius: 4px; box-shadow: inset 0 0 0 1.5px var(--accent); }
 /* `t` is armed: the row says which arrow sets which estimate, on a line of
    its own — beside the text it would crush the row at phone width. */
 .map-row-tmode { flex-wrap: wrap; }
