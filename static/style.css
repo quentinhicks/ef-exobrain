@@ -6692,6 +6692,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .ref-ico { width: 15px; height: 15px; flex: none; color: var(--text-secondary); }
 .ref-chev { flex: none; font-size: 15px; line-height: 1; color: var(--text-secondary); }
 .ref-row.ref-on { background: var(--surface-2); }
+.ref-row.ref-drop, .ref-drop { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: 4px; }
 .ref-row[data-id] { cursor: pointer; }
 .ref-pane-head { display: flex; align-items: center; gap: 8px; padding: 6px 0 10px; }
 .ref-pane-name { flex: 1; min-width: 0; font-size: 16px; font-weight: 600; color: var(--text-primary);

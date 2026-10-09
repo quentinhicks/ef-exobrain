@@ -7087,7 +7087,7 @@ async function initRoutes() {
 }
 
 
-const refView = { lists: [], open: null };
+const refView = { lists: [], open: null, dragId: null };
 
 async function refreshRef() {
   refView.lists = await apiGet('/api/ref', refView.lists);
@@ -7190,9 +7190,46 @@ function refMenu(x, y, dirPid, row) {
     label: `New ${REF_KIND_WORD[kind]}${into !== dirPid ? ` in ${name}` : ''}`, run: () => refCreate(kind, into) }));
   if (l) {
     items.push({ label: 'Rename', run: () => refListRename(row.querySelector('.ref-name')) },
+               { label: 'Move to…', run: () => refMoveMenu(x, y, l) },
                { label: `Delete ${REF_KIND_WORD[l.kind]}`, danger: true, run: () => refDelete(l.id) });
   }
   openObjectMenu(x, y, 'ref', into || 0, items);
+}
+
+// NESTING IS A MOVE (2026-10-08, Quentin's instruction: "like a file system"):
+// any directory, list or document goes into any directory — never into
+// itself or below itself (refused here by omission, and by the server).
+// Two doors, one writer: the menu's Move to… (the finger's path) and a mouse
+// drag onto a directory row or column.
+function refMoveTargets(l) {
+  const inside = id => {
+    for (let cur = refView.lists.find(v => v.id === id); cur;
+         cur = refView.lists.find(v => v.id === cur.parent_id)) if (cur.id === l.id) return true;
+    return false;
+  };
+  const dirs = refView.lists.filter(d => d.kind === 'dir' && !inside(d.id))
+    .map(d => ({ id: d.id, path: refPath(refView.lists, d.id) }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  return [{ id: null, path: '~/' }, ...dirs].filter(t => t.id !== (l.parent_id || null));
+}
+
+function refMoveMenu(x, y, l) {
+  const items = refMoveTargets(l).map(t => ({ label: t.path, run: () => refMove(l.id, t.id) }));
+  if (!items.length) { toast('No other directory to move it to'); return; }
+  openObjectMenu(x, y, 'ref', l.id, items);
+}
+
+async function refMove(id, pid) {
+  const l = refView.lists.find(v => v.id === id);
+  if (!l || (l.parent_id || null) === (pid || null)) return;
+  const from = l.parent_id || null;
+  const res = await apiSend(`/api/ref/lists/${id}`, 'PATCH', { parent_id: pid });
+  if (!res.ok) { toast((await res.json()).error || 'Could not move it'); return; }
+  pushUndo(`moved "${l.name}" to ${refPath(refView.lists, pid)}`, async () => {
+    await apiSend(`/api/ref/lists/${id}`, 'PATCH', { parent_id: from });
+    await refreshAfterUndo();
+  });
+  await refreshRef();
 }
 
 // The rows and add buttons of every directory drawn inside `scope`: the same
@@ -7214,7 +7251,44 @@ function wireRefEntries(scope) {
     onLongPress(area, () => {
       if (press) refMenu(press.x, press.y, pid, press.t.closest('.ref-row[data-id]'));
     });
+    // A mouse drag files a row into a directory: dropped on a directory's
+    // row, or on a column, into the directory that column shows.
+    area.addEventListener('dragover', e => {
+      if (refView.dragId == null) return;
+      e.preventDefault();
+      area.querySelectorAll('.ref-drop').forEach(r => r.classList.remove('ref-drop'));
+      const over = e.target.closest('.ref-row[data-id]');
+      const dir = over && refView.lists.find(v => String(v.id) === over.dataset.id && v.kind === 'dir');
+      (dir ? over : area).classList.add('ref-drop');
+    });
+    area.addEventListener('dragleave', e => {
+      if (!area.contains(e.relatedTarget)) {
+        area.classList.remove('ref-drop');
+        area.querySelectorAll('.ref-drop').forEach(r => r.classList.remove('ref-drop'));
+      }
+    });
+    area.addEventListener('drop', e => {
+      if (refView.dragId == null) return;
+      e.preventDefault();
+      const over = e.target.closest('.ref-row[data-id]');
+      const dir = over && refView.lists.find(v => String(v.id) === over.dataset.id && v.kind === 'dir');
+      const to = dir ? dir.id : pid;
+      const id = refView.dragId;
+      refView.dragId = null;
+      if (to === id) return;
+      refMove(id, to);
+    });
     dirEl.querySelectorAll('.ref-row[data-id]').forEach(row => {
+      row.draggable = true;
+      row.addEventListener('dragstart', e => {
+        refView.dragId = parseInt(row.dataset.id);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', row.dataset.id);
+      });
+      row.addEventListener('dragend', () => {
+        refView.dragId = null;
+        document.querySelectorAll('.ref-drop').forEach(r => r.classList.remove('ref-drop'));
+      });
       const span = row.querySelector('.ref-name');
       onTapOrDouble(row, () => {
         refView.open = parseInt(row.dataset.id);
