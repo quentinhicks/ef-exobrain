@@ -2663,6 +2663,9 @@ def _gate_day_payload(node, ymd, now=None):
         # lock had bitten would draw a verb the server is about to refuse.
         'skipped': skipped,
         'skip_locked': qr_judge.override_locked(node, ymd, now),
+        # Inside the lock a day can still be tightened; whether REMOVING its
+        # override would be one is the server's answer too.
+        'remove_locked': _remove_override_locked(node, ymd, now),
         # The day's own override row, as stored — what an undo of a window
         # drag restores (or DELETEs, when there was none).
         'override': override,
@@ -3774,9 +3777,12 @@ def post_accountability_override(id):
         storage.qr_set_override(id, date, w[0], w[1], w[2], skipped=want)
         return jsonify({'ok': True, 'skipped': want})
 
-    if qr_judge.override_locked(node, date):
-        return jsonify({'error': 'Locked — deadline within 24h'}), 403
     offset = d.get('window_end_offset_days') or 0
+    # Within 24h of the deadline the day can still be TIGHTENED — a window
+    # inside the one in force — and nothing else (qr_judge.window_tightens).
+    if qr_judge.override_locked(node, date) and not qr_judge.window_tightens(
+            node, date, (d['window_start'], d['window_end'], offset)):
+        return jsonify({'error': 'Locked — within 24h of the deadline a day can only be tightened'}), 403
     # A deadline dragged above its own opening is an unsatisfiable gate — the
     # window would be empty and every day would judge absent. Never past the
     # opening. (The drag is bounded client
@@ -3785,6 +3791,15 @@ def post_accountability_override(id):
         return jsonify({'error': 'A deadline cannot come before the window opens'}), 400
     storage.qr_set_override(id, date, d['window_start'], d['window_end'], offset)
     return jsonify({'ok': True})
+
+
+# Removing a day's window override puts the day back on the window beneath it
+# — allowed inside the 24h lock only when THAT is a tightening.
+def _remove_override_locked(node, ymd, now=None):
+    if not qr_judge.override_locked(node, ymd, now):
+        return False
+    beneath = qr_judge.resolve_window(node, ymd, override=False)
+    return not qr_judge.window_tightens(node, ymd, beneath)
 
 
 @app.route('/api/accountability/nodes/<int:id>/overrides/<date>', methods=['DELETE'])
@@ -3797,8 +3812,8 @@ def delete_accountability_override(id, date):
     # one exception — deleting that row puts the gate back on duty, which is a
     # tightening, and refusing it would be refusing to re-commit.
     existing = storage.qr_get_override(id, date)
-    if not (existing and existing.get('skipped'))             and qr_judge.override_locked(nodes[id], date):
-        return jsonify({'error': 'Locked — deadline within 24h'}), 403
+    if not (existing and existing.get('skipped')) and _remove_override_locked(nodes[id], date):
+        return jsonify({'error': 'Locked — within 24h of the deadline a day can only be tightened'}), 403
     storage.qr_delete_override(id, date)
     return jsonify({'ok': True})
 

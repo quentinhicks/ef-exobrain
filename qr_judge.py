@@ -789,6 +789,23 @@ def override_locked(node, ymd, now=None):
     return _local_dt(close_date, end) <= now + timedelta(hours=LOOSEN_DELAY_H)
 
 
+# WITHIN THE LOCK, A DAY MAY STILL BE TIGHTENED (2026-10-08, Quentin's
+# instruction: "allow me to tighten gates but not loosen them within 24
+# hours"). The lock exists to stop a day being made EASIER as it comes due;
+# it refused every change, so moving tonight's deadline earlier was refused
+# exactly like moving it later. A window is a tightening when it lies inside
+# the one in force — no scan it accepts was refused before. A translation
+# accepts scans the old window did not, so it is not one, whichever way it
+# goes. `window` is (start HH:MM, end HH:MM, end offset days).
+def window_tightens(node, ymd, window):
+    def span(w):
+        s = _hhmm_min(w[0])
+        return s, _hhmm_min(w[1]) + (w[2] or 0) * 1440
+    ns, ne = span(window)
+    cs, ce = span(resolve_window(node, ymd))
+    return cs <= ns <= ne <= ce
+
+
 # The only fields a change to cannot make the gate easier to satisfy. Anything
 # not named here has to be PROVEN tighter by is_loosening to apply at once.
 QR_IMMEDIATE_FIELDS = ('label',)

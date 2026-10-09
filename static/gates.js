@@ -521,9 +521,13 @@ function dragRefusal(g) {
   if (g.judged) return 'This day is judged and frozen.';
   if (g.skipped) return 'Called off — put the day back first.';
   if (g.window && g.window.closed) return 'This day has closed.';
-  if (g.skip_locked) return 'Locked: this gate closes within 24h, which is exactly when the rule refuses changes.';
   return null;
 }
+
+// INSIDE THE 24h LOCK A DAY CAN ONLY BE TIGHTENED (2026-10-08): its edges
+// still drag, but only INWARD — the server's rule (qr_judge.window_tightens),
+// which refuses anything else whatever this clamp lets through.
+const INWARD_ONLY = 'Within 24h of the deadline: drag an edge inward to tighten this day — it cannot be loosened now.';
 
 function renderDay() {
   const el = $('#gd-day');
@@ -591,7 +595,7 @@ function renderDay() {
     return `<div class="gd-gate gd-st-${st}${G.sel === g.node_id ? ' gd-picked' : ''}${g.skipped ? ' gd-skipped' : ''}${
       g.window.all_day ? ' gd-allday' : ''}${locked ? ' gd-locked' : ''}" data-gate="${g.node_id}"
       style="top:${top}px;height:${h}px;left:calc(${lane} * (100% / ${lanes}));width:calc(100% / ${lanes} - 4px)"
-      title="${escHtml(locked || 'Drag the top or bottom edge to move this day only')}">
+      title="${escHtml(locked || (g.skip_locked ? INWARD_ONLY : 'Drag the top or bottom edge to move this day only'))}">
       ${locked ? '' : `<span class="gd-grab gd-grab-top" data-edge="start" style="top:${-up}px;height:${10 + up}px"></span>`}
       <div class="gd-gate-name">${escHtml(g.label)}</div>
       <div class="gd-gate-time">${clockHHMM(g.window.start_min)}–${clockLabel(g.window.end_min)}${
@@ -702,14 +706,17 @@ function startDrag(g, band, edge, y0, pid, handle) {
       if (!moved && Math.abs(dy) < 3) return;
       moved = true;
       const dm = Math.round(dy / PX_PER_MIN / SNAP_MIN) * SNAP_MIN;
+      // Locked: an edge only moves inward (INWARD_ONLY).
+      const inward = g.skip_locked;
       if (edge === 'start') {
         // The opening stays on this date and at least 5 minutes before the close.
-        ns = Math.max(0, Math.min(DAY_MIN - SNAP_MIN, e0 - SNAP_MIN, s0 + dm));
+        ns = Math.max(inward ? s0 : 0, Math.min(DAY_MIN - SNAP_MIN, e0 - SNAP_MIN, s0 + dm));
         ne = e0;
       } else {
         // The close may run into tomorrow, never more than a day past the opening.
         ns = s0;
-        ne = Math.max(s0 + SNAP_MIN, Math.min(s0 + DAY_MIN - SNAP_MIN, 2 * DAY_MIN - SNAP_MIN, e0 + dm));
+        ne = Math.max(s0 + SNAP_MIN, Math.min(s0 + DAY_MIN - SNAP_MIN, 2 * DAY_MIN - SNAP_MIN,
+                                              inward ? e0 : Infinity, e0 + dm));
       }
       band.style.top = `${lo + ns * PX_PER_MIN}px`;
       band.style.height = `${Math.max(22, (ne - ns) * PX_PER_MIN)}px`;
@@ -808,7 +815,7 @@ function renderDetail() {
         + `${g.commitment && g.commitment.staked_cents && g.live ? '' : ' (nothing is at stake this day)'}`
         + `. It settles at ${escHtml(stamp(v.settles_at))}.`;
   }
-  const lockedWhy = g.skip_locked && !g.skipped ? 'Locked: this gate closes within 24h.' : '';
+  const lockedWhy = g.skip_locked && !g.skipped ? 'Locked: this gate closes within 24h, so it can be tightened and not loosened.' : '';
   const scans = (g.scans || []).map(sc => `<li class="${sc.satisfies && sc.in_window ? 'gd-good-text' : ''}">
       ${escHtml(sc.local_time || '?')} · ${sc.proof === 'tag' ? 'tag tap' : 'link scan'}${
       sc.distance_m != null ? ` · ${sc.distance_m} m away` : ''}${
@@ -839,10 +846,10 @@ function renderDetail() {
     <div class="gd-actions">
       ${g.applies || g.skipped ? `<button class="gd-btn" id="gd-skip" ${lockedWhy || g.judged ? 'disabled' : ''}>${
         g.skipped ? 'Put this day back' : 'Call this day off'}</button>` : ''}
-      ${g.override && !g.override.skipped && !g.judged ? `<button class="gd-btn" id="gd-unov" ${g.skip_locked ? 'disabled' : ''}>Remove this day's change</button>` : ''}
+      ${g.override && !g.override.skipped && !g.judged ? `<button class="gd-btn" id="gd-unov" ${g.remove_locked ? 'disabled title="Removing it would loosen this day, and it closes within 24h."' : ''}>Remove this day's change</button>` : ''}
       <button class="gd-btn" id="gd-edit">Edit gate ›</button>
     </div>
-    ${lockedWhy ? `<div class="gd-hint">${lockedWhy} Calling it off now is exactly what the rule refuses.</div>` : ''}
+    ${lockedWhy ? `<div class="gd-hint">${lockedWhy} Calling it off is a loosening; dragging the window's edges inward is not.</div>` : ''}
   </div>`;
 
   const skip = $('#gd-skip');
