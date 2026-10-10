@@ -2328,7 +2328,7 @@ function wkTaskTop(top, bottom, spans, n) {
 // THE TASKS ARE READ IN THE ITEM ITSELF (2026-10-08, Quentin: "just list the
 // tasks in very small font in the block/event as the primary way to view"):
 // each open task one tiny line inside what it is on. The card is the second
-// way in — a double-click, and only where there is something to show.
+// way in — a double-click, which is also where one is added.
 function wkTaskList(date, minute, cont, top) {
   if (cont) return '';
   const tasks = wkTasksAt(date, minute);
@@ -2379,7 +2379,8 @@ function wkTaskPopHtml() {
     <div class="ref-list">${tasks.map(x => `<div class="ref-row ref-item">
         <span class="eg-check" data-task-done="${x.id}" title="Done"></span>
         <span class="ref-text">${escHtml(x.content)}</span></div>`).join('')}
-      <input type="text" class="wk-task-add" placeholder="Add a task" value="${escHtml(t.draft || '')}"></div>
+      <div class="wk-task-new"><input type="text" class="wk-task-add" placeholder="Add a task" value="${escHtml(t.draft || '')}">
+        <button class="wk-link" data-task-add>Add task</button></div></div>
     <div class="wk-pop-foot"><span></span>
       <button class="wk-link" data-task-more>${t.isBlock ? 'Block menu…' : 'Event details ›'}</button></div>
   </div>`;
@@ -2394,18 +2395,25 @@ async function wkTaskClick(e) {
   if (done) await wkTaskDone(parseInt(done.dataset.taskDone));
   else if (e.target.closest('[data-task-close]')) { calWeek.pop = null; calWeek.taskPop = null; renderCalWeek(); }
   else if (e.target.closest('[data-task-more]')) wkTaskMore(e);
+  else if (e.target.closest('[data-task-add]')) {
+    const field = document.querySelector('.wk-task-add');
+    if (field && field.value.trim()) await wkTaskAdd(field.value);
+    else if (field) field.focus();
+  }
   return true;
 }
 
-// A DOUBLE-click opens (or, again, closes) an item's card — only when it holds
-// an open task. With none, the double-click is what it was: a block's menu.
+// A DOUBLE-click opens (or, again, closes) an item's card — EVERY block and
+// event (2026-10-10, Quentin's instruction, reversing "only when it holds an
+// open task"): an empty one opens as an empty list with its add field, which
+// is how a task gets onto it. A block's menu is in the card's foot.
 function wkTaskDbl(e) {
   if (!calWeek.on) return;
   const el = e.target.closest('.wk-block[data-cat], .wk-ev');
   if (!el || el.classList.contains('tl-block-cont')) return;
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const occ = wkOccOf(el);
-  if (!occ || !wkTasksAt(occ.date, occ.minute).length) return;
+  if (!occ) return;
   e.stopPropagation();
   clearTimeout(calWeek.evTap);
   hideBlockHover();
@@ -2426,6 +2434,8 @@ function wkTaskDbl(e) {
   calWeek.pop = 'tasks';
   calWeek.taskPop = { ...occ, x, y, draft: '', focus: false };
   renderCalWeek();
+  const field = document.querySelector('#cal-week .wk-task-add');
+  if (field) field.focus();
 }
 
 async function wkTaskDone(id) {
@@ -3149,11 +3159,11 @@ function initCalWeek() {
     } else if (act === 'refresh') {
       await refreshCalendar();
     } else if (act === 'event') {
-      // An event holding tasks has a double-click (its card), and the read-out
-      // docks and shifts the grid under the pointer — so its single click
-      // waits out the double-click, the onTapOrDouble rule. Others open now.
+      // An event has a double-click (its task card), and the read-out docks
+      // and shifts the grid under the pointer — so its single click waits out
+      // the double-click, the onTapOrDouble rule. An all-day one opens now.
       const occ = a.classList.contains('wk-ev') && wkOccOf(a);
-      if (!occ || !wkTasksAt(occ.date, occ.minute).length) { openEventPop(a.dataset.evKey, a); return; }
+      if (!occ) { openEventPop(a.dataset.evKey, a); return; }
       if (e.detail > 1) return;
       const key = a.dataset.evKey;
       clearTimeout(calWeek.evTap);
@@ -11159,6 +11169,14 @@ function wireMapAdds(body) {
       return item;
     });
   });
+  body.querySelectorAll('.add-zone[data-add-proj]').forEach(zone => {
+    const id = parseInt(zone.dataset.addProj);
+    wireAddZone(zone, async (content, keepOpen) => {
+      const item = await mapAddItem(content, { project_id: id });
+      if (item && keepOpen) mapOpenKidZone(id);
+      return item;
+    });
+  });
   // INSIDE AN ITEM is a gesture, not a button (Quentin's instruction): a
   // swipe right on a row (Shift+→ on the selected one, in the row keys).
   body.querySelectorAll('.map-row[data-id]:not(.map-row-in)').forEach(row =>
@@ -11168,6 +11186,9 @@ function wireMapAdds(body) {
 // The add row inside an item: under its children, open at once, gone when
 // put away. Reopened after each add's repaint while Enter keeps it going.
 function mapOpenKidZone(id) {
+  // A project already has its space standing under its last item.
+  const standing = document.querySelector(`#map-overlay .add-zone[data-add-proj="${id}"] .add-zone-fill`);
+  if (standing) { standing.click(); return; }
   const open = document.querySelector('#map-overlay .add-zone[data-add-kid] .add-zone-input');
   if (open) { open.focus(); return; }
   const row = document.querySelector(`#map-overlay .map-row[data-id="${id}"]`);
@@ -11434,10 +11455,15 @@ function renderMap() {
 
   const areaTreeHtml = (areaItems, wantSomeday) => {
     const forest = mapAreaForest(areaItems, wantSomeday, todayStr);
+    // UNDER EVERY PROJECT'S LAST ITEM, A SPACE THAT ADDS TO IT (2026-10-10,
+    // Quentin's instruction) — the shared add zone, so an empty project has
+    // one too.
     const subtree = item => {
       const kids = forest.kids(item);
-      return rowHtml(item) + (kids.length
-        ? `<div class="map-kids">${kids.map(subtree).join('')}</div>` : '');
+      const zone = item.kind === 'project' ? addZoneHtml(`Add to ${item.content}`, '',
+        `data-add-proj="${item.id}"`) : '';
+      return rowHtml(item) + (kids.length || zone
+        ? `<div class="map-kids">${kids.map(subtree).join('')}${zone}</div>` : '');
     };
     return forest.roots.map(subtree).join('');
   };
@@ -11619,7 +11645,7 @@ function renderMap() {
 // One row is always SELECTED — the first when MAP opens — and single keys act
 // on it: ↑↓ move, 1/2/3 priority, d due, s show-on, t then an arrow for the
 // estimate, m multitask, l a location, r renames, p parks it in someday /
-// maybe or brings it back, Enter clarifies, ⌫ deletes. The selection is view
+// maybe or brings it back, Shift+P makes it a project, Enter clarifies, ⌫ deletes. The selection is view
 // state held by ID, so the re-render after a write keeps the row you were on.
 // Every write registers its inverse first, like any other button.
 //
@@ -11857,6 +11883,23 @@ document.addEventListener('keydown', e => {
   }
   else if (k === 'l') { e.preventDefault(); mapPromptLocation(item); }
   else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); mapDeleteSel(item); }
+  else if (k === 'p' && e.shiftKey) {
+    // Shift+P MAKES THE ROW A PROJECT (2026-10-10, Quentin's instruction),
+    // and its add space opens for the first action. On an empty project it
+    // goes back; one that holds actions stays a project.
+    e.preventDefault();
+    if (!item.status) return;
+    const make = item.kind !== 'project';
+    if (!make && (state.mapItems || []).some(i => i.project_id === item.id)) {
+      toast('It holds actions, so it stays a project');
+      return;
+    }
+    undoablePatch(item, ['kind'], `${make ? 'made' : 'unmade'} "${item.content}" a project`);
+    patchInboxItem(item.id, { kind: make ? 'project' : 'item' }).then(async () => {
+      await mapAfterWrite();
+      if (make) mapOpenKidZone(item.id);
+    });
+  }
   else if (k === 'p') {
     // Clarify's Someday exit, one key, and its way back: someday → active,
     // anything else (active, waiting, still in the inbox) → someday.

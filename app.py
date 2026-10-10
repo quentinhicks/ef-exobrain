@@ -838,6 +838,8 @@ def patch_inbox(id):
         kwargs['after_id'] = after_id
     if on_projects is not _s:
         kwargs['on_projects'] = on_projects
+    if data.get('kind') in ('item', 'project'):
+        kwargs['kind'] = data['kind']
     item = storage.update_inbox_item(id, **kwargs)
     _touch_and_sync_inbox()
     return jsonify(item)

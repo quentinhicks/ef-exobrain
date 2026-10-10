@@ -5336,8 +5336,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    sheet's rows and boxes inside. Only the add field and the count are new. */
 .wk-task-pop { position: fixed; width: 260px; padding: 14px 14px 10px; gap: 8px; z-index: 60; }
 .wk-task-pop .ref-item { padding: 5px 0; gap: 8px; }
-.wk-task-add { border: none; outline: none; background: transparent; padding: 7px 0; font: 13px var(--font-ui);
-  color: var(--text-primary); }
+.wk-task-new { display: flex; align-items: center; gap: 8px; }
+.wk-task-add { flex: 1; min-width: 0; border: none; outline: none; background: transparent; padding: 7px 0;
+  font: 13px var(--font-ui); color: var(--text-primary); }
 .wk-task-add::placeholder { color: var(--text-secondary); }
 /* The tasks, read in the item itself: one very small line each. A block's sit
    over its hatching past the drag band; an event's run under its name. */
@@ -5821,6 +5822,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .mp-sec .add-zone-input { flex: 1; border: none; outline: none; background: transparent;
   font: inherit; font-size: 14px; color: var(--text-primary); padding: 0; }
 .add-zone[data-add-kid] .add-zone-fill { display: none; }
+.mp-sec .add-zone[data-add-proj] .add-zone-fill { min-height: 16px; }
 
 /* ---- Light theme ---- */
 
