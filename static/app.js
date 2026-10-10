@@ -672,6 +672,48 @@ document.addEventListener('click', e => {
   e.stopImmediatePropagation();
 }, true);
 
+// A SIDEWAYS SWIPE IS THE ARROW KEYS, TRANSLATED ONCE (2026-10-10, Quentin's
+// instruction: swipe left and right on a phone, mimicking the arrow keys). A
+// quick, mostly-level flick dispatches the same ArrowLeft / ArrowRight keydown
+// the keyboard does — a flick to the LEFT is →, the next one — so whatever a
+// page's arrows do (the Calendar's week or day, the horizons) a finger does,
+// and a page that grows arrows later is swiped with no code of its own.
+//
+// Touch events, the one place they are right: a pointer stream is CANCELLED
+// the moment the browser takes a pan, and the lift this has to see never
+// arrives. It stands down where the flick already means something — inside
+// anything that scrolls sideways (the strip, a wide table), in a text field,
+// and for a hold or a drag that took the touch.
+const swipe = { at: null };
+
+function scrollsSideways(el) {
+  for (; el && el !== document.documentElement; el = el.parentElement) {
+    if (el.scrollWidth > el.clientWidth + 1
+        && /auto|scroll/.test(getComputedStyle(el).overflowX)) return true;
+  }
+  return false;
+}
+
+document.addEventListener('touchstart', e => {
+  const t = e.touches.length === 1 && e.touches[0];
+  swipe.at = t && !typingIn(e.target) && !scrollsSideways(e.target)
+    ? { x: t.clientX, y: t.clientY, t: Date.now() } : null;
+}, { passive: true });
+
+document.addEventListener('touchend', e => {
+  const from = swipe.at;
+  swipe.at = null;
+  const t = e.changedTouches[0];
+  if (!from || !t || e.touches.length) return;
+  if (pointerDrag.live || justPointerDragged() || longPress.fired) return;
+  const dx = t.clientX - from.x, dy = Math.abs(t.clientY - from.y);
+  if (Date.now() - from.t > 600 || Math.abs(dx) < 60 || dy > Math.abs(dx) / 2) return;
+  document.body.dispatchEvent(new KeyboardEvent('keydown', {
+    key: dx < 0 ? 'ArrowRight' : 'ArrowLeft', bubbles: true, cancelable: true }));
+}, { passive: true });
+
+document.addEventListener('touchcancel', () => { swipe.at = null; }, { passive: true });
+
 // A DRAG that touch can start too: on a mouse it begins on press, exactly as a
 // mouse drag always did; on a finger it begins after a 550ms still hold — the
 // same long press that stands in for right-click everywhere else (the long press above).
@@ -6835,7 +6877,7 @@ function initTopNav() {
     e.stopPropagation();
     nowDoor();
   });
-  wireEdgeFade(nav.querySelector('.tn-tabs'));
+  wireEdgeFade(nav);
   nav.querySelectorAll('.tn-search input').forEach(wireEdgeFade);
   window.addEventListener('resize', () =>
     document.querySelectorAll('.edge-fade').forEach(paintEdgeFade));

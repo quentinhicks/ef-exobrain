@@ -123,6 +123,9 @@ html, body {
 /* A hold is the app's right-click (the long press in app.js), so the system's
    own hold sheet — link preview, save image — stands down everywhere. */
 body { overflow-wrap: break-word; -webkit-touch-callout: none; }
+/* A sideways flick is the app's arrow keys (the swipe in app.js), so the
+   browser's own swipe-to-go-back stands down. */
+html, body { overscroll-behavior-x: none; }
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -4210,19 +4213,23 @@ body.np-body {
   gap: 6px;
   background: var(--surface-mid);
   border-bottom: 1px solid var(--border-soft);
+  /* THE WHOLE STRIP SCROLLS SIDEWAYS (2026-10-10, Quentin's instruction):
+     nothing in it is pinned — the tabs, a page's tools, undo, the eye and the
+     gear are one row, and where it is wider than the window all of it moves.
+     Every child is `flex: none`; the auto margins that push the tools right
+     on a wide window collapse to nothing once the row overflows. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
-/* The tabs scroll sideways on a phone; the two icons stay put beside them. */
+#top-nav::-webkit-scrollbar { display: none; }
 .tn-tabs {
-  flex: 1;
-  min-width: 0;
+  flex: none;
   height: 100%;
   display: flex;
   align-items: stretch;
   gap: 22px;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
-.tn-tabs::-webkit-scrollbar { display: none; }
 /* Text past a bar's edge fades rather than stopping mid-word (paintEdgeFade
    says which side has more). A mask, so it is right on either ground and in
    either theme with no colour of its own. */
@@ -6689,7 +6696,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* The calendar selector's week row (calFilter, a stripMenu). */
 .cf-week .wk-title { flex: 1; text-align: center; font-size: 14.5px; font-weight: 600; color: var(--text-primary); }
 .cf-tools .chip { display: inline-flex; align-items: center; gap: 5px; }
-@media (min-width: 900px) { .tn-tabs { flex: 0 1 auto; } }
 #top-nav #eg-undo { margin-left: auto; }
 /* The range button is in the selector's menu; its panel opens at the right. */
 .wk-range-pop { top: 8px; }
