@@ -14443,6 +14443,13 @@ const STICKY_IDLE_MS = 24 * 60 * 60 * 1000;
 
 const STICKY_FIELDS = {
   showDate: 'idle',      // the show-on date the last defer was given
+  // What the last item's flow PICKED (2026-10-10, Quentin's instruction): the
+  // project, the calendar slot, the list. Offered only inside that flow, named
+  // on its row and marked carried — the calendar one places a row, which is
+  // why it is never applied anywhere the row cannot say so.
+  clProject: 'idle',
+  clCal: 'idle',
+  clList: 'idle',
 };
 
 function stickyGet(field) {
@@ -14581,6 +14588,48 @@ function clarifyResetItem() {
   clarifyView.projSearch = null;
   clarifyView.projNotesOpen = false;
   clarifyView.refOpen = false;
+  clarifyCarryPick();
+}
+
+// THE LAST ITEM'S PICK IS THE NEXT ONE'S DEFAULT (2026-10-10, Quentin's
+// instruction): a run of captures bound for one list, one block or one project
+// is one sitting, and re-picking the place per item was the tax. Asked when an
+// item arrives in a flow and when a flow is chosen; a pick the item or this
+// sitting already made wins, and a calendar slot that has passed is spent.
+function clarifyCarryPick() {
+  clarifyView.pickCarried = false;
+  if (!clarifyFlowMode()) return;
+  const flow = clarifyView.flow;
+  const item = clarifyView.queue[0];
+  if (flow === 'project' && !clarifyView.projectId) {
+    const s = stickyGet('clProject');
+    const p = s && s.id && (state.projects || []).find(x => x.id === s.id);
+    if (p) {
+      clarifyView.projectId = p.id;
+      clarifyView.projectName = p.content;
+    } else if (s && !s.id && s.areaId && !(item && item.area_id)
+               && (state.areas || []).some(a => a.id === s.areaId)) {
+      clarifyPickLoose(s.areaId);
+    } else return;
+    stickyRemember('clProject', s);
+    clarifyView.pickCarried = true;
+  } else if (flow === 'calendar' && !clarifyView.showTime) {
+    const s = stickyGet('clCal');
+    if (!s || !s.date || !s.time || s.date < wallDay()) return;
+    clarifyView.showDate = s.date;
+    clarifyView.showTime = s.time;
+    clarifyView.showDateFrom = '';
+    clarifyView.calPick = s.label || '';
+    stickyRemember('clCal', s);
+    clarifyView.pickCarried = true;
+  } else if (flow === 'list' && !clarifyView.refPick) {
+    const s = stickyGet('clList');
+    const lists = (refView && refView.lists) || [];
+    if (!s || !s.id || (lists.length && !lists.some(l => l.id === s.id && l.kind !== 'dir'))) return;
+    clarifyView.refPick = s;
+    stickyRemember('clList', s);
+    clarifyView.pickCarried = true;
+  }
 }
 
 // Chain numbering for one project's actions: after_id links order them, and
@@ -14981,7 +15030,8 @@ function clarifyFlowsHtml() {
   const flow = clarifyView.flow;
   const rows = CLARIFY_FLOWS.map(f => `<button class="cl-flow${flow === f.key ? ' cl-flow-on' : ''}" data-flow="${f.key}">
       <span class="cl-key">${f.k}</span><span class="cl-flow-name">${f.name}</span>
-      <span class="cl-flow-dest">${flow === f.key ? escHtml(clarifyFlowDest(f.key)) : ''}</span></button>`).join('');
+      <span class="cl-flow-dest">${flow === f.key ? escHtml(clarifyFlowDest(f.key)
+        + (clarifyView.pickCarried ? ' · carried' : '')) : ''}</span></button>`).join('');
   const project = flow !== 'project' ? '' : `
     <div class="cl-row">
       <span class="cl-label">Project</span>
@@ -15014,6 +15064,7 @@ async function setClarifyFlow(key) {
     if (prev === 'calendar') { clarifyView.showDate = ''; clarifyView.showTime = ''; clarifyView.calPick = ''; }
     if (prev === 'list') clarifyView.refPick = null;
   }
+  clarifyCarryPick();
   const f = CLARIFY_FLOWS.find(x => x.key === key);
   if (f.route) { await startClarifyPick(f); return; }
   if (clarifyView.picking) { await endClarifyPick(); return; }
@@ -15024,7 +15075,7 @@ async function setClarifyFlow(key) {
 // opened, kept across flows, so putting the sheet down puts the page back.
 async function startClarifyPick(f) {
   const from = clarifyView.picking ? clarifyView.picking.from : currentRoute();
-  const phone = !SETTINGS_WIDE.matches;
+  const phone = !SETTINGS_WIDE.matches && !clarifyView.pickCarried;
   clarifyView.picking = { flow: f.key, from, hidden: phone };
   if (phone) hideSheet('clarify-sheet');
   await goRoute(f.route(), true);
@@ -15042,6 +15093,7 @@ async function endClarifyPick() {
 }
 
 function clarifyPicked() {
+  clarifyView.pickCarried = false;
   if (clarifyView.picking) clarifyView.picking.hidden = false;
   renderClarify();
 }
@@ -15129,12 +15181,18 @@ function fileClarifyFlow() {
   const flow = clarifyView.flow;
   if (flow === 'now') { clarifyView.doVariant = 'done'; return fileClarify('do'); }
   if (flow === 'todo') return fileClarify('todo');
-  if (flow === 'project') return fileClarify('defer');
+  if (flow === 'project') {
+    stickyRemember('clProject', clarifyView.projectId
+      ? { id: clarifyView.projectId } : { id: null, areaId: clarifyView.areaId || null });
+    return fileClarify('defer');
+  }
   if (flow === 'calendar') {
     if (!clarifyView.showDate || !clarifyView.showTime) { toast('Pick a block, an event or a time first'); return; }
+    stickyRemember('clCal', { date: clarifyView.showDate, time: clarifyView.showTime, label: clarifyView.calPick });
     return fileClarify('defer');
   }
   if (!clarifyView.refPick) { toast('Pick a list or document first'); return; }
+  stickyRemember('clList', clarifyView.refPick);
   return fileClarify('reference', { kind: clarifyView.refPick.kind, id: clarifyView.refPick.id });
 }
 
