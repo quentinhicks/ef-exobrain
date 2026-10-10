@@ -5158,7 +5158,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 
 .wk-grid {
   display: grid;
-  grid-template-columns: 52px repeat(7, minmax(0, 1fr));
+  /* --wk-n: how many days the grid draws, set by renderCalWeek — 7, or 1. */
+  grid-template-columns: 52px repeat(var(--wk-n, 7), minmax(0, 1fr));
   padding-right: 8px;
 }
 .wk-days { flex: none; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); }

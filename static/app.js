@@ -2022,13 +2022,13 @@ async function refreshExternal() {
 
 // One week back or forward: the Week menu's ‹ › and the arrow keys.
 function calStepWeek(dir) {
-  state.currentDate = new Date(localDatePlusDays(viewDay(), dir * 7) + 'T12:00:00');
+  state.currentDate = new Date(localDatePlusDays(viewDay(), dir * (calWeek.week ? 7 : 1)) + 'T12:00:00');
   return refreshCalWeek();
 }
 
-// ← → PAGE THE CALENDAR (2026-10-08, Quentin's instruction): a week at a
-// time on the week (calStepWeek, the menu's own step), a day on the day view
-// (its own ‹ › buttons, pressed) — never a second way to move.
+// ← → PAGE THE CALENDAR (2026-10-08, Quentin's instruction): what the grid
+// draws at a time — a week, or a day (calStepWeek, the menu's own step). The
+// old timeline's ‹ › are pressed only while Plan mode has it up.
 document.addEventListener('keydown', e => {
   if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
   if (!currentRoute().startsWith('calendar') || !noSurfaceOver()) return;
@@ -2071,6 +2071,8 @@ function initTimeline() {
     // the spans and no number to weigh them against, which is the one thing
     // the banner is for.
     if (state.planMode) await refreshPlan(viewDay());
+    // Out of Plan: the grid is the calendar again.
+    if (!state.planMode) { await setCalView(calWantsWeek()); return; }
     renderTimeline();
   });
 
@@ -2578,7 +2580,16 @@ const WK_HOUR_PX = 46;
 // `days` is keyed by exact date; `pop` is the one popover open ('range' or
 // 'legend'); `focus` the gate the range panel was opened from; `objDate` the
 // date of the gate last pressed, so its menu's "Open in Gates…" lands on it.
-const calWeek = { on: false, start: null, days: {}, pop: null, focus: null,
+//
+// ONE CALENDAR, ONE DAY OR SEVEN (2026-10-10, Quentin's instruction: the day
+// and the week reuse the same code for a single day). The grid below is the
+// Calendar's only renderer: `week` says whether it draws seven columns or
+// one, and a column is the same code either way — its blocks, events, gates,
+// the tasks written in them, their card, every drag. `on` is "the grid is up",
+// which it is except while PLAN mode has the old timeline (the one thing the
+// grid cannot draw yet). `start` is the first date drawn: the Monday of the
+// viewed week, or the viewed day itself.
+const calWeek = { on: false, week: false, start: null, days: {}, pop: null, focus: null,
                   focusDate: null, objDate: null, scrollKey: null, pref: null };
 
 function calWeekAvailable() { return WEEK_MQ.matches; }
@@ -2591,27 +2602,28 @@ function weekStartOf(ymd) {
   return localDatePlusDays(ymd, -jsDateToDayOfWeek(new Date(ymd + 'T12:00:00')));
 }
 
+// The dates the grid draws, and the first of them for a given day.
 function weekDates() {
-  return [0, 1, 2, 3, 4, 5, 6].map(i => localDatePlusDays(calWeek.start, i));
+  return calWeek.week ? [0, 1, 2, 3, 4, 5, 6].map(i => localDatePlusDays(calWeek.start, i))
+                      : [calWeek.start];
+}
+
+function calGridStart(ymd) {
+  return calWeek.week ? weekStartOf(ymd) : ymd;
 }
 
 async function setCalView(week) {
-  const on = !!week && calWeekAvailable();
-  const was = calWeek.on;
-  calWeek.on = on;
+  calWeek.week = !!week && calWeekAvailable();
+  calWeek.on = !state.planMode;
   calWeek.pop = null;
-  document.getElementById('cal-overlay').classList.toggle('cal-wk', on);
+  document.getElementById('cal-overlay').classList.toggle('cal-wk', calWeek.on);
   calFilter.render();
-  if (on) {
-    // Both are DAY-view states, and neither has a meaning across seven days.
-    state.planMode = false;
-    state.gateSel = null;
+  if (calWeek.on) {
+    state.gateSel = null;   // the old timeline's selection
     await refreshCalWeek();
-  } else if (was) {
-    // The week may have paged the viewed date; the day view's own payloads are
-    // keyed by it, so they are re-read for wherever it landed. Painted FIRST
-    // with the new date (the keyed caches answer empty for it rather than
-    // showing the old day), then again once its data is in.
+  } else {
+    // PLAN mode: the old timeline, whose payloads are keyed by the viewed
+    // date — painted first with that date, then again once its data is in.
     renderTimeline();
     await fetchOverridesForDate(state.currentDate);
     renderTimeline();
@@ -2619,7 +2631,7 @@ async function setCalView(week) {
 }
 
 async function refreshCalWeek() {
-  const start = weekStartOf(viewDay());
+  const start = calGridStart(viewDay());
   calWeek.start = start;
   renderCalWeek();
   const dates = weekDates();
@@ -2759,18 +2771,20 @@ function renderCalWeek() {
   for (let m = start; m <= end; m += 60) hours.push(m);
   const clip = (s, e) => [Math.max(s, start), Math.min(e, end)];
 
-  const first = new Date(dates[0] + 'T12:00:00'), last = new Date(dates[6] + 'T12:00:00');
-  const title = first.getMonth() === last.getMonth()
+  const first = new Date(dates[0] + 'T12:00:00'), last = new Date(dates[dates.length - 1] + 'T12:00:00');
+  const title = dates.length === 1
+    ? first.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+    : first.getMonth() === last.getMonth()
     ? `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()}–${last.getDate()}`
     : `${_MONTHS_SHORT[first.getMonth()]} ${first.getDate()} – ${_MONTHS_SHORT[last.getMonth()]} ${last.getDate()}`;
   const rangeLabel = `${wkClock(start)}–${wkClock(end)}`;
 
   const legendBlocks = new Map();
 
-  const heads = dates.map((d, i) => {
+  const heads = dates.map(d => {
     const on = d === today;
     return `<button class="wk-day${on ? ' wk-today' : ''}" data-wk="day" data-date="${d}">
-      <span class="wk-dow">${WEEKDAYS[i].name.toUpperCase()}</span>
+      <span class="wk-dow">${weekdayOf(new Date(d + 'T12:00:00')).name.toUpperCase()}</span>
       <span class="wk-num">${new Date(d + 'T12:00:00').getDate()}</span></button>`;
   }).join('');
 
@@ -2938,9 +2952,10 @@ function renderCalWeek() {
   // Today (only off this week), Day | Week, the hours, Plan and refresh,
   // above what the calendar draws. calFilter (stripMenu) reads this.
   calWeek.tools = { title, rangeLabel, fetchFailed,
-                    thisWeek: calWeek.start === weekStartOf(wallDay()) };
+                    thisWeek: calWeek.start === calGridStart(wallDay()) };
   calFilter.render();
 
+  host.style.setProperty('--wk-n', dates.length);
   host.innerHTML = `
     ${rangePop}
     <div class="wk-grid wk-days">
@@ -3110,19 +3125,20 @@ const calFilter = stripMenu({
     const t = calWeek.on && calWeek.tools;
     const cals = (state.calendars || []).filter(c => c.active !== 0);
     return [
-      t && { title: 'Week', html: `
-        ${dateNavHtml({ cls: 'cf-week', unit: 'week', prev: 'data-wk="prev"', next: 'data-wk="next"',
+      t && { title: calWeek.week ? 'Week' : 'Day', html: `
+        ${dateNavHtml({ cls: 'cf-week', unit: calWeek.week ? 'week' : 'day', prev: 'data-wk="prev"', next: 'data-wk="next"',
           today: t.thisWeek ? null : 'data-wk="today"',
           label: `<span class="wk-title">${escHtml(t.title)}</span>` })}
         <div class="tn-menu-chips cf-tools">
           <button class="chip wk-mono${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
             title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
           <button class="chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
+          <button class="chip" data-wk="add-event" title="Add an event to Google Calendar">+ Event</button>
           <button class="chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
           ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
         </div>` },
       calWeekAvailable() && { title: 'View', chips: pickChipsHtml([{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }],
-                                            calWeek.on ? 'week' : 'day', 'data-cal-view') },
+                                            calWeek.week ? 'week' : 'day', 'data-cal-view') },
       { title: 'Draw', chips: ['blocks', 'gates', 'events'].map(k =>
           toggleChipHtml(calShow[k] !== false, `data-calshow="${k}"`, k[0].toUpperCase() + k.slice(1))).join('') },
       cals.length && { title: 'Calendars', chips: cals.map(c =>
@@ -3165,6 +3181,7 @@ function initCalWeek() {
     const v = e.target.closest('[data-cal-view]');
     if (!v) return;
     calWeek.pref = v.dataset.calView === 'week' ? 'week' : 'day';
+    state.planMode = false;
     setCalView(calWeek.pref === 'week');
   };
   strip.addEventListener('click', viewSwitch);
@@ -3213,13 +3230,18 @@ function initCalWeek() {
       e.preventDefault();
       openGatesDashboard(a.dataset.node, a.dataset.date);
     } else if (act === 'day') {
+      // A week's day header opens that day; the one-day grid's is its own.
+      if (!calWeek.week) return;
       state.currentDate = new Date(a.dataset.date + 'T12:00:00');
       await setCalView(false);
     } else if (act === 'plan') {
-      await setCalView(false);
+      // The one thing the grid cannot draw yet: the old timeline takes over.
       state.planMode = true;
+      await setCalView(false);
       await refreshPlan(viewDay());
       renderTimeline();
+    } else if (act === 'add-event') {
+      openEvSheet();
     } else if (act === 'refresh') {
       await refreshCalendar();
     } else if (act === 'event') {
@@ -7043,6 +7065,25 @@ async function navigateTo(dest) {
   await goRoute(dest, true);
 }
 
+// CTRL+TAB WALKS THE STRIP (2026-10-10, Quentin's instruction): forward, and
+// back with Shift, through the tabs as the strip shows them and round again —
+// the browser's own tab keys, for the app's pages. From a text field too, as
+// a browser's are. The order is READ off the strip, so a tab added or hidden
+// there is in or out of the walk. A plain browser tab keeps these keys for
+// itself; they reach the page in the desktop window and an installed app.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Tab' || !e.ctrlKey || e.altKey || e.metaKey) return;
+  const tabs = [...document.querySelectorAll('#top-nav .tn-tab:not(.hidden)')].map(b => b.dataset.nav);
+  if (tabs.length < 2) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const at = tabs.indexOf(currentRoute().split('/')[0]);
+  const step = e.shiftKey ? -1 : 1;
+  // From Settings (or anything off the strip) the walk starts at its ends.
+  const to = at < 0 ? (step > 0 ? 0 : tabs.length - 1) : (at + step + tabs.length) % tabs.length;
+  navigateTo(tabs[to]);
+}, true);
+
 // ONE SWITCH, ONE ADDRESS (2026-10-01, Quentin's report: the URL read "/"
 // and then "/#/map" on every click, and switching lagged). The address is
 // written ONCE, after the page is up — pushed for a click, so Back works —
@@ -7087,8 +7128,9 @@ async function openSurface(dest, sub) {
     // route is shared by every device, so the phone's day must not pin the
     // laptop to it.
     if (sub.view === 'week') calWeek.pref = 'week';
+    state.planMode = false;
     await setCalView(calWantsWeek());
-    if (sub.view === 'week' && !calWeek.on && sub.say) {
+    if (sub.view === 'week' && !calWeek.week && sub.say) {
       toast('The week needs a window at least 800px wide — showing the day');
     }
     renderTimeline();
@@ -7141,7 +7183,7 @@ function currentRoute() {
   if (shown('tab-lists')) {
     return refView.open != null ? `lists/${refView.open}` : 'lists';
   }
-  if (shown('cal-overlay') && calWeek.on) return 'calendar/week';
+  if (shown('cal-overlay') && calWeek.week) return 'calendar/week';
   for (const [id, name] of [['cal-overlay', 'calendar'], ['tab-social', 'social']]) {
     if (shown(id)) return name;
   }
@@ -13814,9 +13856,9 @@ function renderEngage() {
     const b = navBounds();
     const clamped = Math.max(b.min, Math.min(b.max, dayOffset(egViewDate())));
     state.currentDate = new Date(today.getTime() + clamped * 86400000);
-    await fetchOverridesForDate(state.currentDate);
     openM('cal-overlay');
-    renderTimeline();
+    state.planMode = false;
+    await setCalView(false);
   });
   const todayBtn = header.querySelector('#eg-today');
   if (todayBtn) todayBtn.addEventListener('click', () => {
