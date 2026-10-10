@@ -281,6 +281,13 @@ def sheet_registry_fails(body):
     for i in sorted(defined - ids):
         out.append((0, "defineSheet('%s'" % i, 'no .sheet element with that id '
                                                'in index.html'))
+    # EVERY TAP-OFF CATCHER IS THE ONE CLASS (2026-10-10). The read-outs' two
+    # were hand-rolled copies with `inset: 0`, outside the contract that stops
+    # a layer above the capture bar, and the bar could not be clicked into.
+    for i in re.findall(r'id="([a-z-]+-backdrop)"', html):
+        if i not in backs:
+            out.append((0, '#' + i, 'class="sheet-backdrop" — a catcher of its own '
+                                    'covers the capture bar'))
     return out, len(ids)
 
 

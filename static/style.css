@@ -2617,13 +2617,12 @@ body.calendar-minimized #review-modal {
 
    z 190: over the calendar overlay (140/150) and the global bar (170), under
    the sheet band (200) — nothing here writes, so a sheet always wins. */
+/* Their catchers are `.sheet-backdrop` like every other (2026-10-10): they
+   were a hand-rolled copy with `inset: 0`, outside the contract that stops
+   every layer above the capture bar — so with a read-out open the bar could
+   not be clicked into. Only the layer is theirs. */
 #event-pop-backdrop,
-#gate-pop-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 189;
-  background: transparent;
-}
+#gate-pop-backdrop { z-index: 189; }
 
 #event-pop,
 #gate-pop {
