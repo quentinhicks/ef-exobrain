@@ -596,25 +596,6 @@ function onTapOrDouble(el, tap, dbl, within) {
   });
 }
 
-// A finger's swipe to the right across `el` — quick, mostly sideways, and a
-// real distance — runs fn. Touch only: a mouse has its keys. The row keeps
-// vertical panning (touch-action: pan-y), so a scroll is never a swipe.
-function onSwipeRight(el, fn) {
-  let start = null;
-  el.style.touchAction = 'pan-y';
-  el.addEventListener('pointerdown', e => {
-    start = e.pointerType === 'mouse' ? null : { x: e.clientX, y: e.clientY, t: Date.now() };
-  });
-  el.addEventListener('pointerup', e => {
-    if (!start) return;
-    const dx = e.clientX - start.x, dy = Math.abs(e.clientY - start.y);
-    const quick = Date.now() - start.t < 600;
-    start = null;
-    if (quick && dx > 60 && dy < dx / 2) fn();
-  });
-  el.addEventListener('pointercancel', () => { start = null; });
-}
-
 // A FINGER'S RIGHT-CLICK IS A LONG PRESS, TRANSLATED ONCE (2026-10-10,
 // Quentin's instruction: features port from laptop to phone without code of
 // their own). A 550ms still hold on a touch screen dispatches the SAME
@@ -6503,7 +6484,8 @@ function openObjectMenu(x, y, kind, id, extra) {
   el.id = 'obj-menu';
   el.innerHTML = items.map((it, i) => it.info
     ? `<div class="om-info">${escHtml(it.label)}</div>`
-    : `<button class="om-item${it.danger ? ' om-danger' : ''}" data-i="${i}">${escHtml(it.label)}</button>`).join('');
+    : `<button class="om-item${it.danger ? ' om-danger' : ''}" data-i="${i}">${escHtml(it.label)}${
+      it.hint ? `<span class="om-key">${escHtml(it.hint)}</span>` : ''}</button>`).join('');
   document.body.appendChild(el);
 
   const pad = 8;
@@ -11141,7 +11123,7 @@ function wireMapIndex(body) {
 // ADDING ON PROJECTS (2026-10-08, Quentin's instruction: as on the to-do
 // list). The blank strip under an area adds an action filed there, ON
 // PROJECTS (on_projects — off the to-do list, like the Project flow); a row's
-// swipe right (Shift+→) opens the same row inside it, and the first action
+// Shift+→ (or the row's menu) opens the same row inside it, and the first action
 // added inside an item
 // makes it a project (storage.update_inbox_item's rule, not a second one).
 async function mapAddItem(content, patch) {
@@ -11176,10 +11158,8 @@ function wireMapAdds(body) {
       return item;
     });
   });
-  // INSIDE AN ITEM is a gesture, not a button (Quentin's instruction): a
-  // swipe right on a row (Shift+→ on the selected one, in the row keys).
-  body.querySelectorAll('.map-row[data-id]:not(.map-row-in)').forEach(row =>
-    onSwipeRight(row, () => mapOpenKidZone(parseInt(row.dataset.id))));
+  // INSIDE AN ITEM is Shift+→ on the selected row, and "Add an action inside"
+  // on the row's menu (mapRowVerbs) — the phone-only swipe went 2026-10-10.
 }
 
 // The add row inside an item: under its children, open at once, gone when
@@ -11847,10 +11827,10 @@ document.addEventListener('keydown', e => {
   if (mapView.tMode) {
     mapView.tMode = false;
     mapSelSync();
-    const est = MAP_EST_KEYS[e.key];
-    if (est && item) {
+    const est = item && mapRowVerbs(item).find(v => v.key === `t ${e.key}`);
+    if (est) {
       e.preventDefault();
-      mapToggleIn(item, est, x => EST_TAGS.includes(x) || /^\d+[mh]$/.test(x), 'estimate');
+      est.run();
       return;
     }
     if (e.key === 'Escape') { e.stopImmediatePropagation(); return; }
@@ -11861,59 +11841,90 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (!item) return;
-  if (e.key === 'ArrowRight' && e.shiftKey && item.status) {
-    e.preventDefault();
-    mapOpenKidZone(item.id);
-    return;
-  }
-  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-  if (k === 'Enter') { e.preventDefault(); openClarifyForItem(item, mapAfterWrite); }
-  else if (k === '1' || k === '2' || k === '3') {
-    mapToggleIn(item, `p${k}`, x => PRIORITY_TAGS.includes(x), 'priority');
-  }
-  else if (k === 'd') { e.preventDefault(); mapPromptDue(item); }
-  else if (k === 's') { e.preventDefault(); mapPromptShow(item); }
-  else if (k === 't') { mapView.tMode = true; mapSelSync(); }
-  else if (k === 'm') {
-    const own = ownTags(item);
-    const on = own.includes('multitask');
-    mapSetTags(item, on ? own.filter(x => x !== 'multitask') : [...own, 'multitask'],
-      `${on ? 'cleared' : 'set'} multitask on "${item.content}"`);
-  }
-  else if (k === 'l') { e.preventDefault(); mapPromptLocation(item); }
-  else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); mapDeleteSel(item); }
-  else if (k === 'p' && e.shiftKey) {
-    // Shift+P MAKES THE ROW A PROJECT (2026-10-10, Quentin's instruction),
-    // and its add space opens for the first action. On an empty project it
-    // goes back; one that holds actions stays a project.
-    e.preventDefault();
-    if (!item.status) return;
-    const make = item.kind !== 'project';
-    if (!make && (state.mapItems || []).some(i => i.project_id === item.id)) {
-      toast('It holds actions, so it stays a project');
-      return;
-    }
-    undoablePatch(item, ['kind'], `${make ? 'made' : 'unmade'} "${item.content}" a project`);
-    patchInboxItem(item.id, { kind: make ? 'project' : 'item' }).then(async () => {
-      await mapAfterWrite();
-      if (make) mapOpenKidZone(item.id);
-    });
-  }
-  else if (k === 'p') {
-    // Clarify's Someday exit, one key, and its way back: someday → active,
-    // anything else (active, waiting, still in the inbox) → someday.
-    const parked = item.status === 'on_hold';
-    undoablePatch(item, ['status'], `${parked ? 'un-parked' : 'parked'} "${item.content}"`);
-    patchInboxItem(item.id, { status: parked ? 'active' : 'on_hold' }).then(mapAfterWrite);
-  }
-  else if (k === 'r') {
-    // The row's own rename (its double-click), not a second editor. The
-    // preventDefault is load-bearing: the field takes focus inside this
-    // keydown, and the r would otherwise be typed into it.
-    e.preventDefault();
-    const text = document.querySelector('#map-body .map-row-sel .map-text');
-    if (text) text.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-  }
+  const combo = (e.shiftKey ? 'Shift+' : '')
+    + (e.key === 'Delete' ? 'Backspace' : e.key.length === 1 ? e.key.toLowerCase() : e.key);
+  // `t` is the first half of the estimate's chord: it arms the next arrow.
+  if (combo === 't') { mapView.tMode = true; mapSelSync(); return; }
+  const verb = mapRowVerbs(item).find(v => v.key === combo);
+  if (!verb) return;
+  // Load-bearing for the ones that focus a field inside this keydown (rename,
+  // the prompts): the key would otherwise be typed into it.
+  e.preventDefault();
+  verb.run();
+});
+
+// ONE VERB TABLE FOR A PROJECTS ROW (2026-10-10, Quentin's instruction: a
+// feature ports from laptop to phone without code of its own). The keyboard
+// handler above looks a key up in it and the row's menu — right-click, or the
+// hold that is a finger's right-click — lists the same rows by name, so a key
+// added here is on the phone the moment it is written and the two cannot
+// drift. It is also where a double-click's verb (Rename) and the swipe that
+// used to add inside an item are reachable by a finger: named items, not a
+// second set of gestures. `hint` is the key as the menu prints it.
+function mapRowVerbs(item) {
+  const filed = !!item.status;
+  const project = item.kind === 'project';
+  const parked = item.status === 'on_hold';
+  const own = ownTags(item);
+  const multi = own.includes('multitask');
+  const est = (key, tag) => ({
+    key: `t ${key}`, hint: `t ${{ ArrowLeft: '←', ArrowUp: '↑', ArrowRight: '→', ArrowDown: '↓' }[key]}`,
+    label: `${own.includes(tag) ? 'Clear estimate' : 'Estimate'} ${tag}`,
+    run: () => mapToggleIn(item, tag, x => EST_TAGS.includes(x) || /^\d+[mh]$/.test(x), 'estimate') });
+  return [
+    { key: 'Enter', hint: '⏎', label: 'Clarify…', run: () => openClarifyForItem(item, mapAfterWrite) },
+    // The row's own rename (its double-click), not a second editor.
+    { key: 'r', label: 'Rename', run: () => {
+      const text = document.querySelector('#map-body .map-row-sel .map-text');
+      if (text) text.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    } },
+    filed && { key: 'Shift+ArrowRight', hint: '⇧→', label: 'Add an action inside', run: () => mapOpenKidZone(item.id) },
+    // SHIFT+P MAKES THE ROW A PROJECT, and its add space opens for the first
+    // action. On an empty project it goes back; one that holds actions stays.
+    filed && { key: 'Shift+p', hint: '⇧P', label: project ? 'Back to an action' : 'Make it a project', run: () => {
+      if (project && (state.mapItems || []).some(i => i.project_id === item.id)) {
+        toast('It holds actions, so it stays a project');
+        return;
+      }
+      undoablePatch(item, ['kind'], `${project ? 'unmade' : 'made'} "${item.content}" a project`);
+      patchInboxItem(item.id, { kind: project ? 'item' : 'project' }).then(async () => {
+        await mapAfterWrite();
+        if (!project) mapOpenKidZone(item.id);
+      });
+    } },
+    ...['1', '2', '3'].map(n => ({ key: n, label: `${own.includes('p' + n) ? 'Clear priority' : 'Priority'} ${n}`,
+      run: () => mapToggleIn(item, `p${n}`, x => PRIORITY_TAGS.includes(x), 'priority') })),
+    { key: 'd', label: 'Due…', run: () => mapPromptDue(item) },
+    { key: 's', label: 'Show on…', run: () => mapPromptShow(item) },
+    // `t` arms the next arrow on a keyboard; the menu names each estimate.
+    ...Object.entries(MAP_EST_KEYS).map(([key, tag]) => est(key, tag)),
+    { key: 'm', label: multi ? 'Clear multitask' : 'Multitask',
+      run: () => mapSetTags(item, multi ? own.filter(x => x !== 'multitask') : [...own, 'multitask'],
+        `${multi ? 'cleared' : 'set'} multitask on "${item.content}"`) },
+    { key: 'l', label: 'Location…', run: () => mapPromptLocation(item) },
+    // Clarify's Someday exit, and its way back: someday → active, anything
+    // else (active, waiting, still in the inbox) → someday.
+    { key: 'p', label: parked ? 'Bring back from someday' : 'Park in someday', run: () => {
+      undoablePatch(item, ['status'], `${parked ? 'un-parked' : 'parked'} "${item.content}"`);
+      patchInboxItem(item.id, { status: parked ? 'active' : 'on_hold' }).then(mapAfterWrite);
+    } },
+    // A key ARMS a project's delete and the second press does it; a menu item
+    // is already a read-and-chosen act, so it arms and deletes in one.
+    { key: 'Backspace', hint: '⌫', label: project ? 'Delete project' : 'Delete', danger: true,
+      run: () => mapDeleteSel(item), pick: () => { mapView.delArm = item.id; mapDeleteSel(item); } },
+  ].filter(Boolean);
+}
+
+document.addEventListener('contextmenu', e => {
+  const row = e.target.closest && e.target.closest('#map-overlay .map-row[data-id]');
+  if (!row || clarifyView.picking) return;
+  e.preventDefault();
+  mapView.sel = parseInt(row.dataset.id);
+  mapSelSync();
+  const item = mapSelItem();
+  if (!item) return;
+  openObjectMenu(e.clientX, e.clientY, 'item', item.id, mapRowVerbs(item).map(v => ({
+    label: v.label, hint: v.hint || v.key.toUpperCase(), danger: v.danger, run: v.pick || v.run })));
 });
 
 // ── Export — the list as Markdown ────────────────────────────

@@ -2728,6 +2728,10 @@ body.calendar-minimized #review-modal {
 
 .om-item:hover,
 .om-item:focus-visible { background: var(--surface-2); }
+/* The key that does the same thing, where the verb has one. */
+.om-key { float: right; margin-left: 18px; font: 11px var(--font-mono); color: var(--text-secondary); }
+/* A long menu scrolls inside the screen rather than running off it. */
+#obj-menu { max-height: calc(var(--vvh, 100vh) - 16px); overflow-y: auto; }
 
 /* A line the menu SAYS rather than offers: what the thing is for (a block's
    purpose, 2026-09-30). Text, not a control, so it takes no hover. */
