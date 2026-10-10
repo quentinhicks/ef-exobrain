@@ -63,6 +63,14 @@ BANNED = [
     (re.compile(r'(?<![\w.])1440(?![\w])'),
      'DAY_MIN, or spanEndMin / windowEndMin / clockHHMM',
      'const DAY_MIN = 1440;'),
+    # A FINGER'S RIGHT-CLICK IS TRANSLATED ONCE (2026-10-10). A long press
+    # dispatches `contextmenu` from one document-level listener, so a surface
+    # wires its right-click and has its finger path. A per-element long press
+    # beside a contextmenu listener is the copy that used to be written ten
+    # times — and the eleventh surface is the one that forgot it.
+    (re.compile(r'(?<![\w.])onLongPress\('),
+     "a 'contextmenu' listener — the long press dispatches it",
+     'const longPress ='),
     # THE VIEW STORE MAY NOT SWALLOW A MONEY-PATH OBJECT. hideTimelineItem
     # files a timeline_dismissal row — a view preference the judge has no
     # reason to read, and the right answer for a block or a fetched event,

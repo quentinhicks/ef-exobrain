@@ -615,32 +615,85 @@ function onSwipeRight(el, fn) {
   el.addEventListener('pointercancel', () => { start = null; });
 }
 
-function onLongPress(el, fn) {
-  let t = null, sx = 0, sy = 0, fired = false;
-  el.addEventListener('pointerdown', e => {
-    if (e.pointerType === 'mouse') return;
-    // A descendant drag surface claimed this press (see onPointerDrag): the
-    // hold belongs to it, not to this element's long-press verb.
-    if (e.pointerDragClaim) return;
-    fired = false;
-    sx = e.clientX; sy = e.clientY;
-    t = setTimeout(() => { fired = true; lastLongPressAt = Date.now(); fn(); }, 550);
-  });
-  el.addEventListener('pointermove', e => {
-    if (t && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) {
-      clearTimeout(t); t = null;
-    }
-  });
-  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev =>
-    el.addEventListener(ev, () => { clearTimeout(t); t = null; }));
-  el.addEventListener('click', e => {
-    if (fired) { e.preventDefault(); e.stopPropagation(); fired = false; }
-  }, true);
+// A FINGER'S RIGHT-CLICK IS A LONG PRESS, TRANSLATED ONCE (2026-10-10,
+// Quentin's instruction: features port from laptop to phone without code of
+// their own). A 550ms still hold on a touch screen dispatches the SAME
+// `contextmenu` event a right-click does, at the finger, on what was pressed —
+// so a surface wires its right-click and has its finger path. It replaced
+// onLongPress(el, fn), which ten sites each called beside a contextmenu
+// listener doing the same thing (and an eleventh, the object doors, timed by
+// hand). iOS never fires contextmenu for a hold, so this is the only one
+// there; where a browser does fire its own, that one is turned away so the
+// verb does not run twice.
+//
+// It stands down when a drag TOOK the hold (onPointerDrag armed — the hold was
+// the grab), and never starts in a text field, whose hold is the system's own
+// paste and selection. "Took", not "saw": a drag surface is often a whole
+// layer that declines every press not on a handle, and standing down for
+// those left an event's box with no hold at all. Both timers are 550ms, so
+// the question is asked one tick later, after any drag has armed or declined.
+const longPress = { timer: null, fired: false, down: false };
+
+function longPressCancel() {
+  clearTimeout(longPress.timer);
+  longPress.timer = null;
 }
+
+document.addEventListener('pointerdown', e => {
+  longPress.fired = false;
+  if (e.pointerType === 'mouse') return;
+  longPressCancel();
+  if (typingIn(e.target)) return;
+  longPress.down = true;
+  const x = e.clientX, y = e.clientY;
+  longPress.timer = setTimeout(() => { longPress.timer = setTimeout(() => {
+    longPress.timer = null;
+    if (pointerDrag.live) return;
+    const target = e.target.isConnected ? e.target : document.elementFromPoint(x, y);
+    if (!target) return;
+    const handled = !target.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+    if (!handled) return;
+    // The click the lifting finger sends belongs to the hold, not to the row.
+    longPress.fired = true;
+    lastLongPressAt = Date.now();
+    const sel = window.getSelection && window.getSelection();
+    if (sel && sel.removeAllRanges) sel.removeAllRanges();
+  }, 0); }, 550);
+  const sx = x, sy = y;
+  const moved = ev => {
+    if (Math.abs(ev.clientX - sx) > 10 || Math.abs(ev.clientY - sy) > 10) longPressCancel();
+  };
+  const up = () => {
+    longPress.down = false;
+    longPressCancel();
+    document.removeEventListener('pointermove', moved, true);
+    document.removeEventListener('pointerup', up, true);
+    document.removeEventListener('pointercancel', up, true);
+  };
+  document.addEventListener('pointermove', moved, true);
+  document.addEventListener('pointerup', up, true);
+  document.addEventListener('pointercancel', up, true);
+}, true);
+
+document.addEventListener('contextmenu', e => {
+  // The browser's own contextmenu for the same hold (Android): ours is the one.
+  if (e.isTrusted && (longPress.down || longPress.fired) && !typingIn(e.target)) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+}, true);
+
+document.addEventListener('click', e => {
+  if (!longPress.fired) return;
+  longPress.fired = false;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
 
 // A DRAG that touch can start too: on a mouse it begins on press, exactly as a
 // mouse drag always did; on a finger it begins after a 550ms still hold — the
-// same long press that stands in for right-click everywhere else (onLongPress).
+// same long press that stands in for right-click everywhere else (the long press above).
 //
 // The press is what disambiguates. Touch cannot tell "grab this" from "scroll
 // the page" at pointerdown, so movement before the timer cancels the gesture and
@@ -731,15 +784,6 @@ function onPointerDrag(el, spec) {
   };
 
   el.addEventListener('pointerdown', e => {
-    // THIS PRESS IS CLAIMED. A drag surface is usually a child of something
-    // that long-presses for its own verb (a block's bar inside the block, an
-    // event's bar inside the event), and BOTH would arm on one 550ms hold: the
-    // finger dragged the thing and hid it in the same gesture. `spec.start`'s
-    // stopPropagation cannot prevent that — on touch it runs at 550ms, long
-    // after the pointerdown finished bubbling. The flag is set here, in the
-    // same dispatch, and onLongPress reads it. Guarding a child against a
-    // parent has to happen at POINTERDOWN; this is that rule, one level up.
-    e.pointerDragClaim = true;
     if (e.pointerType === 'mouse') {
       arm(e);
       // preventDefault on POINTERDOWN cancels the click that follows it. That
@@ -1704,7 +1748,6 @@ function renderGcalLayer(bodyH = 600) {
       renderTimeline();
     };
     el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
-    onLongPress(el, hide);   // the touch right-click
     // Same plain-tap meaning as the event row on Engage: open its read-out —
     // where it is and what the invite said. The occasion is in its foot.
     el.addEventListener('click', () => openEventPop(el.dataset.evKey, el));
@@ -1761,7 +1804,6 @@ function initEventDrag(layer, dateOf, geo) {
         bar.addEventListener('contextmenu', e => {
           e.preventDefault(); e.stopPropagation(); restore();
         });
-        onLongPress(bar, restore);
       }
     } else {
       bar.addEventListener('click', e => {
@@ -2916,7 +2958,6 @@ function renderCalWeek() {
     col.querySelectorAll('.tl-gcal-event').forEach(el => {
       const hide = () => hideTimelineItem('event', el.dataset.evKey, el.dataset.evLabel);
       el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
-      onLongPress(el, hide);
     });
   });
 
@@ -6611,34 +6652,6 @@ function initObjectDoors() {
     e.stopPropagation();
     openObjectMenuOrRemove(e.clientX, e.clientY, kind, id, el);
   }, true);
-
-  // The finger's way in, and the same 550ms the rest of the app uses. Bound
-  // once on the document rather than per element, so an artifact rendered
-  // later is covered without being wired.
-  let lpTimer = null, lpAt = null;
-  document.addEventListener('pointerdown', e => {
-    if (e.pointerType === 'mouse') return;
-    const el = e.target.closest('[data-obj]');
-    if (!el) return;
-    const [kind, id] = String(el.dataset.obj).split(':');
-    if (!OBJECT_KINDS[kind]) return;
-    lpAt = { x: e.clientX, y: e.clientY };
-    lpTimer = setTimeout(() => {
-      lpTimer = null;
-      // A drag that armed on the same press owns it — onPointerDrag claims the
-      // press at pointerdown, and the menu stands down exactly like onLongPress.
-      if (e.pointerDragClaim) return;
-      openObjectMenuOrRemove(lpAt.x, lpAt.y, kind, id, el);
-    }, 550);
-  }, true);
-  const cancelLp = e => {
-    if (lpTimer && lpAt && e.clientX != null
-        && Math.hypot(e.clientX - lpAt.x, e.clientY - lpAt.y) < 8) return;
-    clearTimeout(lpTimer); lpTimer = null;
-  };
-  document.addEventListener('pointermove', cancelLp, true);
-  document.addEventListener('pointerup', () => { clearTimeout(lpTimer); lpTimer = null; }, true);
-  document.addEventListener('pointercancel', () => { clearTimeout(lpTimer); lpTimer = null; }, true);
 }
 
 // ── OPEN B OVER A, AND COME BACK ─────────────────────────────
@@ -6821,7 +6834,7 @@ function initTopNav() {
   paintUndo();
   const eye = document.getElementById('eg-panel-btn');
   paintPrivacyEye();
-  // onLongPress swallows the click that trails a fired hold (capture phase,
+  // The long press swallows the click that trails a fired hold (capture phase,
   // before this one), so the plain click here is only ever a plain click.
   eye.addEventListener('click', togglePrivacy);
   // PC: the evergreen pywebview panel. Phone (no pywebview): the same active
@@ -6840,7 +6853,6 @@ function initTopNav() {
     e.stopPropagation();
     nowDoor();
   });
-  onLongPress(eye, nowDoor);
   wireEdgeFade(nav.querySelector('.tn-tabs'));
   nav.querySelectorAll('.tn-search input').forEach(wireEdgeFade);
   window.addEventListener('resize', () =>
@@ -7353,11 +7365,6 @@ function wireRefEntries(scope) {
     area.addEventListener('contextmenu', e => {
       e.preventDefault();
       refMenu(e.clientX, e.clientY, pid, e.target.closest('.ref-row[data-id]'));
-    });
-    let press = null;
-    area.addEventListener('pointerdown', e => { press = { x: e.clientX, y: e.clientY, t: e.target }; });
-    onLongPress(area, () => {
-      if (press) refMenu(press.x, press.y, pid, press.t.closest('.ref-row[data-id]'));
     });
     // A mouse drag files a row into a directory: dropped on a directory's
     // row, or on a column, into the directory that column shows.
@@ -11066,10 +11073,6 @@ function renderHorizon(body) {
     const menu = (x, y) => openObjectMenu(x, y, 'vision', ph.dataset.photo, [
       { label: 'Remove photo', danger: true, run: () => removeVisionPhoto(ph.dataset.photo) }]);
     ph.addEventListener('contextmenu', e => { e.preventDefault(); menu(e.clientX, e.clientY); });
-    onLongPress(ph, () => {
-      const r = ph.getBoundingClientRect();
-      menu(r.left + r.width / 2, r.top + r.height / 2);
-    });
   });
 }
 
@@ -13788,7 +13791,7 @@ function renderEngage() {
   // gesture you have to aim, and on a phone the press it competes with is
   // "complete this" — the most destructive thing on the surface. The row is the
   // whole width, and long-press is already this app's touch right-click
-  // (onLongPress: timeline dismiss, block cancel, event hide).
+  // (the long press: timeline dismiss, block cancel, event hide).
   // A TAP REDRAWS FIRST, THEN WRITES (2026-10-05, Quentin's report: lag on
   // mobile). Each tap used to wait on the write — a completion is a snapshot
   // GET then the DELETE — and then on ten reads before the row moved, so on a
@@ -13811,7 +13814,6 @@ function renderEngage() {
   };
   body.querySelectorAll('.eg-pool-item[data-id], .eg-action[data-id]').forEach(row => {
     const id = parseInt(row.dataset.id);
-    onLongPress(row, () => startedToggle(id));
     row.addEventListener('contextmenu', e => { e.preventDefault(); startedToggle(id); });
   });
 
@@ -13954,7 +13956,7 @@ function renderEngage() {
       // this one booking. The occasion (the actions this KIND of event brings)
       // is a button in its foot, since that is a fact about the title rather
       // than about today's instance. ⌘-click and the long press still hide, and
-      // onLongPress swallows the click a fired hold would otherwise send here.
+      // The long press swallows the click a fired hold would otherwise send here.
       openEventPop(el.dataset.ekey, el);
     });
     // RIGHT-CLICK REMOVES IT FROM THE DAY (2026-09-15, Quentin's instruction)
@@ -13964,10 +13966,6 @@ function renderEngage() {
     const menu = (x, y) => openObjectMenu(x, y, 'event', el.dataset.ekey,
       [{ label: 'Remove from the day', danger: true, run: hide }]);
     el.addEventListener('contextmenu', e => { e.preventDefault(); menu(e.clientX, e.clientY); });
-    onLongPress(el, () => {
-      const r = el.getBoundingClientRect();
-      menu(r.left + r.width / 2, r.top + 8);
-    });
   });
 
   body.querySelectorAll('.eg-unplace').forEach(el => {
@@ -15619,7 +15617,6 @@ function renderClarify() {
         e.preventDefault();
         handOffToDevice(b.dataset.tag);
       });
-      onLongPress(b, () => handOffToDevice(b.dataset.tag));
     }
   });
   sheet.querySelectorAll('.chip[data-who]').forEach(b => b.addEventListener('click', () => {

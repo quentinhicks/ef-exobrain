@@ -120,7 +120,9 @@ html, body {
    only acts on overflow, so nothing that already fits moves. A flex item that
    holds text still needs its own min-width: 0, or it will not shrink to let
    the break happen. */
-body { overflow-wrap: break-word; }
+/* A hold is the app's right-click (the long press in app.js), so the system's
+   own hold sheet — link preview, save image — stands down everywhere. */
+body { overflow-wrap: break-word; -webkit-touch-callout: none; }
 
 ::-webkit-scrollbar {
   width: 6px;
