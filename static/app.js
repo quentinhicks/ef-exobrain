@@ -317,7 +317,7 @@ async function loadAll() {
     apiGet('/api/calendars', []),
     apiGet('/api/settings', ({})),
     apiGet(`/api/accountability/outcomes?from=${localDatePlusDays(dateStr, -4)}&to=${dateStr}`, []),
-    apiGet('/api/dismissals', []),
+    apiGet('/api/dismissals', null),
     apiGet('/api/locations', state.locations),
     apiGet('/api/tag-locations', state.tagLocations),
     apiGet('/api/tag-devices', state.tagDevices),
@@ -361,11 +361,7 @@ async function loadAll() {
   }
   state.qrOutcomes = {};
   (Array.isArray(qrOutcomes) ? qrOutcomes : []).forEach(o => { state.qrOutcomes[`${o.node_id}:${o.date}`] = o.outcome; });
-  state.tlHidden = { block: {}, event: {} };
-  (Array.isArray(dismissals) ? dismissals : []).forEach(d => {
-    if (!state.tlHidden[d.type]) return;
-    state.tlHidden[d.type][d.key] = true;
-  });
+  setDismissals(dismissals);
   state.lastFetched = new Date();
 
   const activeBlock = detectCurrentStandardBlock();
@@ -802,12 +798,32 @@ function eventKey(e) {
   return `${e.uid}|${e.orig_start || e.start}`;
 }
 
+// What has been removed from the day, as the SERVER holds it. A failed read
+// (anything but a list) keeps what the page already knows — falling back to
+// nothing drew every removed event again.
+function setDismissals(list) {
+  if (!Array.isArray(list)) return;
+  state.tlHidden = { block: {}, event: {} };
+  list.forEach(d => {
+    if (state.tlHidden[d.type]) state.tlHidden[d.type][d.key] = true;
+  });
+}
+
 // Right-click a block / event / gate to drop it from the day's view. No backend
 // or config change — it returns next day (blocks/qr) or on restart. Ctrl+Z undoes.
 function hideTimelineItem(type, key, label) {
   if (state.tlHidden[type][key]) return;
   state.tlHidden[type][key] = true;
-  apiSend('/api/dismissals', 'POST', { type, key }).catch(() => {});
+  // A removal that did not reach the server would come back on the next read,
+  // so it comes back NOW and says so.
+  apiSend('/api/dismissals', 'POST', { type, key })
+    .then(r => { if (!r.ok) throw new Error(r.status); })
+    .catch(() => {
+      delete state.tlHidden[type][key];
+      toast('Could not remove that — nothing changed');
+      renderTimeline();
+      renderEngage();
+    });
   renderTimeline();
   renderEngage();   // Engage shares the event dismissal set (⌘-click there)
   pushUndo(`hid "${label || 'item'}"`, async () => {
@@ -2914,6 +2930,8 @@ async function refreshCalendar() {
   document.getElementById('cal-overlay').classList.add('cal-refreshing');
   try {
     await refreshExternal();
+    // What was removed on another device is removed here too.
+    setDismissals(await apiGet('/api/dismissals', null));
     state.accountabilityNodes = await apiGet('/api/accountability/nodes', state.accountabilityNodes);
     if (calWeek.on) await refreshCalWeek();
     else await fetchOverridesForDate(state.currentDate);
