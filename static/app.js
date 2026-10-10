@@ -4372,7 +4372,6 @@ function renderSeSheet() {
   }
   const el = document.getElementById('se-sheet');
   el.innerHTML = `
-    <div class="se-grab"><span></span></div>
     <div class="se-head">
       <span class="se-title">${escHtml(spec.title(seSheet.item))}</span>
       <button class="se-cancel">Cancel</button>
@@ -12026,7 +12025,6 @@ function renderPicker() {
     ? `<div class="sp-shared">${escHtml(sharedLine(d.reach))}</div>` : '';
 
   el.innerHTML = `
-    <div class="se-grab"><span></span></div>
     <div class="se-head"><span class="se-title">Repeats</span>
       <button class="sp-cancel">Cancel</button></div>
     <div class="sp-body">${body}</div>

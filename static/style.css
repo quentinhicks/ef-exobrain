@@ -653,15 +653,6 @@ select option {
    never open at once); this is only what is inside. Every field is the same
    shape: a mono caption above a full-width control, halves paired on one line. */
 
-.se-grab { display: flex; justify-content: center; padding: 8px 0 4px; }
-
-.se-grab span {
-  width: 38px;
-  height: 4px;
-  border-radius: 3px;
-  background: var(--border);
-}
-
 .se-head {
   display: flex;
   align-items: center;
@@ -4295,14 +4286,15 @@ body.np-body {
 }
 #eg-capture {
   flex: 1;
-  font: 13px var(--font-ui);
+  min-width: 0;
+  font: 15px var(--font-ui);
   background: transparent;
   border: none;
   color: var(--text-primary);
   outline: none;
 }
 #eg-clarify {
-  font: 11px var(--font-mono);
+  font: 13px var(--font-mono);
   color: var(--accent);
   padding: 2px 4px;
   /* The device split ("Clarify 3 · 2 pc") must stay on ONE line: wrapped, it
@@ -4692,10 +4684,15 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
      with no way to scroll to it. */
   max-height: calc(var(--vvh, 100dvh) * 0.88);
   overflow-y: auto;
-  background: var(--surface);
+  /* ONE LOOK, TWO PLACES (2026-10-10, Quentin's instruction: a phone differs
+     from the laptop only where a narrow screen forces it). Where a sheet
+     STANDS is forced — a phone has no right column, so it rises from the
+     bottom. How it LOOKS is not: the page's ground, a hairline edge, square,
+     no shadow, the panel's padding — the laptop's docked panel, here too. */
+  background: var(--surface-mid);
   border-top: 1px solid var(--border-soft);
-  border-radius: 14px 14px 0 0;
-  box-shadow: 0 -14px 34px var(--overlay);
+  padding: 10px 10px 16px;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   z-index: 200;
@@ -5799,8 +5796,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   /* The dock (Map Page 9a): the field from the left edge, Clarify at the
      far right, the strip's 32px gutter. */
   #global-bar { max-width: none; gap: 14px; padding: 0 32px env(safe-area-inset-bottom); }
-  #global-bar #eg-capture { font-size: 15px; min-width: 0; }
-  #global-bar #eg-clarify { font-size: 13px; }
 }
 
 /* The add row, and the space under a list that opens it (addZoneHtml). */
@@ -6249,9 +6244,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .mp-sec { padding-bottom: 6px; }
 .mp-sec-title {
   margin: 0 0 6px;
-  padding: 22px 0 8px;
+  padding: 30px 0 10px;
   border-bottom: 1px solid var(--border-soft);
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -6326,7 +6321,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     border-right: 1px solid var(--border-soft);
   }
   .mp-searching .mp-main { padding-bottom: 40px; }
-  .mp-sec-title { padding: 30px 0 10px; font-size: 20px; }
   .mp-add-foot { display: none; }
 }
 
@@ -6433,11 +6427,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .tn-search:focus-within { border-color: var(--accent); }
 /* The page's own field styles (#map-q) stop at the strip. */
 #top-nav .tn-search input { border: none; border-radius: 0; background: transparent; padding: 0; height: auto; }
-@media (max-width: 899px) {
-  .tn-pill { font-size: 12px; padding: 4px 4px; }
-  .tn-count { display: none; }
-  .tn-tools { gap: 2px; }
-}
 .tn-search:focus-within input, .tn-search input:not(:placeholder-shown) { width: 150px; }
 /* On a phone the open field may not push the tabs to nothing or the gear off
    the edge (2026-10-02, Quentin's report: stuck on Log). */
@@ -6643,26 +6632,29 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     background: var(--surface-mid) !important;
     padding: 10px 10px 16px !important;
   }
-  #gate-pop, #event-pop { padding: 24px !important; font-size: 14px; }
+  #gate-pop, #event-pop { padding: 24px !important; }
   /* Nothing dims behind the panel — it is beside the page, not over it —
      and the phone's drag handle has nothing to drag. */
   .eg-dimmed,
   #block-editor-modal.be-sheet-open .modal-header,
   #block-editor-modal.be-sheet-open #be-index,
   #block-editor-modal.be-sheet-open #be-panes { opacity: 1; }
-  .se-grab { display: none; }
-  /* The new design's type inside every panel: Inter section labels instead
-     of mono, a heading-sized title, room to breathe. */
-  .cl-label, .cl-eyebrow, .se-flabel, .gp-label {
-    font: 600 11px var(--font-ui);
-    letter-spacing: 0.06em;
-  }
-  .cl-head { padding-top: 18px; }
-  .cl-title { font-size: 20px; font-weight: 700; }
-  .cl-item { padding-top: 14px; padding-bottom: 18px; }
-  .cl-sec { padding-top: 6px; }
 
 }
+
+/* The type inside every sheet, panel and read-out, at every width (it was the
+   wide window's alone until 2026-10-10): Inter section labels instead of
+   mono, a heading-sized title, room to breathe. After each one's own rule,
+   so it is the one in force. */
+.cl-label, .cl-eyebrow, .se-flabel, .gp-label {
+  font: 600 11px var(--font-ui);
+  letter-spacing: 0.06em;
+}
+.cl-head { padding-top: 18px; }
+.cl-title { font-size: 20px; font-weight: 700; }
+.cl-item { padding-top: 14px; padding-bottom: 18px; }
+.cl-sec { padding-top: 6px; }
+#gate-pop, #event-pop { font-size: 14px; }
 
 /* Settings → Gates: the dashboard, mounted. It scrolls inside its own frame,
    which is the height of what you can see, so its sheets (fixed inside it)
