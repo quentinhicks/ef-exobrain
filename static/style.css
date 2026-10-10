@@ -6470,20 +6470,25 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    count, and the × only under the pointer (always there on a touch screen,
    which has no hover to find it with). */
 #tab-lists.ref-index #ref-body { padding: 0; }
-#tab-lists.ref-index .ref-row {
+/* A ROW LOOKS ONE WAY WHEREVER IT STANDS (2026-10-10, Quentin's report: grey
+   bars between entries on the phone). `.ref-index` is LAYOUT — the shell and
+   its columns — and app.js takes it off when a phone opens an entry, so the
+   row's look may not hang on it: it did, and the phone's open directory fell
+   back to the old ruled rows. */
+#tab-lists .ref-row {
   gap: 12px;
   padding: 7px 8px;
   margin: 0 -8px;
   border-bottom: none;
   border-radius: 6px;
 }
-#tab-lists.ref-index .ref-row:hover { background: var(--surface-2); }
-#tab-lists.ref-index .ref-name { font-size: 15.5px; }
+#tab-lists .ref-row:hover { background: var(--surface-2); }
+#tab-lists .ref-name { font-size: 15.5px; }
 
-#tab-lists.ref-index .ref-del { width: 18px; padding: 0; font-size: 15px; opacity: 0; }
-#tab-lists.ref-index .ref-row:hover .ref-del, #tab-lists.ref-index .ref-del:focus-visible { opacity: 1; }
-@media (hover: none) { #tab-lists.ref-index .ref-del { opacity: 0.55; } }
-#tab-lists.ref-index .map-add-btn { margin-top: 8px; }
+#tab-lists .ref-del { width: 18px; padding: 0; font-size: 15px; opacity: 0; }
+#tab-lists .ref-row:hover .ref-del, #tab-lists .ref-del:focus-visible { opacity: 1; }
+@media (hover: none) { #tab-lists .ref-del { opacity: 0.55; } }
+#tab-lists .map-add-btn { margin-top: 8px; }
 @media (min-width: 900px) {
   #tab-lists.ref-index #ref-body {
     background: linear-gradient(var(--border-soft), var(--border-soft))
@@ -6567,8 +6572,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   }
   .ref-col { padding: 22px 24px; overflow-y: auto; scrollbar-width: none; min-height: 0; }
   .ref-col-mid { padding: 22px 28px; border-left: 1px solid var(--border-soft); border-right: 1px solid var(--border-soft); }
-  .ref-cols .ref-row { padding: 6px 8px; gap: 9px; }
-  .ref-cols .ref-name { font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ref-cols .ref-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ref-cols .log-back-btn { margin-bottom: 8px; }
 }
 
