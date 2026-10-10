@@ -2169,11 +2169,12 @@ const WK_HOUR_PX = 46;
 const calWeek = { on: false, week: false, start: null, days: {}, pop: null, focus: null,
                   focusDate: null, objDate: null, scrollKey: null, pref: null };
 
-function calWeekAvailable() { return WEEK_MQ.matches; }
-
-// What the Calendar shows when nothing more specific was asked: the week,
-// unless Day was picked this session. calWeekAvailable still has the last word.
-function calWantsWeek() { return calWeek.pref !== 'day'; }
+// What the Calendar shows: what was picked on THIS device this session, else
+// what the window fits — the week from 800px, the day below it. The width is
+// only the DEFAULT (2026-10-10, Quentin's instruction: a phone differs only
+// where a narrow screen forces it): the week used to be refused outright on a
+// phone, and seven narrow columns are a choice a phone may make.
+function calWantsWeek() { return calWeek.pref ? calWeek.pref === 'week' : WEEK_MQ.matches; }
 
 function weekStartOf(ymd) {
   return localDatePlusDays(ymd, -jsDateToDayOfWeek(new Date(ymd + 'T12:00:00')));
@@ -2190,7 +2191,7 @@ function calGridStart(ymd) {
 }
 
 async function setCalView(week) {
-  calWeek.week = !!week && calWeekAvailable();
+  calWeek.week = !!week;
   calWeek.on = true;
   calWeek.pop = null;
   document.getElementById('cal-overlay').classList.add('cal-wk');
@@ -2705,7 +2706,7 @@ const calFilter = stripMenu({
           <button class="chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
           ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
         </div>` },
-      calWeekAvailable() && { title: 'View', chips: pickChipsHtml([{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }],
+      { title: 'View', chips: pickChipsHtml([{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }],
                                             calWeek.week ? 'week' : 'day', 'data-cal-view') },
       { title: 'Draw', chips: ['blocks', 'gates', 'events'].map(k =>
           toggleChipHtml(calShow[k] !== false, `data-calshow="${k}"`, k[0].toUpperCase() + k.slice(1))).join('') },
@@ -2826,11 +2827,12 @@ function initCalWeek() {
   strip.addEventListener('click', weekClick);
   host.addEventListener('dblclick', wkTaskDbl);
 
-  // Narrowed past the week's width: back to the day, which fits.
-  // The window was resized across the week's width: follow it, both ways.
+  // The window was resized across the week's width: follow it, both ways —
+  // a pick made at the other width was a pick for that width.
   WEEK_MQ.addEventListener('change', () => {
+    calWeek.pref = null;
     if (overlay.classList.contains('hidden')) return;
-    setCalView(WEEK_MQ.matches && calWantsWeek());
+    setCalView(calWantsWeek());
   });
 }
 
@@ -6608,7 +6610,7 @@ async function goRoute(route, push) {
   // (Settings and the week read a dozen things first). The Calendar's day/week
   // is decided now by the same rule openSurface asks, so the address it gets
   // is the one it keeps.
-  const lands = route === 'calendar' && calWeekAvailable() && calWantsWeek() ? 'calendar/week' : route;
+  const lands = route === 'calendar' && calWantsWeek() ? 'calendar/week' : route;
   if (push && location.pathname !== routePath(lands)) history.pushState(null, '', routePath(lands));
   try {
     // SETTINGS IS A COLUMN, NOT A PAGE (2026-10-05, Quentin's instruction):
@@ -6630,15 +6632,13 @@ async function openSurface(dest, sub) {
   sub = sub || {};
   if (dest === 'calendar') {
     openM('cal-overlay');
-    // An address that names the week asks for it; any other opening follows
-    // the window. A bare `calendar` is NOT a request for the day: the last
-    // route is shared by every device, so the phone's day must not pin the
-    // laptop to it.
-    if (sub.view === 'week') calWeek.pref = 'week';
+    // An address that names the week asks for it where the week is the
+    // window's own default; any other opening follows the window. The last
+    // route is shared by every device, so the laptop's week must not put a
+    // phone in seven columns it never chose, nor the phone's day pin the
+    // laptop to it. On a phone the week is the selector's Week, pressed.
+    if (sub.view === 'week' && WEEK_MQ.matches) calWeek.pref = 'week';
     await setCalView(calWantsWeek());
-    if (sub.view === 'week' && !calWeek.week && sub.say) {
-      toast('The week needs a window at least 800px wide — showing the day');
-    }
     renderTimeline();
   }
   else if (dest === 'lists') {
@@ -14576,7 +14576,7 @@ const CLARIFY_FLOWS = [
   { key: 'todo', name: 'To-do', k: 'T' },
   { key: 'project', name: 'Project', k: 'P', route: () => 'map', what: 'a project' },
   { key: 'calendar', name: 'Calendar', k: 'C', what: 'a block, an event or a time',
-    route: () => (calWeekAvailable() ? 'calendar/week' : 'calendar') },
+    route: () => (calWantsWeek() ? 'calendar/week' : 'calendar') },
   { key: 'list', name: 'List', k: 'L', route: () => 'lists', what: 'a list or document' },
 ];
 const CLARIFY_FLOW_HINT = {
@@ -14673,7 +14673,7 @@ async function startClarifyPick(f) {
   if (phone) hideSheet('clarify-sheet');
   await goRoute(f.route(), true);
   renderClarify();
-  if (phone) toast(`Pick ${f.what} for “${clarifyView.action.trim() || 'this'}” · Esc to cancel`);
+  if (phone) toast(`Pick ${f.what} for “${clarifyView.action.trim() || 'this'}” · another tab cancels`);
 }
 
 // Give the pick up: back where clarify was opened, on the to-do flow.
