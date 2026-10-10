@@ -204,6 +204,44 @@ function minutesSince(now, then) {
 // res.status to decide what to say, and a helper that hid the response would
 // send every one of them back to a raw fetch. Body omitted = no Content-Type
 // header, which is what a bare DELETE always sent.
+// NO REQUEST WAITS FOREVER (2026-10-10, Quentin's report: on the phone a tap
+// freezes the app and nothing else can be clicked). Nothing here ever timed
+// out, so a request that stalled — a phone back from the background on a dead
+// connection is the usual one — held whatever awaited it for good: leaving
+// Settings waits on its save, a filing sheet stays locked on "Filing…". Every
+// request in every document goes through `fetch`, so the limit is put THERE,
+// once, rather than on the two helpers below and again on each raw call: a
+// stalled request now FAILS, which every caller already handles (apiGet falls
+// back, a write says it did not land) and which runs the `finally` that
+// unlocks the surface. A caller that passes its own signal keeps it.
+//
+// A feed refresh asks Google and may honestly take a while; an upload carries
+// a photo. Everything else answers in well under a second or is not coming.
+let REQUEST_MS = 12000;      // `let`: a headless run shortens it rather than waiting it out
+const SLOW_REQUEST_MS = 90000;
+const SLOW_REQUEST = /\/api\/(gcal|sheets)\/refresh|\/api\/vision|\/api\/calendars/;
+let lastStallToast = 0;
+
+(function limitRequests() {
+  const send = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (init && init.signal) return send(input, init);
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const ctl = new AbortController();
+    let stalled = false;
+    const timer = setTimeout(() => { stalled = true; ctl.abort(new Error('the server did not answer')); },
+                             SLOW_REQUEST.test(url) ? SLOW_REQUEST_MS : REQUEST_MS);
+    return send(input, { ...(init || {}), signal: ctl.signal }).finally(() => {
+      clearTimeout(timer);
+      // Said once per stall, not once per request: a page reads many at a time.
+      if (stalled && Date.now() - lastStallToast > 8000) {
+        lastStallToast = Date.now();
+        toast('The server did not answer — check the connection');
+      }
+    });
+  };
+})();
+
 function apiGet(path, fallback) {
   // Written out, not via a helper: this IS the helper. (A mechanical sweep
   // once rewrote this body into a call to itself — twice.)
