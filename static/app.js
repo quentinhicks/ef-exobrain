@@ -403,8 +403,6 @@ function renderTimeline() {
   renderDateLabel();
   renderAlldayStrip();
   const bodyH = document.getElementById('tl-body').clientHeight || 600;
-  renderPlanLayer(bodyH);
-  renderPlanBar();
   renderBlocksLayer(bodyH);
   renderGcalLayer(bodyH);
   renderQrLayer();
@@ -1013,406 +1011,6 @@ function renderDateLabel() {
   });
 }
 
-
-// ── THE PLAN: hours drawn on the day, before they are worked ─────────────
-//
-// The PLAN half of the study-hours system (2026-09-02, Quentin's design). The
-// other half is study_entry, the minutes actually worked, and they are two
-// stores on purpose: a drawn span is a claim about the future, a logged minute
-// a claim about the past, and merging them would force the record to lie —
-// a plan later "confirmed" is not evidence the work happened.
-//
-// NOTHING JUDGES A SPAN. qr_judge never reads plan_span, so drawing five hours
-// costs and earns exactly nothing. That is what keeps the plan free to be
-// optimistic, which is what makes it worth drawing at all; the priming is the
-// point, and the accountability lives entirely in the other store.
-//
-// Drawing is a MODE, and that is a considered exception to the rule that sent
-// the edit mode to the gallows. What made THAT mode wrong was invisible state:
-// the same tap meant different things and nothing on screen said which. This
-// one paints a banner across the top for as long as it is on, changes the
-// track's own cursor, and adds a gesture on EMPTY space rather than
-// overloading one that already means something — no existing tap changes
-// meaning while it is on.
-function planModeOn() {
-  return !!state.planMode;
-}
-
-async function refreshPlan(dateStr) {
-  const d = dateStr || viewDay();
-  const [plan, hours] = await Promise.all([
-    apiGet(`/api/plan/spans?date=${d}`, null),
-    // The requirement is the hours GATE's, resolved by the server. The plan
-    // surface never works out what the day owes: that number decides money in
-    // qr_judge, and a second answer to it here would eventually disagree with
-    // the one that charges.
-    (function () {
-      const node = (state.accountabilityNodes || []).find(n => n.proof_mode === 'hours');
-      return node ? apiGet(`/api/accountability/nodes/${node.id}/hours?date=${d}`, null)
-                  : Promise.resolve(null);
-    })(),
-  ]);
-  state.plan = plan || { date: d, spans: [], planned_minutes: 0 };
-  state.planHours = hours;
-}
-
-// The banner. It is the visible half of the mode, and it says the one thing
-// the drawing is FOR: how the hours drawn compare with what the day owes.
-function renderPlanBar() {
-  const bar = document.getElementById('tl-plan-bar');
-  const btn = document.getElementById('tl-plan-mode');
-  if (!bar) return;
-  if (btn) btn.classList.toggle('tl-plan-on', planModeOn());
-  bar.classList.toggle('hidden', !planModeOn());
-  document.getElementById('tl-body')?.classList.toggle('tl-planning', planModeOn());
-  if (!planModeOn()) return;
-  const planned = (state.plan || {}).planned_minutes || 0;
-  const h = state.planHours;
-  let against = '';
-  if (h) {
-    const owed = h.required_minutes;
-    against = owed <= 0
-      ? ' · the day owes nothing, the bucket covers it'
-      : planned >= owed
-        ? ` · that covers the ${humanMinutes(owed)} it owes`
-        : ` · ${humanMinutes(owed - planned)} short of the ${humanMinutes(owed)} it owes`;
-  }
-  // (The "drawing for" domain chips went with domains, 2026-10-01: a span is
-  // drawn unfiled, and its own menu files it under an area.)
-  bar.innerHTML = `<span class="tl-plan-sum">${planned
-    ? humanMinutes(planned) + ' planned' : 'nothing planned yet'}${escHtml(against)}</span>`
-    + '<span class="tl-plan-hint">drag an empty stretch to draw · drag a span to move it'
-      + ' · tap it for its menu, double-click to type where</span>';
-}
-
-
-function renderPlanLayer(bodyH = 600) {
-  const layer = document.getElementById('tl-plan-layer');
-  if (!layer) return;
-  const dateStr = viewDay();
-  const plan = state.plan && state.plan.date === dateStr ? state.plan : null;
-  const spans = (plan && plan.spans) || [];
-
-  // A span's location being typed into is HALF-TYPED TEXT, and this layer is
-  // rebuilt by the 60s tick, every day change and every write. innerHTML would
-  // destroy the box mid-word — the `checkActiveBlock` rule, one surface along.
-  if (document.activeElement && document.activeElement.classList.contains('tl-plan-loc-input')
-      && layer.contains(document.activeElement)) return;
-
-  // THE EDGE TARGET REACHES OUTSIDE THE SPAN (2026-09-16, Quentin's report:
-  // dragging an edge on a phone was too hard). Inside the box a finger got
-  // THIRDS, and below ~36px no sub-target at all — which at a day-long zoom is
-  // most spans, so the commonest one could not be resized by hand at all. The
-  // grab band now OVERHANGS the top and bottom edges: the target is the edge
-  // itself rather than a share of the box, so a 20-minute span is as grabbable
-  // as an hour and the thirds stay as they were for the spans big enough.
-  //
-  // It only overhangs into FREE TRACK. Spans abut exactly (planClamp snaps a
-  // drag to a neighbour's edge), and a band reaching over a shared boundary
-  // would resize whichever of the two happened to be drawn later — the ONE
-  // pixel-level ambiguity this could introduce, so each side gets min(8, gap/2)
-  // and none at all where there is no room for it.
-  const geom = spans.map(s => [
-    Math.max(0, minutesToViewPercent(s.start_min)) * bodyH / 100,
-    Math.min(100, minutesToViewPercent(s.end_min)) * bodyH / 100]);
-  const grabBand = (i, edge) => {
-    let gap = Infinity;
-    geom.forEach(([t, b], j) => {
-      if (j === i) return;
-      const d = edge === 'top' ? geom[i][0] - b : t - geom[i][1];
-      if (d >= 0) gap = Math.min(gap, d);
-    });
-    const px = Math.min(8, Math.floor(gap / 2));
-    return px >= 3 ? px : 0;
-  };
-
-  layer.innerHTML = spans.map((s, i) => {
-    const top = Math.max(0, minutesToViewPercent(s.start_min));
-    const bottom = Math.min(100, minutesToViewPercent(s.end_min));
-    if (bottom - top <= 0) return '';
-    const what = filingLabel(s);
-    const px = (bottom - top) * bodyH / 100;
-    const tight = px < 18;
-    const tier = tlTier(px, s.location ? 2 : 1);
-    const len = humanMinutes(s.end_min - s.start_min);
-    const color = planSpanColor(s);
-    return `<div class="tl-plan-span${tight ? ' tl-event-tight' : ''}"
-                 data-span-id="${s.id}" data-obj="planspan:${s.id}" data-obj-dbl="1"
-                 data-start-min="${s.start_min}" data-end-min="${s.end_min}"
-                 style="top:${top}%;height:${bottom - top}%;--grab-top:${
-                   grabBand(i, 'top')}px;--grab-bot:${grabBand(i, 'bot')}px${
-                   color ? `;--plan-color:${color}` : ''}">
-              <div class="tl-plan-bar-grip"></div>${tier === 'none' ? '' : `
-              <div class="tl-text" data-tl-rank="1"><span class="tl-plan-label">${escHtml(len)}${
-                what && tier !== 'short' ? ' · ' + escHtml(what) : ''}</span>${s.location && tier === 'full'
-                ? `<span class="tl-plan-sublabel">📍︎ ${escHtml(s.location)}</span>` : ''}</div>`}
-            </div>`;
-  }).join('');
-
-  wirePlanSpanDrags(layer, dateStr);
-  wirePlanDraw(layer);
-}
-
-// A SPAN'S COLOUR IS ITS DOMAIN'S (2026-09-10, Quentin's instruction). The
-// colour hangs on the DOMAIN, not on the span: one edit re-colours every hour
-// ever drawn for that domain and the day reads as domains at a glance. A
-// colour written on the span would be a second answer to "what is this
-// stretch for".
-//
-// A domain with no colour of its own returns null and the span keeps the
-// accent it has always drawn in: nothing has to be coloured for the surface
-// to work.
-function planSpanColor(span) {
-  const did = filingDomainId(span);
-  if (!did) return null;
-  const d = (state.domains || []).find(x => String(x.id) === String(did));
-  return (d && d.color) || null;
-}
-
-// Minutes under a pointer, snapped to 5 — the same grain the block drag uses,
-// and asked of the SAME view window everything else on the timeline is drawn
-// against, so a span lands where the finger is at any zoom.
-function planMinuteAt(clientY) {
-  const body = document.getElementById('tl-body');
-  const r = body.getBoundingClientRect();
-  const span = state.view.end - state.view.start;
-  const frac = Math.min(1, Math.max(0, (clientY - r.top) / r.height));
-  return Math.round((state.view.start + frac * span) / 5) * 5;
-}
-
-// The occupied stretches of the day: every OTHER span. A new span clamps to
-// the gap it was started in rather than being refused — a refusal that only
-// renders in a bar reads as a dead button on a phone, and here there is not
-// even a bar to render it in. Blocks and events are deliberately NOT obstacles:
-// planning to work through a block you own is a real intention, and the plan
-// is not a booking system.
-function planOccupied(exceptId) {
-  return ((state.plan || {}).spans || [])
-    .filter(s => String(s.id) !== String(exceptId))
-    .map(s => [s.start_min, s.end_min])
-    .sort((a, b) => a[0] - b[0]);
-}
-
-function planClamp(lo, hi, exceptId) {
-  for (const [a, b] of planOccupied(exceptId)) {
-    if (hi > a && lo < b) {
-      if (lo >= a) lo = Math.max(lo, b);      // started inside: push past it
-      else hi = Math.min(hi, a);              // grew into it: stop at its edge
-    }
-  }
-  return [lo, hi];
-}
-
-// ONCE. renderPlanLayer replaces the layer's innerHTML but not the layer
-// ITSELF, so binding here on every render stacked one live handler per repaint
-// and a single drag drew three spans at once — the timeline repaints on the
-// 60s tick, on every day change and after each write, so the count grew all
-// day. The span drags below are bound to elements innerHTML just created and
-// are new every time; this one is not, and the mapWired flag is the idiom.
-//
-// The date is read at DRAG TIME rather than closed over, which is what lets
-// the handler outlive the render that made it without ever writing a span to
-// the day it was bound on.
-let planDrawWired = false;
-
-function wirePlanDraw(layer) {
-  if (planDrawWired) return;
-  planDrawWired = true;
-  onPointerDrag(layer, { start(e) {
-    if (!planModeOn()) return null;
-    const dateStr = viewDay();
-    if (e.pointerType === 'mouse' && e.button !== 0) return null;
-    // A press that landed on an existing span belongs to that span.
-    if (e.target.closest && e.target.closest('.tl-plan-span')) return null;
-    const anchor = planMinuteAt(e.clientY);
-    let lo = anchor, hi = anchor;
-    const ghost = document.createElement('div');
-    ghost.className = 'tl-plan-span tl-plan-ghost';
-    layer.appendChild(ghost);
-
-    function paint() {
-      const top = Math.max(0, minutesToViewPercent(lo));
-      const bottom = Math.min(100, minutesToViewPercent(hi));
-      ghost.style.top = `${top}%`;
-      ghost.style.height = `${Math.max(0, bottom - top)}%`;
-      ghost.textContent = hi - lo >= 5 ? humanMinutes(hi - lo) : '';
-    }
-    paint();
-
-    return {
-      move(clientY) {
-        const m = planMinuteAt(clientY);
-        [lo, hi] = planClamp(Math.min(anchor, m), Math.max(anchor, m), null);
-        paint();
-      },
-      async end() {
-        ghost.remove();
-        if (hi - lo < 5) { renderTimeline(); return; }
-        const res = await apiSend('/api/plan/spans', 'POST',
-          { date: dateStr, start_min: lo, end_min: hi, domain_id: state.planDomainId });
-        if (!res.ok) { toast('Could not draw that span'); renderTimeline(); return; }
-        const row = await res.json();
-        // A GESTURE IS A BUTTON: a create inverts to a delete of the row it
-        // made, registered in the handler that made it.
-        pushUndo(`drew ${humanMinutes(hi - lo)}`, async () => {
-          await apiSend(`/api/plan/spans/${row.id}`, 'DELETE');
-          await refreshPlan(dateStr);
-          renderTimeline();
-        });
-        await refreshPlan(dateStr);
-        renderTimeline();
-        renderPlanBar();
-      },
-    };
-  } });
-}
-
-// THE WHOLE SPAN IS THE HANDLE (2026-09-05, Quentin's report: a drawn region
-// could not be dragged on a phone). It was the 14px rail alone, which is a
-// mouse target — the app's own rule is thirds, not edges, and below ~36px the
-// sub-target is dropped rather than offered where a finger cannot hit it. The
-// rail stays as the affordance that says "this can be grabbed"; it is no
-// longer the only thing that can be.
-//
-// What made the body free to become a drag surface is that a span's menu opens
-// on a TAP (`data-obj-tap`), so the 550ms hold that every other artifact spends
-// on its menu is spare here — and a press on a span already meant nothing else.
-// `keepClick` keeps the mouse's tap alive (a press that never moves is still a
-// tap, and the tap is the menu); justPointerDragged turns away the click that
-// TRAILS a real drag.
-function wirePlanSpanDrags(layer, dateStr) {
-  layer.querySelectorAll('.tl-plan-span').forEach(el => {
-    el.dataset.objTap = '1';        // a tap opens its menu; nothing here mutates bare
-    const origStart = parseInt(el.dataset.startMin);
-    const origEnd = parseInt(el.dataset.endMin);
-    const id = el.dataset.spanId;
-
-    onPointerDrag(el, { keepClick: true, start(e) {
-      if (e.pointerType === 'mouse' && e.button !== 0) return null;
-      // A press in the location box is placing a caret or selecting a word.
-      if (e.target.closest('.tl-plan-loc-input')) return null;
-      e.stopPropagation();
-      const r = el.getBoundingClientRect();
-      // Thirds for a finger, a 10px edge for a mouse — the block bar's rule,
-      // and below ~36px the sub-targets are dropped rather than offered
-      // where they cannot be hit. OUTSIDE the box is the edge itself: the
-      // overhanging band renderPlanLayer sized (which is why this asks about
-      // the rect and not about a class), and it is the only target a short
-      // span has, so it answers before the height rule does.
-      const touch = e.pointerType !== 'mouse';
-      const mode = e.clientY < r.top ? 'start'
-        : e.clientY > r.bottom ? 'end'
-        : touch
-        ? (r.height < 36 ? 'move'
-          : e.clientY - r.top < r.height / 3 ? 'start'
-          : r.bottom - e.clientY < r.height / 3 ? 'end' : 'move')
-        : ((e.clientY - r.top < 10) ? 'start' : (r.bottom - e.clientY < 10) ? 'end' : 'move');
-      const startM = planMinuteAt(e.clientY);
-      let curS = origStart, curE = origEnd, dragged = false;
-
-      return {
-        move(clientY) {
-          dragged = true;
-          const delta = planMinuteAt(clientY) - startM;
-          let lo = curS, hi = curE;
-          if (mode === 'move') { lo = origStart + delta; hi = origEnd + delta; }
-          else if (mode === 'start') lo = Math.min(origStart + delta, origEnd - 5);
-          else hi = Math.max(origEnd + delta, origStart + 5);
-          [curS, curE] = planClamp(lo, hi, id);
-          el.style.top = `${Math.max(0, minutesToViewPercent(curS))}%`;
-          el.style.height = `${Math.min(100, minutesToViewPercent(curE))
-            - Math.max(0, minutesToViewPercent(curS))}%`;
-        },
-        async end() {
-          // A PRESS THAT NEVER MOVED IS A TAP, and the tap is how this span's
-          // menu opens — so the whole-span drag must leave it alone. Repainting
-          // here would eat it: renderTimeline rebuilds the layer, and the click
-          // the mouse-up is about to send then lands on a detached node with no
-          // `data-obj-tap` above it. Only a drag that MOVED owes a repaint,
-          // and one that moved back to where it started owes just the snap.
-          if (!dragged) return;
-          if (curS === origStart && curE === origEnd) { renderTimeline(); return; }
-          const res = await apiSend(`/api/plan/spans/${id}`, 'PATCH',
-            { start_min: curS, end_min: curE });
-          if (!res.ok) { toast('Could not move that span'); renderTimeline(); return; }
-          // The inverse is the geometry it had BEFORE the drop, read before
-          // the write — scoped to this drop, so a sibling handler's undo
-          // cannot vouch for it.
-          pushUndo('moved a planned span', async () => {
-            await apiSend(`/api/plan/spans/${id}`, 'PATCH',
-              { start_min: origStart, end_min: origEnd });
-            await refreshPlan(dateStr);
-            renderTimeline();
-          });
-          await refreshPlan(dateStr);
-          renderTimeline();
-          renderPlanBar();
-        },
-      };
-    } });
-  });
-}
-
-// Deleting one, with its inverse: the row comes back with its ORIGINAL id, so
-// anything still pointing at it points at the same span rather than a copy.
-async function deletePlanSpan(span) {
-  const res = await apiSend(`/api/plan/spans/${span.id}`, 'DELETE');
-  if (!res.ok) { toast('Could not remove that span'); return; }
-  pushUndo(`removed ${humanMinutes(span.end_min - span.start_min)}`, async () => {
-    await apiSend('/api/plan/spans', 'POST', {
-      id: span.id, date: span.date, start_min: span.start_min,
-      end_min: span.end_min, area_id: span.area_id, domain_id: span.domain_id,
-      location: span.location });
-    await refreshPlan(span.date);
-    renderTimeline();
-  });
-  await refreshPlan(span.date);
-  renderTimeline();
-  renderPlanBar();
-}
-
-// DOUBLE-CLICK A SPAN AND TYPE WHERE (2026-09-14, Quentin's instruction). The
-// span's second line becomes a text box, in place: no sheet, no picker, and
-// nothing from Settings' locations, which are geofences and not the words you
-// would use for a place you mean to work. Enter or leaving the box saves,
-// Esc puts the words back, blank clears. One edit, one undo entry.
-function editPlanSpanLocation(id, el) {
-  const span = ((state.plan || {}).spans || []).find(s => String(s.id) === String(id));
-  if (!span || el.querySelector('.tl-plan-loc-input')) return;
-  const was = span.location || '';
-  const sub = el.querySelector('.tl-plan-sublabel');
-  if (sub) sub.remove();
-  // The field takes the second line's place (a slot, since a span with no
-  // location has no line to replace). Blank CLEARS, so it is allowed.
-  const slot = document.createElement('span');
-  el.appendChild(slot);
-  const input = inlineEdit(slot, {
-    value: was,
-    className: 'tl-plan-loc-input',
-    allowBlank: true,
-    onCancel: () => renderTimeline(),
-    onCommit: async now => {
-      const res = await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: now });
-      if (!res.ok) { toast('Could not save where'); renderTimeline(); return; }
-      pushUndo(now ? `set where to "${now}"` : 'cleared where', async () => {
-        await apiSend(`/api/plan/spans/${span.id}`, 'PATCH', { location: was });
-        await refreshPlan(span.date);
-        renderTimeline();
-      });
-      await refreshPlan(span.date);
-      renderTimeline();
-    },
-  });
-  input.placeholder = 'where?';
-  input.setAttribute('aria-label', 'Where this span happens');
-}
-
-registerObjectVerbs('timeline-plan-span', (kind, id) => {
-  if (kind !== 'planspan') return [];
-  const span = ((state.plan || {}).spans || []).find(s => String(s.id) === String(id));
-  if (!span) return [];
-  return [{ label: 'Remove this span', danger: true, run: () => deletePlanSpan(span) }];
-});
 
 function renderBlocksLayer(bodyH = 600) {
   const layer = document.getElementById('tl-blocks-layer');
@@ -2027,8 +1625,7 @@ function calStepWeek(dir) {
 }
 
 // ← → PAGE THE CALENDAR (2026-10-08, Quentin's instruction): what the grid
-// draws at a time — a week, or a day (calStepWeek, the menu's own step). The
-// old timeline's ‹ › are pressed only while Plan mode has it up.
+// draws at a time — a week, or a day (calStepWeek, the menu's own step).
 document.addEventListener('keydown', e => {
   if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
   if (!currentRoute().startsWith('calendar') || !noSurfaceOver()) return;
@@ -2060,21 +1657,6 @@ function initTimeline() {
   });
   document.getElementById('refresh-btn').addEventListener('click', refreshCalendar);
   document.getElementById('tl-add-event').addEventListener('click', openEvSheet);
-  // The mode's own switch. It is visible while it is on — the banner, the
-  // pressed button and the track's cursor — which is the whole difference
-  // between this and the edit mode that was removed.
-  document.getElementById('tl-plan-mode').addEventListener('click', async () => {
-    state.planMode = !state.planMode;
-    // Re-read on the way IN. The plan travels with the day, but the
-    // requirement comes from the hours gate and the first fetch can happen
-    // before the gates themselves have loaded — in which case the banner had
-    // the spans and no number to weigh them against, which is the one thing
-    // the banner is for.
-    if (state.planMode) await refreshPlan(viewDay());
-    // Out of Plan: the grid is the calendar again.
-    if (!state.planMode) { await setCalView(calWantsWeek()); return; }
-    renderTimeline();
-  });
 
   // Tap the day off a selected gate. The squares and the lines stop their own
   // clicks, so anything reaching the body is "somewhere else".
@@ -2119,11 +1701,6 @@ async function fetchOverridesForDate(date) {
   state.viewSegments = { date: dateStr, segments };
   setViewGates(dateStr, gates);
   if (calPin.cat) paintCalPin();
-  // The plan is VIEWED-DAY data and travels with the day, so it can never be
-  // one date behind what is drawn. renderPlanLayer still checks the date it
-  // came back keyed with rather than trusting it — the guard viewSegmentsFor
-  // makes, for the same reason.
-  await refreshPlan(dateStr);
 }
 
 // THE VIEWED DAY'S GATES, as /api/gates/day serves them (2026-09-29) — the
@@ -2586,9 +2163,9 @@ const WK_HOUR_PX = 46;
 // Calendar's only renderer: `week` says whether it draws seven columns or
 // one, and a column is the same code either way — its blocks, events, gates,
 // the tasks written in them, their card, every drag. `on` is "the grid is up",
-// which it is except while PLAN mode has the old timeline (the one thing the
-// grid cannot draw yet). `start` is the first date drawn: the Monday of the
-// viewed week, or the viewed day itself.
+// which it always is once the Calendar has opened: planned hours, the last
+// thing that needed the old timeline, were removed the same day. `start` is
+// the first date drawn: the Monday of the viewed week, or the viewed day.
 const calWeek = { on: false, week: false, start: null, days: {}, pop: null, focus: null,
                   focusDate: null, objDate: null, scrollKey: null, pref: null };
 
@@ -2614,20 +2191,12 @@ function calGridStart(ymd) {
 
 async function setCalView(week) {
   calWeek.week = !!week && calWeekAvailable();
-  calWeek.on = !state.planMode;
+  calWeek.on = true;
   calWeek.pop = null;
-  document.getElementById('cal-overlay').classList.toggle('cal-wk', calWeek.on);
+  document.getElementById('cal-overlay').classList.add('cal-wk');
   calFilter.render();
-  if (calWeek.on) {
-    state.gateSel = null;   // the old timeline's selection
-    await refreshCalWeek();
-  } else {
-    // PLAN mode: the old timeline, whose payloads are keyed by the viewed
-    // date — painted first with that date, then again once its data is in.
-    renderTimeline();
-    await fetchOverridesForDate(state.currentDate);
-    renderTimeline();
-  }
+  state.gateSel = null;   // the old timeline's selection
+  await refreshCalWeek();
 }
 
 async function refreshCalWeek() {
@@ -3132,7 +2701,6 @@ const calFilter = stripMenu({
         <div class="tn-menu-chips cf-tools">
           <button class="chip wk-mono${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
             title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
-          <button class="chip" data-wk="plan" title="Draw the hours you plan to work — on the day">Plan</button>
           <button class="chip" data-wk="add-event" title="Add an event to Google Calendar">+ Event</button>
           <button class="chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
           ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
@@ -3181,7 +2749,6 @@ function initCalWeek() {
     const v = e.target.closest('[data-cal-view]');
     if (!v) return;
     calWeek.pref = v.dataset.calView === 'week' ? 'week' : 'day';
-    state.planMode = false;
     setCalView(calWeek.pref === 'week');
   };
   strip.addEventListener('click', viewSwitch);
@@ -3234,12 +2801,6 @@ function initCalWeek() {
       if (!calWeek.week) return;
       state.currentDate = new Date(a.dataset.date + 'T12:00:00');
       await setCalView(false);
-    } else if (act === 'plan') {
-      // The one thing the grid cannot draw yet: the old timeline takes over.
-      state.planMode = true;
-      await setCalView(false);
-      await refreshPlan(viewDay());
-      renderTimeline();
     } else if (act === 'add-event') {
       openEvSheet();
     } else if (act === 'refresh') {
@@ -5707,51 +5268,6 @@ const SETTINGS_SHEETS = {
     remove: async b => removeDayBlock(b.id),
   },
 
-  planspan: {
-    title: () => 'Planned hours',
-    save: () => 'Save span',
-    removeLabel: 'Remove span',
-    blank: () => ({ start: '', end: '', area: '', location: '' }),
-    load: s => ({ start: clockHHMM(s.start_min), end: clockHHMM(s.end_min),
-                  area: filingKey(s), location: s.location || '' }),
-    fields: v => [
-      { key: 'start', label: 'From', kind: 'time', half: true },
-      { key: 'end', label: 'To', kind: 'time', half: true },
-      { key: 'area', label: 'For', kind: 'select',
-        options: () => seFilingOptions(v.area),
-        hint: 'What this stretch is for: a domain, or an area (which carries its '
-              + 'domain, if it has one).' },
-      // WHERE, as typed words — the same field the span's double-click edits
-      // in place. This sheet is the finger's road to it (the menu's
-      // `Edit span…`), since a double-click is a poor phone gesture.
-      { key: 'location', label: 'Where', kind: 'text', placeholder: 'e.g. Firestone, 3rd floor',
-        hint: 'Just words. It gates nothing — the plan is a claim about the '
-              + 'day, never a geofence.' },
-    ],
-    submit: async (v, s) => {
-      if (!v.start || !v.end) return 'From and to are required.';
-      const lo = timeToMinutes(v.start);
-      if (isNaN(lo)) return 'From and to are required.';
-      // A span crossing midnight ends past 1440, and spanEndMin is the ONE
-      // place that decides the wrap. Re-deciding it here is the bug the
-      // accessors exist to stop — and client_rules_test caught exactly that
-      // when this line was written by hand.
-      const end = spanEndMin(v.start, v.end);
-      if (isNaN(end) || end - lo < 5) return 'A span runs at least 5 minutes.';
-      const res = await apiSend(`/api/plan/spans/${s.id}`, 'PATCH',
-        { start_min: lo, end_min: end, ...filingBody(v.area),
-          location: (v.location || '').trim() });
-      if (!res.ok) return 'Error saving that span.';
-      await refreshPlan(s.date);
-      renderTimeline();
-      return null;
-    },
-    remove: async s => {
-      await deletePlanSpan(s);
-      return true;
-    },
-  },
-
   location: {
     title: it => it ? 'Location' : 'Add location',
     save: it => it ? 'Save location' : 'Save location',
@@ -6447,9 +5963,6 @@ const OBJECT_KINDS = {
   recurring: { noun: 'recurring task',
     find: async id => (await apiGet('/api/recurring', []))
       .find(t => String(t.id) === String(id)) },
-  // A drawn plan span. Unlike every other kind here it is DAY data rather than
-  // permanent structure, so its sheet has no Pause — see the named gap on
-  // SETTINGS_SHEETS.planspan.
   // A block for ONE date (the local store). Fetched by id rather than found in
   // a cache: it is drawn on the day view, the week and Engage, each holding a
   // different day.
@@ -6458,8 +5971,6 @@ const OBJECT_KINDS = {
       const r = await apiGet(`/api/day-blocks/${id}`, null);
       return r && r.id ? r : null;
     } },
-  planspan: { noun: 'span',
-    find: id => ((state.plan || {}).spans || []).find(s => String(s.id) === String(id)) },
 };
 
 // The block list's own numbering, in one place so the settings index and the
@@ -6670,10 +6181,7 @@ function initObjectDoors() {
     if (el.dataset.objDbl) {
       if (objTap.el === el && objTap.timer) {
         objTapCancel();
-        // A span's double-click is its location, typed in place; any other
-        // artifact that opts in still gets its editor.
-        if (kind === 'planspan') editPlanSpanLocation(id, el);
-        else openObjectSheet(kind, id);
+        openObjectSheet(kind, id);
         return;
       }
       objTap.el = el;
@@ -7128,7 +6636,6 @@ async function openSurface(dest, sub) {
     // route is shared by every device, so the phone's day must not pin the
     // laptop to it.
     if (sub.view === 'week') calWeek.pref = 'week';
-    state.planMode = false;
     await setCalView(calWantsWeek());
     if (sub.view === 'week' && !calWeek.week && sub.say) {
       toast('The week needs a window at least 800px wide — showing the day');
@@ -13857,7 +13364,6 @@ function renderEngage() {
     const clamped = Math.max(b.min, Math.min(b.max, dayOffset(egViewDate())));
     state.currentDate = new Date(today.getTime() + clamped * 86400000);
     openM('cal-overlay');
-    state.planMode = false;
     await setCalView(false);
   });
   const todayBtn = header.querySelector('#eg-today');
@@ -15202,15 +14708,10 @@ function calPickFrom(el, e) {
     return { date: el.dataset.date || viewDay(), minute: Math.max(0, parseInt(el.dataset.startMin) || 0) % DAY_MIN,
              label: (label && label.textContent.trim()) || 'Block' };
   }
-  let date, minute;
-  if (el.classList.contains('wk-col')) {
-    const r = el.getBoundingClientRect(), rg = calWeek.range;
-    minute = rg.start + Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) * (rg.end - rg.start);
-    date = el.dataset.date;
-  } else {
-    minute = planMinuteAt(e.clientY);
-    date = viewDay();
-  }
+  if (!el.classList.contains('wk-col')) return null;
+  const r = el.getBoundingClientRect(), rg = calWeek.range;
+  let minute = rg.start + Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) * (rg.end - rg.start);
+  let date = el.dataset.date;
   minute = Math.round(minute / 15) * 15;
   if (minute >= DAY_MIN) { date = localDatePlusDays(date, 1); minute -= DAY_MIN; }
   return { date, minute, label: 'At' };
@@ -15221,7 +14722,7 @@ function calPickFrom(el, e) {
 // Calendar's menus, a project row's clarify, a list row's opening). Anything
 // else on the page — a directory, the week's paging — works as it always does.
 const CLARIFY_PICK_TARGETS = {
-  calendar: '#cal-overlay .tl-block, #cal-overlay .tl-gcal-event, #cal-overlay .wk-col[data-date], #cal-overlay #tl-body',
+  calendar: '#cal-overlay .tl-block, #cal-overlay .tl-gcal-event, #cal-overlay .wk-col[data-date]',
   project: '#map-overlay .map-row-project[data-id], #map-overlay .mp-sec:not([data-sec="in"]) > .mp-sec-title',
   list: '#tab-lists .ref-row[data-id]',
 };
