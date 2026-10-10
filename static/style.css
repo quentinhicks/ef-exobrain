@@ -339,16 +339,6 @@ select option {
   border-right: 1px solid var(--border);
 }
 
-.m-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--border);
-  flex: none;
-  background: var(--surface);
-}
-.m-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 
 .tab-btn {
   display: flex;
@@ -6365,8 +6355,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border: none;
   justify-content: flex-start;
 }
-.m-close, #map-close, #modal-close { display: none; }
-#cal-overlay > .m-head { display: none; }
+#map-close, #modal-close { display: none; }
 #tab-lists:not(.ref-index) > *, #tab-tracking > *, #tab-social > *, #now-full > * {
   width: 100%;
   max-width: var(--page-w);
@@ -6393,9 +6382,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   #block-editor-modal {
     border-left: 1px solid var(--border-soft);
     border-right: 1px solid var(--border-soft);
-  }
-  #tab-lists > .m-head, #tab-tracking > .m-head, #tab-social > .m-head, #now-full > .m-head {
-    background: var(--surface-mid);
   }
 }
 
@@ -6670,7 +6656,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    named in the left column, the rows in the middle — a name, a quiet mono
    count, and the × only under the pointer (always there on a touch screen,
    which has no hover to find it with). */
-#tab-lists.ref-index > .m-head { display: none; }
 #tab-lists.ref-index #ref-body { padding: 0; }
 #tab-lists.ref-index .ref-row {
   gap: 12px;
@@ -6761,7 +6746,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .md a { color: var(--accent); }
 #tab-lists .ref-item { border-bottom: none; align-items: flex-start; }
 /* On a phone the page's own head already names what is open. */
-@media (max-width: 899.98px) { .ref-pane-head, .ref-doc-title { display: none; } }
 @media (min-width: 900px) {
   #tab-lists.ref-index #ref-body { background: none; overflow: hidden; }
   .ref-cols {

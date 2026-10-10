@@ -284,6 +284,11 @@ def sheet_registry_fails(body):
     # EVERY TAP-OFF CATCHER IS THE ONE CLASS (2026-10-10). The read-outs' two
     # were hand-rolled copies with `inset: 0`, outside the contract that stops
     # a layer above the capture bar, and the bar could not be clicked into.
+    # NO PAGE CARRIES A HEADER BAR OF ITS OWN (2026-10-10, Quentin's
+    # instruction): the strip names the page; the old titled bars with a ✕ are
+    # gone and may not come back.
+    if 'class="m-head"' in html:
+        out.append((0, '.m-head', 'no header bar — the top strip names the page'))
     for i in re.findall(r'id="([a-z-]+-backdrop)"', html):
         if i not in backs:
             out.append((0, '#' + i, 'class="sheet-backdrop" — a catcher of its own '

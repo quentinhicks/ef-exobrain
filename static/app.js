@@ -6717,9 +6717,6 @@ function initHub() {
     .addEventListener('click', closeGatePop);
   document.getElementById('event-pop-backdrop')
     .addEventListener('click', closeEventPop);
-  document.querySelectorAll('.m-close').forEach(btn => {
-    btn.addEventListener('click', () => closeM(btn.dataset.close));
-  });
   // THE PEEL ORDER, innermost first. Sheets put their own rungs on this
   // scale through defineSheet (their ranks are beside them); these are the
   // rest. A rung returns true when it took the key.
@@ -7602,15 +7599,15 @@ function renderRefColumns(body, open) {
 
 function renderRef() {
   const body = document.getElementById('ref-body');
-  const title = document.getElementById('ref-title');
   if (!body) return;
   syncRoute();
 
   const open = refView.lists.find(l => l.id === refView.open);
   const wide = SETTINGS_WIDE.matches;
   // LISTS PAGE (2026-10-01, Quentin's design): the index wears the Now shell
-  // and needs no header of its own; on a phone one open entry keeps its head
-  // (it carries the name and the way back). The laptop's columns never do.
+  // and needs no header of its own. THE OLD HEADER BARS ARE GONE (2026-10-10,
+  // Quentin's instruction): a phone's open entry names itself the way the
+  // laptop's pane does, under its own way back.
   document.getElementById('tab-lists').classList.toggle('ref-index', wide || !open);
 
   // A document being written in is not repainted under the cursor — half-typed
@@ -7621,16 +7618,15 @@ function renderRef() {
   if (wide) { renderRefColumns(body, open); return; }
 
   if (!open) {
-    title.textContent = 'Lists';
     body.innerHTML = mpSection('', '', refDirHtml(null, null));
     wireRefEntries(body);
     return;
   }
 
-  title.textContent = open.name;
   const parent = open.parent_id ? refView.lists.find(l => l.id === open.parent_id) : null;
   body.innerHTML = `<button id="ref-back" class="log-back-btn">‹ ${parent ? escHtml(parent.name) : 'Home'}</button>
-    ${open.kind === 'dir' ? refDirHtml(open.id, null) : refPaneHtml(open)}`;
+    ${open.kind === 'dir' ? `<div class="ref-pane-head"><span class="ref-pane-name">${escHtml(open.name)}</span></div>${
+      refDirHtml(open.id, null)}` : refPaneHtml(open)}`;
   if (open.kind === 'dir') wireRefEntries(body); else wireRefPane(body, open);
 
   // Back peels one LEVEL, not to the index — nesting made "up" and "out"
