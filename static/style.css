@@ -5336,6 +5336,13 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    sheet's rows and boxes inside. Only the add field and the count are new. */
 .wk-task-pop { position: fixed; width: 260px; padding: 14px 14px 10px; gap: 8px; z-index: 60; }
 .wk-task-pop .ref-item { padding: 5px 0; gap: 8px; }
+/* The card is the item's right-click menu too (2026-10-11): its verbs under
+   the tasks, in the object menu's own rows. It scrolls inside the window. */
+.wk-task-pop { max-height: calc(var(--vvh, 100vh) - 72px); overflow-y: auto; }
+.wk-card-verbs { display: flex; flex-direction: column; margin: 2px -8px 0; padding-top: 6px;
+  border-top: 1px solid var(--border-soft); }
+.wk-change { display: flex; align-items: center; gap: 8px; }
+.wk-change-sw { flex: none; width: 10px; height: 10px; border-radius: 3px; }
 .wk-task-new { display: flex; align-items: center; gap: 8px; }
 .wk-task-add { flex: 1; min-width: 0; border: none; outline: none; background: transparent; padding: 7px 0;
   font: 13px var(--font-ui); color: var(--text-primary); }

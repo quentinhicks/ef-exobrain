@@ -1131,7 +1131,7 @@ registerObjectVerbs('week-block', (kind, id, el) => {
   return [
     ...purposeItem(blockEl),
     { label: cancelled ? 'Restore for this day' : 'Cancel for this day',
-      danger: !cancelled, rightClick: true,
+      danger: !cancelled,
       run: () => toggleBlockCancelOn(parseInt(id), d, overrides, refreshCalWeek) },
     { label: 'Hide for this day',
       run: () => hideTimelineItem('block', `${id}:${d}`, label) },
@@ -1151,7 +1151,7 @@ registerObjectVerbs('timeline-block', (kind, id, el) => {
   return [
     ...purposeItem(blockEl),
     { label: cancelled ? 'Restore for today' : 'Cancel for today',
-      danger: !cancelled, rightClick: true,
+      danger: !cancelled,
       run: () => toggleBlockCancelOn(parseInt(id), dateStr, state.overrides, async () => {
         await fetchOverridesForDate(state.currentDate);
         renderTimeline();
@@ -1350,7 +1350,7 @@ function renderGcalLayer(bodyH = 600) {
     const col = e.color || '#888888';
     const key = eventKey(e);
     const moved = e.moved
-      ? ` title="Moved here — the calendar still says ${escHtml(isoToAmPm(e.orig_start))}. Right-click or long-press the bar to put it back."`
+      ? ` title="Moved here — the calendar still says ${escHtml(isoToAmPm(e.orig_start))}. Right-click it to put it back."`
       : tier === 'full' ? '' : ` title="${escHtml(`${e.summary || 'Event'} · ${timeStr}`)}"`;
     return `<div class="tl-gcal-event${tight ? ' tl-event-tight' : ''}${e.moved ? ' tl-event-moved' : ''}"
                  data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}"
@@ -1420,12 +1420,6 @@ function initEventDrag(layer, dateOf, geo) {
     // ends on it does not also open the occasion sheet.
     if (inputs === 'both') {
       bar.addEventListener('click', e => e.stopPropagation());
-      if (el.classList.contains('tl-event-moved')) {
-        const restore = () => unmoveEvent(el.dataset.evUid, el.dataset.evStart);
-        bar.addEventListener('contextmenu', e => {
-          e.preventDefault(); e.stopPropagation(); restore();
-        });
-      }
     } else {
       bar.addEventListener('click', e => {
         if (el.dataset.lpDragged === '1') { e.stopPropagation(); e.preventDefault(); }
@@ -1917,19 +1911,8 @@ function initCalBlockPin() {
     // the highlighted block's name, not the popup with items). The label is
     // the one the hover shows, kept up for the stretch that was clicked — on a
     // phone, with no hover, this is how a block is read. A block's tasks are
-    // written inside it; its card is a double-click (wkTaskDbl).
+    // written inside it; its card is the right-click (wkOpenCard).
     if (calPin.cat) showBlockHover(el); else hideBlockHover();
-  });
-  // The block's menu (its day verbs and Edit) moved to a DOUBLE-click: on a
-  // calendar whose right-click removes, it is the remaining door to them.
-  cal.addEventListener('dblclick', e => {
-    const el = e.target.closest('.tl-block[data-cat]');
-    if (!el || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    e.stopPropagation();
-    if (!calPin.cat) toggleCalPin(el);
-    hideBlockHover();
-    const [kind, id] = (el.dataset.obj || '').split(':');
-    if (kind && id) openObjectMenu(e.clientX, e.clientY + 4, kind, id, verbsFor(kind, id, el));
   });
 
 }
@@ -1943,8 +1926,8 @@ function initCalBlockPin() {
 // own .wk-pop, positioned at the column, so nothing else on the page moves —
 // listing them with a box to finish each and a field to add another. The
 // tasks are the SERVER's read (/api/calendar/tasks), cached per week with the
-// days. Its foot keeps the doors the click used to be: an event's read-out,
-// a block's menu (also still on double-click).
+// days. Since 2026-10-11 the card is the item's RIGHT-CLICK and carries its
+// menu's verbs under the tasks (wkOpenCard); there is no double-click.
 // A TASK IS ON ONE THING (2026-10-11, Quentin: adding to an event must not
 // add to the block under it). A placement made on an event carries that
 // event's key as its `anchor`; one with none is the block's. An unanchored
@@ -1982,7 +1965,7 @@ function wkTaskTop(top, bottom, spans, n) {
 // THE TASKS ARE READ IN THE ITEM ITSELF (2026-10-08, Quentin: "just list the
 // tasks in very small font in the block/event as the primary way to view"):
 // each open task one tiny line inside what it is on. The card is the second
-// way in — a double-click, which is also where one is added.
+// way in — the right-click, which is also where one is added.
 function wkTaskList(date, minute, cont, top, evKey) {
   if (cont) return '';
   const tasks = wkTasksAt(date, minute, evKey);
@@ -2026,7 +2009,13 @@ function wkTaskPopHtml() {
   t.focus = !!(a && a.matches && a.matches('.wk-task-add'));
   const day = new Date(t.date + 'T12:00:00');
   const tasks = wkTasksAt(t.date, t.minute, t.evKey);
-  return `<div class="wk-pop wk-task-pop" style="left:${t.x}px;top:${t.y}px">
+  t.verbs = t.changing ? [] : wkCardVerbs(t);
+  const verbs = t.changing
+    ? `<div class="wk-card-verbs"><div class="om-info">Change this day's block to</div>${wkChangeTargets(t).map(c =>
+        `<button class="om-item wk-change" data-task-change="${escHtml(c.key)}"><span class="wk-change-sw" style="background:${c.color}"></span>${escHtml(c.label)}</button>`).join('')
+        || '<div class="om-info">No other blocks yet</div>'}<button class="om-item" data-task-unchange>‹ Back</button></div>`
+    : `<div class="wk-card-verbs">${t.verbs.map((v, i) => `<button class="om-item${v.danger ? ' om-danger' : ''}" data-task-verb="${i}">${escHtml(v.label)}</button>`).join('')}</div>`;
+  return `<div class="wk-pop wk-task-pop" style="left:${t.x}px;top:${t.y}px;width:${t.w || 260}px">
     <div class="wk-pop-head"><span>${escHtml(t.name)}</span>
       <button class="wk-icon" data-task-close title="Close">${WK_SVG.close}</button></div>
     <div class="wk-pop-note">${weekdayOf(day).name} ${day.getDate()} · ${escHtml(t.span)}</div>
@@ -2035,8 +2024,7 @@ function wkTaskPopHtml() {
         <span class="ref-text">${escHtml(x.content)}</span></div>`).join('')}
       <div class="wk-task-new"><input type="text" class="wk-task-add" placeholder="Add a task" value="${escHtml(t.draft || '')}">
         <button class="wk-link" data-task-add>Add task</button></div></div>
-    <div class="wk-pop-foot"><span></span>
-      <button class="wk-link" data-task-more>${t.isBlock ? 'Block menu…' : 'Event details ›'}</button></div>
+    ${verbs}
   </div>`;
 }
 
@@ -2048,7 +2036,22 @@ async function wkTaskClick(e) {
   const done = e.target.closest('[data-task-done]');
   if (done) await wkTaskDone(parseInt(done.dataset.taskDone));
   else if (e.target.closest('[data-task-close]')) { calWeek.pop = null; calWeek.taskPop = null; renderCalWeek(); }
-  else if (e.target.closest('[data-task-more]')) wkTaskMore(e);
+  else if (e.target.closest('[data-task-verb]')) {
+    const t = calWeek.taskPop;
+    const v = t.verbs[parseInt(e.target.closest('[data-task-verb]').dataset.taskVerb)];
+    if (!v) return true;
+    if (v.change) { t.changing = true; renderCalWeek(); return true; }
+    calWeek.pop = null; calWeek.taskPop = null;
+    renderCalWeek();
+    if (v.edit) openObjectSheet(...t.obj.split(':'));
+    else if (v.run) await v.run();
+  } else if (e.target.closest('[data-task-unchange]')) { calWeek.taskPop.changing = false; renderCalWeek(); }
+  else if (e.target.closest('[data-task-change]')) {
+    const t = calWeek.taskPop;
+    calWeek.pop = null; calWeek.taskPop = null;
+    renderCalWeek();
+    await wkChangeBlock(t, e.target.closest('[data-task-change]').dataset.taskChange);
+  }
   else if (e.target.closest('[data-task-add]')) {
     const field = document.querySelector('.wk-task-add');
     if (field && field.value.trim()) await wkTaskAdd(field.value);
@@ -2057,39 +2060,112 @@ async function wkTaskClick(e) {
   return true;
 }
 
-// A DOUBLE-click opens (or, again, closes) an item's card — EVERY block and
-// event (2026-10-10, Quentin's instruction, reversing "only when it holds an
-// open task"): an empty one opens as an empty list with its add field, which
-// is how a task gets onto it. A block's menu is in the card's foot.
-function wkTaskDbl(e) {
-  if (!calWeek.on) return;
-  const el = e.target.closest('.wk-block[data-cat], .wk-ev');
-  if (!el || el.classList.contains('tl-block-cont')) return;
-  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+// RIGHT-CLICK OPENS AN ITEM'S CARD (2026-10-11, Quentin's instruction:
+// "right click gives me a dropdown of options including the pop up menu you
+// see when you double left click. Remove double left click"). ONE card for
+// every block and event: its tasks with a box each, the add field, and then
+// the item's verbs — a block's day verbs, Change to…, and its editor; an
+// event's read-out, put-back and hide. The hold is the same contextmenu, so a
+// finger gets it too. Returns whether it opened.
+function wkOpenCard(el, px, py) {
+  if (!calWeek.on || !el || el.classList.contains('tl-block-cont')) return false;
   const occ = wkOccOf(el);
-  if (!occ) return;
-  e.stopPropagation();
+  if (!occ) return false;
   clearTimeout(calWeek.evTap);
   hideBlockHover();
   if (eventPop.key != null) closeEventPop();
-  const cur = calWeek.pop === 'tasks' && calWeek.taskPop;
-  if (cur && cur.key === occ.key) {
-    calWeek.pop = null; calWeek.taskPop = null;
-    renderCalWeek();
-    return;
-  }
-  // Beside the column, on the side with room, level with the click.
+  closeObjectMenu();
+  // Beside the column where the week has room; at the pointer when one day
+  // fills the grid. Never wider than the window.
+  const W = Math.min(280, window.innerWidth - 16);
   const colEl = el.closest('.wk-col');
   const col = colEl.getBoundingClientRect();
-  const i = weekDates().indexOf(colEl.dataset.date);
-  const W = 260;
-  const x = i >= 4 || col.right + 6 + W > window.innerWidth ? Math.max(8, col.left - W - 6) : col.right + 6;
-  const y = Math.max(56, Math.min(e.clientY - 24, window.innerHeight - 320));
+  let x;
+  if (calWeek.week && col.width < W) {
+    const i = weekDates().indexOf(colEl.dataset.date);
+    x = i >= 4 || col.right + 6 + W > window.innerWidth ? col.left - W - 6 : col.right + 6;
+  } else x = px;
+  x = Math.max(8, Math.min(x, window.innerWidth - W - 8));
+  const y = Math.max(56, Math.min(py - 24, window.innerHeight - 360));
   calWeek.pop = 'tasks';
-  calWeek.taskPop = { ...occ, x, y, draft: '', focus: false };
+  calWeek.taskPop = { ...occ, x, y, w: W, draft: '', focus: false, changing: false };
   renderCalWeek();
-  const field = document.querySelector('#cal-week .wk-task-add');
-  if (field) field.focus();
+  return true;
+}
+
+// The verbs under a card's tasks, read fresh from the item each time it draws
+// — the same providers the object menu asks, so a verb added for blocks shows
+// here without a second list.
+function wkCardVerbs(t) {
+  const host = document.getElementById('cal-week');
+  if (t.isBlock) {
+    const el = host && host.querySelector(`.wk-block[data-obj="${CSS.escape(t.obj)}"][data-date="${t.date}"][data-occ-min="${t.minute}"]`);
+    if (!el) return [];
+    const [kind, id] = t.obj.split(':');
+    return objectMenuItems(kind, [...verbsFor(kind, id, el).filter(v => !v.info),
+      { label: 'Change to another block…', change: true }]);
+  }
+  const ev = state.gcalEvents.find(x => eventKey(x) === t.evKey);
+  if (!ev) return [];
+  const el = host && host.querySelector(`.wk-ev[data-ev-key="${CSS.escape(t.evKey)}"]`);
+  return [
+    { label: 'Event details', run: () => openEventPop(t.evKey, el) },
+    ...(ev.moved ? [{ label: 'Put back at its calendar time', run: () => unmoveEvent(ev.uid, ev.orig_start) }] : []),
+    { label: 'Hide for this day', danger: true,
+      run: () => hideTimelineItem('event', t.evKey, ev.summary || 'Event') },
+  ];
+}
+
+// CHANGE A BLOCK INTO ANOTHER, FOR THAT DAY (2026-10-11, Quentin's
+// instruction). A day's block is LOCAL, so this never touches the week: a
+// one-off is relabelled in place; a weekly block is cancelled for the date and
+// a one-off of the chosen category put in its exact stretch — the two local
+// stores, one undo for both.
+function wkChangeTargets(t) {
+  const here = blockCatKey(t.name.replace(/ \(cont\.\)$/, ''));
+  return blockCategories().filter(c => c.key !== here && c.rows.length);
+}
+
+async function wkChangeBlock(t, catKey) {
+  const cat = blockCategories().find(c => c.key === catKey);
+  if (!cat) return;
+  const rep = cat.rows.find(r => r.active) || cat.rows[0];
+  const fields = { label: rep.label, color: rep.color, area_id: rep.area_id || null,
+                   domain_id: rep.domain_id || null, location_id: rep.location_id || null,
+                   description: rep.description || '' };
+  const [kind, id] = t.obj.split(':');
+  const day = calWeek.days[t.date] || {};
+  if (kind === 'dayblock') {
+    const prev = await apiGet(`/api/day-blocks/${id}`, null);
+    if (!prev || !prev.id) { toast('That block is gone'); return; }
+    const res = await apiSend(`/api/day-blocks/${id}`, 'PATCH', fields);
+    if (!res.ok) { toast('Could not change that block'); return; }
+    const back = {};
+    Object.keys(fields).forEach(k => { back[k] = prev[k] == null ? null : prev[k]; });
+    pushUndo(`changed "${prev.label}" to "${rep.label}"`, async () => {
+      await apiSend(`/api/day-blocks/${id}`, 'PATCH', back);
+      await refreshAfterUndo();
+    });
+  } else {
+    const seg = (day.segments || []).find(s => String(s.block_id) === id && !s.day_block_id
+      && Math.round(Math.max(0, s.start)) === Math.round(t.minute));
+    if (!seg) { toast('Could not find that block on this day'); return; }
+    const was = (day.overrides || []).find(o => String(o.block_id) === id && o.date === t.date);
+    const ov = await apiSend('/api/overrides', 'POST', { block_id: parseInt(id), date: t.date, cancelled: true });
+    if (!ov.ok) { toast('Could not change that block'); return; }
+    const ovRow = await ov.json();
+    const res = await apiSend('/api/day-blocks', 'POST', { date: t.date, start_min: Math.max(0, seg.start),
+                                                          end_min: seg.end, ...fields });
+    const made = res.ok ? await res.json() : null;
+    pushUndo(`changed "${t.name}" to "${rep.label}"`, async () => {
+      if (made) await apiSend(`/api/day-blocks/${made.id}`, 'DELETE');
+      if (was) await apiSend('/api/overrides', 'POST', { block_id: parseInt(id), date: t.date, cancelled: !!was.cancelled });
+      else await apiSend(`/api/overrides/${ovRow.id}`, 'DELETE');
+      await refreshAfterUndo();
+    });
+    if (!made) toast('Could not add the new block — the old one is cancelled for the day; undo puts it back');
+  }
+  await refreshCalWeek();
 }
 
 async function wkTaskDone(id) {
@@ -2116,22 +2192,6 @@ async function wkTaskAdd(text) {
   });
   t.draft = '';
   await refreshCalTasks();
-}
-
-function wkTaskMore(e) {
-  const t = calWeek.taskPop;
-  calWeek.pop = null;
-  calWeek.taskPop = null;
-  renderCalWeek();
-  const host = document.getElementById('cal-week');
-  if (t.isBlock) {
-    const el = host.querySelector(`.wk-block[data-obj="${CSS.escape(t.obj)}"][data-date="${t.date}"]`);
-    const [kind, id] = t.obj.split(':');
-    if (el) openObjectMenu(e.clientX, e.clientY + 4, kind, id, verbsFor(kind, id, el));
-  } else {
-    const el = host.querySelector(`.wk-ev[data-ev-key="${CSS.escape(t.evKey)}"]`);
-    openEventPop(t.evKey, el);
-  }
 }
 
 // The field's half-typed text survives a repaint (the week re-renders whole),
@@ -2430,7 +2490,7 @@ function renderCalWeek() {
         data-ev-key="${escHtml(eventKey(e))}" data-ev-label="${escHtml(e.summary || 'Event')}"
         data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
         data-start-min="${x.s}" data-end-min="${x.e}"
-        ${e.moved ? `title="${escHtml(`Moved here — the calendar still says ${isoToAmPm(e.orig_start)}. Right-click or long-press the bar to put it back.`)}"`
+        ${e.moved ? `title="${escHtml(`Moved here — the calendar still says ${isoToAmPm(e.orig_start)}. Right-click it to put it back.`)}"`
           : h < 30 ? `title="${escHtml(`${e.summary || 'Event'} · ${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"` : ''}
         style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${e.color || '#888888'}">
         <div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${
@@ -2575,8 +2635,10 @@ function renderCalWeek() {
     const evs = col.querySelector('.wk-evs');
     if (evs) initEventDrag(evs, d, geo);
     col.querySelectorAll('.tl-gcal-event').forEach(el => {
-      const hide = () => hideTimelineItem('event', el.dataset.evKey, el.dataset.evLabel);
-      el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
+      el.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        if (!wkOpenCard(el, e.clientX, e.clientY)) hideTimelineItem('event', el.dataset.evKey, el.dataset.evLabel);
+      });
     });
   });
 
@@ -2818,25 +2880,15 @@ function initCalWeek() {
     } else if (act === 'refresh') {
       await refreshCalendar();
     } else if (act === 'event') {
-      // An event has a double-click (its task card), and the read-out docks
-      // and shifts the grid under the pointer — so its single click waits out
-      // the double-click, the onTapOrDouble rule. An all-day one opens now.
-      const occ = a.classList.contains('wk-ev') && wkOccOf(a);
-      if (!occ) { openEventPop(a.dataset.evKey, a); return; }
-      if (e.detail > 1) return;
-      const key = a.dataset.evKey;
-      clearTimeout(calWeek.evTap);
-      calWeek.evTap = setTimeout(() => {
-        const live = document.querySelector(`#cal-week .wk-ev[data-ev-key="${CSS.escape(key)}"]`);
-        openEventPop(key, live || a);
-      }, DBL_WAIT_MS);
+      // Its read-out, at once: the task card moved to the right-click, so
+      // there is no double-click left to wait out.
+      openEventPop(a.dataset.evKey, a);
     }
   };
   // ONE handler for the week's controls wherever they stand — the grid, and
   // the selector's menu.
   host.addEventListener('click', weekClick);
   strip.addEventListener('click', weekClick);
-  host.addEventListener('dblclick', wkTaskDbl);
 
   // The window was resized across the week's width: follow it, both ways —
   // a pick made at the other width was a pick for that width.
@@ -3273,7 +3325,7 @@ async function removeDayBlock(id) {
 // Its one day-level verb. The date is the ROW's own, never the viewed day, so
 // the verb is the same wherever the block is drawn.
 registerObjectVerbs('dayblock', (kind, id) => kind !== 'dayblock' ? [] : [
-  { label: 'Remove from this date', danger: true, rightClick: true,
+  { label: 'Remove from this date', danger: true,
     run: () => removeDayBlock(parseInt(id)) },
 ]);
 
@@ -6126,20 +6178,17 @@ function verbsFor(kind, id, el) {
   return out;
 }
 
-// RIGHT-CLICK REMOVES, ON THE CALENDAR (2026-09-30, Quentin's instruction:
-// "allow me to right click to remove gates/blocks/events"). A surface may mark
-// ONE of its verbs `rightClick` — the Calendar marks the day-level removal of a
-// block (cancel it for that day) and a gate (call that day off) — and then the
-// right-click and the 550ms hold RUN it instead of opening the menu, the way a
-// fetched event's right-click has always hidden it. The menu is still one tap
-// away where it matters: a block's plain click opens it, and a gate's read-out
-// has its door. Every such verb is undoable, and a gate's goes through the
-// store the judge reads, so the 24h lock still decides whether it lands.
+// RIGHT-CLICK OPENS A MENU, EVERYWHERE (2026-10-11, Quentin's instruction,
+// reversing 2026-09-30's "right-click removes" on the Calendar). Cancelling a
+// block's day, calling a gate's day off and hiding an event are NAMED items on
+// the menu now; a calendar block or event opens its card, which is its menu
+// with its tasks above it.
 function openObjectMenuOrRemove(x, y, kind, id, el) {
-  const verbs = verbsFor(kind, id, el);
-  const direct = verbs.find(v => v.rightClick);
-  if (direct) { direct.run(); return; }
-  openObjectMenu(x, y, kind, id, verbs);
+  // A block on the Calendar opens its CARD — tasks, then this same menu's
+  // verbs (2026-10-11, Quentin's instruction, reversing right-click-removes):
+  // the removal is a named item now, never the gesture itself.
+  if (el.matches('#cal-week .wk-block[data-cat]') && wkOpenCard(el, x, y)) return;
+  openObjectMenu(x, y, kind, id, verbsFor(kind, id, el));
 }
 
 function initObjectDoors() {
@@ -9546,7 +9595,7 @@ registerObjectVerbs('calendar-gate', (kind, id, el) => {
   const { g, d } = hit;
   return [{
     label: g.skipped ? 'Put this day back on' : 'Call this day off',
-    danger: !g.skipped, rightClick: true,
+    danger: !g.skipped,
     run: () => toggleCalGateSkip(g.node_id, g.label, d, !!g.skipped),
   }];
 });
