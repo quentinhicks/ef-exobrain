@@ -838,6 +838,8 @@ def patch_inbox(id):
         kwargs['after_id'] = after_id
     if on_projects is not _s:
         kwargs['on_projects'] = on_projects
+    if 'entered_at' in data:
+        kwargs['entered_at'] = data['entered_at']
     if data.get('kind') in ('item', 'project'):
         kwargs['kind'] = data['kind']
     item = storage.update_inbox_item(id, **kwargs)

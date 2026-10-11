@@ -13243,8 +13243,13 @@ function renderEngage() {
     // DUE DATE (2026-10-05, Quentin's instruction, reversing "deadlines sort
     // the pool" of 2026-08-07): a dated row, a recurring one included, jumped
     // above everything already on the list. Every row lands at the bottom when
-    // it is added; the due chip still says when it is due.
-    .sort((a, b) => (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
+    // it is added; the due chip still says when it is due. A RE-ENTERED row
+    // (FVP: worked on, not finished) sorts by when it re-entered.
+    .sort((a, b) => (a.entered_at || a.captured_at || '').localeCompare(b.entered_at || b.captured_at || '')
+      || a.id - b.id);
+  // THE CURRENT TASK (2026-10-11, Quentin's instruction): in FVP the LAST
+  // dot down the list is the one to work on. A faint highlight says which.
+  const currentId = (pool.filter(i => i.started_at).pop() || {}).id;
 
   // WHAT COMES BACK ON THIS DAY. A deferred item vanishes from every surface
   // until its date, which is the point — but it also means walking forward to
@@ -13454,9 +13459,10 @@ function renderEngage() {
     <div class="eg-todo-head">To-do list</div>
     <div class="eg-pool">
       ${pool.map(i => `
-        <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
-          ${egRowControl(i, i.started_at, i.started_at
-            ? 'Dotted — tap when done · hold to clear the dot'
+        <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}${i.id === currentId ? ' eg-current' : ''}" draggable="true" data-id="${i.id}">
+          ${egRowControl(i, i.started_at, i.id === currentId
+            ? 'Working on this — tap when done · hold if not finished: back to the end'
+            : i.started_at ? 'Dotted — tap when done · hold to clear the dot'
             : 'Tap to dot (preselect) · tap again when done')}
           <span class="eg-text">${escHtml(i.content)}</span>
           <span class="eg-tags">${dueChip(i, 'eg-tag')}</span>
@@ -13547,9 +13553,28 @@ function renderEngage() {
     try { await patchInboxItem(id, { started_at }); }
     finally { if (--egWrites === 0) await after(); }
   };
+  // NOT FINISHED GOES TO THE END (2026-10-11, Quentin's instruction, FVP's
+  // re-entry): the hold on the CURRENT task — the one move FVP never makes is
+  // clearing that dot and leaving the row where it was — puts it at the bottom
+  // of the list, undotted. No new button; undo puts it back. Any other row's
+  // hold still just toggles its dot.
+  const reenter = async id => {
+    const item = localItems(id)[0];
+    if (!item) return;
+    undoablePatch(item, ['entered_at', 'started_at'], `put "${item.content}" back at the end`);
+    // Sorts last until the server's own stamp comes back with the refresh.
+    localItems(id).forEach(i => { i.started_at = null; i.entered_at = '￿'; });
+    renderEngage();
+    egWrites++;
+    try { await patchInboxItem(id, { entered_at: 'now', started_at: null }); }
+    finally { if (--egWrites === 0) await after(); }
+  };
   body.querySelectorAll('.eg-pool-item[data-id], .eg-action[data-id]').forEach(row => {
     const id = parseInt(row.dataset.id);
-    row.addEventListener('contextmenu', e => { e.preventDefault(); startedToggle(id); });
+    row.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      if (row.classList.contains('eg-current')) reenter(id); else startedToggle(id);
+    });
   });
 
   // TWO TAPS TO DONE (Now Page Minimal v2): the first tap DOTS it — the same

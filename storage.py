@@ -710,6 +710,15 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE inbox_item ADD COLUMN on_projects INTEGER NOT NULL DEFAULT 0')
         conn.commit()
+    # RE-ENTERED (2026-10-11, Quentin's instruction, Forster's FVP): a task
+    # worked on and not finished goes back to the END of the to-do list. The
+    # list sorts by entered_at where it is set, else captured_at; same local
+    # 'YYYY-MM-DD HH:MM:SS' shape, stamped here, never by a client clock.
+    try:
+        conn.execute('SELECT entered_at FROM inbox_item LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE inbox_item ADD COLUMN entered_at TEXT')
+        conn.commit()
     # Delegation (Allen: date everything you hand off): who has it and when to
     # chase. chase_on may stay blank — the date is optional by design.
     try:
@@ -3322,7 +3331,8 @@ def delete_ref_item(id):
 def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_until=_UNSET,
                       project_id=_UNSET, tags=_UNSET, waiting_on=_UNSET, chase_on=_UNSET,
                       notes=_UNSET, pushed=_UNSET, started_at=_UNSET, deadline=_UNSET,
-                      after_id=_UNSET, domain_id=_UNSET, on_projects=_UNSET, kind=_UNSET):
+                      after_id=_UNSET, domain_id=_UNSET, on_projects=_UNSET, kind=_UNSET,
+                      entered_at=_UNSET):
     # Projects nest, so filing must not close a loop: an item can't land under
     # itself or under anything in its own subtree. A cycle-making file is a
     # silent no-op (the client refuses it too; this is the backstop).
@@ -3377,6 +3387,11 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
         updates['pushed'] = pushed
     if started_at is not _UNSET:
         updates['started_at'] = started_at
+    # 'now' re-enters it (stamped here); any other value is an undo putting
+    # the previous one back.
+    if entered_at is not _UNSET:
+        updates['entered_at'] = (datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                 if entered_at == 'now' else entered_at)
     if deadline is not _UNSET:
         updates['deadline'] = deadline
     if on_projects is not _UNSET:

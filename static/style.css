@@ -5676,6 +5676,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #engage-body .eg-pool .eg-row:hover { background: var(--tint); }
 #engage-body .eg-pool .eg-text { font-size: 16px; line-height: 1.4; color: var(--text-primary); }
 #engage-body .eg-inprog .eg-text { color: var(--text-primary); }
+/* The current task (FVP: the last dot down the list), faintly lit. */
+#engage-body .eg-pool .eg-current { background: var(--tint); }
 #engage-body .eg-check{
   width: 18px;
   height: 18px;
