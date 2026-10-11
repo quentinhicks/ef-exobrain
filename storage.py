@@ -3484,7 +3484,9 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
     conn.commit()
     row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (id,)).fetchone()
     conn.close()
-    return dict(row)
+    # None when the row is gone — deleted on another device while this one
+    # still showed it (distributed_test). The route answers 404.
+    return dict(row) if row else None
 
 
 # Recurring tasks: calendar-anchored chores seeded into active items when due.
@@ -4292,6 +4294,11 @@ def backup_db():
         for line in src.iterdump():
             f.write(line + '\n')
     src.close()
+    # Plaintext copies of everything: readable by their owner only
+    # (backup_test). Windows has no mode bits to set.
+    if os.name == 'posix':
+        for name in (f'tracker-{today}.db', 'tracker.sql'):
+            os.chmod(os.path.join(BACKUPS_DIR, name), 0o600)
     snapshots = sorted(f for f in os.listdir(BACKUPS_DIR)
                        if re.match(r'tracker-\d{4}-\d{2}-\d{2}\.db$', f))
     for old in snapshots[:-BACKUP_KEEP]:

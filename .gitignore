@@ -9,6 +9,9 @@ tracker.db
 logs/
 backups/
 daybook/
+# The Vision horizon's photos (data dir): a local run from the repo would
+# otherwise put them in a public repository (backup_test).
+vision/
 __pycache__/
 *.pyc
 

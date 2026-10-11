@@ -79,6 +79,8 @@ if [ ! -f "$ARCHIVE" ]; then
   mkdir -p "$ESCAPE_DIR"; chmod 700 "$ESCAPE_DIR"
   ESCAPE_PATHS=(logs config.json)
   [ -d "$APP_DIR/daybook" ] && ESCAPE_PATHS+=(daybook)
+  # The Vision photos are files nothing else holds (backup_test).
+  [ -d "$APP_DIR/vision" ] && ESCAPE_PATHS+=(vision)
   tar czf "$STAGE/escape.tar.gz" \
       -C "$STAGE" tracker.db \
       -C "$APP_DIR" "${ESCAPE_PATHS[@]}" 2>/dev/null

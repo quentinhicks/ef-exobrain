@@ -841,6 +841,8 @@ def patch_inbox(id):
     if data.get('kind') in ('item', 'project'):
         kwargs['kind'] = data['kind']
     item = storage.update_inbox_item(id, **kwargs)
+    if item is None:
+        return jsonify({'error': 'that item is gone — deleted, perhaps on another device'}), 404
     _touch_and_sync_inbox()
     return jsonify(item)
 
