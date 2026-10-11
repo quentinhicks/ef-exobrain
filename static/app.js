@@ -312,7 +312,13 @@ async function loadAll() {
     apiGet('/api/domains', state.domains),
     apiGet('/api/gcal', state.gcalEvents),
     apiGet(`/api/overrides?date=${dateStr}`, state.overrides),
-    apiGet('/api/inbox', state.inbox),
+    // The Clarify count paints the moment ITS read lands, not when the
+    // slowest of these does (the gates' read-out, ~1s) — it said a false
+    // "Clarify 0" until then (2026-10-11).
+    apiGet('/api/inbox', state.inbox).then(v => {
+      if (Array.isArray(v)) { state.inbox = v; state.inboxRead = true; renderInbox(); }
+      return v;
+    }),
     apiGet('/api/accountability/nodes', []),
     apiGet('/api/calendars', []),
     apiGet('/api/settings', ({})),
@@ -3269,6 +3275,20 @@ function renderBar() {
 // Repaint whatever surfaces are open after an undo, without caring which one
 // the original action came from.
 async function refreshAfterUndo() {
+  await refreshVisible();
+  // The breakdown composer reads its own list, so an undo that touched a
+  // chain (undoablePatch writes the inverse itself) has to repaint it here or
+  // the sheet keeps showing the state that was just reversed.
+  if (clarifyView.compose) await refreshCompose();
+  state.inbox = await fetch('/api/inbox').then(r => r.json());
+  renderInbox();
+}
+
+// EVERY PAGE ON SCREEN RE-READS ITS DATA (2026-10-11, Quentin: numbers went
+// stale after a change). It was the undo's alone; a clarify filing refreshed
+// only the surface clarify was opened FROM, so the page it filed INTO — a
+// list's count, a block's tasks, a project — kept its old numbers.
+async function refreshVisible() {
   await refreshEngage();
   // The week caches each day it draws, so an undo re-reads it like any surface.
   if (calWeek.on) await refreshCalWeek();
@@ -3279,12 +3299,6 @@ async function refreshAfterUndo() {
   }
   if (!document.getElementById('map-overlay').classList.contains('hidden')) await refreshMap();
   if (!document.getElementById('tab-lists').classList.contains('hidden')) await refreshRef();
-  // The breakdown composer reads its own list, so an undo that touched a
-  // chain (undoablePatch writes the inverse itself) has to repaint it here or
-  // the sheet keeps showing the state that was just reversed.
-  if (clarifyView.compose) await refreshCompose();
-  state.inbox = await fetch('/api/inbox').then(r => r.json());
-  renderInbox();
 }
 
 // Snapshot an inbox item so a delete can be replayed exactly (same id, so
@@ -3687,6 +3701,8 @@ function parseTags(text) {
 // One label, three callers (renderInbox, renderBarCounts, refreshInboxCount),
 // because the count and the split have to agree everywhere they are printed.
 function clarifyBarLabel() {
+  // Before the first read there is no count to give — not zero.
+  if (!state.inboxRead) return 'Clarify';
   const device = currentDevice();
   const tagDev = deviceTagMap();
   const away = state.inbox.filter(i => !itemOnDevice(i, device, tagDev));
@@ -14621,7 +14637,8 @@ async function fileClarify(bucket, refTarget) {
       state.inbox = await fetch('/api/inbox').then(r => r.json());
       state.projects = await fetch('/api/projects').then(r => r.json())
         .catch(() => state.projects);
-      await refreshEngage();
+      renderInbox();
+      await refreshVisible();
       await refreshActiveItems();
       // Filing into a project that now holds more than one action drops you
       // into the composer to ORDER them, exactly as creating a project does.
@@ -14993,7 +15010,8 @@ async function fileClarifyExternal(bucket, refTarget) {
       });
     }
     state.inbox = await fetch('/api/inbox').then(r => r.json());
-    await refreshEngage();
+    renderInbox();
+    await refreshVisible();
     clarifyView.queue = [];
     clarifyResetItem();
     renderClarify();
