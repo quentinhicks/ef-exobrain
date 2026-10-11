@@ -10832,7 +10832,17 @@ async function mapAddItem(content, patch) {
     await refreshAfterUndo();
   });
   await refreshMap();
+  mapRevealSel(item.id);
   return item;
+}
+
+// WHAT WAS JUST MADE IS SELECTED AND SHOWN (2026-10-11, Quentin's
+// instruction: adding a project selects it and scrolls to where it landed).
+// The list re-sorts on every repaint, so the row is found after it.
+function mapRevealSel(id) {
+  mapView.sel = id;
+  const row = mapSelSync();
+  if (row && row.dataset.id === String(id)) row.scrollIntoView({ block: 'nearest' });
 }
 
 function wireMapAdds(body) {
@@ -11588,6 +11598,7 @@ function mapRowVerbs(item) {
       undoablePatch(item, ['kind'], `${project ? 'unmade' : 'made'} "${item.content}" a project`);
       patchInboxItem(item.id, { kind: project ? 'item' : 'project' }).then(async () => {
         await mapAfterWrite();
+        mapRevealSel(item.id);
         if (!project) mapOpenKidZone(item.id);
       });
     } },
