@@ -759,6 +759,15 @@ def init_db():
             minute  REAL NOT NULL,
             PRIMARY KEY (date, item_id)
         )''')
+    # WHICH THING ON THE CALENDAR a placement was put on (2026-10-11, Quentin:
+    # a task added to an event must not also land on the block under it). An
+    # event's key (`uid|original start`, eventKey in app.js) or NULL — the
+    # minute alone could not tell an event from a block starting with it.
+    try:
+        conn.execute('SELECT anchor FROM engage_placement LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE engage_placement ADD COLUMN anchor TEXT')
+        conn.commit()
     # OCCASIONS: the actions a KIND of event always brings with it.
     #
     # An occasion is recognised by TEXT, not by a calendar series uid: the same
@@ -2586,7 +2595,7 @@ def get_inbox_snapshot(id):
     kids = [r['id'] for r in conn.execute(
         'SELECT id FROM inbox_item WHERE project_id = ?', (id,)).fetchall()]
     places = [dict(r) for r in conn.execute(
-        'SELECT date, minute FROM engage_placement WHERE item_id = ?', (id,)).fetchall()]
+        'SELECT date, minute, anchor FROM engage_placement WHERE item_id = ?', (id,)).fetchall()]
     # Chain successors: delete splices them past this row, so undo has to
     # re-point them back at it.
     chain = [r['id'] for r in conn.execute(
@@ -2613,8 +2622,8 @@ def restore_inbox_item(snap):
     # scheduled a time) go away too, not just the snapshotted ones coming back.
     conn.execute('DELETE FROM engage_placement WHERE item_id = ?', (row['id'],))
     for p in snap.get('placements') or []:
-        conn.execute('INSERT OR REPLACE INTO engage_placement (date, item_id, minute) VALUES (?, ?, ?)',
-                     (p['date'], row['id'], p['minute']))
+        conn.execute('INSERT OR REPLACE INTO engage_placement (date, item_id, minute, anchor) VALUES (?, ?, ?, ?)',
+                     (p['date'], row['id'], p['minute'], p.get('anchor')))
     for cid in snap.get('chain') or []:
         conn.execute('UPDATE inbox_item SET after_id = ? WHERE id = ?', (row['id'], cid))
     conn.commit()
@@ -2663,7 +2672,7 @@ def get_engage_placements_from(date):
 def get_placed_tasks(frm, to):
     conn = get_conn()
     rows = conn.execute(
-        """SELECT p.date, p.minute, i.id, i.content
+        """SELECT p.date, p.minute, p.anchor, i.id, i.content
              FROM engage_placement p JOIN inbox_item i ON i.id = p.item_id
             WHERE p.date >= ? AND p.date <= ? AND i.status = 'active'
             ORDER BY p.date, p.minute, i.id""", (frm, to)).fetchall()
@@ -2671,10 +2680,10 @@ def get_placed_tasks(frm, to):
     return [dict(r) for r in rows]
 
 
-def set_engage_placement(date, item_id, minute):
+def set_engage_placement(date, item_id, minute, anchor=None):
     conn = get_conn()
-    conn.execute('INSERT OR REPLACE INTO engage_placement (date, item_id, minute) VALUES (?, ?, ?)',
-                 (date, item_id, minute))
+    conn.execute('INSERT OR REPLACE INTO engage_placement (date, item_id, minute, anchor) VALUES (?, ?, ?, ?)',
+                 (date, item_id, minute, anchor or None))
     conn.commit()
     conn.close()
 
@@ -2847,7 +2856,7 @@ def mint_occasions(day):
     # Same JOIN get_gcal_events uses: an event on a calendar you switched OFF is
     # not on your day, so it may not bring actions onto it either.
     events = [dict(r) for r in conn.execute(
-        """SELECT e.summary, e.start FROM gcal_event e
+        """SELECT e.uid, e.summary, e.start FROM gcal_event e
            JOIN calendar_source c ON e.source_id = c.id
            WHERE c.active = 1 AND substr(e.start, 1, 10) = ?
            ORDER BY e.start""",
@@ -2902,8 +2911,8 @@ def mint_occasions(day):
                  o['id'], day if day > today else None))
             item_id = cur.lastrowid
             conn.execute(
-                'INSERT OR REPLACE INTO engage_placement (date, item_id, minute) VALUES (?, ?, ?)',
-                (day, item_id, minute))
+                'INSERT OR REPLACE INTO engage_placement (date, item_id, minute, anchor) VALUES (?, ?, ?, ?)',
+                (day, item_id, minute, f"{hit['uid']}|{hit['start']}"))
             conn.execute(
                 'INSERT INTO occasion_mint (date, template_id, item_id) VALUES (?, ?, ?)',
                 (day, t['id'], item_id))

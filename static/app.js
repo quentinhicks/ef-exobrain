@@ -1945,8 +1945,18 @@ function initCalBlockPin() {
 // tasks are the SERVER's read (/api/calendar/tasks), cached per week with the
 // days. Its foot keeps the doors the click used to be: an event's read-out,
 // a block's menu (also still on double-click).
-function wkTasksAt(date, minute) {
-  return (calWeek.tasks || []).filter(t => t.date === date && Math.round(t.minute) === Math.round(minute));
+// A TASK IS ON ONE THING (2026-10-11, Quentin: adding to an event must not
+// add to the block under it). A placement made on an event carries that
+// event's key as its `anchor`; one with none is the block's. An unanchored
+// placement where no block starts (made before anchors existed) still shows on
+// an event starting there, so nothing older vanishes. `evKey` asks for an
+// event's tasks; leave it out for a block's.
+function wkTasksAt(date, minute, evKey) {
+  const m = Math.round(minute);
+  const blockHere = evKey && ((calWeek.days[date] || {}).segments || [])
+    .some(s => !s.cancelled && s.start >= 0 && Math.round(s.start) === m);
+  return (calWeek.tasks || []).filter(t => t.date === date && Math.round(t.minute) === m
+    && (evKey ? t.anchor === evKey || (!t.anchor && !blockHere) : !t.anchor));
 }
 
 // WHERE A BLOCK'S TASKS GO, in px from its top (2026-10-08, Quentin: never
@@ -1973,9 +1983,9 @@ function wkTaskTop(top, bottom, spans, n) {
 // tasks in very small font in the block/event as the primary way to view"):
 // each open task one tiny line inside what it is on. The card is the second
 // way in — a double-click, which is also where one is added.
-function wkTaskList(date, minute, cont, top) {
+function wkTaskList(date, minute, cont, top, evKey) {
   if (cont) return '';
-  const tasks = wkTasksAt(date, minute);
+  const tasks = wkTasksAt(date, minute, evKey);
   return tasks.length ? `<div class="wk-tasks"${top != null ? ` style="top:${top}px"` : ''}>${tasks.map(t =>
     `<div class="wk-task">${escHtml(t.content)}</div>`).join('')}</div>` : '';
 }
@@ -2015,7 +2025,7 @@ function wkTaskPopHtml() {
   const a = document.activeElement;
   t.focus = !!(a && a.matches && a.matches('.wk-task-add'));
   const day = new Date(t.date + 'T12:00:00');
-  const tasks = wkTasksAt(t.date, t.minute);
+  const tasks = wkTasksAt(t.date, t.minute, t.evKey);
   return `<div class="wk-pop wk-task-pop" style="left:${t.x}px;top:${t.y}px">
     <div class="wk-pop-head"><span>${escHtml(t.name)}</span>
       <button class="wk-icon" data-task-close title="Close">${WK_SVG.close}</button></div>
@@ -2098,7 +2108,8 @@ async function wkTaskAdd(text) {
   if (!t || !content) return;
   const created = await apiSend('/api/inbox', 'POST', { content }).then(r => r.json());
   await apiSend(`/api/inbox/${created.id}`, 'PATCH', { status: 'active', defer_until: t.date });
-  await apiSend('/api/engage/placements', 'POST', { item_id: created.id, date: t.date, minute: t.minute });
+  await apiSend('/api/engage/placements', 'POST', { item_id: created.id, date: t.date, minute: t.minute,
+                                                    anchor: t.evKey || null });
   pushUndo(`added "${content}" to ${t.name}`, async () => {
     await apiSend(`/api/inbox/${created.id}`, 'DELETE');
     await refreshAfterUndo();
@@ -2424,7 +2435,7 @@ function renderCalWeek() {
         style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${e.color || '#888888'}">
         <div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${
           escHtml(e.summary || '')}</span>${h >= 30 ? `<span class="tl-event-time">${escHtml(time)}</span>` : ''}</div>${
-          wkTaskList(formatDateYMD(new Date(e.start)), isoMin(e.start))}</div>`;
+          wkTaskList(formatDateYMD(new Date(e.start)), isoMin(e.start), false, null, eventKey(e))}</div>`;
     }).join('');
 
     const gates = wkDayGates(d).filter(g => g.window.end_min >= start && g.window.end_min <= end)
@@ -11342,7 +11353,7 @@ async function mapPromptShow(item) {
           await apiSend(`/api/engage/placements/${item.id}?date=${date}`, 'DELETE');
           for (const p of prevPlaces) {
             await apiSend('/api/engage/placements', 'POST',
-                          { item_id: item.id, date: p.date, minute: p.minute });
+                          { item_id: item.id, date: p.date, minute: p.minute, anchor: p.anchor || null });
           }
         }
         await refreshAfterUndo();
@@ -13574,7 +13585,7 @@ function renderEngage() {
       await apiSend(`/api/engage/placements/${id}?date=${dateStr}`, 'DELETE');
       if (was) {
         pushUndo('unscheduled an action', async () => {
-          await apiSend('/api/engage/placements', 'POST', { date: dateStr, item_id: id, minute: was.minute });
+          await apiSend('/api/engage/placements', 'POST', { date: dateStr, item_id: id, minute: was.minute, anchor: was.anchor || null });
           await refreshAfterUndo();
         });
       }
@@ -13589,7 +13600,7 @@ function renderEngage() {
     await apiSend('/api/engage/placements', 'POST', { date: dateStr, item_id: id, minute });
     pushUndo(was ? 'moved an action' : 'scheduled an action', async () => {
       if (was) {
-        await apiSend('/api/engage/placements', 'POST', { date: dateStr, item_id: id, minute: was.minute });
+        await apiSend('/api/engage/placements', 'POST', { date: dateStr, item_id: id, minute: was.minute, anchor: was.anchor || null });
       } else {
         await apiSend(`/api/engage/placements/${id}?date=${dateStr}`, 'DELETE');
       }
@@ -13745,7 +13756,7 @@ const clarifyView = {
   action: '', tags: new Set(), showDate: '', showTime: '', showDateFrom: '',
   // The five flows (clarifyFlowsHtml): which one, a pick in progress
   // ({ flow, from, hidden }), and what the calendar / a list picked.
-  flow: 'todo', picking: null, calPick: '', refPick: null,
+  flow: 'todo', picking: null, calPick: '', calAnchor: null, refPick: null,
   projectId: null, projectName: '', who: '', chase: '',
   notes: '',          // support material, saved with the item on file
   due: '',            // hard deadline (YMD) — real ones only; '' = none
@@ -14118,6 +14129,7 @@ function clarifyResetItem() {
   clarifyView.showTime = '';
   clarifyView.showDateFrom = '';
   clarifyView.calPick = '';
+  clarifyView.calAnchor = null;
   clarifyView.refPick = null;
   // A project's start date is a standing property, not a fresh decision, so
   // it is prefilled from the ROW where an action's is only ever a suggestion — "Active" is then the explicit act of
@@ -14213,6 +14225,7 @@ function clarifyCarryPick() {
     clarifyView.showTime = s.time;
     clarifyView.showDateFrom = '';
     clarifyView.calPick = s.label || '';
+    clarifyView.calAnchor = s.anchor || null;
     stickyRemember('clCal', s);
     clarifyView.pickCarried = true;
   } else if (flow === 'list' && !clarifyView.refPick) {
@@ -14470,7 +14483,8 @@ async function fileClarify(bucket, refTarget) {
           await apiSend(`/api/engage/placements/${item.id}?date=${p.date}`, 'DELETE');
         }
         await apiSend('/api/engage/placements', 'POST', { item_id: item.id, date: clarifyView.showDate,
-                                 minute: timeToMinutes(clarifyView.showTime) });
+                                 minute: timeToMinutes(clarifyView.showTime),
+                                 anchor: (clarifyView.flow === 'calendar' && clarifyView.calAnchor) || null });
       }
     }
 
@@ -14654,7 +14668,7 @@ async function setClarifyFlow(key) {
   const prev = clarifyView.flow;
   clarifyView.flow = key;
   if (prev !== key) {
-    if (prev === 'calendar') { clarifyView.showDate = ''; clarifyView.showTime = ''; clarifyView.calPick = ''; }
+    if (prev === 'calendar') { clarifyView.showDate = ''; clarifyView.showTime = ''; clarifyView.calPick = ''; clarifyView.calAnchor = null; }
     if (prev === 'list') clarifyView.refPick = null;
   }
   clarifyCarryPick();
@@ -14699,7 +14713,8 @@ function calPickFrom(el, e) {
   if (el.classList.contains('tl-gcal-event')) {
     const ev = state.gcalEvents.find(x => eventKey(x) === el.dataset.evKey);
     if (!ev) return null;
-    return { date: formatDateYMD(new Date(ev.start)), minute: isoMin(ev.start), label: ev.summary || 'Event' };
+    return { date: formatDateYMD(new Date(ev.start)), minute: isoMin(ev.start), label: ev.summary || 'Event',
+             anchor: eventKey(ev) };
   }
   if (el.classList.contains('tl-block')) {
     const label = el.querySelector('.tl-block-label');
@@ -14757,6 +14772,7 @@ window.addEventListener('click', e => {
   if (!pick) return;
   clarifyView.showDate = pick.date;
   clarifyView.showTime = clockHHMM(pick.minute);
+  clarifyView.calAnchor = pick.anchor || null;
   clarifyView.showDateFrom = '';
   const day = new Date(pick.date + 'T12:00:00');
   clarifyView.calPick = `${pick.label === 'At' ? '' : pick.label + ' · '}${weekdayOf(day).name} ${day.getDate()} ${hhmmToAmPm(clockHHMM(pick.minute))}`;
@@ -14776,7 +14792,8 @@ function fileClarifyFlow() {
   }
   if (flow === 'calendar') {
     if (!clarifyView.showDate || !clarifyView.showTime) { toast('Pick a block, an event or a time first'); return; }
-    stickyRemember('clCal', { date: clarifyView.showDate, time: clarifyView.showTime, label: clarifyView.calPick });
+    stickyRemember('clCal', { date: clarifyView.showDate, time: clarifyView.showTime, label: clarifyView.calPick,
+                              anchor: clarifyView.calAnchor || null });
     return fileClarify('defer');
   }
   if (!clarifyView.refPick) { toast('Pick a list or document first'); return; }
@@ -14851,7 +14868,8 @@ async function fileClarifyExternal(bucket, refTarget) {
         stickyRemember('showDate', clarifyView.showDate);
         if (clarifyView.showDate && clarifyView.showTime) {
           await apiSend('/api/engage/placements', 'POST', { item_id: created.id, date: clarifyView.showDate,
-                                   minute: timeToMinutes(clarifyView.showTime) });
+                                   minute: timeToMinutes(clarifyView.showTime),
+                                 anchor: (clarifyView.flow === 'calendar' && clarifyView.calAnchor) || null });
         }
       }
       pushUndo(`clarified "${content}"`, async () => {
@@ -15249,6 +15267,7 @@ function renderClarify() {
   if (showDate) showDate.addEventListener('change', e => {
     clarifyView.showDate = e.target.value;
     clarifyView.calPick = '';
+    clarifyView.calAnchor = null;
     // Typed over: it is this item's date now, not a carried-over suggestion.
     if (clarifyView.showDateFrom) { clarifyView.showDateFrom = ''; renderClarify(); }
   });
@@ -15262,6 +15281,7 @@ function renderClarify() {
   if (showTime) showTime.addEventListener('change', e => {
     clarifyView.showTime = e.target.value;
     clarifyView.calPick = '';
+    clarifyView.calAnchor = null;
     if (e.target.value && !clarifyView.showDate) clarifyView.showDate = wallDay();
     renderClarify();  // date autofill + the clear ✕ appearing/going
   });
@@ -15269,6 +15289,7 @@ function renderClarify() {
   if (showTimeX) showTimeX.addEventListener('click', () => {
     clarifyView.showTime = '';
     clarifyView.calPick = '';
+    clarifyView.calAnchor = null;
     renderClarify();
   });
   const chase = sheet.querySelector('#cl-chase');

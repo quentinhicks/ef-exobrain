@@ -938,7 +938,7 @@ def get_calendar_tasks_route():
 def post_engage_placement():
     data = request.get_json()
     date = data.get('date') or date_cls.today().isoformat()
-    storage.set_engage_placement(date, data['item_id'], data['minute'])
+    storage.set_engage_placement(date, data['item_id'], data['minute'], data.get('anchor'))
     return jsonify(storage.get_engage_placements(date)), 201
 
 
