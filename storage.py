@@ -2,8 +2,10 @@ import os
 import re
 import json
 import sqlite3
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 
 import recurrence
 import schedule
@@ -16,6 +18,38 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# A READ SCOPE (2026-10-11, Quentin: gates were slow to load). Resolving one
+# gate's day asks the same three single-row questions dozens of times — its
+# override, its sealed window, the schedule sources — and each ask opened its
+# own connection: ~380 connections for /api/accountability/nodes with three
+# gates, 1s on a laptop. Inside `with read_scope():` those answers are kept for
+# the length of the block, on this thread only. ONLY a read-only route opens
+# one (nothing inside writes, so nothing can go stale), and never the judge:
+# the money path reads the store fresh every time.
+_scope = threading.local()
+
+
+@contextmanager
+def read_scope():
+    outer = getattr(_scope, 'memo', None)
+    if outer is None:
+        _scope.memo = {}
+    try:
+        yield
+    finally:
+        if outer is None:
+            _scope.memo = None
+
+
+def _memo(key, read):
+    memo = getattr(_scope, 'memo', None)
+    if memo is None:
+        return read()
+    if key not in memo:
+        memo[key] = read()
+    return memo[key]
 
 
 # THE ONE CLOCK. The whole app dates things in LOCAL time (date_cls.today(),
@@ -7290,10 +7324,13 @@ def qr_node_day_state(node_id, date):
 
 
 def qr_get_override(node_id, date):
-    conn = get_conn()
-    row = conn.execute('SELECT * FROM qr_override WHERE node_id = ? AND date = ?',
-                       (node_id, date)).fetchone()
-    conn.close()
+    def read():
+        conn = get_conn()
+        row = conn.execute('SELECT * FROM qr_override WHERE node_id = ? AND date = ?',
+                           (node_id, date)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+    row = _memo(('qr_override', node_id, date), read)
     return dict(row) if row else None
 
 
@@ -7454,13 +7491,15 @@ def qr_drop_commitment(node_id, date):
 
 
 def qr_sealed_window(node_id, date):
-    conn = get_conn()
-    row = conn.execute(
-        '''SELECT window_start, window_end, offset_days FROM qr_commitment
-           WHERE node_id = ? AND date = ? AND sealed_at IS NOT NULL''',
-        (node_id, date)).fetchone()
-    conn.close()
-    return (row['window_start'], row['window_end'], row['offset_days'] or 0) if row else None
+    def read():
+        conn = get_conn()
+        row = conn.execute(
+            '''SELECT window_start, window_end, offset_days FROM qr_commitment
+               WHERE node_id = ? AND date = ? AND sealed_at IS NOT NULL''',
+            (node_id, date)).fetchone()
+        conn.close()
+        return (row['window_start'], row['window_end'], row['offset_days'] or 0) if row else None
+    return _memo(('qr_sealed', node_id, date), read)
 
 
 def qr_commitments_between(from_date, to_date):
@@ -7834,9 +7873,12 @@ def schedule_resolver():
     """A `resolve` for schedule.py backed by one read of the table. Callers
     that expand more than one source should reuse it rather than paying a query
     per member."""
-    conn = get_conn()
-    store = _all_sources(conn)
-    conn.close()
+    def read():
+        conn = get_conn()
+        store = _all_sources(conn)
+        conn.close()
+        return store
+    store = _memo(('schedule_sources',), read)
     return store.get, store
 
 

@@ -970,6 +970,31 @@ def get_blocks_day_route():
     return jsonify(storage.block_segments_for(date, with_cancelled=bool(request.args.get('all'))))
 
 
+# THE CALENDAR READS A RANGE IN ONE REQUEST (2026-10-11, Quentin: tasks and
+# gates were slow to appear). The week asked per day — blocks, overrides and
+# gates for seven dates, 21 requests plus the tasks — and a browser runs ~6 at
+# a time to one host, so the gates and tasks queued behind everything else.
+# Each of these is the per-day answer, keyed by date: the same function asked
+# once per date, never a second resolution.
+def _date_range(frm, to):
+    if not (_YMD_RE.match(frm or '') and _YMD_RE.match(to or '')) or frm > to:
+        return None
+    d, end, out = date_cls.fromisoformat(frm), date_cls.fromisoformat(to), []
+    while d <= end and len(out) < 42:
+        out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
+@app.route('/api/calendar/days')
+def get_calendar_days_route():
+    dates = _date_range(request.args.get('from'), request.args.get('to'))
+    if dates is None:
+        return jsonify({'error': 'from and to are YYYY-MM-DD, in order'}), 400
+    return jsonify({d: {'segments': storage.block_segments_for(d, with_cancelled=True),
+                        'overrides': storage.get_overrides_for_date(d)} for d in dates})
+
+
 @app.route('/api/engage/day')
 def get_engage_day_route():
     # The NOW panel polls this and may well be the first reader of the day.
@@ -2504,7 +2529,8 @@ def accountability_nodes():
     # user already deleted. apply_at has passed either way, so nothing about
     # judgment changes.
     storage.qr_apply_due_pending_changes(datetime.now().isoformat())
-    return jsonify([_node_payload(n, today) for n in storage.qr_get_nodes()])
+    with storage.read_scope():
+        return jsonify([_node_payload(n, today) for n in storage.qr_get_nodes()])
 
 
 # WHAT THIS GATE IS, ON ONE DAY, out of this box's own database (2026-08-21,
@@ -2869,8 +2895,24 @@ def gates_day():
         return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
     storage.qr_apply_due_pending_changes(datetime.now().isoformat())
     now = datetime.now()
-    return jsonify({'date': ymd,
-                    'gates': [_gate_day_payload(n, ymd, now) for n in storage.qr_get_nodes()]})
+    with storage.read_scope():
+        return jsonify({'date': ymd,
+                        'gates': [_gate_day_payload(n, ymd, now) for n in storage.qr_get_nodes()]})
+
+
+# A range of /api/gates/day in one request, keyed by date (the calendar's
+# week): the pending changes applied and the gates read once, not per day.
+@app.route('/api/gates/days', methods=['GET'])
+def gates_days():
+    dates = _date_range(request.args.get('from'), request.args.get('to'))
+    if dates is None:
+        return jsonify({'error': 'from and to are YYYY-MM-DD, in order'}), 400
+    storage.qr_apply_due_pending_changes(datetime.now().isoformat())
+    now = datetime.now()
+    with storage.read_scope():
+        nodes = storage.qr_get_nodes()
+        return jsonify({d: {'date': d, 'gates': [_gate_day_payload(n, d, now) for n in nodes]}
+                        for d in dates})
 
 
 # THE LEDGER: every judged row for every gate — met, missed, called off, and
@@ -2897,7 +2939,8 @@ def accountability_outcomes():
     to_date = request.args.get('to', '')
     if not (_YMD_RE.match(from_date) and _YMD_RE.match(to_date)) or from_date > to_date:
         return jsonify({'error': 'from and to required (YYYY-MM-DD)'}), 400
-    return jsonify(qr_judge.outcomes(from_date, to_date))
+    with storage.read_scope():
+        return jsonify(qr_judge.outcomes(from_date, to_date))
 
 
 @app.route('/api/accountability/nodes/<int:id>', methods=['PATCH', 'DELETE'])

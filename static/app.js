@@ -2015,7 +2015,7 @@ function wkTaskList(date, minute, cont, top, evKey) {
 async function refreshCalTasks(start) {
   const wk = start || calWeek.start;
   const dates = weekDates();
-  const rows = await apiGet(`/api/calendar/tasks?from=${dates[0]}&to=${dates[6]}`, null);
+  const rows = await apiGet(`/api/calendar/tasks?from=${dates[0]}&to=${dates[dates.length - 1]}`, null);
   if (calWeek.start !== wk) return;   // paged on while this was out
   if (Array.isArray(rows)) calWeek.tasks = rows;
   renderCalWeek();
@@ -2328,15 +2328,21 @@ async function refreshCalWeek() {
     });
     renderCalWeek();
   };
+  // ONE request per kind for the whole grid (2026-10-11): asked per day, the
+  // week was 22 requests and the browser's ~6 at a time put the gates and
+  // tasks at the back of the queue. Each answer is still the server's per-day
+  // one, keyed by exact date.
+  const range = `from=${dates[0]}&to=${dates[dates.length - 1]}`;
+  const byDate = r => dates.map(d => (r && r[d]) || null);
   await Promise.all([
-    // ?all=1 keeps a cancelled block, struck through, so "Restore for this
-    // day" has something to be opened from — the day view's rule.
-    Promise.all(dates.map(d => apiGet(`/api/blocks/day?date=${d}&all=1`, null)))
-      .then(fill('segments', r => (Array.isArray(r) ? r : null))),
-    // The day's override rows: what a block drop's undo restores.
-    Promise.all(dates.map(d => apiGet(`/api/overrides?date=${d}`, null)))
-      .then(fill('overrides', r => (Array.isArray(r) ? r : null))),
-    Promise.all(dates.map(d => apiGet(`/api/gates/day?date=${d}`, null)))
+    // Cancelled blocks are kept, struck through, so "Restore for this day"
+    // has something to be opened from; the override rows are what a block
+    // drop's undo restores.
+    apiGet(`/api/calendar/days?${range}`, null).then(byDate).then(rows => {
+      fill('segments', r => (r && Array.isArray(r.segments) ? r.segments : null))(rows);
+      fill('overrides', r => (r && Array.isArray(r.overrides) ? r.overrides : null))(rows);
+    }),
+    apiGet(`/api/gates/days?${range}`, null).then(byDate)
       .then(fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))),
     refreshCalTasks(start),
   ]);
@@ -11360,10 +11366,13 @@ function rowCursorStep(rows, id, step) {
 
 // Nothing stands over the page — no Settings, sheet, menu or read-out — so a
 // page's own keys may act. Asked by every page's key handler.
+// A clarify that is PICKING is not over the page: the page is what is being
+// worked in, so its keys are live (2026-10-11, Quentin's instruction). Clarify
+// keeps its own few keys, taken first (the picking keydown below).
 function noSurfaceOver() {
   const settings = document.getElementById('modal-overlay');
   return !(settings && !settings.classList.contains('hidden'))
-    && !clarifyView.open && !entrySheet.open && !seSheet.kind && !objMenu.open
+    && !(clarifyView.open && !clarifyView.picking) && !entrySheet.open && !seSheet.kind && !objMenu.open
     && !occasionView.open && !ctxSheet.tag;
 }
 
@@ -13297,8 +13306,8 @@ function renderEngage() {
     return `<div class="eg-row eg-action${r.started ? ' eg-inprog' : ''}" draggable="true" data-id="${r.id}">
       <span class="eg-time"></span>
       ${egRowControl(r, r.started, r.started
-        ? 'Started — tap to complete · hold to clear the dot'
-        : 'Tap to start · tap again to complete')}
+        ? 'Dotted — tap when done · hold to clear the dot'
+        : 'Tap to dot (preselect) · tap again when done')}
       <span class="eg-text">${escHtml(r.label)}</span>
       <button class="eg-unplace" data-id="${r.id}" title="Back to Not scheduled">↩︎</button>
     </div>`;
@@ -13420,8 +13429,8 @@ function renderEngage() {
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}" draggable="true" data-id="${i.id}">
           ${egRowControl(i, i.started_at, i.started_at
-            ? 'Started — tap to complete · hold to clear the dot'
-            : 'Tap to start · tap again to complete')}
+            ? 'Dotted — tap when done · hold to clear the dot'
+            : 'Tap to dot (preselect) · tap again when done')}
           <span class="eg-text">${escHtml(i.content)}</span>
           <span class="eg-tags">${dueChip(i, 'eg-tag')}</span>
         </div>`).join('') || emptyHtml('Nothing available — done, parked, or handed off.')}
@@ -13502,8 +13511,8 @@ function renderEngage() {
     const item = localItems(id)[0];
     if (!item) return;
     undoablePatch(item, ['started_at'], item.started_at
-      ? `cleared in-progress on "${item.content}"`
-      : `marked "${item.content}" in progress`);
+      ? `undotted "${item.content}"`
+      : `dotted "${item.content}"`);
     const started_at = item.started_at ? null : new Date().toISOString();
     localItems(id).forEach(i => { i.started_at = started_at; });
     renderEngage();
@@ -13516,9 +13525,12 @@ function renderEngage() {
     row.addEventListener('contextmenu', e => { e.preventDefault(); startedToggle(id); });
   });
 
-  // TWO TAPS TO DONE (Now Page Minimal v2): the first tap STARTS it — the dot,
-  // the same started_at the long press has always set — and a tap on a dotted
-  // box completes it. Both undoable. The row's long press / right-click still
+  // TWO TAPS TO DONE (Now Page Minimal v2): the first tap DOTS it — the same
+  // started_at the long press has always set — and a tap on a dotted box
+  // completes it. A DOT IS NOT A START (2026-10-11, Quentin's instruction): in
+  // Forster's Final Version a dot PRESELECTS — "What do I want to do more than
+  // X?" asked down the list, no action taken — and the last dot is the one
+  // worked on. started_at is only the column's old name. Both undoable. The row's long press / right-click still
   // toggles the dot, which is how one is cleared without completing.
   body.querySelectorAll('.eg-check[data-id]').forEach(el => {
     const id = parseInt(el.dataset.id);
@@ -14774,6 +14786,9 @@ async function startClarifyPick(f) {
   const phone = !SETTINGS_WIDE.matches && !clarifyView.pickCarried;
   clarifyView.picking = { flow: f.key, from, hidden: phone };
   if (phone) hideSheet('clarify-sheet');
+  // The sheet says the flow AT THE KEY, not once the page has read its data
+  // (the week's reads took ~0.7s to come back; 2026-10-11, Quentin: no lag).
+  renderClarify();
   await goRoute(f.route(), true);
   renderClarify();
   if (phone) toast(`Pick ${f.what} for “${clarifyView.action.trim() || 'this'}” · another tab cancels`);
@@ -15880,9 +15895,29 @@ function closeCompose() {
 
 // Keyboard: the whole inbox can be emptied without the mouse. Typing fields
 // keep their keys; Enter files from the main sheet.
+// WHILE PICKING, the page under the sheet has its keys (j/k, arrows, its row
+// verbs) and clarify keeps ONLY its flow letters, Enter and ⌫ — taken in the
+// capture phase and stopped, so a letter that is also a page verb (P / C / L
+// on a Projects row, ⌫ deleting one) means the clarify, never both. Works
+// with the sheet stepped aside on a phone too.
 document.addEventListener('keydown', e => {
-  if (!clarifyView.open || (clarifyView.picking && clarifyView.picking.hidden)) return;
+  if (!clarifyView.open || !clarifyView.picking || typingIn(e.target)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const f = CLARIFY_FLOWS.find(x => x.k.toLowerCase() === e.key.toLowerCase());
+  if (!f && e.key !== 'Enter' && e.key !== 'Backspace') return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (f) setClarifyFlow(f.key);
+  else if (e.key === 'Enter') clarifyFile();
+  else if (!clarifyView.external) fileClarify('trash');
+}, true);
+
+document.addEventListener('keydown', e => {
+  if (!clarifyView.open) return;
   const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+  // Picking: the capture handler above took clarify's keys; only Enter in
+  // one of the sheet's own fields is left for here.
+  if (clarifyView.picking && !(typing && e.key === 'Enter')) return;
   // Both sub-views own their own keys — the composer's Enter adds an action.
   if (clarifyView.projSearch != null || clarifyView.compose) return;
   // Enter files from ANY field — the two inputs where Enter means something
