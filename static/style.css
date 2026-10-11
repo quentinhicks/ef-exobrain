@@ -4427,7 +4427,6 @@ body.np-body {
   justify-content: center;
 }#block-editor-modal, #review-modal, #map-modal {
   width: 100%;
-  max-width: 430px;
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
@@ -4648,7 +4647,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* A sheet over the day: the Engage panel stays visible (dimmed) behind it,
    so deferring to today lands somewhere you can see. */
 
-.eg-dimmed { opacity: 0.32; pointer-events: none; }
+.eg-dimmed { opacity: 0.32; }
 
 /* FIXED, not absolute-inside-#engage-root: the sheet is now reachable from
    GTD and MAP too, and those overlays sit at z 140/150. It keeps the 430px
@@ -4664,6 +4663,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .sheet-backdrop {
   position: fixed;
   inset: 0;
+  /* PASS-THROUGH (2026-10-11, Quentin: the page behind a sheet could not be
+     scrolled or right-clicked). The catcher takes no pointer events; tap-off
+     is answered by ONE document check in app.js (initSheetCatchers), which
+     asks whether this layer WOULD have been hit. Scrolling, the wheel and
+     right-click reach the page underneath. */
+  pointer-events: none;
     z-index: 199;
   background: transparent;
 }
@@ -4673,11 +4678,11 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    Same geometry, same layer — they are never open at once. */
 .sheet {
   position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  /* The window's width, not a 430px box (2026-10-11, Quentin: a laptop
+     window narrow enough for the phone layout showed a fixed-width popup). */
   width: 100%;
-  max-width: 430px;
-  bottom: 0;                  
+  bottom: 0;
   /* 88% of the VISIBLE screen. A percentage resolves against the layout
      viewport, so on a phone with the keyboard up a sheet could be taller than
      the room it had — which is how a Save button ends up under the keyboard

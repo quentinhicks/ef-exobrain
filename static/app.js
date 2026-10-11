@@ -670,6 +670,45 @@ document.addEventListener('click', e => {
   e.stopImmediatePropagation();
 }, true);
 
+// A SHEET'S TAP-OFF CATCHER IS ASKED, NOT STOOD ON (2026-10-11, Quentin's
+// instruction: the page under a sheet could not be scrolled or right-clicked,
+// at every width). Every `.sheet-backdrop` used to be a full-window layer that
+// took ALL pointer input, so while clarify, a settings sheet or a read-out
+// was up, the page you could see was dead to the wheel, a finger's pan and
+// the right-click. The catchers are `pointer-events: none` now; a tap is
+// still tap-off where a catcher WOULD have been hit — asked by letting the
+// open ones take the point for one elementFromPoint — and then it is
+// swallowed and handed to the catcher, whose own click listeners
+// (defineSheet, the read-outs) run unchanged. A press that moved (a pan, a
+// scrollbar, a selection) is not a tap. Registered after the long press, so a
+// hold's trailing click is already gone.
+const sheetCatch = { el: null, x: 0, y: 0 };
+
+function catcherAt(x, y) {
+  const open = [...document.querySelectorAll('.sheet-backdrop:not(.hidden)')];
+  if (!open.length) return null;
+  open.forEach(b => { b.style.pointerEvents = 'auto'; });
+  const hit = document.elementFromPoint(x, y);
+  open.forEach(b => { b.style.pointerEvents = ''; });
+  return open.includes(hit) ? hit : null;
+}
+
+document.addEventListener('pointerdown', e => {
+  sheetCatch.el = e.button === 0 ? catcherAt(e.clientX, e.clientY) : null;
+  sheetCatch.x = e.clientX;
+  sheetCatch.y = e.clientY;
+}, true);
+
+document.addEventListener('click', e => {
+  const bd = sheetCatch.el;
+  sheetCatch.el = null;
+  if (!bd || bd.classList.contains('hidden') || !e.isTrusted) return;
+  if (Math.abs(e.clientX - sheetCatch.x) > 6 || Math.abs(e.clientY - sheetCatch.y) > 6) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  bd.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: e.clientX, clientY: e.clientY }));
+}, true);
+
 // A SIDEWAYS SWIPE IS THE ARROW KEYS, TRANSLATED ONCE (2026-10-10, Quentin's
 // instruction: swipe left and right on a phone, mimicking the arrow keys). A
 // quick, mostly-level flick dispatches the same ArrowLeft / ArrowRight keydown
@@ -6348,7 +6387,7 @@ function initHub() {
   // THE PEEL ORDER, innermost first. Sheets put their own rungs on this
   // scale through defineSheet (their ranks are beside them); these are the
   // rest. A rung returns true when it took the key.
-  //   -10 schedule picker   0 clarify   5 flush notes (never takes the key)
+  //   -20 the object menu   -10 schedule picker   0 clarify   5 flush notes
   //    10 settings sheet   20–29 read-outs, menus, transient calendar state
   //    30 occasion sheet   40 legacy overlays   50–53 ctx / event / entry /
   //    ending sheets       70–71 Social, Lists
@@ -6361,8 +6400,9 @@ function initHub() {
   // same rung — before the occasion sheet it can open, which sits above.
   escRung(21, () => { if (eventPop.key == null) return false; closeEventPop(); return true; });
   // A menu is always the innermost thing on screen and closing it is free,
-  // so it peels before anything else Esc could reach.
-  escRung(22, () => { if (!objMenu.open) return false; closeObjectMenu(); return true; });
+  // so it peels before anything else Esc could reach — sheets included, now
+  // that a page under an open sheet can be right-clicked (2026-10-11).
+  escRung(-20, () => { if (!objMenu.open) return false; closeObjectMenu(); return true; });
   // A selected gate is transient state over the calendar — it peels after the
   // read-out it opens and before the overlay it is drawn on.
   escRung(23, () => clearGateSel());
