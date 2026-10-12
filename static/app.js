@@ -14045,6 +14045,13 @@ async function openClarifyForItem(item, after) {
   clarifyView.open = true;
   clarifyView.after = after || null;
   clarifyResetItem();
+  // AN ACTION ON PROJECTS OPENS ON THE PROJECT FLOW (2026-10-12, Quentin's
+  // report: it "doesn't even show as a project"). It opened on To-do, which
+  // shows none of what it carries — its project, area, show-on and due — and
+  // filing it there took it off Projects. Set AFTER the reset, so no carried
+  // pick is laid over the place the item already has; no pick is started, so
+  // the page's rows still open rather than being picked.
+  if (item.on_projects && clarifyFlowMode()) clarifyView.flow = 'project';
   renderClarify();
 }
 
@@ -14803,9 +14810,32 @@ function clarifyFlowsHtml() {
       ${clarifyView.showDateFrom === 'sticky' ? '<button id="cl-show-date-x" class="cl-x" title="Carried over from the last item — tap to clear">✕ carried</button>' : ''}
       <span class="cl-label">Due</span>
       <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
-    </div>`;
+    </div>
+    ${clarifyView.projectId
+      ? '<div class="cl-row"><span class="cl-hint">It takes its project’s area.</span></div>'
+      : clarifyAreaHtml()}`;
+  // Outside a pick nothing on the page is listening for the click the pick's
+  // hint promises, so the sheet names the controls it does have.
+  const hint = flow === 'project' && !clarifyView.picking
+    ? 'Search for a project, or leave it in none under an area. Either way it stays off the to-do list.'
+    : CLARIFY_FLOW_HINT[flow];
   return `<div class="cl-flows">${rows}</div>${project}
-    <div class="cl-row"><span class="cl-hint">${CLARIFY_FLOW_HINT[flow]}</span></div>`;
+    <div class="cl-row"><span class="cl-hint">${hint}</span></div>`;
+}
+
+// Where it lands: an AREA or nothing — one row of chips, tap again to let go
+// (domains went 2026-10-01). Filing under nothing is a real answer. ONE row,
+// drawn by the Project flow, a project's own sheet and the old verbs alike.
+function clarifyAreaHtml() {
+  const shown = state.areas.filter(a => a.active && a.type === 'standard'
+                                        || a.id === clarifyView.areaId);
+  return `
+      <div class="cl-sec"><span class="cl-label">Filing to</span>
+        <span class="cl-hint">${clarifyView.areaId ? 'tap again to clear' : 'nothing in particular'}</span></div>
+      ${shown.length ? `<div class="cl-chips">
+        ${shown.map(a => `<button class="chip chip-sm${a.id === clarifyView.areaId ? ' on' : ''}"
+           data-area="${a.id}">${escHtml(a.name)}</button>`).join('')}
+      </div>` : ''}`;
 }
 
 function wireClarifyFlows(sheet) {
@@ -15153,9 +15183,9 @@ function renderClarify() {
         <input type="text" id="cl-tag-new" class="cl-chip-input" placeholder="+ new">
       </div>
       <div class="cl-row">
-        ${verb === 'defer' ? `<span class="cl-label">Start on</span>
+        <span class="cl-label">Show on</span>
         <input type="date" id="cl-show-date" class="cl-date"
-          title="When you want to start working on this" value="${clarifyView.showDate}">` : ''}
+          title="Held back until this day — a date defers it, no date is active" value="${clarifyView.showDate}">
         <span class="cl-label">Due</span>
         <input type="date" id="cl-due" class="cl-date" title="Real deadlines only" value="${clarifyView.due}">
       </div>`;
@@ -15218,19 +15248,7 @@ function renderClarify() {
     middle = '';
   }
 
-  // Where it lands: an AREA or nothing — one row of chips, tap again to let
-  // go (domains went 2026-10-01). Filing under nothing is a real answer.
-  if ((verb !== 'do' || doProgress) && verb !== 'trash') {
-    const shown = state.areas.filter(a => a.active && a.type === 'standard'
-                                          || a.id === clarifyView.areaId);
-    middle += `
-      <div class="cl-sec"><span class="cl-label">Filing to</span>
-        <span class="cl-hint">${clarifyView.areaId ? 'tap again to clear' : 'nothing in particular'}</span></div>
-      ${shown.length ? `<div class="cl-chips">
-        ${shown.map(a => `<button class="chip chip-sm${a.id === clarifyView.areaId ? ' on' : ''}"
-           data-area="${a.id}">${escHtml(a.name)}</button>`).join('')}
-      </div>` : ''}`;
-  }
+  if ((verb !== 'do' || doProgress) && verb !== 'trash') middle += clarifyAreaHtml();
 
   if (flowMode) middle = clarifyFlowsHtml();
   const next = clarifyView.queue[1];
@@ -15424,6 +15442,14 @@ function renderClarify() {
     clarifyView.showDate = e.target.value;
     clarifyView.calPick = '';
     clarifyView.calAnchor = null;
+    // A PROJECT'S DATE IS ITS STATE: the field is always on its sheet
+    // (2026-10-12 — it used to appear only after Defer), so a date typed in
+    // IS the defer and clearing it is Active; the verbs follow the field.
+    if (clarifyView.project && !clarifyFlowMode() && !clarifyView.forRecurring) {
+      clarifyView.verb = e.target.value ? 'defer' : 'active';
+      renderClarify();
+      return;
+    }
     // Typed over: it is this item's date now, not a carried-over suggestion.
     if (clarifyView.showDateFrom) { clarifyView.showDateFrom = ''; renderClarify(); }
   });
