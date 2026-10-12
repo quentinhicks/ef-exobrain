@@ -304,6 +304,33 @@ def sheet_registry_fails(body):
     return out, len(ids)
 
 
+# A POPUP IS PLACED BY ONE FUNCTION (2026-10-12, Quentin's instruction: popups
+# are always presented in the viewport). Five places each clamped their own
+# menu, card, read-out or tip to the window — one against a guessed height,
+# two never looking at the bottom edge. `fitInViewport` (common.js) is the one
+# placer, and a hand-set LEFT is the tell of a sixth: everything drawn in the
+# flow of a day sets a top and a height, only a floating box sets a left.
+# popup_viewport_test.py is the measured half, in a real browser.
+POPUP_LEFT = re.compile(r'\.style\.left\s*=|style="left:\$\{')
+
+
+def popup_placement_fails(flines):
+    out, inside = [], False
+    for n, line in enumerate(flines):
+        if line.startswith('function fitInViewport('):
+            inside = True
+        elif line == '}':
+            inside = False
+        stripped = line.strip()
+        if inside or stripped.startswith(('//', '*')):
+            continue
+        if POPUP_LEFT.search(line):
+            out.append((n + 1, stripped[:88],
+                        'fitInViewport(el, x, y) — a popup is placed, capped and '
+                        'kept inside the window by the one placer'))
+    return out
+
+
 def main():
     with open(APP_JS, encoding='utf-8') as f:
         body = f.read()
@@ -336,6 +363,7 @@ def main():
                 if allowed_in is not None and (allowed_in in owner or allowed_in in line):
                     continue
                 fails.append((fname, n + 1, stripped[:88], instead))
+        fails += [(fname,) + f for f in popup_placement_fails(flines)]
 
         fdated = day_filing_functions(flines)
         dated += fdated
@@ -380,6 +408,7 @@ midnight, a paused row, or a config change.""")
           % len(DOCKED.findall(open(INDEX_HTML, encoding='utf-8').read())))
     print('  sheets        %d in the shell, each defined once (tap-off + Esc rung)'
           % n_sheets)
+    print('  popups        placed by fitInViewport, no hand-set left beside it')
     return 0
 
 

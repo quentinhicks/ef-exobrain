@@ -291,6 +291,34 @@ function toast(msg) {
                           Math.max(2600, 60 * String(msg).length));
 }
 
+// ── Popups ────────────────────────────────────────────────────
+// A POPUP IS ALWAYS PRESENTED INSIDE THE VIEWPORT (2026-10-12, Quentin's
+// instruction). A menu, card, read-out or tip that opens past an edge is one
+// you cannot read, and on a phone cannot scroll to. Five places each clamped
+// their own — one guessed a height, two never looked at the bottom edge — so
+// this is the ONE placer: put `el` at (x, y), or leave it where its CSS stands
+// it, then cap it to the window and move it back in by however far it hangs
+// out. Measured, so it is right for a fixed or an absolute box alike.
+// client_rules_test bans a hand-set left beside it; popup_viewport_test opens
+// every popup at every edge and measures.
+function fitInViewport(el, x, y, pad = 8) {
+  if (x != null) { el.style.left = `${x}px`; el.style.top = `${y}px`; }
+  const vv = window.visualViewport;
+  const vw = window.innerWidth;
+  const vh = vv ? Math.min(vv.height, window.innerHeight) : window.innerHeight;
+  if (el.dataset.fitCap) { el.style.maxHeight = ''; el.style.maxWidth = ''; delete el.dataset.fitCap; }
+  let r = el.getBoundingClientRect();
+  if (r.height > vh - 2 * pad) { el.style.maxHeight = `${vh - 2 * pad}px`; el.style.overflowY = 'auto'; el.dataset.fitCap = '1'; }
+  if (r.width > vw - 2 * pad) { el.style.maxWidth = `${vw - 2 * pad}px`; el.dataset.fitCap = '1'; }
+  if (el.dataset.fitCap) r = el.getBoundingClientRect();
+  // The far edge first, then the near one: a box too big for the window keeps
+  // its start in view.
+  const back = (lo, hi, size) => Math.max(pad - lo, Math.min(0, size - pad - hi));
+  const dx = back(r.left, r.right, vw), dy = back(r.top, r.bottom, vh);
+  if (dx) { el.style.left = `${el.offsetLeft + dx}px`; el.style.right = 'auto'; }
+  if (dy) { el.style.top = `${el.offsetTop + dy}px`; el.style.bottom = 'auto'; }
+}
+
 // ── Copy ──────────────────────────────────────────────────────
 // COPY THAT WORKS OFF LOCALHOST. navigator.clipboard is gated on a SECURE
 // CONTEXT, so it is undefined over http://<tailnet-name>:5000 — which is every

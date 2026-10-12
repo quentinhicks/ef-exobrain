@@ -1924,11 +1924,10 @@ function showBlockHover(el) {
   tip.innerHTML = `<span class="cal-pin-sw" style="--block-color:${
     escHtml(el.style.getPropertyValue('--block-color'))}"></span><b>${escHtml(el.dataset.name || '')}</b><span>${
     escHtml(el.dataset.what || '')}</span>`;
-  tip.style.left = `${r.left + 12}px`;
-  tip.style.top = `${Math.max(r.top, floor) + 3}px`;
   // Wider than a narrow column when it has to be: it floats over the grid.
   tip.style.maxWidth = `${Math.max(280, r.width - 16)}px`;
   tip.classList.remove('hidden');
+  fitInViewport(tip, r.left + 12, Math.max(r.top, floor) + 3);
 }
 
 function initCalBlockPin() {
@@ -2060,7 +2059,7 @@ function wkTaskPopHtml() {
         `<button class="om-item wk-change" data-task-change="${escHtml(c.key)}"><span class="wk-change-sw" style="background:${c.color}"></span>${escHtml(c.label)}</button>`).join('')
         || '<div class="om-info">No other blocks yet</div>'}<button class="om-item" data-task-unchange>‹ Back</button></div>`
     : `<div class="wk-card-verbs">${t.verbs.map((v, i) => `<button class="om-item${v.danger ? ' om-danger' : ''}" data-task-verb="${i}">${escHtml(v.label)}</button>`).join('')}</div>`;
-  return `<div class="wk-pop wk-task-pop" style="left:${t.x}px;top:${t.y}px;width:${t.w || 260}px">
+  return `<div class="wk-pop wk-task-pop" data-x="${t.x}" data-y="${t.y}" style="width:${t.w || 260}px">
     <div class="wk-pop-head"><span>${escHtml(t.name)}</span>
       <button class="wk-icon" data-task-close title="Close">${WK_SVG.close}</button></div>
     <div class="wk-pop-note">${weekdayOf(day).name} ${day.getDate()} · ${escHtml(t.span)}</div>
@@ -2130,8 +2129,9 @@ function wkOpenCard(el, px, py) {
     const i = weekDates().indexOf(colEl.dataset.date);
     x = i >= 4 || col.right + 6 + W > window.innerWidth ? col.left - W - 6 : col.right + 6;
   } else x = px;
-  x = Math.max(8, Math.min(x, window.innerWidth - W - 8));
-  const y = Math.max(56, Math.min(py - 24, window.innerHeight - 360));
+  // Where it would like to stand; renderCalWeek fits it to the window once
+  // it has a size (fitInViewport), so no height is guessed here.
+  const y = Math.max(56, py - 24);
   calWeek.pop = 'tasks';
   calWeek.taskPop = { ...occ, x, y, w: W, draft: '', focus: false, changing: false };
   renderCalWeek();
@@ -2666,6 +2666,10 @@ function renderCalWeek() {
     </div>`;
 
   calWeek.range = { start, end };
+  // The week's pops are presented in the window: the card at the point it was
+  // opened from, the hours panel and the legend where their CSS stands them.
+  host.querySelectorAll('.wk-pop').forEach(p => (p.dataset.x
+    ? fitInViewport(p, parseFloat(p.dataset.x), parseFloat(p.dataset.y)) : fitInViewport(p)));
   const taskIn = calWeek.taskPop && calWeek.taskPop.focus && host.querySelector('.wk-task-add');
   if (taskIn) { taskIn.focus(); taskIn.setSelectionRange(taskIn.value.length, taskIn.value.length); }
   host.querySelectorAll('.wk-col[data-date]').forEach(col => {
@@ -6188,10 +6192,7 @@ function openObjectMenu(x, y, kind, id, extra) {
       it.hint ? `<span class="om-key">${escHtml(it.hint)}</span>` : ''}</button>`).join('');
   document.body.appendChild(el);
 
-  const pad = 8;
-  const w = el.offsetWidth, h = el.offsetHeight;
-  el.style.left = `${Math.max(pad, Math.min(x, window.innerWidth - w - pad))}px`;
-  el.style.top = `${Math.max(pad, Math.min(y, window.innerHeight - h - pad))}px`;
+  fitInViewport(el, x, y);
   objMenu.open = true;
 
   // A SECOND CLICK IS NOT A CHOICE. The menu opens AT the pointer, so its
@@ -9120,13 +9121,11 @@ function placeGatePop(el, anchorEl) {
   const r = !anchorEl
     ? { left: pad, right: pad, top: window.innerHeight / 3, bottom: window.innerHeight / 3 }
     : (anchorEl.getBoundingClientRect ? anchorEl.getBoundingClientRect() : anchorEl);
-  const w = el.offsetWidth || 340;
+  // Under the pill, or above it where under runs off the bottom; the placer
+  // keeps whichever it is inside the window.
   const h = el.offsetHeight || 300;
-  let left = Math.min(Math.max(pad, r.left), window.innerWidth - w - pad);
-  let top = r.bottom + 8;
-  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 8);
-  el.style.left = `${left}px`;
-  el.style.top = `${top}px`;
+  const top = r.bottom + 8 + h > window.innerHeight - pad ? r.top - h - 8 : r.bottom + 8;
+  fitInViewport(el, r.left, top, pad);
 }
 
 function closeGatePop() {
@@ -9705,8 +9704,7 @@ function dragTip(el, text) {
   const r = el.getBoundingClientRect();
   const w = tip.offsetWidth;
   const left = r.right + 8 + w > window.innerWidth - 8 ? r.left - 8 - w : r.right + 8;
-  tip.style.left = `${Math.max(8, left)}px`;
-  tip.style.top = `${r.top + r.height / 2 - tip.offsetHeight / 2}px`;
+  fitInViewport(tip, left, r.top + r.height / 2 - tip.offsetHeight / 2);
 }
 
 function dragTipHide() {
