@@ -106,6 +106,56 @@ win.log.clear()
 api.set_height(140)
 check('client ON: resizes', win.log == ['resize(140)'], win.log)
 
+# The clarify window: Ctrl+Alt+O shows a strip and puts it away again. Placing
+# is stubbed (it moves a real window by title); what matters is the order — it
+# is placed BEFORE it is shown, never while hidden, and the main window hears
+# when it goes down.
+
+
+class FakeApp(FakeWindow):
+    def evaluate_js(self, js):
+        self.log.append('js:' + js)
+
+
+A._CLIENT_SERVER = ''
+placed = []
+A._clarify_place = lambda wide: placed.append(wide)
+strip, main = FakeApp(), FakeApp()
+strip.visible = False
+capi = A.ClarifyApi()
+
+r = c.post('/api/panel/clarify').get_json()
+check('clarify: no window (the VM) is a no-op', r == {'shown': False}, r)
+
+A._clarify_window, A._main_window = strip, main
+capi.clarify_fit(True)
+check('clarify hidden: a fit places nothing', placed == [] and not strip.visible, placed)
+
+r = c.post('/api/panel/clarify').get_json()
+check('clarify: the key shows it', r == {'shown': True} and strip.visible, r)
+check('clarify: placed as the strip, then shown, then opened',
+      placed == [False] and strip.log == ['show', 'js:openClarify()'], (placed, strip.log))
+
+capi.clarify_fit(True)
+capi.clarify_fit(False)
+check('clarify shown: a pick grows it and the next item shrinks it',
+      placed == [False, True, False], placed)
+
+strip.log.clear()
+r = c.post('/api/panel/clarify').get_json()
+check('clarify: the key puts it away', r == {'shown': False} and not strip.visible, r)
+check('clarify: closed through closeClarify, then hidden',
+      strip.log == ['js:clarifyView.open && closeClarify()', 'hide'], strip.log)
+check('clarify: the main window re-reads', main.log == ['js:refreshTodoNow().then(refreshVisible)'], main.log)
+
+# Esc in the sheet hides it too, and a second hide is nothing.
+c.post('/api/panel/clarify')
+strip.log.clear()
+capi.clarify_hide()
+capi.clarify_hide()
+check('clarify: Esc hides once', strip.log == ['hide'] and not A._clarify_shown, strip.log)
+A._clarify_window = A._main_window = None
+
 print('\n'.join(ok + bad))
 print('\n%d passed, %d failed' % (len(ok), len(bad)))
 sys.exit(1 if bad else 0)

@@ -4,9 +4,13 @@ Global hotkeys to capture inbox items without switching to the app.
 Both windows open centered on the mouse cursor.
 
 - **Ctrl+Alt+I** — pops a one-line box; type an item, Enter, done.
-- **Ctrl+Alt+O** — opens a small window showing what's in the inbox now
-  (Esc to close). Opens instantly (window first, data fetched after), and if
-  you add an item (Ctrl+Alt+I) while it's open, it refreshes itself.
+- **Ctrl+Alt+O** — clarify the inbox in a strip down the right edge of the
+  screen, over whatever else is up; press it again (or Esc) to put it away.
+  It is the app's own clarify sheet in a third window (`/clarify`), so it
+  needs the app running. Picking Project, Calendar or List fills the screen
+  with that page until the next item. **With the app closed** it opens the
+  small read-only list of what's in the inbox instead (Esc to close), which
+  refreshes itself if you add an item while it's open.
 - **Ctrl+Alt+M** — hides the always-on-top NOW panel and brings it back after
   10 seconds. Pure local window op (`WinHide`/`WinShow` on the window titled
   `NOW`) — no network. Needs the app running (the panel must exist).

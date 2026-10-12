@@ -253,7 +253,7 @@ def index():
 # app.js reads the path and opens that page. Still no data in the template —
 # the path is only an address.
 APP_PAGES = ('now', 'calendar', 'horizons', 'projects', 'lists', 'tracking', 'social',
-             'settings', 'run')
+             'settings', 'run', 'clarify')
 
 
 @app.route('/<any(%s):page>' % ', '.join(APP_PAGES))
@@ -555,10 +555,83 @@ def panel_privacy():
 # evaluate_js never shows a window, so the resize rule above is not in play.
 def _drive_privacy(on):
     js = 'true' if on else 'false'
-    if _main_window:
-        _main_window.evaluate_js('setPrivacy(%s)' % js)
+    for w in (_main_window, _clarify_window):
+        if w:
+            w.evaluate_js('setPrivacy(%s)' % js)
     if _panel_window:
         _panel_window.evaluate_js('npSetPrivacy(%s)' % js)
+
+
+# THE CLARIFY WINDOW (2026-10-12, Quentin's instruction): clarify as a strip
+# down the right edge of the screen, over whatever else is up, so the inbox
+# can be worked through beside a browser without the app's window. It is the
+# APP at `/clarify` — the same sheet, not a second one — in a third window
+# that Ctrl+Alt+O shows and hides. A Project / Calendar / List pick needs its
+# page beside the sheet, so the window fills the screen for the pick and goes
+# back to the strip when the next item arrives (clarifyWindowFit in app.js).
+_clarify_window = None
+_clarify_shown = False
+CLARIFY_W = 430
+
+
+# Placed with SetWindowPos directly, in the physical pixels the work area is
+# read in: pywebview's resize()/move() take logical ones and are also a SHOW
+# (SWP_SHOWWINDOW, see _panel_show), and this must never show a hidden strip.
+def _clarify_place(wide):
+    left, top, right, bottom = _work_area()
+    if sys.platform != 'win32':
+        w = right - left if wide else CLARIFY_W
+        _clarify_window.resize(w, bottom - top)
+        _clarify_window.move(right - w, top)
+        return
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, 'Clarify')
+    if not hwnd:
+        return
+    w = right - left
+    if not wide:
+        w = min(w, CLARIFY_W * user32.GetDpiForWindow(ctypes.c_void_p(hwnd)) // 96)
+    # NOZORDER | NOACTIVATE
+    user32.SetWindowPos(ctypes.c_void_p(hwnd), None, right - w, top, w, bottom - top,
+                        0x0004 | 0x0010)
+
+
+def _clarify_hide():
+    global _clarify_shown
+    if not _clarify_shown:
+        return
+    _clarify_shown = False
+    _clarify_window.hide()
+    _clarify_changed()
+
+
+# What was filed over there changed what the main window shows: its inbox
+# count, and every page it has up.
+def _clarify_changed():
+    if _main_window:
+        _main_window.evaluate_js('refreshTodoNow().then(refreshVisible)')
+
+
+# Showing re-reads the queue (openClarify), so a capture made since the last
+# sitting is in it. Hiding goes through closeClarify, which keeps typed notes.
+def _clarify_toggle():
+    global _clarify_shown
+    if not _clarify_window:
+        return False
+    if _clarify_shown:
+        _clarify_window.evaluate_js('clarifyView.open && closeClarify()')
+        _clarify_hide()
+    else:
+        _clarify_place(False)
+        _clarify_shown = True
+        _clarify_window.show()
+        _clarify_window.evaluate_js('openClarify()')
+    return _clarify_shown
+
+
+@app.route('/api/panel/clarify', methods=['POST'])
+def panel_clarify():
+    return jsonify({'shown': _clarify_toggle()})
 
 
 @app.route('/api/areas')
@@ -3817,6 +3890,9 @@ _client_panel_hidden = False
 
 
 class WindowApi:
+    # Underscored for the reason PanelApi's is: pywebview walks public attributes.
+    _window = None
+
     # Called from the main window's JS (the Engage eye / Settings toggle).
     # Local mode flips the setting directly; client mode asks the server to
     # flip it and mirrors the result onto the local window.
@@ -3849,8 +3925,13 @@ class WindowApi:
     def set_privacy(self, on):
         global _privacy_on
         _privacy_on = bool(on)
+        js = 'true' if _privacy_on else 'false'
         if _panel_window:
-            _panel_window.evaluate_js('npSetPrivacy(%s)' % ('true' if _privacy_on else 'false'))
+            _panel_window.evaluate_js('npSetPrivacy(%s)' % js)
+        # The other app window follows too (the main one, or the clarify strip).
+        for w in (_main_window, _clarify_window):
+            if w and w is not self._window:
+                w.evaluate_js('setPrivacy(%s)' % js)
         return _privacy_on
 
     # EVERY DOWNLOAD LANDS IN THE DOWNLOADS FOLDER (2026-09-23, Quentin's
@@ -3871,6 +3952,21 @@ class WindowApi:
         with open(path, 'w', encoding='utf-8', newline='') as f:
             f.write(text)
         return path
+
+
+# The clarify window's page is the app, so it gets the app's api and three
+# calls of its own.
+class ClarifyApi(WindowApi):
+    # Never while hidden: the strip is placed again when it is next shown.
+    def clarify_fit(self, wide):
+        if _clarify_shown:
+            _clarify_place(bool(wide))
+
+    def clarify_hide(self):
+        _clarify_hide()
+
+    def clarify_changed(self):
+        _clarify_changed()
 
 
 def _remote_settings(server):
@@ -3942,6 +4038,9 @@ def _client_bridge():
                     _panel_window.hide()
                     threading.Timer(10, lambda: None if _panel_off() else _panel_show()).start()
                 self._done()
+            elif self.path == '/api/panel/clarify':
+                _clarify_toggle()
+                self._done()
             else:
                 self._proxy()
                 # A hotkey capture went through to the server — the laptop
@@ -3959,6 +4058,15 @@ def _client_bridge():
 def _active_monitor_origin():
     if sys.platform != 'win32':
         return 0, 0
+    return _work_area()[:2]
+
+
+# (left, top, right, bottom) of the work area of the monitor the cursor is on.
+def _work_area():
+    if sys.platform != 'win32':
+        screens = webview.screens
+        s = (screens() if callable(screens) else screens)[0]
+        return s.x, s.y, s.x + s.width, s.y + s.height
     user32 = ctypes.windll.user32
 
     class POINT(ctypes.Structure):
@@ -3978,7 +4086,7 @@ def _active_monitor_origin():
     mi = MONITORINFO()
     mi.cbSize = ctypes.sizeof(MONITORINFO)
     user32.GetMonitorInfoW(hmon, ctypes.byref(mi))
-    return mi.rcWork.left, mi.rcWork.top
+    return mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom
 
 
 def _panel_yield_to_app():
@@ -4012,7 +4120,9 @@ def _panel_yield_to_app():
         # Query the live z-order every tick instead of tracking state, so
         # anything else that reorders the panel (Ctrl+Alt+M's hide/show, a
         # resize, the user raising a window) self-heals on the next tick.
-        if pid.value != ours:
+        # The clarify strip counts as another app here: it stands beside the
+        # browser, and the panel should stay up over the browser while it does.
+        if pid.value != ours or fg == user32.FindWindowW(None, 'Clarify'):
             if not user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST:
                 user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, KEEP_PLACE)
         elif fg != hwnd and user32.GetWindow(fg, GW_HWNDNEXT) != hwnd:
@@ -4179,13 +4289,15 @@ if __name__ == '__main__':
         t.start()
         panel_hidden = _panel_toggled_off()
 
+    main_api = WindowApi()
     main_window = webview.create_window(
         'Productivity Tracker',
         base,
         width=430,
         height=930,
-        js_api=WindowApi(),
+        js_api=main_api,
     )
+    main_api._window = main_window
     origin_x, origin_y = _active_monitor_origin()
     panel_api = PanelApi()
     panel_window = webview.create_window(
@@ -4204,9 +4316,24 @@ if __name__ == '__main__':
     panel_api._window = panel_window
     _panel_window = panel_window
     _main_window = main_window
+    # Hidden until Ctrl+Alt+O; _clarify_place puts it on the right edge then.
+    clarify_api = ClarifyApi()
+    _clarify_window = webview.create_window(
+        'Clarify',
+        base + '/clarify',
+        width=CLARIFY_W,
+        height=930,
+        frameless=True,
+        on_top=True,
+        easy_drag=False,
+        hidden=True,
+        js_api=clarify_api,
+    )
+    clarify_api._window = _clarify_window
 
     def _close_panel(*args):
         panel_window.destroy()
+        _clarify_window.destroy()
 
     main_window.events.closed += _close_panel
     if sys.platform == 'win32':

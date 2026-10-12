@@ -5,7 +5,8 @@
 ; AHK never touches the network (Plucky would block it) — it only captures
 ; input and shells out to python.exe (Plucky-allowlisted), which does all HTTP.
 ;   Ctrl+Alt+I  -> add an item to the inbox
-;   Ctrl+Alt+O  -> view what's currently in the inbox
+;   Ctrl+Alt+O  -> clarify the inbox in a strip at the right edge of the
+;                  screen, and again to put it away (app closed: list the inbox)
 ;   Ctrl+Alt+M  -> hide the NOW panel for 10 seconds (it returns on its own)
 ;   Ctrl+Alt+S  -> open the NOW panel's switch form (focuses the panel to type)
 ;   Ctrl+Alt+X  -> mark interrupted on the NOW panel (no focus steal)
@@ -36,9 +37,19 @@ resultFile := A_Temp "\inbox_result.txt"
     SetTimer(() => ToolTip(), -1800)
 }
 
+; Clarify beside whatever else is up: the app's third window, a strip down the
+; right edge. Activated here because clarify is typed into, and only the
+; process that owns the hotkey may take the foreground. With the app closed
+; there is no window, so the key still lists the inbox, as it always did.
 ^!o:: {
     global pythonExe, cli
-    Run('"' pythonExe '" "' cli '" view', A_ScriptDir, "Hide")
+    if !PanelSend("clarify") {
+        Run('"' pythonExe '" "' cli '" view', A_ScriptDir, "Hide")
+        return
+    }
+    SetTitleMatchMode(3)              ; only that window is titled exactly "Clarify"
+    if WinExist("Clarify")            ; hidden again when the key put it away
+        WinActivate("Clarify")
 }
 
 ; Hide the always-on-top NOW panel and bring it back after 10 seconds.
@@ -86,14 +97,21 @@ ShowNowPanel() {
 ; through; if it ever doesn't, Send() throws and we fall back to python.exe.
 PanelPost(action) {
     global pythonExe, panelCli
+    if !PanelSend(action)
+        Run('"' pythonExe '" "' panelCli '" ' action, A_ScriptDir, "Hide")
+}
+
+; The request itself; false when nothing answered (the app is closed).
+PanelSend(action) {
     try {
         req := ComObject("WinHttp.WinHttpRequest.5.1")
         req.Open("POST", "http://127.0.0.1:5000/api/panel/" action, false)
         req.SetProxy(1)                       ; direct, never a proxy for localhost
         req.SetTimeouts(300, 300, 1000, 3000)
         req.Send("")
+        return req.Status < 400
     } catch {
-        Run('"' pythonExe '" "' panelCli '" ' action, A_ScriptDir, "Hide")
+        return false
     }
 }
 

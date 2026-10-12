@@ -4,7 +4,8 @@
 -- inbox HTTP. Panel actions POST straight to loopback (no Plucky on Mac, so
 -- no python fallback is needed).
 --   Ctrl+Alt+I -> add an item to the inbox
---   Ctrl+Alt+O -> view what's currently in the inbox
+--   Ctrl+Alt+O -> clarify the inbox in a strip at the right edge of the
+--                 screen, and again to put it away (app closed: list the inbox)
 --   Ctrl+Alt+M -> hide the NOW panel for 10 seconds (POST /api/panel/hide;
 --                 macOS has no external per-window hide, so the app does it)
 --   Ctrl+Alt+S -> open the NOW panel's switch form (focuses the panel first)
@@ -31,10 +32,14 @@ end
 
 -- The panel is the only window titled exactly NOW; hs.window.find() pattern-
 -- matches substrings, so compare titles exactly like inbox.ahk's title mode 3.
-local function nowWindow()
+local function windowTitled(title)
     for _, w in ipairs(hs.window.allWindows()) do
-        if w:title() == 'NOW' then return w end
+        if w:title() == title then return w end
     end
+end
+
+local function nowWindow()
+    return windowTitled('NOW')
 end
 
 hs.hotkey.bind({'ctrl', 'alt'}, 'i', function()
@@ -59,10 +64,20 @@ hs.hotkey.bind({'ctrl', 'alt'}, 'i', function()
     t:start()
 end)
 
+-- Clarify beside whatever else is up: the app's third window, a strip down
+-- the right edge, focused because clarify is typed into. With the app closed
+-- nothing answers, so the key still lists the inbox (same as inbox.ahk).
 hs.hotkey.bind({'ctrl', 'alt'}, 'o', function()
-    local t = hs.task.new(python, nil, {cli, 'view'})
-    t:setWorkingDirectory(hotkeyDir)
-    t:start()
+    hs.http.asyncPost('http://127.0.0.1:5000/api/panel/clarify', '', nil, function(status)
+        if status >= 200 and status < 400 then
+            local w = windowTitled('Clarify')
+            if w then w:focus() end
+            return
+        end
+        local t = hs.task.new(python, nil, {cli, 'view'})
+        t:setWorkingDirectory(hotkeyDir)
+        t:start()
+    end)
 end)
 
 hs.hotkey.bind({'ctrl', 'alt'}, 'm', function()

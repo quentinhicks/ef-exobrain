@@ -3293,6 +3293,9 @@ async function refreshAfterUndo() {
 // only the surface clarify was opened FROM, so the page it filed INTO — a
 // list's count, a block's tasks, a project — kept its old numbers.
 async function refreshVisible() {
+  // The clarify window's writes are the main window's to re-read as well.
+  const win = clarifyWindowApi();
+  if (win) win.clarify_changed();
   await refreshEngage();
   // The week caches each day it draws, so an undo re-reads it like any surface.
   if (calWeek.on) await refreshCalWeek();
@@ -6725,7 +6728,7 @@ async function goRoute(route, push) {
   // Leaving the Calendar mid-pick gives the pick up: clarify comes back.
   const pk = clarifyView.picking && CLARIFY_FLOWS.find(f => f.key === clarifyView.picking.flow);
   const pickLeft = !!pk && String(route).split('/')[0] !== pk.route().split('/')[0];
-  if (pickLeft) clarifyView.picking = null;
+  if (pickLeft) { clarifyView.picking = null; clarifyWindowFit(false); }
   routeView.moving = true;
   routeView.target = String(route || '').split('/')[0];
   paintTopNav();
@@ -6846,6 +6849,8 @@ function pathRoute(path) {
 
 function syncRoute() {
   paintTopNav();
+  // The clarify window's pages are a pick's, never where you were.
+  if (CLARIFY_WINDOW) return;
   // Nothing is written until the remembered address has been reopened, or
   // the empty screen of a page still loading would overwrite it — nor while
   // a switch is under way, which writes its one address when it lands.
@@ -6889,7 +6894,8 @@ async function initRoutes() {
   routeView.fromAddress = true;
   const route = location.hash.length > 2 ? location.hash.replace(/^#\/?/, '')
     : location.pathname !== '/' ? pathRoute(location.pathname) : routeView.saved;
-  try { await openRoute(route); } catch (e) {}
+  try { await openRoute(CLARIFY_WINDOW ? '' : route); } catch (e) {}
+  if (CLARIFY_WINDOW) openClarify();
   routeView.fromAddress = false;
   routeView.ready = true;
   const watch = new MutationObserver(syncRoute);
@@ -13902,6 +13908,32 @@ async function renderNowFull() {
 // behind the sheet; a future date is scheduled into that day's schedule when
 // it arrives). Date alone just defers — no placement. Delegation stamps today
 // and takes an optional chase date.
+// THE CLARIFY WINDOW (2026-10-12, Quentin's instruction): the desktop app's
+// third window is this page at `/clarify` — clarify as a strip down the right
+// edge of the screen, beside whatever else is up, shown and hidden by
+// Ctrl+Alt+O (app.py's _clarify_toggle). Read ONCE: a pick moves the address.
+// The sheet is the one every other door opens; all this adds is the window's
+// size, its hiding, and telling the main window what was filed.
+const CLARIFY_WINDOW = location.pathname.replace(/\/+$/, '') === '/clarify';
+
+function clarifyWindowApi() {
+  const api = CLARIFY_WINDOW && window.pywebview && window.pywebview.api;
+  return api && api.clarify_fit ? api : null;
+}
+
+// A PICK NEEDS ITS PAGE BESIDE THE SHEET, so the window fills the screen for
+// one and is the strip again when the next item arrives or the pick is given
+// up. Growing waits for the width to land: startClarifyPick reads it to tell
+// the docked sheet from the phone's, which steps aside.
+async function clarifyWindowFit(wide) {
+  const api = clarifyWindowApi();
+  if (!api) return;
+  await api.clarify_fit(wide);
+  for (let i = 0; wide && !SETTINGS_WIDE.matches && i < 40; i++) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+}
+
 const clarifyView = {
   open: false, queue: [], total: 0, verb: 'defer',
   action: '', tags: new Set(), showDate: '', showTime: '', showDateFrom: '',
@@ -14275,6 +14307,7 @@ function recentBump(key, value) {
 
 function clarifyResetItem() {
   const item = clarifyView.queue[0];
+  clarifyWindowFit(false);
   clarifyView.compose = null;
   clarifyView.project = !!(item && item.kind === 'project');
   clarifyView.verb = 'defer';
@@ -14502,6 +14535,10 @@ function closeClarify() {
   document.getElementById('engage-body').classList.remove('eg-dimmed');
   renderInbox();
   if (after) after();
+  // In the clarify window the sheet IS the window: down means hidden — unless
+  // `after` put it back up (a project's own clarify, closed over the item's).
+  const win = clarifyWindowApi();
+  if (win && !clarifyView.open) win.clarify_hide();
 }
 
 // HAND A CAPTURE TO THE OTHER MACHINE, undecided (2026-08-23).
@@ -14864,6 +14901,7 @@ async function setClarifyFlow(key) {
 // opened, kept across flows, so putting the sheet down puts the page back.
 async function startClarifyPick(f) {
   const from = clarifyView.picking ? clarifyView.picking.from : currentRoute();
+  await clarifyWindowFit(true);
   const phone = !SETTINGS_WIDE.matches && !clarifyView.pickCarried;
   clarifyView.picking = { flow: f.key, from, hidden: phone };
   if (phone) hideSheet('clarify-sheet');
@@ -14879,6 +14917,7 @@ async function startClarifyPick(f) {
 async function endClarifyPick() {
   const from = clarifyView.picking && clarifyView.picking.from;
   clarifyView.picking = null;
+  clarifyWindowFit(false);
   if (clarifyView.flow !== 'now' && clarifyView.flow !== 'todo') clarifyView.flow = 'todo';
   if (from != null && from !== currentRoute()) await goRoute(from, true);
   if (clarifyView.open) renderClarify();
