@@ -14173,6 +14173,12 @@ async function renderNowFull() {
 // The sheet is the one every other door opens; all this adds is the window's
 // size, its hiding, and telling the main window what was filed.
 const CLARIFY_WINDOW = location.pathname.replace(/\/+$/, '') === '/clarify';
+// AS THE STRIP IT IS THE DOCKED PANEL AND NOTHING ELSE (2026-10-14, Quentin's
+// instruction: it read as the phone — the strip, the Now page, the tabs and
+// the capture bar, the sheet rising from the bottom). `clarify-strip` puts the
+// app away and stands the sheet full height; a pick that fills the screen
+// takes the class off, so its page is there beside the sheet.
+if (CLARIFY_WINDOW) document.documentElement.classList.add('clarify-strip');
 
 function clarifyWindowApi() {
   const api = CLARIFY_WINDOW && window.pywebview && window.pywebview.api;
@@ -14184,6 +14190,7 @@ function clarifyWindowApi() {
 // up. Growing waits for the width to land: startClarifyPick reads it to tell
 // the docked sheet from the phone's, which steps aside.
 async function clarifyWindowFit(wide) {
+  if (CLARIFY_WINDOW) document.documentElement.classList.toggle('clarify-strip', !wide);
   const api = clarifyWindowApi();
   if (!api) return;
   await api.clarify_fit(wide);

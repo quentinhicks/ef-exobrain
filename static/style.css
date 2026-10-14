@@ -6176,6 +6176,22 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border-radius: 2px;
 }
 
+/* THE CLARIFY WINDOW AS A STRIP (2026-10-14, Quentin's instruction): the
+   sheet is the whole window, as it stands docked in the wide app — no tabs,
+   no page, no capture bar, top to bottom. A pick that fills the screen takes
+   `clarify-strip` off (clarifyWindowFit). Where it stands only: the look is
+   the sheet's own. */
+:root.clarify-strip #top-nav,
+:root.clarify-strip #engage-header,
+:root.clarify-strip #engage-body,
+:root.clarify-strip #global-bar { display: none; }
+:root.clarify-strip #clarify-sheet {
+  top: 0;
+  bottom: 0;
+  max-height: none;
+  border-top: none;
+}
+
 /* ── The top strip's half of the same contract ───────────────────────────
    Every full-screen layer starts UNDER the strip rather than covering it.
    Sheets are not listed: they are modal at z 200 and cover it on purpose. */
