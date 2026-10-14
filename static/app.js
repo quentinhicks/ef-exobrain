@@ -10393,20 +10393,20 @@ let mapWired = false;
 // "Next actions" on MAP meaning the same thing it means in the pool.
 // Deliberately NOT the pool's full availability rule: MAP shows blocked
 // (`after_id`) actions too, because seeing the chain is the point of a map.
+// 2026-10-14, Quentin's instruction: "Waiting & deferred" is gone, and the
+// inbox is a lens of its own rather than a pile under All.
 const MAP_LENSES = [
   { key: 'all', name: 'All', keep: () => true },
-  { key: 'waiting', name: 'Waiting & deferred',
-    keep: (i, today) => i.status === 'waiting'
-      || (i.status === 'active' && i.defer_until && i.defer_until > today) },
   { key: 'projects', name: 'Projects', keep: i => i.kind === 'project' },
   { key: 'someday', name: 'Someday / maybe', keep: i => i.status === 'on_hold' },
+  { key: 'inbox', name: 'Inbox', keep: () => false },
 ];
 
 // `sel` is the keyboard's row (by id) and `tMode` the armed `t` — see MAP BY
 // KEYBOARD below.
 // `delArm` is a project waiting for its second ⌫.
 const mapView = { q: '', lens: 'all', tags: new Set(), menuOpen: false,
-                  sel: null, tMode: false, delArm: null, todo: new Set(),
+                  sel: null, tMode: false, delArm: null, todo: new Set(), placed: new Set(),
                   horizon: 'projects' };
 
 function mapLens() {
@@ -10425,19 +10425,23 @@ function mapFilterExtras() {
 // What is on the TO-DO LIST is not here at all (2026-10-01): the list is
 // what you will do, Projects what you might — asked of the same served set
 // the list reads, through the list's own rule (onTodoList).
+// Nor is an action PLACED on the calendar today or later (2026-10-14,
+// Quentin's instruction): it has its time, and the day shows it there. A
+// project stays — its place is here whatever its actions are doing.
 function mapVisibleItems(items, today) {
   const lens = mapLens();
   return items.filter(i =>
     !(mapView.todo.has(i.id) && onTodoList(i))
+    && !(i.kind !== 'project' && mapView.placed.has(i.id))
     && lens.keep(i, today)
     && [...mapView.tags].every(t => itemTags(i).includes(t)));
 }
 
 // "In" is not a next action, a project or a someday — it is what has not been
-// decided yet. It belongs to the whole inventory and to no lens, so any lens
-// at all puts it away rather than showing it under a heading it contradicts.
+// decided yet, so it is its OWN lens, Inbox (2026-10-14, Quentin's
+// instruction: not a pile at the foot of All).
 function mapInboxItems() {
-  return (mapView.lens === 'all' && !mapView.tags.size)
+  return (mapView.lens === 'inbox' && !mapView.tags.size)
     ? (state.inbox || []) : [];
 }
 
@@ -10968,7 +10972,7 @@ async function refreshMap() {
   // to load state.areas last is how an area added here fails to appear until
   // something unrelated refreshes. Every fetch falls back to CURRENT state, not
   // [] — Promise.all rejects as a unit, and one dead endpoint used to blank it.
-  const [items, projects, inbox, areas, todo, vision, settings] = await Promise.all([
+  const [items, projects, inbox, areas, todo, vision, settings, placed] = await Promise.all([
     apiGet('/api/map', state.mapItems || []),
     apiGet('/api/projects', state.projects || []),
     apiGet('/api/inbox', state.inbox || []),
@@ -10978,7 +10982,10 @@ async function refreshMap() {
     // The horizons above Projects: their photos and their documents.
     apiGet('/api/vision', state.vision || []),
     apiGet('/api/settings', null),
+    // What the calendar holds from today on — left off this page.
+    apiGet(`/api/engage/placements?from=${wallDay()}`, null),
   ]);
+  if (Array.isArray(placed)) mapView.placed = new Set(placed.map(p => p.item_id));
   state.vision = vision;
   if (settings) state.settings = settings;
   state.mapItems = items;
