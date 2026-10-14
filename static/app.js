@@ -12738,6 +12738,8 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      // "already scheduled" exclusion (date >= viewed).
                      futurePlaced: [],
                      routineItems: [], flows: [], deferred: [],
+                     // To-dos typed and drawn but not yet written (addEngageTodo).
+                     adding: [],
                      dragId: null,
                      // Which routine's details card is open (area id). Session
                      // state; survives the re-render a checkoff triggers.
@@ -12887,6 +12889,10 @@ async function refreshEngage() {
     // then costs no round trip, same as the pool.
     apiGet('/api/inbox/deferred', engageView.deferred),
   ]);
+  // A write that started while these reads were out is not in them: drawing
+  // them would put a just-completed row back, or drop a just-added one. That
+  // write re-reads when it lands (egWrites), so this answer is only stale.
+  if (egWrites) return;
   engageView.placements = placements;
   engageView.futurePlaced = futurePlaced;
   engageView.pool = pool;
@@ -13173,16 +13179,37 @@ function wireAddZone(zone, add, onClose) {
   input.addEventListener('blur', () => { if (input.value.trim()) commit(false); else close(); });
 }
 
+// AN ADD DRAWS FIRST, THEN WRITES (the tap's rule, 2026-10-05): the row used
+// to wait on the POST and then on refreshEngage's ten reads before it showed,
+// so typing a few to-dos in a row read as lag. It is drawn at once from
+// `engageView.adding` — no id, so no handler acts on it — becomes the real row
+// when its POST returns, and the reads run once the LAST write in flight lands.
+// The POSTs go ONE AT A TIME: sent together, the server numbered them in the
+// order they happened to arrive, and the list (oldest first) reshuffled.
+let egAddQueue = Promise.resolve();
 async function addEngageTodo(content) {
-  const res = await apiSend('/api/inbox', 'POST', { content, status: 'active' }).catch(() => null);
-  if (!res || !res.ok) { toast('Could not add that — it is still in the box'); return null; }
-  const item = await res.json();
+  engageView.adding.push(content);
+  renderEngage();
+  egWrites++;
+  let item = null;
+  try {
+    const req = egAddQueue.then(() => apiSend('/api/inbox', 'POST', { content, status: 'active' }))
+      .catch(() => null);
+    egAddQueue = req;
+    const res = await req;
+    if (res && res.ok) item = await res.json();
+  } finally {
+    engageView.adding.splice(engageView.adding.indexOf(content), 1);
+    if (item) { engageView.pool.push(item); engageView.allItems.push(item); }
+    renderEngage();
+    if (--egWrites === 0) refreshEngage();
+  }
+  if (!item) { toast('Could not add that — it is still in the box'); return null; }
   // A create inverts to a delete of the new id.
   pushUndo(`added "${content}"`, async () => {
     await apiSend(`/api/inbox/${item.id}`, 'DELETE');
     await refreshAfterUndo();
   });
-  await refreshEngage();
   return item;
 }
 
@@ -13470,7 +13497,12 @@ function renderEngage() {
             : 'Tap to dot (preselect) · tap again when done')}
           <span class="eg-text">${escHtml(i.content)}</span>
           <span class="eg-tags">${dueChip(i, 'eg-tag')}</span>
-        </div>`).join('') || emptyHtml('Nothing available — done, parked, or handed off.')}
+        </div>`).join('')}${engageView.adding.map(content => `
+        <div class="eg-row eg-pool-item eg-adding">
+          <span class="eg-check eg-check-ghost"></span>
+          <span class="eg-text">${escHtml(content)}</span>
+        </div>`).join('')
+      || (pool.length ? '' : emptyHtml('Nothing available — done, parked, or handed off.'))}
     </div>
     ${popHtml}
     </div>
@@ -13558,10 +13590,11 @@ function renderEngage() {
     finally { if (--egWrites === 0) await after(); }
   };
   // NOT FINISHED GOES TO THE END (2026-10-11, Quentin's instruction, FVP's
-  // re-entry): the hold on the CURRENT task — the one move FVP never makes is
-  // clearing that dot and leaving the row where it was — puts it at the bottom
-  // of the list, undotted. No new button; undo puts it back. Any other row's
-  // hold still just toggles its dot.
+  // re-entry): the hold on a dotted row puts it at the bottom of the list,
+  // undotted. No new button; undo puts it back. An undotted row's hold dots it.
+  // (Until 2026-10-14 only the CURRENT task re-entered and an earlier dotted
+  // row merely lost its dot in place — Quentin's report: unselecting did not
+  // send it to the bottom.)
   const reenter = async id => {
     const item = localItems(id)[0];
     if (!item) return;
@@ -13577,7 +13610,7 @@ function renderEngage() {
     const id = parseInt(row.dataset.id);
     row.addEventListener('contextmenu', e => {
       e.preventDefault();
-      if (row.classList.contains('eg-current')) reenter(id); else startedToggle(id);
+      if (row.matches('.eg-pool-item.eg-inprog')) reenter(id); else startedToggle(id);
     });
   });
 
@@ -13766,7 +13799,7 @@ function renderEngage() {
     await refreshEngage();
   };
 
-  body.querySelectorAll('.eg-pool-item, .eg-action').forEach(row => {
+  body.querySelectorAll('.eg-pool-item:not(.eg-adding), .eg-action').forEach(row => {
     row.addEventListener('dragstart', e => {
       engageView.dragId = parseInt(row.dataset.id);
       row.classList.add('eg-dragging');
