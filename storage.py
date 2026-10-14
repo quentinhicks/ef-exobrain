@@ -719,6 +719,14 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE inbox_item ADD COLUMN entered_at TEXT')
         conn.commit()
+    # THE AREAS' ORDER IS QUENTIN'S (2026-10-14, his instruction: reorder the
+    # areas on Projects). NULL sorts after every placed area, by name, so an
+    # area made since the last reorder lands at the end.
+    try:
+        conn.execute('SELECT position FROM area LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE area ADD COLUMN position INTEGER')
+        conn.commit()
     # Delegation (Allen: date everything you hand off): who has it and when to
     # chase. chase_on may stay blank — the date is optional by design.
     try:
@@ -2077,9 +2085,30 @@ def _new_uid(kind):
 
 def get_areas():
     conn = get_conn()
-    rows = conn.execute('SELECT * FROM area ORDER BY name').fetchall()
+    rows = conn.execute('SELECT * FROM area ORDER BY position IS NULL, position, name').fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def rename_area(id, name):
+    conn = get_conn()
+    conn.execute('UPDATE area SET name = ? WHERE id = ?', (name, id))
+    conn.commit()
+    row = conn.execute('SELECT * FROM area WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# The whole order in one write: `ids` first to last. An area left out keeps
+# its place after them (NULL), so a stale list cannot lose one.
+def set_area_order(ids):
+    conn = get_conn()
+    conn.execute('UPDATE area SET position = NULL')
+    for n, id in enumerate(ids):
+        conn.execute('UPDATE area SET position = ? WHERE id = ?', (n, id))
+    conn.commit()
+    conn.close()
+    return get_areas()
 
 
 # No domain is picked for you: an area is assigned to one only when you say so.

@@ -5158,7 +5158,7 @@ const SETTINGS_SHEETS = {
       + (it.domain_id ? `the ${domainName(it.domain_id)} domain.` : 'nothing in particular.'),
     blank: () => ({ name: '', type: 'standard', domain: '' }),
     load: a => ({
-      type: a.type, domain: a.domain_id || '', qr: a.qr_node_id || '', active: !!a.active,
+      name: a.name, type: a.type, domain: a.domain_id || '', qr: a.qr_node_id || '', active: !!a.active,
     }),
     fields: (v, it) => {
       const types = [
@@ -5170,7 +5170,7 @@ const SETTINGS_SHEETS = {
         { key: 'type', label: 'Type', kind: 'select', half: true, options: () => types },
       ];
       return [
-        { key: 'name', label: 'Name', kind: 'static', text: it.name },
+        { key: 'name', label: 'Name', kind: 'text', placeholder: 'Area name' },
         { key: 'type', label: 'Type', kind: 'select', half: true, rerender: true, options: () => types },
         // A routine area can hang off a gate: the routine then nests under
         // that gate's hairline on Engage even with no block on the calendar.
@@ -5189,6 +5189,8 @@ const SETTINGS_SHEETS = {
         return null;
       }
       const patch = async body => apiSend(`/api/areas/${a.id}`, 'PATCH', body);
+      if (!v.name.trim()) return 'Name is required.';
+      if (v.name.trim() !== a.name) await patch({ name: v.name.trim() });
       if (v.type !== a.type) await patch({ type: v.type });
       if (String(v.domain) !== String(a.domain_id || '')) {
         const res = await patch({ domain_id: parseInt(v.domain) || null });
@@ -5647,6 +5649,9 @@ async function refreshDayAfterSettings() {
   // show there without paging away and back. Not awaited: seven days take a
   // couple of seconds, and the sheet should not stand open that long.
   if (calWeek.on) refreshCalWeek();
+  // Projects draws the areas — a rename, pause or delete from their sheet
+  // (opened from its own titles, or Settings docked beside it) shows at once.
+  if (!document.getElementById('map-overlay').classList.contains('hidden')) refreshMap();
 }
 
 // The settings lists, from state. Also what a write INSIDE a sheet (an action
@@ -6182,14 +6187,19 @@ function closeObjectMenu() {
 // Opened AT THE POINTER (Fitts), and kept on screen: a menu that opens under
 // the thumb or off the bottom edge is a menu you cannot read on a phone, which
 // is the same rule placeGatePop follows.
-function openObjectMenu(x, y, kind, id, extra) {
+// `opts.filter` (a placeholder) puts a field at the top that is focused at
+// once: typing narrows the items by label, ↑↓ pick among what is left, Enter
+// runs the lit one and Esc puts the menu away — a menu you choose from by name.
+function openObjectMenu(x, y, kind, id, extra, opts) {
   closeObjectMenu();
   objTapCancel();   // a menu arriving by any road voids a held tap
   const items = objectMenuItems(kind, extra);
   if (!items.length) return false;
   const el = document.createElement('div');
   el.id = 'obj-menu';
-  el.innerHTML = items.map((it, i) => it.info
+  el.innerHTML = (opts && opts.filter
+    ? `<input type="text" class="om-filter" placeholder="${escHtml(opts.filter)}" autocomplete="off">` : '')
+    + items.map((it, i) => it.info
     ? `<div class="om-info">${escHtml(it.label)}</div>`
     : `<button class="om-item${it.danger ? ' om-danger' : ''}" data-i="${i}">${escHtml(it.label)}${
       it.hint ? `<span class="om-key">${escHtml(it.hint)}</span>` : ''}</button>`).join('');
@@ -6215,6 +6225,36 @@ function openObjectMenu(x, y, kind, id, extra) {
       else if (it.run) it.run();
     });
   });
+  const filter = el.querySelector('.om-filter');
+  if (filter) {
+    const shown = () => [...el.querySelectorAll('.om-item:not(.hidden)')];
+    const light = btn => el.querySelectorAll('.om-item').forEach(b => b.classList.toggle('om-lit', b === btn));
+    filter.addEventListener('input', () => {
+      const q = filter.value.trim().toLowerCase();
+      el.querySelectorAll('.om-item').forEach(b =>
+        b.classList.toggle('hidden', !items[parseInt(b.dataset.i)].label.toLowerCase().includes(q)));
+      light(shown()[0]);
+    });
+    filter.addEventListener('keydown', ev => {
+      ev.stopPropagation();
+      const list = shown();
+      const at = list.findIndex(b => b.classList.contains('om-lit'));
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        light(list[Math.max(0, Math.min(list.length - 1, at + (ev.key === 'ArrowDown' ? 1 : -1)))]);
+      } else if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const it = list[at] && items[parseInt(list[at].dataset.i)];
+        closeObjectMenu();
+        if (it && it.run) it.run();
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        closeObjectMenu();
+      }
+    });
+    light(shown()[0]);
+    filter.focus();
+  }
   // Any tap elsewhere dismisses, like every menu. Deferred by a frame or the
   // very click that opened it would close it again.
   setTimeout(() => document.addEventListener('pointerdown', function once(ev) {
@@ -10797,14 +10837,16 @@ function mapSections(items, inboxItems) {
   const narrowed = mapLens().key !== 'all' || !!mapFilterExtras();
   const byArea = {};
   items.forEach(i => { (byArea[i.area_id || 0] = byArea[i.area_id || 0] || []).push(i); });
+  // In the order Quentin set (storage.get_areas; 2026-10-14), not by name.
   const areas = (state.areas || []).filter(a => a.type === 'standard'
-      && (byArea[a.id] || (!narrowed && a.active)))
-    .sort((x, y) => x.name.localeCompare(y.name));
-  const secs = areas.map(a => ({ key: `a${a.id}`, name: a.name, obj: `area:${a.id}`,
+      && (byArea[a.id] || (!narrowed && a.active)));
+  const secs = areas.map(a => ({ key: `a${a.id}`, name: a.name, obj: `area:${a.id}`, areaId: a.id,
                                  paused: !a.active, items: byArea[a.id] || [] }));
   const known = new Set(areas.map(a => a.id));
   const loose = items.filter(i => !known.has(i.area_id));
-  if (loose.length) secs.push({ key: 'none', name: 'No area', items: loose });
+  // What is filed under no area reads "General" (2026-10-14, Quentin's
+  // instruction). A LABEL, not an area: nothing is seeded, nothing undeletable.
+  if (loose.length) secs.push({ key: 'none', name: 'General', items: loose });
   if (inboxItems.length) secs.push({ key: 'in', name: 'In', sub: 'not yet clarified',
                                     inbox: true, items: inboxItems });
   return secs;
@@ -11022,8 +11064,13 @@ function mapAreaForest(areaItems, wantSomeday, todayStr) {
     else roots.push(item);
   });
   const parked = r => r.status === 'on_hold';
+  // PROJECTS FIRST (2026-10-14, Quentin's instruction): a project and the
+  // actions inside it stand above the actions filed under no project, each
+  // group in MAP's own order.
+  const isProj = r => r.kind === 'project';
+  const sorted = mapSortSiblings(roots.filter(r => (wantSomeday ? parked(r) : !parked(r))), todayStr);
   return {
-    roots: mapSortSiblings(roots.filter(r => (wantSomeday ? parked(r) : !parked(r))), todayStr),
+    roots: [...sorted.filter(isProj), ...sorted.filter(r => !isProj(r))],
     kids: item => mapSortSiblings(kidsOf[item.id] || [], todayStr),
   };
 }
@@ -11253,8 +11300,10 @@ function renderMap() {
       const nLater = sec.items.filter(i => i.status === 'on_hold').length;
       rows = live + (later ? `<div class="map-someday-head">Someday / maybe<span class="count">${nLater}</span></div>${later}` : '');
     }
-    return `<section class="mp-sec" data-sec="${sec.key}">
-      <h2 class="mp-sec-title"${sec.obj ? ` data-obj="${sec.obj}"` : ''}>${escHtml(sec.name)}${
+    return `<section class="mp-sec" data-sec="${sec.key}"${
+        sec.inbox ? '' : ` data-drop-area="${sec.areaId || ''}"`}>
+      <h2 class="mp-sec-title"${sec.obj ? ` data-obj="${sec.obj}"` : ''}><span class="mp-sec-name"${
+        sec.areaId ? ' title="Double-click to rename"' : ''}>${escHtml(sec.name)}</span>${
         sec.paused ? '<span class="mp-sub">paused</span>' : ''}${
         sec.sub ? `<span class="mp-sub">${escHtml(sec.sub)}</span>` : ''}</h2>
       ${sec.inbox ? rows : `${rows}${addZoneHtml(`Add to ${sec.name}`, '',
@@ -11270,7 +11319,8 @@ function renderMap() {
   }</div>`;
   body.innerHTML = `<div class="mp-page">
     <nav class="mp-index">${secs.map(sec => `<button class="mp-idx" data-go="${sec.key}"${
-      sec.obj ? ` data-obj="${sec.obj}"` : ''}>${escHtml(sec.name)}</button>`).join('')}
+      sec.obj ? ` data-obj="${sec.obj}"` : ''}${sec.areaId ? ` data-area="${sec.areaId}" title="Drag to reorder"` : ''}${
+      sec.inbox ? '' : ` data-drop-area="${sec.areaId || ''}"`}>${escHtml(sec.name)}</button>`).join('')}
       <button class="mp-add-area mp-idx-add">+ Add area</button></nav>
     <div class="mp-main">${secs.map(secHtml).join('') || empty}
       <button class="mp-add-area mp-add-foot">+ Add area</button></div>
@@ -11341,9 +11391,159 @@ function renderMap() {
     });
   });
 
+  // DROPPED ON AN AREA, IT MOVES THERE (2026-10-14, Quentin's instruction):
+  // the area's section (anywhere off a row, which files UNDER that row) or its
+  // name in the index. A project takes everything inside it along.
+  body.querySelectorAll('[data-drop-area]').forEach(target => {
+    const areaId = target.dataset.dropArea ? parseInt(target.dataset.dropArea) : null;
+    const over = e => dragId && !e.target.closest('.map-row') && byId[dragId]
+      && (byId[dragId].area_id || null) !== areaId;
+    target.addEventListener('dragover', e => {
+      if (!over(e)) { target.classList.remove('s2-drop-target'); return; }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      target.classList.add('s2-drop-target');
+    });
+    target.addEventListener('dragleave', e => {
+      if (!target.contains(e.relatedTarget)) target.classList.remove('s2-drop-target');
+    });
+    target.addEventListener('drop', e => {
+      if (!over(e)) return;
+      e.preventDefault();
+      target.classList.remove('s2-drop-target');
+      const item = byId[dragId];
+      dragId = null;
+      mapMoveToArea(item, areaId);
+    });
+  });
+
+  // An area's name renames on a double-click, as a row's does.
+  body.querySelectorAll('.mp-sec-title[data-obj^="area:"] .mp-sec-name').forEach(span => {
+    span.addEventListener('dblclick', () => mapRenameArea(parseInt(span.parentElement.dataset.obj.slice(5))));
+  });
+  wireAreaOrderDrag(body);
+
   dragEdgeScroll(body);
   mapSelSync();
 }
+
+// MOVING A ROW TO AN AREA (2026-10-14): out of any project, into the area —
+// or into none ("General"). The server carries a project's subtree along.
+async function mapMoveToArea(item, areaId) {
+  if (!item) return;
+  const name = areaId ? ((state.areas || []).find(a => a.id === areaId) || {}).name : 'General';
+  undoablePatch(item, ['project_id', 'area_id', 'domain_id'], `moved "${item.content}" to ${name}`);
+  await patchInboxItem(item.id, areaId ? { area_id: areaId, project_id: null }
+                                       : { area_id: null, domain_id: null, project_id: null });
+  await mapAfterWrite();
+  mapRevealSel(item.id);
+}
+
+// Alt on a row (or the menu's "Move to area…"): the areas as a menu you type
+// into — what you type narrows it, Enter moves the row.
+function mapAreaPicker(item) {
+  const row = document.querySelector(`#map-body .map-row[data-id="${item.id}"]`);
+  const r = row ? row.getBoundingClientRect() : { left: 40, bottom: 80 };
+  const here = item.area_id || null;
+  const choices = [{ id: null, name: 'General' },
+    ...(state.areas || []).filter(a => a.type === 'standard' && a.active)]
+    .filter(a => a.id !== here)
+    .map(a => ({ label: a.name, run: () => mapMoveToArea(item, a.id) }));
+  openObjectMenu(r.left + 24, r.bottom, null, null, choices, { filter: 'Move to area…' });
+}
+
+// AN AREA IS RENAMED IN PLACE (2026-10-14, Quentin's instruction), here and
+// as the Name field of its sheet. Undoable: the inverse puts the old name back.
+function mapRenameArea(id) {
+  const area = (state.areas || []).find(a => a.id === id);
+  const span = document.querySelector(`#map-body .mp-sec-title[data-obj="area:${id}"] .mp-sec-name`);
+  if (!area || !span) return;
+  span.scrollIntoView({ block: 'nearest' });
+  inlineEdit(span, {
+    value: area.name,
+    onCancel: refreshMap,
+    onCommit: async name => {
+      const old = area.name;
+      const res = await apiSend(`/api/areas/${id}`, 'PATCH', { name }).catch(() => null);
+      if (!res || !res.ok) { toast('Could not rename that area'); await refreshMap(); return; }
+      pushUndo(`renamed area "${old}"`, async () => {
+        await apiSend(`/api/areas/${id}`, 'PATCH', { name: old });
+        await refreshAfterUndo();
+      });
+      await refreshVisible();
+    },
+  });
+}
+
+// THE AREAS' ORDER (2026-10-14, Quentin's instruction): drag a name in the
+// index up or down — the shared pointer drag, so a finger holds then drags —
+// or Move up / Move down on the area's menu. One write, the whole order.
+async function setAreaOrder(ids, label) {
+  const before = (state.areas || []).map(a => a.id);
+  const res = await apiSend('/api/areas/order', 'PUT', { ids }).catch(() => null);
+  if (!res || !res.ok) { toast('Could not reorder the areas'); return; }
+  pushUndo(label, async () => {
+    await apiSend('/api/areas/order', 'PUT', { ids: before });
+    await refreshAfterUndo();
+  });
+  await refreshVisible();
+}
+
+function areaOrderMoved(id, to) {
+  const ids = (state.areas || []).filter(a => a.type === 'standard').map(a => a.id);
+  const from = ids.indexOf(id);
+  if (from < 0) return null;
+  ids.splice(from, 1);
+  ids.splice(Math.max(0, Math.min(ids.length, to)), 0, id);
+  return ids;
+}
+
+function wireAreaOrderDrag(body) {
+  const btns = [...body.querySelectorAll('.mp-idx[data-area]')];
+  btns.forEach(btn => onPointerDrag(btn, {
+    keepClick: true,
+    start: e => {
+      if (e.button) return null;
+      const mids = btns.map(b => { const r = b.getBoundingClientRect(); return r.top + r.height / 2; });
+      const at = btns.indexOf(btn);
+      let to = at;
+      return {
+        move: y => {
+          to = mids.filter(m => m < y).length;
+          btns.forEach((b, n) => b.classList.toggle('mp-idx-before', n === to && n !== at && n !== at + 1));
+          btn.classList.add('mp-idx-dragging');
+        },
+        end: () => {
+          btns.forEach(b => b.classList.remove('mp-idx-before', 'mp-idx-dragging'));
+          const drawn = btns.map(b => parseInt(b.dataset.area));
+          const moved = drawn.slice();
+          moved.splice(at, 1);
+          moved.splice(to > at ? to - 1 : to, 0, drawn[at]);
+          if (moved.join() === drawn.join()) return;
+          // A narrowed page draws only some areas: they swap among the slots
+          // they hold in the whole order, and the rest stay where they were.
+          const all = (state.areas || []).filter(a => a.type === 'standard').map(a => a.id);
+          let k = 0;
+          setAreaOrder(all.map(id => (drawn.includes(id) ? moved[k++] : id)), 'reordered the areas');
+        },
+      };
+    },
+  }));
+}
+
+// The area's own menu on Projects: rename and its place in the order — the
+// finger's way to both (a double-click and a drag are a mouse's).
+registerObjectVerbs('mp-area', (kind, id, el) => {
+  if (kind !== 'area' || !el || !el.closest('#map-body')) return [];
+  const aid = parseInt(id);
+  const ids = (state.areas || []).filter(a => a.type === 'standard').map(a => a.id);
+  const at = ids.indexOf(aid);
+  return [
+    { label: 'Rename', run: () => mapRenameArea(aid) },
+    at > 0 && { label: 'Move up', run: () => setAreaOrder(areaOrderMoved(aid, at - 1), 'moved an area up') },
+    at >= 0 && at < ids.length - 1 && { label: 'Move down', run: () => setAreaOrder(areaOrderMoved(aid, at + 1), 'moved an area down') },
+  ].filter(Boolean);
+});
 
 // ── MAP BY KEYBOARD (2026-09-23, Quentin's instruction) ───────
 //
@@ -11540,6 +11740,22 @@ function mapPromptLocation(item) {
   });
 }
 
+// ALT ALONE opens the area picker on the selected row (2026-10-14, Quentin's
+// instruction). On the KEYUP, and only if no other key went down while it was
+// held — so Alt+Tab and every Alt chord stay what they were.
+let mapAltAlone = false;
+document.addEventListener('keydown', e => { mapAltAlone = e.key === 'Alt' && !e.repeat ? true : e.key === 'Alt' && mapAltAlone; }, true);
+document.addEventListener('keyup', e => {
+  if (e.key !== 'Alt' || !mapAltAlone) return;
+  mapAltAlone = false;
+  if (!mapKeysLive() || typingIn(e.target)) return;
+  const item = mapSelItem();
+  const verb = item && mapRowVerbs(item).find(v => v.key === 'Alt');
+  if (!verb) return;
+  e.preventDefault();   // the window's own menu bar would take the focus
+  verb.run();
+});
+
 document.addEventListener('keydown', e => {
   if (!mapKeysLive()) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -11608,6 +11824,8 @@ function mapRowVerbs(item) {
       if (text) text.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     } },
     filed && { key: 'Shift+ArrowRight', hint: '⇧→', label: 'Add an action inside', run: () => mapOpenKidZone(item.id) },
+    // Alt ALONE (pressed and let go with nothing else) — see the keyup below.
+    filed && { key: 'Alt', hint: 'Alt', label: 'Move to area…', run: () => mapAreaPicker(item) },
     // SHIFT+P MAKES THE ROW A PROJECT, and its add space opens for the first
     // action. On an empty project it goes back; one that holds actions stays.
     filed && { key: 'Shift+p', hint: '⇧P', label: project ? 'Back to an action' : 'Make it a project', run: () => {

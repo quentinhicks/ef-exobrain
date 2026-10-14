@@ -652,6 +652,14 @@ def post_area():
     return jsonify(project), 201
 
 
+@app.route('/api/areas/order', methods=['PUT'])
+def put_area_order():
+    ids = (request.get_json() or {}).get('ids')
+    if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+        return jsonify({'error': 'ids must be a list of area ids'}), 400
+    return jsonify(storage.set_area_order(ids))
+
+
 @app.route('/api/areas/<int:id>', methods=['PATCH'])
 def patch_area(id):
     data = request.get_json()
@@ -664,6 +672,11 @@ def patch_area(id):
         project = storage.set_area_domain(id, data['domain_id'])
     elif 'qr_node_id' in data:
         project = storage.set_area_qr_node(id, data['qr_node_id'])
+    elif 'name' in data:
+        name = (data['name'] or '').strip()
+        if not name:
+            return jsonify({'error': 'An area needs a name.'}), 400
+        project = storage.rename_area(id, name)
     else:
         project = storage.set_project_active(id, data['active'])
     return jsonify(project)

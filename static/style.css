@@ -2721,7 +2721,21 @@ body.calendar-minimized #review-modal {
 }
 
 .om-item:hover,
-.om-item:focus-visible { background: var(--surface-2); }
+.om-item:focus-visible,
+.om-item.om-lit { background: var(--surface-2); }
+/* A menu chosen from by name (openObjectMenu's `filter`). */
+.om-filter {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 4px;
+  padding: 7px 10px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 7px;
+  background: var(--surface-low);
+  color: var(--text-primary);
+  font: inherit;
+}
 /* The key that does the same thing, where the verb has one. */
 .om-key { float: right; margin-left: 18px; font: 11px var(--font-mono); color: var(--text-secondary); }
 /* A long menu scrolls inside the screen rather than running off it. */
@@ -6327,6 +6341,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   .mp-idx:hover { background: var(--surface-2); color: var(--text-primary); }
   .mp-idx.on { color: var(--text-primary); font-weight: 600; }
   .mp-idx-add { margin: 10px -8px 0 0; font-size: 13.5px; }
+  /* Reordering the areas (wireAreaOrderDrag): the one dragged, and a line
+     where it will land. */
+  .mp-idx-dragging { background: var(--surface-2); color: var(--text-primary); }
+  .mp-idx-before { box-shadow: inset 0 2px 0 var(--accent); }
   .mp-main {
     grid-column: 2;
     min-height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h));
