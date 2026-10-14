@@ -11101,7 +11101,7 @@ function wireMapRows(body, byId, afterFn) {
   body.querySelectorAll('.map-text').forEach(span => {
     onTapOrDouble(span, () => {
       const item = byId[parseInt(span.closest('.map-row').dataset.id)];
-      if (item) openClarifyForItem(item, after);
+      if (item) openClarifyForItem(item, after, mapClarifyFlow(item));
     }, () => {
       const row = span.closest('.map-row');
       const id = parseInt(row.dataset.id);
@@ -11125,9 +11125,15 @@ function wireMapRows(body, byId, afterFn) {
   body.querySelectorAll('.map-open').forEach(btn => {
     btn.addEventListener('click', () => {
       const item = byId[parseInt(btn.dataset.id)];
-      if (item) openClarifyForItem(item, after);
+      if (item) openClarifyForItem(item, after, mapClarifyFlow(item));
     });
   });
+}
+
+// A FILED row opened from Projects opens on the Project flow (2026-10-14); a
+// capture under the Inbox lens is still undecided, so it opens as one.
+function mapClarifyFlow(item) {
+  return item.status ? 'project' : null;
 }
 
 // MAP holds one piece of view state now — the search query (mapView.q). Every
@@ -11824,7 +11830,7 @@ function mapRowVerbs(item) {
     label: `${own.includes(tag) ? 'Clear estimate' : 'Estimate'} ${tag}`,
     run: () => mapToggleIn(item, tag, x => EST_TAGS.includes(x) || /^\d+[mh]$/.test(x), 'estimate') });
   return [
-    { key: 'Enter', hint: '⏎', label: 'Clarify…', run: () => openClarifyForItem(item, mapAfterWrite) },
+    { key: 'Enter', hint: '⏎', label: 'Clarify…', run: () => openClarifyForItem(item, mapAfterWrite, mapClarifyFlow(item)) },
     // The row's own rename (its double-click), not a second editor.
     { key: 'r', label: 'Rename', run: () => {
       const text = document.querySelector('#map-body .map-row-sel .map-text');
@@ -14333,7 +14339,10 @@ async function openClarifyNewAction(project, after) {
 }
 
 
-async function openClarifyForItem(item, after) {
+// `flow` 'project' opens it on the Project flow whatever it is — every row
+// opened FROM Projects (2026-10-14, Quentin's report: an action there opened
+// on To-do).
+async function openClarifyForItem(item, after, flow) {
   await clarifyLoadAux();
   clarifyView.queue = [item];
   clarifyView.total = 1;
@@ -14348,7 +14357,9 @@ async function openClarifyForItem(item, after) {
   // filing it there took it off Projects. Set AFTER the reset, so no carried
   // pick is laid over the place the item already has; no pick is started, so
   // the page's rows still open rather than being picked.
-  if (item.on_projects && clarifyFlowMode()) clarifyView.flow = 'project';
+  if (clarifyFlowMode() && (item.on_projects || item.kind === 'project' || flow === 'project')) {
+    clarifyView.flow = 'project';
+  }
   renderClarify();
 }
 
@@ -14874,6 +14885,14 @@ async function fileClarify(bucket, refTarget) {
   bucket = clarifyActiveNow(bucket, startNow);
   const item = clarifyView.queue[0];
   if (!item) { closeClarify(); return; }
+  // A PROJECT's Trash takes a second press, here as on Projects: deleting one
+  // moves its actions up a level, more than one press should do on its own.
+  if (bucket === 'trash' && item.kind === 'project' && clarifyView.trashArm !== item.id) {
+    clarifyView.trashArm = item.id;
+    toast('Trash again to delete the project — its actions move up a level');
+    return;
+  }
+  clarifyView.trashArm = null;
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
   if (bucket === 'reference' && !refTarget) return;
   // Read before clarifyResetItem clears it — the post-file composer hook
@@ -14920,7 +14939,12 @@ async function fileClarify(bucket, refTarget) {
                     deadline: clarifyView.due || null,
                     tags: [...clarifyView.tags].join(' ') });
     } else {
-      const body = { content, status: 'active', ...filing,
+      // SOMEDAY STAYS SOMEDAY WHERE IT IS FILED (2026-10-14, Quentin's
+      // instruction): the Project flow on a parked row moves it to that area
+      // or project, still in someday / maybe. Every other flow is a decision
+      // to act, and makes it active.
+      const keepParked = clarifyView.flow === 'project' && item.status === 'on_hold';
+      const body = { content, status: keepParked ? 'on_hold' : 'active', ...filing,
                      tags: [...clarifyView.tags].join(' '),
                      notes: clarifyView.notes,
                      deadline: clarifyView.due || null,
@@ -15062,9 +15086,12 @@ const CLARIFY_FLOW_HINT = {
   list: 'Click a list or document on the Lists page to add it there.',
 };
 
+// ONE CLARIFY (2026-10-14, Quentin's instruction): a PROJECT opens in the
+// same five flows, on Project — its own outcome sheet is gone. Only the two
+// templates (a recurring project, an occasion's action) keep sheets of their
+// own, having no today for a flow to file into.
 function clarifyFlowMode() {
-  return !clarifyView.forRecurring && !clarifyView.forOccasion
-    && !(clarifyView.project && !clarifyView.external);
+  return !clarifyView.forRecurring && !clarifyView.forOccasion;
 }
 
 // The Project flow sends an action to Projects and off the to-do list; every
@@ -15410,9 +15437,9 @@ function renderClarify() {
   // contexts, no parent project, nothing to drop into a day — the decision is
   // just its state, its deadline and where it belongs.
   const rec = clarifyView.forRecurring;
-  const isProj = clarifyView.project && !clarifyView.external && (!!item || !!rec);
-  const tpl = !!clarifyView.forOccasion;
   const flowMode = clarifyFlowMode();
+  const isProj = clarifyView.project && !clarifyView.external && (!!item || !!rec) && !flowMode;
+  const tpl = !!clarifyView.forOccasion;
   // "Do now" means two different things and only one of them was buildable:
   // FINISH it (the two-minute rule — filing deletes it) or START it. Starting
   // it is the ACTIVE exit plus a started_at stamp — no new column, no new
