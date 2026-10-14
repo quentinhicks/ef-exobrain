@@ -3353,7 +3353,40 @@ async function snapshotItem(id) {
 }
 
 function patchInboxItem(id, body) {
+  clarifyHears(id, body);
   return apiSend(`/api/inbox/${id}`, 'PATCH', body);
+}
+
+// A write elsewhere to the row clarify is showing (a rename on Projects
+// beside the docked sheet): each field the sheet has NOT changed follows the
+// row, so the sheet shows what is true and its baseline moves with it. A
+// field typed into here is the sheet's decision and stays.
+function clarifyHears(id, body) {
+  const item = clarifyView.open && clarifyView.queue[0];
+  const base = clarifyView.base;
+  if (!item || item.id !== id || !base || clarifyView.external) return;
+  let heard = false;
+  if ('content' in body && body.content) {
+    if (clarifyView.action.trim() === base.content) clarifyView.action = body.content;
+    base.content = item.content = body.content;
+    heard = true;
+  }
+  if ('notes' in body) {
+    if (clarifyView.notes === base.notes) clarifyView.notes = body.notes || '';
+    base.notes = item.notes = body.notes || '';
+    heard = true;
+  }
+  if ('deadline' in body) {
+    if ((clarifyView.due || '') === base.due) clarifyView.due = body.deadline || '';
+    base.due = item.deadline = body.deadline || '';
+    heard = true;
+  }
+  if ('tags' in body) {
+    if ([...clarifyView.tags].join(' ') === base.tags) clarifyView.tags = new Set(parseTags(body.tags || ''));
+    base.tags = item.tags = body.tags || '';
+    heard = true;
+  }
+  if (heard) renderClarify();
 }
 
 // ── A DRAG IS A BUTTON, AND EVERY BUTTON SHIPS ITS INVERSE (2026-08-24,
@@ -11154,7 +11187,7 @@ function wireMapRows(body, byId, afterFn) {
         onCancel: after,
         onCommit: async content => {
           undoablePatch(item, ['content'], `renamed "${item.content}"`);
-          await apiSend(`/api/inbox/${id}`, 'PATCH', { content });
+          await patchInboxItem(id, { content });
           await after();
         },
       });
@@ -14704,6 +14737,14 @@ function clarifyResetItem() {
   clarifyView.chase = '';
   clarifyView.notes = item ? (item.notes || '') : '';
   clarifyView.due = item ? (item.deadline || '') : '';
+  // WHAT THE SHEET LOADED (2026-10-14, Quentin's report: renamed, then moved
+  // in clarify, it went back to its old name). Filing writes the row's own
+  // fields only where the SHEET changed them (clarifyOwnFields): a copy read
+  // at open time is not a decision, and writing it back reverted whatever
+  // another surface wrote in between — a rename on Projects beside the
+  // docked sheet, a note, a due date.
+  clarifyView.base = item ? { content: item.content, tags: ownTags(item).join(' '),
+                              notes: item.notes || '', due: item.deadline || '' } : null;
   // An item already filed keeps its filing. Only a fresh capture — which has
   // none — is offered one: the domain you last filed into, else the block in
   // force's. Offered ON the chips, so nothing is filed that the sheet did not
@@ -14848,7 +14889,7 @@ function closeClarify() {
   // the notes would be the one field that leaked out of a declined edit.
   const item = clarifyView.queue[0];
   if (item && !clarifyView.external && !clarifyView.forOccasion && !clarifyView.forRecurring
-      && clarifyView.notes !== (item.notes || '')) {
+      && clarifyView.base && clarifyView.notes !== clarifyView.base.notes) {
     undoablePatch(item, ['notes'], `edited notes on "${item.content}"`);
     patchInboxItem(item.id, { notes: clarifyView.notes });
     item.notes = clarifyView.notes;
@@ -14927,6 +14968,20 @@ async function handOffToDevice(dev) {
   renderClarify();
 }
 
+// The row's own fields the sheet CHANGED from what it loaded — the only ones
+// a filing writes. An empty action field is no change: the name stays.
+function clarifyOwnFields() {
+  const base = clarifyView.base || {};
+  const own = {};
+  const typed = clarifyView.action.trim();
+  if (typed && typed !== base.content) own.content = typed;
+  const tags = [...clarifyView.tags].join(' ');
+  if (tags !== base.tags) own.tags = tags;
+  if (clarifyView.notes !== base.notes) own.notes = clarifyView.notes;
+  if ((clarifyView.due || '') !== base.due) own.deadline = clarifyView.due || null;
+  return own;
+}
+
 async function fileClarify(bucket, refTarget) {
   if (clarifyView.filing) return;          // in flight — ignore the double click
   // A project's "Active" IS the defer exit with no start date — the same
@@ -14967,7 +15022,8 @@ async function fileClarify(bucket, refTarget) {
     // recoverable: snapshot the item exactly as it sat in "in".
     const snap = await snapshotItem(item.id);
     const patch = body => apiSend(`/api/inbox/${item.id}`, 'PATCH', body);
-    const content = clarifyView.action.trim() || item.content;
+    const own = clarifyOwnFields();
+    const content = own.content || (snap && snap.row ? snap.row.content : item.content);
     // A chosen project overrides the filing server-side, and MAP can re-file
     // later. Filing is what teaches the memory — the filing actually written,
     // not the one that happened to be showing.
@@ -14983,31 +15039,24 @@ async function fileClarify(bucket, refTarget) {
     } else if (bucket === 'reference') {
       // The other non-actionable keep: the text moves to a reference list and
       // the item leaves the action inventory entirely.
-      refUndo = await refFileCapture(refTarget, content, clarifyView.notes);
+      refUndo = await refFileCapture(refTarget, content,
+        'notes' in own ? own.notes : ((snap && snap.row && snap.row.notes) || ''));
       await apiSend(`/api/inbox/${item.id}`, 'DELETE');
     } else if (bucket === 'someday') {
       // No due input on this exit, but the prefilled value rides along so
       // parking a deadlined item never silently drops its deadline.
-      await patch({ content, status: 'on_hold', ...filing,
-                    notes: clarifyView.notes,
-                    deadline: clarifyView.due || null });
+      await patch({ ...own, status: 'on_hold', ...filing });
     } else if (bucket === 'delegate') {
-      await patch({ content, status: 'waiting', ...filing,
+      await patch({ ...own, status: 'waiting', ...filing,
                     waiting_on: clarifyView.who.trim(),
-                    chase_on: clarifyView.chase || null,
-                    notes: clarifyView.notes,
-                    deadline: clarifyView.due || null,
-                    tags: [...clarifyView.tags].join(' ') });
+                    chase_on: clarifyView.chase || null });
     } else {
       // SOMEDAY STAYS SOMEDAY WHERE IT IS FILED (2026-10-14, Quentin's
       // instruction): the Project flow on a parked row moves it to that area
       // or project, still in someday / maybe. Every other flow is a decision
       // to act, and makes it active.
       const keepParked = clarifyView.flow === 'project' && item.status === 'on_hold';
-      const body = { content, status: keepParked ? 'on_hold' : 'active', ...filing,
-                     tags: [...clarifyView.tags].join(' '),
-                     notes: clarifyView.notes,
-                     deadline: clarifyView.due || null,
+      const body = { ...own, status: keepParked ? 'on_hold' : 'active', ...filing,
                      defer_until: clarifyView.showDate || null };
       // ◐ is a glance state, not a predicate: nothing gates on started_at, it
       // just floats the row to the top of the pool and accents it.
@@ -15412,7 +15461,8 @@ async function fileClarifyExternal(bucket, refTarget) {
   try {
     if (bucket === 'reference') {
       // Straight to the list — reference never touches the action inventory.
-      const refUndo = await refFileCapture(refTarget, content, clarifyView.notes);
+      const refUndo = await refFileCapture(refTarget, content,
+        "notes" in own ? own.notes : ((snap && snap.row && snap.row.notes) || ""));
       pushUndo(`referenced "${content}"`, async () => {
         await refUndo();
         await refreshAfterUndo();
