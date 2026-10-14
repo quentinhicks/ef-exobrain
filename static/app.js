@@ -10512,12 +10512,19 @@ let mapWired = false;
 // "Next actions" on MAP meaning the same thing it means in the pool.
 // Deliberately NOT the pool's full availability rule: MAP shows blocked
 // (`after_id`) actions too, because seeing the chain is the point of a map.
+// SOMEDAY / MAYBE ON PROJECTS is what is parked AND what is deferred — a
+// show-on date still to come puts a row there by itself (2026-10-14, Quentin's
+// instruction).
+function mapParked(i, today) {
+  return i.status === 'on_hold' || (!!i.defer_until && i.defer_until > today);
+}
+
 // 2026-10-14, Quentin's instruction: "Waiting & deferred" is gone, and the
 // inbox is a lens of its own rather than a pile under All.
 const MAP_LENSES = [
   { key: 'all', name: 'All', keep: () => true },
   { key: 'projects', name: 'Projects', keep: i => i.kind === 'project' },
-  { key: 'someday', name: 'Someday / maybe', keep: i => i.status === 'on_hold' },
+  { key: 'someday', name: 'Someday / maybe', keep: (i, today) => mapParked(i, today) },
   { key: 'inbox', name: 'Inbox', keep: () => false },
 ];
 
@@ -10549,9 +10556,9 @@ function mapFilterExtras() {
 // project stays — its place is here whatever its actions are doing.
 function mapVisibleItems(items, today) {
   const lens = mapLens();
-  return items.filter(i =>
+  return items.filter(i => i.sent_from || (
     !(mapView.todo.has(i.id) && onTodoList(i))
-    && !(i.kind !== 'project' && mapView.placed.has(i.id))
+    && !(i.kind !== 'project' && mapView.placed.has(i.id)))
     && lens.keep(i, today)
     && [...mapView.tags].every(t => itemTags(i).includes(t)));
 }
@@ -11192,7 +11199,7 @@ function mapAreaForest(areaItems, wantSomeday, todayStr) {
     if (pid) (kidsOf[pid] = kidsOf[pid] || []).push(item);
     else roots.push(item);
   });
-  const parked = r => r.status === 'on_hold';
+  const parked = r => mapParked(r, todayStr);
   // PROJECTS FIRST (2026-10-14, Quentin's instruction): a project and the
   // actions inside it stand above the actions filed under no project, each
   // group in MAP's own order.
@@ -11307,6 +11314,12 @@ function renderMap() {
     if (item.defer_until && item.defer_until > todayStr) parts.push(`→ ${escHtml(item.defer_until)}`);
     const prio = PRIORITY_TAGS.find(t => ownTags(item).includes(t));
     if (prio) parts.push(prio);
+    // SENT FROM HERE (2026-10-14, Quentin's instruction): to the To-do list
+    // or the Calendar by clarify opened on Projects — it stays, marked, until
+    // it is completed.
+    if (item.sent_from) {
+      parts.push(`<span class="mp-sent" title="Sent to the ${item.sent_from === 'T' ? 'To-do list' : 'Calendar'}">${item.sent_from}</span>`);
+    }
     if (item.pushed >= 3) {
       parts.push(`<span title="Not-today'd ${item.pushed} times — too big, not real, or being avoided">pushed ${item.pushed}x</span>`);
     }
@@ -11432,8 +11445,9 @@ function renderMap() {
     else {
       const live = areaTreeHtml(sec.items, false);
       const later = areaTreeHtml(sec.items, true);
-      const nLater = sec.items.filter(i => i.status === 'on_hold').length;
-      rows = live + (later ? `<div class="map-someday-head">Someday / maybe<span class="count">${nLater}</span></div>${later}` : '');
+      // Someday / maybe and everything DEFERRED stand below a bare rule —
+      // no heading (2026-10-14, Quentin's instruction).
+      rows = live + (later ? `<div class="map-someday-head"></div>${later}` : '');
     }
     return `<section class="mp-sec" data-sec="${sec.key}"${
         sec.inbox ? '' : ` data-drop-area="${sec.areaId || ''}"`}>
@@ -14439,6 +14453,7 @@ async function openClarify() {
     .sort((a, b) => (a.captured_at || '').localeCompare(b.captured_at || '') || a.id - b.id);
   clarifyView.total = clarifyView.queue.length;
   clarifyView.single = false;
+  clarifyView.fromProjects = false;
   // An empty "in" doesn't mean an empty head: the cycle still ends (or, here,
   // starts) with the stuff on sticky notes, in email, on paper.
   clarifyView.external = !clarifyView.queue.length;
@@ -14498,6 +14513,7 @@ async function openClarifyForItem(item, after, flow) {
   // filing it there took it off Projects. Set AFTER the reset, so no carried
   // pick is laid over the place the item already has; no pick is started, so
   // the page's rows still open rather than being picked.
+  clarifyView.fromProjects = flow === 'project';
   if (clarifyFlowMode() && (item.on_projects || item.kind === 'project' || flow === 'project')) {
     clarifyView.flow = 'project';
   }
@@ -14953,6 +14969,7 @@ function closeClarify() {
   clarifyView.single = false;
   clarifyView.external = false;
   clarifyView.forProject = null;
+  clarifyView.fromProjects = false;
   clarifyView.forOccasion = null;
   clarifyView.forRecurring = null;
   clarifyView.after = null;
@@ -15112,6 +15129,12 @@ async function fileClarify(bucket, refTarget) {
       if (clarifyView.projectId) body.project_id = clarifyView.projectId;
       else if (clarifyOnProjects()) body.project_id = null;
       body.on_projects = clarifyOnProjects();
+      // Sent from Projects to the To-do list or the Calendar: marked there.
+      // Back to Projects clears it; any other road leaves it as it was.
+      if (clarifyView.flow === 'project') body.sent_from = null;
+      else if (clarifyView.fromProjects && (clarifyView.flow === 'todo' || clarifyView.flow === 'calendar')) {
+        body.sent_from = clarifyView.flow === 'todo' ? 'T' : 'C';
+      }
       await patch(body);
       // The date that was actually WRITTEN teaches the next item — a value
       // left on screen and then cleared by the exit never learned anything.

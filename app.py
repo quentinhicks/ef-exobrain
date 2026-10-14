@@ -926,6 +926,8 @@ def patch_inbox(id):
         kwargs['on_projects'] = on_projects
     if 'entered_at' in data:
         kwargs['entered_at'] = data['entered_at']
+    if 'sent_from' in data:
+        kwargs['sent_from'] = data['sent_from']
     if data.get('kind') in ('item', 'project'):
         kwargs['kind'] = data['kind']
     item = storage.update_inbox_item(id, **kwargs)

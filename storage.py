@@ -727,6 +727,15 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE area ADD COLUMN position INTEGER')
         conn.commit()
+    # SENT FROM PROJECTS (2026-10-14, Quentin's instruction): 'T' or 'C' when
+    # clarify, opened from Projects, sent the row to the To-do list or the
+    # Calendar. Projects keeps showing it, marked, until it is completed; the
+    # Project flow clears it. Only sends from now on carry it.
+    try:
+        conn.execute('SELECT sent_from FROM inbox_item LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE inbox_item ADD COLUMN sent_from TEXT')
+        conn.commit()
     # Delegation (Allen: date everything you hand off): who has it and when to
     # chase. chase_on may stay blank — the date is optional by design.
     try:
@@ -3367,7 +3376,7 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
                       project_id=_UNSET, tags=_UNSET, waiting_on=_UNSET, chase_on=_UNSET,
                       notes=_UNSET, pushed=_UNSET, started_at=_UNSET, deadline=_UNSET,
                       after_id=_UNSET, domain_id=_UNSET, on_projects=_UNSET, kind=_UNSET,
-                      entered_at=_UNSET):
+                      entered_at=_UNSET, sent_from=_UNSET):
     # Projects nest, so filing must not close a loop: an item can't land under
     # itself or under anything in its own subtree. A cycle-making file is a
     # silent no-op (the client refuses it too; this is the backstop).
@@ -3431,6 +3440,8 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
         updates['deadline'] = deadline
     if on_projects is not _UNSET:
         updates['on_projects'] = 1 if on_projects else 0
+    if sent_from is not _UNSET:
+        updates['sent_from'] = sent_from if sent_from in ('T', 'C') else None
     # An item can be NAMED a project before it holds anything (2026-10-10).
     # Going back is only for an empty one: an item that holds others is a
     # project, which is the invariant the filing branch below keeps.
