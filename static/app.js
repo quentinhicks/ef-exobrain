@@ -2092,9 +2092,10 @@ async function wkTaskClick(e) {
   } else if (e.target.closest('[data-task-unchange]')) { calWeek.taskPop.changing = false; renderCalWeek(); }
   else if (e.target.closest('[data-task-change]')) {
     const t = calWeek.taskPop;
+    const to = e.target.closest('[data-task-change]').dataset.taskChange;
     calWeek.pop = null; calWeek.taskPop = null;
     renderCalWeek();
-    await wkChangeBlock(t, e.target.closest('[data-task-change]').dataset.taskChange);
+    if (await wkChangeBlock(t, to)) await wkOfferSwap(t, blockCatKey(t.name.replace(/ \(cont\.\)$/, '')), to);
   }
   else if (e.target.closest('[data-task-add]')) {
     const field = document.querySelector('.wk-task-add');
@@ -2171,20 +2172,22 @@ function wkChangeTargets(t) {
   return blockCategories().filter(c => c.key !== here && c.rows.length);
 }
 
-async function wkChangeBlock(t, catKey) {
+// `served` is the day's served blocks when the week has not cached it (a swap
+// reaches past the week on screen). Returns whether it changed.
+async function wkChangeBlock(t, catKey, served) {
   const cat = blockCategories().find(c => c.key === catKey);
-  if (!cat) return;
+  if (!cat) return false;
   const rep = cat.rows.find(r => r.active) || cat.rows[0];
   const fields = { label: rep.label, color: rep.color, area_id: rep.area_id || null,
                    domain_id: rep.domain_id || null, location_id: rep.location_id || null,
                    description: rep.description || '' };
   const [kind, id] = t.obj.split(':');
-  const day = calWeek.days[t.date] || {};
+  const day = served || calWeek.days[t.date] || {};
   if (kind === 'dayblock') {
     const prev = await apiGet(`/api/day-blocks/${id}`, null);
-    if (!prev || !prev.id) { toast('That block is gone'); return; }
+    if (!prev || !prev.id) { toast('That block is gone'); return false; }
     const res = await apiSend(`/api/day-blocks/${id}`, 'PATCH', fields);
-    if (!res.ok) { toast('Could not change that block'); return; }
+    if (!res.ok) { toast('Could not change that block'); return false; }
     const back = {};
     Object.keys(fields).forEach(k => { back[k] = prev[k] == null ? null : prev[k]; });
     pushUndo(`changed "${prev.label}" to "${rep.label}"`, async () => {
@@ -2194,10 +2197,10 @@ async function wkChangeBlock(t, catKey) {
   } else {
     const seg = (day.segments || []).find(s => String(s.block_id) === id && !s.day_block_id
       && Math.round(Math.max(0, s.start)) === Math.round(t.minute));
-    if (!seg) { toast('Could not find that block on this day'); return; }
+    if (!seg) { toast('Could not find that block on this day'); return false; }
     const was = (day.overrides || []).find(o => String(o.block_id) === id && o.date === t.date);
     const ov = await apiSend('/api/overrides', 'POST', { block_id: parseInt(id), date: t.date, cancelled: true });
-    if (!ov.ok) { toast('Could not change that block'); return; }
+    if (!ov.ok) { toast('Could not change that block'); return false; }
     const ovRow = await ov.json();
     const res = await apiSend('/api/day-blocks', 'POST', { date: t.date, start_min: Math.max(0, seg.start),
                                                           end_min: seg.end, ...fields });
@@ -2211,6 +2214,41 @@ async function wkChangeBlock(t, catKey) {
     if (!made) toast('Could not add the new block — the old one is cancelled for the day; undo puts it back');
   }
   await refreshCalWeek();
+  return true;
+}
+
+// A SWAP, NOT ONLY A CHANGE (2026-10-14, Quentin's instruction: "if I choose
+// to work on COS333 during a COS330 block, allow me an option where I can
+// select which block I would want to switch from COS333 to COS330 in the
+// future"). Once a day's block has changed from one category to another, the
+// next two weeks' blocks of the NEW category are offered by day and time, and
+// the one picked becomes the OLD category — the same local change, so the
+// week is never touched and each half has its own undo.
+const SWAP_DAYS = 14;
+async function wkOfferSwap(t, fromKey, toKey) {
+  const from = blockCategories().find(c => c.key === fromKey);
+  const to = blockCategories().find(c => c.key === toKey);
+  if (!from || !to) return;
+  const first = localDatePlusDays(t.date, 1);
+  const days = await apiGet(`/api/calendar/days?from=${first}&to=${localDatePlusDays(t.date, SWAP_DAYS)}`, null);
+  if (!days) return;
+  const offers = [];
+  Object.keys(days).sort().forEach(date => (days[date].segments || []).forEach(s => {
+    // A stretch's continuation past midnight is the same block — offered once.
+    if (s.cancelled || s.start < 0 || blockCatKey(s.label) !== toKey) return;
+    const day = new Date(date + 'T12:00:00');
+    offers.push({
+      label: `${weekdayOf(day).name.slice(0, 3)} ${day.getDate()} · ${hhmmToAmPm(clockHHMM(s.start))}–${hhmmToAmPm(clockHHMM(s.end))}`,
+      run: () => wkChangeBlock({ obj: s.day_block_id ? `dayblock:${s.day_block_id}` : `block:${s.block_id}`,
+                                 date, minute: s.start, name: s.label }, fromKey, days[date]),
+    });
+  }));
+  if (!offers.length) { toast(`No ${to.label} block in the next ${SWAP_DAYS} days to swap back`); return; }
+  openObjectMenu(t.x || 80, t.y || 80, null, null, [
+    { info: true, label: `Swap back — which later ${to.label} block becomes ${from.label}?` },
+    ...offers,
+    { label: 'No swap', run: () => {} },
+  ]);
 }
 
 async function wkTaskDone(id) {
