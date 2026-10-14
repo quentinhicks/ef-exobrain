@@ -2053,12 +2053,8 @@ function wkTaskPopHtml() {
   t.focus = !!(a && a.matches && a.matches('.wk-task-add'));
   const day = new Date(t.date + 'T12:00:00');
   const tasks = wkTasksAt(t.date, t.minute, t.evKey);
-  t.verbs = t.changing ? [] : wkCardVerbs(t);
-  const verbs = t.changing
-    ? `<div class="wk-card-verbs"><div class="om-info">Change this day's block to</div>${wkChangeTargets(t).map(c =>
-        `<button class="om-item wk-change" data-task-change="${escHtml(c.key)}"><span class="wk-change-sw" style="background:${c.color}"></span>${escHtml(c.label)}</button>`).join('')
-        || '<div class="om-info">No other blocks yet</div>'}<button class="om-item" data-task-unchange>‹ Back</button></div>`
-    : `<div class="wk-card-verbs">${t.verbs.map((v, i) => `<button class="om-item${v.danger ? ' om-danger' : ''}" data-task-verb="${i}">${escHtml(v.label)}</button>`).join('')}</div>`;
+  t.verbs = wkCardVerbs(t);
+  const verbs = `<div class="wk-card-verbs">${t.verbs.map((v, i) => `<button class="om-item${v.danger ? ' om-danger' : ''}" data-task-verb="${i}">${escHtml(v.label)}</button>`).join('')}</div>`;
   return `<div class="wk-pop wk-task-pop" data-x="${t.x}" data-y="${t.y}" style="width:${t.w || 260}px">
     <div class="wk-pop-head"><span>${escHtml(t.name)}</span>
       <button class="wk-icon" data-task-close title="Close">${WK_SVG.close}</button></div>
@@ -2084,18 +2080,16 @@ async function wkTaskClick(e) {
     const t = calWeek.taskPop;
     const v = t.verbs[parseInt(e.target.closest('[data-task-verb]').dataset.taskVerb)];
     if (!v) return true;
-    if (v.change) { t.changing = true; renderCalWeek(); return true; }
     calWeek.pop = null; calWeek.taskPop = null;
+    if (v.change) {
+      renderCalWeek();
+      const el = document.querySelector(`#cal-week .wk-block[data-obj="${CSS.escape(t.obj)}"][data-date="${t.date}"][data-occ-min="${t.minute}"]`);
+      if (el) startCalSwap(t, el);
+      return true;
+    }
     renderCalWeek();
     if (v.edit) openObjectSheet(...t.obj.split(':'));
     else if (v.run) await v.run();
-  } else if (e.target.closest('[data-task-unchange]')) { calWeek.taskPop.changing = false; renderCalWeek(); }
-  else if (e.target.closest('[data-task-change]')) {
-    const t = calWeek.taskPop;
-    const to = e.target.closest('[data-task-change]').dataset.taskChange;
-    calWeek.pop = null; calWeek.taskPop = null;
-    renderCalWeek();
-    if (await wkChangeBlock(t, to)) await wkOfferSwap(t, blockCatKey(t.name.replace(/ \(cont\.\)$/, '')), to);
   }
   else if (e.target.closest('[data-task-add]')) {
     const field = document.querySelector('.wk-task-add');
@@ -2134,7 +2128,7 @@ function wkOpenCard(el, px, py) {
   // it has a size (fitInViewport), so no height is guessed here.
   const y = Math.max(56, py - 24);
   calWeek.pop = 'tasks';
-  calWeek.taskPop = { ...occ, x, y, w: W, draft: '', focus: false, changing: false };
+  calWeek.taskPop = { ...occ, x, y, w: W, draft: '', focus: false };
   renderCalWeek();
   return true;
 }
@@ -2166,89 +2160,123 @@ function wkCardVerbs(t) {
 // instruction). A day's block is LOCAL, so this never touches the week: a
 // one-off is relabelled in place; a weekly block is cancelled for the date and
 // a one-off of the chosen category put in its exact stretch — the two local
-// stores, one undo for both.
-function wkChangeTargets(t) {
-  const here = blockCatKey(t.name.replace(/ \(cont\.\)$/, ''));
-  return blockCategories().filter(c => c.key !== here && c.rows.length);
-}
-
-// `served` is the day's served blocks when the week has not cached it (a swap
-// reaches past the week on screen). Returns whether it changed.
-async function wkChangeBlock(t, catKey, served) {
+// stores. Returns `{ label, undo }` (the undo re-reads nothing), or null.
+async function wkChangeBlock(t, catKey) {
   const cat = blockCategories().find(c => c.key === catKey);
-  if (!cat) return false;
+  if (!cat) return null;
   const rep = cat.rows.find(r => r.active) || cat.rows[0];
   const fields = { label: rep.label, color: rep.color, area_id: rep.area_id || null,
                    domain_id: rep.domain_id || null, location_id: rep.location_id || null,
                    description: rep.description || '' };
   const [kind, id] = t.obj.split(':');
-  const day = served || calWeek.days[t.date] || {};
+  const day = calWeek.days[t.date] || {};
   if (kind === 'dayblock') {
     const prev = await apiGet(`/api/day-blocks/${id}`, null);
-    if (!prev || !prev.id) { toast('That block is gone'); return false; }
+    if (!prev || !prev.id) { toast('That block is gone'); return null; }
     const res = await apiSend(`/api/day-blocks/${id}`, 'PATCH', fields);
-    if (!res.ok) { toast('Could not change that block'); return false; }
+    if (!res.ok) { toast('Could not change that block'); return null; }
     const back = {};
     Object.keys(fields).forEach(k => { back[k] = prev[k] == null ? null : prev[k]; });
-    pushUndo(`changed "${prev.label}" to "${rep.label}"`, async () => {
-      await apiSend(`/api/day-blocks/${id}`, 'PATCH', back);
-      await refreshAfterUndo();
-    });
-  } else {
-    const seg = (day.segments || []).find(s => String(s.block_id) === id && !s.day_block_id
-      && Math.round(Math.max(0, s.start)) === Math.round(t.minute));
-    if (!seg) { toast('Could not find that block on this day'); return false; }
-    const was = (day.overrides || []).find(o => String(o.block_id) === id && o.date === t.date);
-    const ov = await apiSend('/api/overrides', 'POST', { block_id: parseInt(id), date: t.date, cancelled: true });
-    if (!ov.ok) { toast('Could not change that block'); return false; }
-    const ovRow = await ov.json();
-    const res = await apiSend('/api/day-blocks', 'POST', { date: t.date, start_min: Math.max(0, seg.start),
-                                                          end_min: seg.end, ...fields });
-    const made = res.ok ? await res.json() : null;
-    pushUndo(`changed "${t.name}" to "${rep.label}"`, async () => {
-      if (made) await apiSend(`/api/day-blocks/${made.id}`, 'DELETE');
-      if (was) await apiSend('/api/overrides', 'POST', { block_id: parseInt(id), date: t.date, cancelled: !!was.cancelled });
-      else await apiSend(`/api/overrides/${ovRow.id}`, 'DELETE');
-      await refreshAfterUndo();
-    });
-    if (!made) toast('Could not add the new block — the old one is cancelled for the day; undo puts it back');
+    return { label: prev.label, undo: () => apiSend(`/api/day-blocks/${id}`, 'PATCH', back) };
   }
-  await refreshCalWeek();
+  const seg = (day.segments || []).find(s => String(s.block_id) === id && !s.day_block_id
+    && Math.round(Math.max(0, s.start)) === Math.round(t.minute));
+  if (!seg) { toast('Could not find that block on this day'); return null; }
+  const was = (day.overrides || []).find(o => String(o.block_id) === id && o.date === t.date);
+  const ov = await apiSend('/api/overrides', 'POST', { block_id: parseInt(id), date: t.date, cancelled: true });
+  if (!ov.ok) { toast('Could not change that block'); return null; }
+  const ovRow = await ov.json();
+  const res = await apiSend('/api/day-blocks', 'POST', { date: t.date, start_min: Math.max(0, seg.start),
+                                                        end_min: seg.end, ...fields });
+  const made = res.ok ? await res.json() : null;
+  if (!made) toast('Could not add the new block — the old one is cancelled for the day; undo puts it back');
+  return { label: seg.label, undo: async () => {
+    if (made) await apiSend(`/api/day-blocks/${made.id}`, 'DELETE');
+    if (was) await apiSend('/api/overrides', 'POST', { block_id: parseInt(id), date: t.date, cancelled: !!was.cancelled });
+    else await apiSend(`/api/overrides/${ovRow.id}`, 'DELETE');
+  } };
+}
+
+// A SWAP, PICKED ON THE CALENDAR (2026-10-14, Quentin's instruction:
+// "Change to another block" should "highlight on my calendar interface slices
+// of blocks which are roughly the same duration as the block I'm changing").
+// The card's Change to another block… lights every block of ANOTHER category
+// whose length is within swapTol of this one's — the larger of half its
+// length and 30 minutes — that has not already ended; the rest dim. Clicking
+// a lit one trades the two: each becomes the other's category, by the local
+// change above, under ONE undo. The arrows still page the week while picking;
+// Esc or Cancel gives it up.
+const calSwap = { src: null };
+
+function swapTol(dur) { return Math.max(dur * 0.5, 30); }
+
+function swapDur(el) { return parseInt(el.dataset.endMin) - parseInt(el.dataset.startMin); }
+
+function swapCandidate(el) {
+  const src = calSwap.src;
+  if (!src || el.classList.contains('tl-block-cancelled') || el.classList.contains('tl-block-cont')) return false;
+  if (el.dataset.cat === src.cat) return false;
+  if (Math.abs(swapDur(el) - src.dur) > swapTol(src.dur)) return false;
+  const today = wallDay();
+  const now = new Date();
+  return el.dataset.date > today
+    || (el.dataset.date === today && parseInt(el.dataset.endMin) > now.getHours() * 60 + now.getMinutes());
+}
+
+function paintCalSwap() {
+  const host = document.getElementById('cal-week');
+  const ov = document.getElementById('cal-overlay');
+  if (ov) ov.classList.toggle('cal-swapping', !!calSwap.src);
+  let bar = document.getElementById('cal-swap-bar');
+  if (!calSwap.src) { if (bar) bar.remove(); }
+  else {
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'cal-swap-bar';
+      document.body.appendChild(bar);
+      bar.addEventListener('click', e => { if (e.target.closest('[data-swap-cancel]')) endCalSwap(); });
+    }
+    const n = host ? [...host.querySelectorAll('.wk-block')].filter(swapCandidate).length : 0;
+    bar.innerHTML = `<span>Swap <b>${escHtml(calSwap.src.t.name)}</b> ${escHtml(calSwap.src.t.span)} with… ${
+      n ? 'click a lit block' : 'nothing of about this length here — ← → for another week'}</span>
+      <button class="wk-link" data-swap-cancel>Cancel</button>`;
+  }
+  if (!host) return;
+  host.querySelectorAll('.wk-block').forEach(el => {
+    const src = !!calSwap.src && el.dataset.obj === calSwap.src.t.obj && el.dataset.date === calSwap.src.t.date
+      && parseInt(el.dataset.occMin) === calSwap.src.t.minute;
+    el.classList.toggle('wk-swap-src', src);
+    el.classList.toggle('wk-swap-cand', !src && swapCandidate(el));
+  });
+}
+
+function startCalSwap(t, el) {
+  calSwap.src = { t, cat: el.dataset.cat, dur: swapDur(el) };
+  paintCalSwap();
+}
+
+function endCalSwap() {
+  if (!calSwap.src) return false;
+  calSwap.src = null;
+  paintCalSwap();
   return true;
 }
 
-// A SWAP, NOT ONLY A CHANGE (2026-10-14, Quentin's instruction: "if I choose
-// to work on COS333 during a COS330 block, allow me an option where I can
-// select which block I would want to switch from COS333 to COS330 in the
-// future"). Once a day's block has changed from one category to another, the
-// next two weeks' blocks of the NEW category are offered by day and time, and
-// the one picked becomes the OLD category — the same local change, so the
-// week is never touched and each half has its own undo.
-const SWAP_DAYS = 14;
-async function wkOfferSwap(t, fromKey, toKey) {
-  const from = blockCategories().find(c => c.key === fromKey);
-  const to = blockCategories().find(c => c.key === toKey);
-  if (!from || !to) return;
-  const first = localDatePlusDays(t.date, 1);
-  const days = await apiGet(`/api/calendar/days?from=${first}&to=${localDatePlusDays(t.date, SWAP_DAYS)}`, null);
-  if (!days) return;
-  const offers = [];
-  Object.keys(days).sort().forEach(date => (days[date].segments || []).forEach(s => {
-    // A stretch's continuation past midnight is the same block — offered once.
-    if (s.cancelled || s.start < 0 || blockCatKey(s.label) !== toKey) return;
-    const day = new Date(date + 'T12:00:00');
-    offers.push({
-      label: `${weekdayOf(day).name.slice(0, 3)} ${day.getDate()} · ${hhmmToAmPm(clockHHMM(s.start))}–${hhmmToAmPm(clockHHMM(s.end))}`,
-      run: () => wkChangeBlock({ obj: s.day_block_id ? `dayblock:${s.day_block_id}` : `block:${s.block_id}`,
-                                 date, minute: s.start, name: s.label }, fromKey, days[date]),
-    });
-  }));
-  if (!offers.length) { toast(`No ${to.label} block in the next ${SWAP_DAYS} days to swap back`); return; }
-  openObjectMenu(t.x || 80, t.y || 80, null, null, [
-    { info: true, label: `Swap back — which later ${to.label} block becomes ${from.label}?` },
-    ...offers,
-    { label: 'No swap', run: () => {} },
-  ]);
+async function doCalSwap(el) {
+  const a = calSwap.src;
+  const b = wkOccOf(el);
+  if (!a || !b) return;
+  const bCat = el.dataset.cat;
+  endCalSwap();
+  const one = await wkChangeBlock(a.t, bCat);
+  if (!one) return;
+  const two = await wkChangeBlock(b, a.cat);
+  pushUndo(`swapped "${a.t.name}" and "${b.name}"`, async () => {
+    if (two) await two.undo();
+    await one.undo();
+    await refreshAfterUndo();
+  });
+  await refreshCalWeek();
 }
 
 async function wkTaskDone(id) {
@@ -2742,6 +2770,7 @@ function renderCalWeek() {
   } else {
     sc.scrollTop = keepTop;
   }
+  paintCalSwap();
 }
 
 // ↻, on either view. The feed refresh alone left the blocks and gates as they
@@ -2920,6 +2949,23 @@ function initCalWeek() {
   };
   strip.addEventListener('click', viewSwitch);
   paintCalShowClasses();
+
+  // WHILE A SWAP IS PICKED the calendar's clicks are the pick's: a lit block
+  // trades, the week's own paging still pages, and nothing else acts.
+  host.addEventListener('click', e => {
+    if (!calSwap.src) return;
+    const page = e.target.closest('[data-wk]');
+    if (page && ['prev', 'next', 'today'].includes(page.dataset.wk)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const el = e.target.closest('.wk-block.wk-swap-cand');
+    if (el) doCalSwap(el);
+  }, true);
+  host.addEventListener('contextmenu', e => {
+    if (!calSwap.src) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
 
   // Pressing a gate says which DAY its menu is about.
   host.addEventListener('pointerdown', e => {
@@ -6510,7 +6556,7 @@ function closeM(id) {
   flushOpenNotes();
   const el = document.getElementById(id);
   el.classList.add('hidden');
-  if (id === 'cal-overlay') { clearCalPin(); hideBlockHover(); }
+  if (id === 'cal-overlay') { clearCalPin(); hideBlockHover(); endCalSwap(); }
   renderBar();
 }
 
@@ -6547,6 +6593,8 @@ function initHub() {
   escRung(24, () => closeCalWeekPops());
   // So is a category lit up on it.
   escRung(25, () => clearCalPin());
+  // A swap being picked is too — given up, nothing written.
+  escRung(22, () => endCalSwap());
   // MAP's filter menu is a transient layer again (23a) — it peels before the
   // MAP overlay in the loop below, the way every sheet peels before what
   // opened it.
