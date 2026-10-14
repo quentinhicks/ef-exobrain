@@ -2100,8 +2100,14 @@ def rename_area(id, name):
 
 
 # The whole order in one write: `ids` first to last. An area left out keeps
-# its place after them (NULL), so a stale list cannot lose one.
+# its place after them (NULL), so a stale list cannot lose one. 0 is GENERAL
+# — what is filed under no area, a label and not a row — and its place in the
+# list is kept in `setting.general_area_position` (2026-10-14, Quentin: every
+# area reorders, General too).
 def set_area_order(ids):
+    if 0 in ids:
+        set_setting('general_area_position', str(ids.index(0)))
+        ids = [i for i in ids if i != 0]
     conn = get_conn()
     conn.execute('UPDATE area SET position = NULL')
     for n, id in enumerate(ids):

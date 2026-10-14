@@ -10888,7 +10888,10 @@ function mapSections(items, inboxItems) {
   const loose = items.filter(i => !known.has(i.area_id));
   // What is filed under no area reads "General" (2026-10-14, Quentin's
   // instruction). A LABEL, not an area: nothing is seeded, nothing undeletable.
-  if (loose.length) secs.push({ key: 'none', name: 'General', items: loose });
+  // It takes its place in the order like any area (areaOrderIds, as 0).
+  if (loose.length) secs.push({ key: 'none', name: 'General', areaId: 0, items: loose });
+  const at = new Map(areaOrderIds().map((id, n) => [id, n]));
+  secs.sort((x, y) => at.get(x.areaId) - at.get(y.areaId));
   if (inboxItems.length) secs.push({ key: 'in', name: 'In', sub: 'not yet clarified',
                                     inbox: true, items: inboxItems });
   return secs;
@@ -11370,7 +11373,7 @@ function renderMap() {
   }</div>`;
   body.innerHTML = `<div class="mp-page">
     <nav class="mp-index">${secs.map(sec => `<button class="mp-idx" data-go="${sec.key}"${
-      sec.obj ? ` data-obj="${sec.obj}"` : ''}${sec.areaId ? ` data-area="${sec.areaId}" title="Drag to reorder"` : ''}${
+      sec.obj ? ` data-obj="${sec.obj}"` : ''}${sec.areaId != null ? ` data-area="${sec.areaId}" title="Drag to reorder"` : ''}${
       sec.inbox ? '' : ` data-drop-area="${sec.areaId || ''}"`}>${escHtml(sec.name)}</button>`).join('')}
       <button class="mp-add-area mp-idx-add">+ Add area</button></nav>
     <div class="mp-main">${secs.map(secHtml).join('') || empty}
@@ -11473,6 +11476,12 @@ function renderMap() {
     span.addEventListener('dblclick', () => mapRenameArea(parseInt(span.parentElement.dataset.obj.slice(5))));
   });
   wireAreaOrderDrag(body);
+  // General is no object, so its heading's menu is its place in the order.
+  const general = body.querySelector('.mp-sec[data-sec="none"] .mp-sec-title');
+  if (general) general.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    openObjectMenu(e.clientX, e.clientY, null, null, areaMoveVerbs(0));
+  });
 
   dragEdgeScroll(body);
   mapSelSync();
@@ -11529,8 +11538,17 @@ function mapRenameArea(id) {
 // THE AREAS' ORDER (2026-10-14, Quentin's instruction): drag a name in the
 // index up or down — the shared pointer drag, so a finger holds then drags —
 // or Move up / Move down on the area's menu. One write, the whole order.
+// The whole order as the page draws it: the standard areas, with GENERAL (0
+// — what is filed under no area) at its own stored place, last by default.
+function areaOrderIds() {
+  const ids = (state.areas || []).filter(a => a.type === 'standard').map(a => a.id);
+  const g = parseInt((state.settings || {}).general_area_position);
+  ids.splice(Number.isNaN(g) ? ids.length : Math.min(g, ids.length), 0, 0);
+  return ids;
+}
+
 async function setAreaOrder(ids, label) {
-  const before = (state.areas || []).map(a => a.id);
+  const before = areaOrderIds();
   const res = await apiSend('/api/areas/order', 'PUT', { ids }).catch(() => null);
   if (!res || !res.ok) { toast('Could not reorder the areas'); return; }
   pushUndo(label, async () => {
@@ -11541,7 +11559,7 @@ async function setAreaOrder(ids, label) {
 }
 
 function areaOrderMoved(id, to) {
-  const ids = (state.areas || []).filter(a => a.type === 'standard').map(a => a.id);
+  const ids = areaOrderIds();
   const from = ids.indexOf(id);
   if (from < 0) return null;
   ids.splice(from, 1);
@@ -11573,7 +11591,7 @@ function wireAreaOrderDrag(body) {
           if (moved.join() === drawn.join()) return;
           // A narrowed page draws only some areas: they swap among the slots
           // they hold in the whole order, and the rest stay where they were.
-          const all = (state.areas || []).filter(a => a.type === 'standard').map(a => a.id);
+          const all = areaOrderIds();
           let k = 0;
           setAreaOrder(all.map(id => (drawn.includes(id) ? moved[k++] : id)), 'reordered the areas');
         },
@@ -11587,14 +11605,18 @@ function wireAreaOrderDrag(body) {
 registerObjectVerbs('mp-area', (kind, id, el) => {
   if (kind !== 'area' || !el || !el.closest('#map-body')) return [];
   const aid = parseInt(id);
-  const ids = (state.areas || []).filter(a => a.type === 'standard').map(a => a.id);
+  return [{ label: 'Rename', run: () => mapRenameArea(aid) }, ...areaMoveVerbs(aid)];
+});
+
+// Move up / Move down for one entry of the order — an area, or General (0).
+function areaMoveVerbs(aid) {
+  const ids = areaOrderIds();
   const at = ids.indexOf(aid);
   return [
-    { label: 'Rename', run: () => mapRenameArea(aid) },
     at > 0 && { label: 'Move up', run: () => setAreaOrder(areaOrderMoved(aid, at - 1), 'moved an area up') },
     at >= 0 && at < ids.length - 1 && { label: 'Move down', run: () => setAreaOrder(areaOrderMoved(aid, at + 1), 'moved an area down') },
   ].filter(Boolean);
-});
+}
 
 // ── MAP BY KEYBOARD (2026-09-23, Quentin's instruction) ───────
 //
