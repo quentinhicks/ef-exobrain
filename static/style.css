@@ -6424,7 +6424,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .hz-photo {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 10;
+  /* The page between the strip and the capture bar, exactly (.hz-purpose's
+     measure): one photo is the whole visible page and nothing covers it. */
+  height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h));
   overflow: hidden;
   background: var(--surface-2);
 }
@@ -6622,6 +6624,25 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .md pre code { background: none; padding: 0; }
 .md hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
 .md a { color: var(--accent); }
+/* Extended syntax (mdHtml, 2026-10-19). A table scrolls inside its own box,
+   so a wide one never runs off the page's edge. */
+.md a[data-md-jump] { cursor: pointer; text-decoration: underline; }
+.md img { max-width: 100%; border-radius: 6px; }
+.md mark { background: color-mix(in srgb, var(--accent) 32%, transparent); color: inherit;
+  padding: 0 2px; border-radius: 2px; }
+.md sub, .md sup { font-size: 0.75em; line-height: 0; }
+.md .md-table { overflow-x: auto; margin: 0.4em 0 0.8em; }
+.md table { border-collapse: collapse; font-size: 0.95em; }
+.md th, .md td { border: 1px solid var(--border); padding: 4px 10px; text-align: left;
+  vertical-align: top; overflow-wrap: normal; }
+.md th { font-weight: 600; background: var(--surface-2); }
+.md dl { margin: 0.2em 0 0.6em; }
+.md dt { font-weight: 600; }
+.md dd { margin: 0 0 0.3em 1.4em; }
+.md .md-footnotes { margin-top: 1.4em; padding-top: 0.6em; border-top: 1px solid var(--border);
+  font-size: 0.9em; color: var(--text-secondary); }
+.md .md-footnotes ol { margin: 0; }
+.md .md-fnref a, .md .md-fnback { text-decoration: none; }
 #tab-lists .ref-item { border-bottom: none; align-items: flex-start; }
 /* On a phone the page's own head already names what is open. */
 @media (min-width: 900px) {

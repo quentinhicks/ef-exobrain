@@ -3858,31 +3858,106 @@ const _MONTHS_LONG    = ['January', 'February', 'March', 'April', 'May', 'June',
 // Markdown, rendered — what a Lists DOCUMENT shows when it is not being
 // written (2026-10-08, Quentin's instruction: write it in markdown, read it
 // formatted). Escape FIRST, then decorate — the input is user text, never
-// trusted HTML. Line-level: # to ###### headings, - * and 1. lists, - [ ] /
-// - [x] tasks, > quotes, ``` fenced code, --- rules, blank-line paragraphs.
-// Inline: **bold**, *italic*, ~~struck~~, `code`, [text](http/https url).
+// trusted HTML. Basic: # to ###### headings, - * and 1. lists, > quotes, ---
+// rules, blank-line paragraphs; **bold** __bold__, *italic* _italic_, `code`,
+// [text](url), ![alt](url). EXTENDED (2026-10-19, Quentin's instruction:
+// "extended markdown syntax everywhere"): ``` / ~~~ fenced code with a
+// language, | tables | with :-: alignment, [^1] footnotes, ### heading
+// {#custom-id}, term / : definition lists, ~~struck~~, - [ ] / - [x] tasks,
+// :emoji: shortcodes, ==highlight==, H~2~O, X^2^, bare and <angle> URLs, and
+// \ escapes. A link to #an-id jumps inside the document (data-md-jump) rather
+// than writing the address, where a `#…` would be read as a route.
+const MD_EMOJI = {
+  smile: '😄', smiley: '😃', grin: '😁', joy: '😂', wink: '😉', blush: '😊',
+  thinking: '🤔', cry: '😢', sob: '😭', angry: '😠', heart: '❤️', thumbsup: '👍',
+  '+1': '👍', thumbsdown: '👎', '-1': '👎', clap: '👏', wave: '👋', pray: '🙏',
+  muscle: '💪', ok_hand: '👌', point_right: '👉', eyes: '👀', fire: '🔥',
+  star: '⭐', sparkles: '✨', tada: '🎉', rocket: '🚀', bulb: '💡', zap: '⚡',
+  warning: '⚠️', x: '❌', white_check_mark: '✅', heavy_check_mark: '✔️',
+  question: '❓', exclamation: '❗', hourglass: '⌛', calendar: '📅', memo: '📝',
+  books: '📚', pushpin: '📌', link: '🔗', lock: '🔒', moneybag: '💰',
+  coffee: '☕', sunny: '☀️', moon: '🌙', arrow_right: '➡️', arrow_left: '⬅️',
+  100: '💯',
+};
+const MD_TABLE_RULE = /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/;
+const mdSlug = s => String(s).toLowerCase().replace(/<[^>]*>/g, '').replace(/&\w+;/g, '')
+  .replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '');
+const mdUrl = u => /^(https?:\/\/|mailto:)/i.test(u);
+
+// One line's inline syntax. What must not be decorated further (escapes,
+// code, links, URLs) is HELD behind a placeholder and put back last, so a
+// star inside `code` or a URL stays a star.
+function mdInline(src, notes) {
+  const keep = [];
+  const hold = html => `\u0000${keep.push(html) - 1}\u0000`;
+  const deco = s => escHtml(s)
+    .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^\w])__(?=\S)([\s\S]*?\S)__(?!\w)/g, '$1<strong>$2</strong>')
+    .replace(/\*(?=\S)([^*]*?\S)\*/g, '<em>$1</em>')
+    .replace(/(^|[^\w])_(?=\S)([^_]*?\S)_(?!\w)/g, '$1<em>$2</em>')
+    .replace(/~~(?=\S)([^~]*?\S)~~/g, '<del>$1</del>')
+    .replace(/==(?=\S)([^=]*?\S)==/g, '<mark>$1</mark>')
+    .replace(/~([^~\s]+)~/g, '<sub>$1</sub>')
+    .replace(/\^([^^\s]+)\^/g, '<sup>$1</sup>')
+    .replace(/:([\w+-]+):/g, (m, k) => MD_EMOJI[k] || m);
+  const link = (text, url) => url.startsWith('#')
+    ? hold(`<a class="md-jump" data-md-jump="${escHtml(mdSlug(url.slice(1)))}">${deco(text)}</a>`)
+    : hold(`<a href="${escHtml(url)}" target="_blank" rel="noopener">${deco(text)}</a>`);
+  let t = String(src).replace(/\u0000/g, '')
+    .replace(/\\([\\`*_{}[\]()#+\-.!|~=^:<>])/g, (m, c) => hold(escHtml(c)))
+    .replace(/`([^`]+)`/g, (m, c) => hold(`<code>${escHtml(c)}</code>`))
+    .replace(/!\[([^\]]*)\]\(((?:https?:\/\/|\/)[^)\s]+)\)/g,
+      (m, alt, url) => hold(`<img src="${escHtml(url)}" alt="${escHtml(alt)}">`))
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) =>
+      (mdUrl(url) || url.startsWith('#') ? link(text, url) : m))
+    .replace(/<((?:https?:\/\/|mailto:)[^>\s]+)>/g, (m, url) => link(url, url))
+    .replace(/\bhttps?:\/\/[^\s<\u0000]*[^\s<\u0000.,;:!?'")\]]/g, url => link(url, url));
+  if (notes) {
+    t = t.replace(/\[\^([^\]\s]+)\]/g, (m, id) => {
+      if (!(id in notes.text)) return m;
+      const first = !notes.order.includes(id);
+      if (first) notes.order.push(id);
+      const n = notes.order.indexOf(id) + 1, key = mdSlug(id);
+      return hold(`<sup class="md-fnref"${first ? ` id="md-fnref-${key}"` : ''}><a data-md-jump="fn-${key}">${n}</a></sup>`);
+    });
+  }
+  let html = deco(t);
+  while (html.includes('\u0000')) html = html.replace(/\u0000(\d+)\u0000/g, (m, n) => keep[n]);
+  return html;
+}
+
 function mdHtml(src) {
-  const inline = s => escHtml(s)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Footnote definitions come out first: a reference above its definition
+  // still needs its number. Not inside a fence, where they are code.
+  const notes = { order: [], text: {} };
+  const lines = [];
+  let fenced = null;
+  for (const raw of String(src).replace(/\r\n?/g, '\n').split('\n')) {
+    const f = raw.match(/^(```|~~~)/);
+    const wasFenced = fenced;
+    if (f) fenced = fenced ? (raw.startsWith(fenced) ? null : fenced) : f[1];
+    const fn = !wasFenced && !f && raw.match(/^\[\^([^\]\s]+)\]: ?(.*)/);
+    if (fn) notes.text[fn[1]] = fn[2]; else lines.push(raw);
+  }
+  const inline = s => mdInline(s, notes);
+  const cells = row => row.trim().replace(/^\|/, '').replace(/(^|[^\\])\|$/, '$1')
+    .split(/(?<!\\)\|/).map(c => c.trim());
   const out = [];
   let list = null;  // 'ul' | 'ol' | null
-  let code = null;  // lines of an open ``` block
   let quote = false;
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
   const closeQuote = () => { if (quote) { out.push('</blockquote>'); quote = false; } };
-  for (const raw of String(src).split('\n')) {
-    const line = raw.trimEnd();
-    if (code) {
-      if (/^```/.test(line)) { out.push(`<pre><code>${escHtml(code.join('\n'))}</code></pre>`); code = null; }
-      else code.push(raw);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd(), next = (lines[i + 1] || '').trim();
+    const fence = line.match(/^(```|~~~)\s*([\w+#.-]*)/);
+    if (fence) {
+      closeList(); closeQuote();
+      const code = [];
+      while (++i < lines.length && !lines[i].startsWith(fence[1])) code.push(lines[i]);
+      const lang = fence[2] ? ` class="language-${escHtml(fence[2])}"` : '';
+      out.push(`<pre><code${lang}>${escHtml(code.join('\n'))}</code></pre>`);
       continue;
     }
-    if (/^```/.test(line)) { closeList(); closeQuote(); code = []; continue; }
     const q = line.match(/^> ?(.*)/);
     if (q) {
       closeList();
@@ -3891,11 +3966,36 @@ function mdHtml(src) {
       continue;
     }
     closeQuote();
-    const h = line.match(/^(#{1,6}) +(.*)/);
+    if (line.includes('|') && next.includes('|') && MD_TABLE_RULE.test(next)) {
+      closeList();
+      const align = cells(next).map(c => (/^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : /^:/.test(c) ? 'left' : ''));
+      const row = (r, tag) => `<tr>${cells(r).map((c, k) =>
+        `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ''}>${inline(c)}</${tag}>`).join('')}</tr>`;
+      const rows = [];
+      for (i += 2; i < lines.length && lines[i].includes('|') && lines[i].trim(); i++) rows.push(row(lines[i], 'td'));
+      i--;
+      out.push(`<div class="md-table"><table><thead>${row(line, 'th')}</thead><tbody>${rows.join('')}</tbody></table></div>`);
+      continue;
+    }
+    if (line.trim() && /^: /.test(next) && !/^([-*] |\d+[.)] |#)/.test(line)) {
+      closeList();
+      out.push('<dl>');
+      for (; i < lines.length && lines[i].trim(); i++) {
+        const dd = lines[i].match(/^: +(.*)/);
+        out.push(dd ? `<dd>${inline(dd[1])}</dd>` : `<dt>${inline(lines[i].trim())}</dt>`);
+      }
+      out.push('</dl>');
+      continue;
+    }
+    const h = line.match(/^(#{1,6}) +(.*?)(?: +\{#([\w-]+)\})?$/);
     const task = line.match(/^[-*] +\[([ xX])\] +(.*)/);
     const li = line.match(/^[-*] +(.*)/);
     const ol = line.match(/^\d+[.)] +(.*)/);
-    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); }
+    if (h) {
+      closeList();
+      const body = inline(h[2]), n = h[1].length;
+      out.push(`<h${n} id="md-${mdSlug(h[3] || body)}">${body}</h${n}>`);
+    }
     else if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) { closeList(); out.push('<hr>'); }
     else if (li || ol) {
       const kind = li ? 'ul' : 'ol';
@@ -3907,8 +4007,16 @@ function mdHtml(src) {
     else if (!line.trim()) closeList();
     else { closeList(); out.push(`<p>${inline(line)}</p>`); }
   }
-  if (code) out.push(`<pre><code>${escHtml(code.join('\n'))}</code></pre>`);
   closeList(); closeQuote();
+  if (notes.order.length) {
+    // By index: a footnote's own text may cite another, which joins the end.
+    const items = [];
+    for (let k = 0; k < notes.order.length; k++) {
+      const id = notes.order[k], key = mdSlug(id);
+      items.push(`<li id="md-fn-${key}">${inline(notes.text[id])} <a class="md-fnback" data-md-jump="fnref-${key}">↩</a></li>`);
+    }
+    out.push(`<section class="md-footnotes"><ol>${items.join('')}</ol></section>`);
+  }
   return out.join('');
 }
 
@@ -7363,7 +7471,16 @@ function wireRefPane(scope, open) {
       ta.focus();
     };
     view.addEventListener('dblclick', write);
-    view.addEventListener('click', e => { if (e.detail >= 2) write(e); });
+    view.addEventListener('click', e => {
+      // A footnote or a #heading link moves within the document (mdHtml).
+      const jump = e.target.closest('[data-md-jump]');
+      if (jump) {
+        const to = view.querySelector(`[id="md-${jump.dataset.mdJump}"]`);
+        if (to) to.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return;
+      }
+      if (e.detail >= 2) write(e);
+    });
     ta.addEventListener('keydown', e => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ta.blur(); }
     });
@@ -10691,7 +10808,7 @@ const HZ_DOC_KEYS = { areas: 'horizon_areas', goals: 'horizon_goals', purpose: '
 const HZ_PLACEHOLDER = {
   areas: 'The areas you keep up, and the standard each is held to. Start a line with ### for a heading, - for a list.',
   goals: 'What you mean to have done in a year or two. Start a line with ### for a heading, - for a list.',
-  purpose: 'Write your purpose in one sentence.',
+  purpose: 'Write your meaning',
 };
 // `slots` is the empty photo frames "+ Add photo" asked for; with no photos
 // there is always one, so the page is never blank.
@@ -10864,9 +10981,45 @@ function readDataUrl(blob) {
   });
 }
 
+// A Vision photo fills the page between the strip and the capture bar
+// (2026-10-19, Quentin's instruction), so it is stored in that shape: 1920
+// wide and as tall as the page's proportions make it. The size names itself
+// on the empty frame.
+function visionSize() {
+  const box = document.querySelector('.hz-photo');
+  const w = box ? box.clientWidth : window.innerWidth, h = box ? box.clientHeight : window.innerHeight;
+  return { w: 1920, h: Math.round(1920 * h / Math.max(1, w)) };
+}
+
+// Cropped from the middle to the page's proportions and reduced to 1920
+// wide when it is larger — never enlarged. A GIF is left as it is: a canvas
+// would keep one frame.
+async function fitVisionPhoto(file) {
+  const data = await readDataUrl(file);
+  if (!data || file.type === 'image/gif') return data;
+  const img = await new Promise(res => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => res(null);
+    im.src = data;
+  });
+  if (!img) return data;
+  const { w, h } = visionSize();
+  const sw = Math.min(img.naturalWidth, img.naturalHeight * w / h);
+  const sh = sw * h / w;
+  const scale = Math.min(1, w / sw);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(sw * scale);
+  canvas.height = Math.round(sh * scale);
+  canvas.getContext('2d').drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) / 2,
+    sw, sh, 0, 0, canvas.width, canvas.height);
+  const type = /^image\/(png|jpeg|webp)$/.test(file.type) ? file.type : 'image/png';
+  return canvas.toDataURL(type, 0.92);
+}
+
 async function addVisionPhoto(file) {
   if (!file || !/^image\//.test(file.type)) { toast('That is not an image'); return; }
-  const res = await apiSendData('/api/vision', 'POST', { data: await readDataUrl(file) });
+  const res = await apiSendData('/api/vision', 'POST', { data: await fitVisionPhoto(file) });
   if (!res.ok) { toast(res.data.error || 'Could not add that photo'); return; }
   const name = res.data.name;
   pushUndo('added a photo', async () => {
@@ -10916,10 +11069,12 @@ function renderHorizon(body) {
   const slots = photos.length ? hzView.slots : Math.max(1, hzView.slots);
   body.innerHTML = `<div class="hz-vision">${photos.map(n => `<div class="hz-photo" data-photo="${escHtml(n)}"
       title="Right-click or hold to remove"><img src="/vision/${encodeURIComponent(n)}" alt=""></div>`).join('')}${
-    Array.from({ length: slots }, () => `<button class="hz-photo hz-slot">Drop a 1920 × 1200 photo</button>`).join('')}
+    Array.from({ length: slots }, () => `<button class="hz-photo hz-slot">Drop a photo</button>`).join('')}
     <button class="hz-add">+ Add photo</button>
     <input type="file" accept="image/*" class="hidden" id="hz-file">
   </div>`;
+  const size = visionSize();
+  body.querySelectorAll('.hz-slot').forEach(slot => { slot.textContent = `Drop a ${size.w} × ${size.h} photo`; });
   const file = body.querySelector('#hz-file');
   file.addEventListener('change', () => { if (file.files[0]) addVisionPhoto(file.files[0]); file.value = ''; });
   body.querySelectorAll('.hz-slot').forEach(slot => {
