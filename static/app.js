@@ -4020,6 +4020,66 @@ function mdHtml(src) {
   return out.join('');
 }
 
+// A MARKDOWN DOCUMENT — READ FORMATTED, WRITTEN IN MARKDOWN. One component
+// (2026-10-19), first written for a Lists document (2026-10-08) and shared
+// with the Horizons' Areas and Goals (Quentin's instruction). It is a notes
+// field: the notes debounce, every close flushes it, ONE undo per editing
+// session. A double-click (a double tap on a finger) swaps the rendered view
+// for the markdown; leaving the field — blur, or Esc, which here means
+// "done", never "revert" — swaps back. An empty document opens straight in
+// markdown: there is nothing to read. `attrs` names the textarea for the
+// surface's own repaint guard; `saved()` is what the store holds now.
+function mdDocHtml(body, attrs, placeholder) {
+  const has = !!String(body || '').trim();
+  return `<div class="md-doc-view md${has ? '' : ' hidden'}" title="Double-click to write">${mdHtml(body || '')}</div>
+    <textarea class="md-doc${has ? ' hidden' : ''}" ${attrs || ''} data-grow="full"
+      placeholder="${escHtml(placeholder || 'Write in markdown…')}" spellcheck="true">${escHtml(body || '')}</textarea>`;
+}
+
+function wireMdDoc(scope, { label, saved, save, restore }) {
+  const ta = scope.querySelector('textarea.md-doc');
+  const view = scope.querySelector('.md-doc-view');
+  let undoPushed = false;
+  const before = saved();
+  wireNotesAutosave(ta, async value => {
+    if (value === saved()) return;
+    if (!undoPushed) {
+      undoPushed = true;
+      pushUndo(label, () => restore(before));
+    }
+    await save(value);
+  });
+  const write = e => {
+    if (!ta.classList.contains('hidden')) return;
+    if (e.target.closest('a')) return;
+    view.classList.add('hidden');
+    ta.classList.remove('hidden');
+    autoGrowNotes(ta);
+    ta.focus();
+  };
+  view.addEventListener('dblclick', write);
+  view.addEventListener('click', e => {
+    // A footnote or a #heading link moves within the document (mdHtml).
+    const jump = e.target.closest('[data-md-jump]');
+    if (jump) {
+      const to = view.querySelector(`[id="md-${jump.dataset.mdJump}"]`);
+      if (to) to.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
+    if (e.detail >= 2) write(e);
+  });
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ta.blur(); }
+  });
+  ta.addEventListener('blur', async () => {
+    await ta.__flushNotes();
+    if (!ta.value.trim()) return;
+    view.innerHTML = mdHtml(ta.value);
+    ta.classList.add('hidden');
+    view.classList.remove('hidden');
+  });
+}
+
 function nowTimeStr() {
   const now = new Date();
   return now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
@@ -7414,9 +7474,7 @@ async function refDelete(id) {
 function refPaneHtml(open) {
   if (open.kind === 'doc') {
     return `<div class="ref-pane"><div class="ref-doc-title" title="Double-click to rename">${escHtml(open.name)}</div>
-      <div class="ref-doc-view md${open.body ? '' : ' hidden'}" title="Double-click to write">${mdHtml(open.body || '')}</div>
-      <textarea class="ref-doc${open.body ? ' hidden' : ''}" data-ref-doc="${open.id}" data-grow="full" placeholder="Write in markdown…"
-        spellcheck="true">${escHtml(open.body || '')}</textarea></div>`;
+      ${mdDocHtml(open.body, `data-ref-doc="${open.id}"`)}</div>`;
   }
   return `<div class="ref-pane"><div class="ref-pane-head"><span class="ref-pane-name">${escHtml(open.name)}</span>
       <span class="count">${open.items.filter(i => !i.done).length}</span></div>
@@ -7431,7 +7489,6 @@ function refPaneHtml(open) {
 
 function wireRefPane(scope, open) {
   if (open.kind === 'doc') {
-    const ta = scope.querySelector('[data-ref-doc]');
     const title = scope.querySelector('.ref-doc-title');
     title.addEventListener('dblclick', () => inlineEdit(title, {
       value: open.name,
@@ -7441,55 +7498,17 @@ function wireRefPane(scope, open) {
         await refreshRef();
       },
     }));
-    // A document is a notes field: the notes debounce, every close flushes
-    // it, and ONE undo per editing session.
-    let undoPushed = false;
-    const before = open.body || '';
-    wireNotesAutosave(ta, async value => {
-      if (value === (open.body || '')) return;
-      if (!undoPushed) {
-        undoPushed = true;
-        pushUndo(`edited "${open.name}"`, async () => {
-          await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { body: before });
-          await refreshAfterUndo();
-        });
-      }
-      await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { body: value });
-      open.body = value;
-    });
-    // READ FORMATTED, WRITE MARKDOWN: a double-click (a double tap on a
-    // finger) swaps the rendered view for the markdown; leaving the field —
-    // blur, or Esc, which here means "done", never "revert" — swaps back.
-    // An empty document opens straight in markdown: there is nothing to read.
-    const view = scope.querySelector('.ref-doc-view');
-    const write = e => {
-      if (!ta.classList.contains('hidden')) return;
-      if (e.target.closest('a')) return;
-      view.classList.add('hidden');
-      ta.classList.remove('hidden');
-      autoGrowNotes(ta);
-      ta.focus();
-    };
-    view.addEventListener('dblclick', write);
-    view.addEventListener('click', e => {
-      // A footnote or a #heading link moves within the document (mdHtml).
-      const jump = e.target.closest('[data-md-jump]');
-      if (jump) {
-        const to = view.querySelector(`[id="md-${jump.dataset.mdJump}"]`);
-        if (to) to.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        return;
-      }
-      if (e.detail >= 2) write(e);
-    });
-    ta.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ta.blur(); }
-    });
-    ta.addEventListener('blur', async () => {
-      await ta.__flushNotes();
-      if (!ta.value.trim()) return;
-      view.innerHTML = mdHtml(ta.value);
-      ta.classList.add('hidden');
-      view.classList.remove('hidden');
+    wireMdDoc(scope, {
+      label: `edited "${open.name}"`,
+      saved: () => open.body || '',
+      save: async value => {
+        await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { body: value });
+        open.body = value;
+      },
+      restore: async prev => {
+        await apiSend(`/api/ref/lists/${open.id}`, 'PATCH', { body: prev });
+        await refreshAfterUndo();
+      },
     });
     return;
   }
@@ -10690,7 +10709,6 @@ function mapInboxItems() {
 
 async function openMap(horizon) {
   mapView.horizon = HORIZONS.some(h => h.key === horizon) ? horizon : 'projects';
-  hzView.slots = 0;
   if (!mapWired) {
     const overlay = document.getElementById('map-overlay');
     const shut = () => {
@@ -10810,9 +10828,7 @@ const HZ_PLACEHOLDER = {
   goals: 'What you mean to have done in a year or two. Start a line with ### for a heading, - for a list.',
   purpose: 'Write your meaning',
 };
-// `slots` is the empty photo frames "+ Add photo" asked for; with no photos
-// there is always one, so the page is never blank.
-const hzView = { menuOpen: false, slots: 0 };
+const hzView = { menuOpen: false };
 
 function horizonName(key) {
   return (HORIZONS.find(h => h.key === key) || HORIZONS[0]).name;
@@ -10837,7 +10853,6 @@ function setHorizon(key) {
   if (!HORIZONS.some(h => h.key === key)) return;
   flushOpenNotes();
   hzView.menuOpen = false;
-  hzView.slots = 0;
   mapView.horizon = key;
   renderMap();
   document.getElementById('map-body').scrollTop = 0;
@@ -10869,29 +10884,26 @@ async function saveHorizonDoc(key, value) {
   if (!res.ok) toast(res.data.error || 'Could not save that');
 }
 
-// A HORIZON DOCUMENT IS A NOTES FIELD in everything but its shape: it saves
-// on the notes debounce, joins openNotes so every close flushes it, pushes ONE
-// undo per editing session, and pastes as text. Half-typed text is data, so a
-// repaint leaves a focused document alone (renderHorizon).
-function wireHorizonDoc(el, h) {
-  const key = HZ_DOC_KEYS[h];
-  const plain = h === 'purpose';
-  const read = () => {
-    const text = el.textContent.trim();
-    return plain ? text : (text ? el.innerHTML : '');
-  };
+// PURPOSE IS ONE SENTENCE, written where it is read — the one horizon that
+// is not a markdown document. It is a notes field in everything but its
+// shape: it saves on the notes debounce, joins openNotes so every close
+// flushes it, pushes ONE undo per editing session, pastes as one line, and
+// Enter is done. Half-typed text is data, so a repaint leaves it alone while
+// it is focused (renderHorizon).
+function wireHorizonPurpose(el) {
+  const key = HZ_DOC_KEYS.purpose;
   let timer = null, pending = false, undoPushed = false;
   const flush = async () => {
     clearTimeout(timer);
     timer = null;
     if (!pending) return;
     pending = false;
-    const value = read();
+    const value = el.textContent.trim();
     const prev = (state.settings || {})[key] || '';
     if (value === prev) return;
     if (!undoPushed) {
       undoPushed = true;
-      pushUndo(`edited ${horizonName(h)}`, async () => {
+      pushUndo(`edited ${horizonName('purpose')}`, async () => {
         await saveHorizonDoc(key, prev);
         renderMap();
       });
@@ -10903,70 +10915,16 @@ function wireHorizonDoc(el, h) {
     clearTimeout(timer);
     timer = setTimeout(flush, NOTES_SAVE_MS);
   });
-  el.addEventListener('blur', () => {
-    if (!plain && !el.textContent.trim() && !el.querySelector('li')) el.innerHTML = '';
-    flush();
-  });
-  // Every line is a block, so a line's shape can change (below); the first one
-  // is made on focus, and an empty document is emptied again on blur so its
-  // placeholder comes back.
-  el.addEventListener('focus', () => {
-    document.execCommand('defaultParagraphSeparator', false, 'p');
-    if (plain || el.firstChild) return;
-    el.innerHTML = '<p><br></p>';
-    const r = document.createRange();
-    r.setStart(el.firstChild, 0);
-    r.collapse(true);
-    getSelection().removeAllRanges();
-    getSelection().addRange(r);
-  });
+  el.addEventListener('blur', flush);
   el.addEventListener('paste', e => {
     e.preventDefault();
     const text = (e.clipboardData || window.clipboardData).getData('text/plain');
-    document.execCommand('insertText', false, plain ? text.replace(/\s*\n\s*/g, ' ') : text);
+    document.execCommand('insertText', false, text.replace(/\s*\n\s*/g, ' '));
   });
   el.addEventListener('keydown', e => {
     // Escape means done, never revert, and it stops here: the page stays up.
     if (e.key === 'Escape') { e.stopPropagation(); el.blur(); return; }
-    if (plain) {
-      if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
-      return;
-    }
-    // `### ` makes a heading and `- ` a list, typed at the start of a line —
-    // the markdown the notes fields already speak, turned into the shape.
-    // Done on the DOM: execCommand's formatBlock/delete pair merged lines.
-    if (e.key !== ' ') return;
-    const sel = getSelection();
-    if (!sel.rangeCount || !sel.isCollapsed) return;
-    const node = sel.anchorNode;
-    if (!node || node.nodeType !== 3 || node.previousSibling) return;
-    const before = node.textContent.slice(0, sel.anchorOffset);
-    const heading = /^#{1,3}$/.test(before), list = /^[-*]$/.test(before);
-    if (!heading && !list) return;
-    let line = node.parentNode;
-    if (line === el) {
-      line = document.createElement('p');
-      el.insertBefore(line, node);
-      line.appendChild(node);
-    }
-    if (line.parentNode !== el || !/^(P|DIV|H3)$/.test(line.tagName)) return;
-    e.preventDefault();
-    node.textContent = node.textContent.slice(before.length);
-    let into = document.createElement(heading ? 'h3' : 'li');
-    while (line.firstChild) into.appendChild(line.firstChild);
-    if (!into.textContent) into.innerHTML = '<br>';
-    if (heading) line.replaceWith(into);
-    else {
-      const prev = line.previousElementSibling;
-      if (prev && prev.tagName === 'UL') { prev.appendChild(into); line.remove(); }
-      else { const ul = document.createElement('ul'); ul.appendChild(into); line.replaceWith(ul); }
-    }
-    const r = document.createRange();
-    r.setStart(into.firstChild, 0);
-    r.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r);
-    el.dispatchEvent(new Event('input'));
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
   });
   el.__flushNotes = flush;
   openNotes.push(el);
@@ -11017,29 +10975,36 @@ async function fitVisionPhoto(file) {
   return canvas.toDataURL(type, 0.92);
 }
 
+// VISION IS ONE PHOTO (2026-10-19, Quentin's instruction): adding one
+// REPLACES what is there (storage.vision_add keeps only the newest), so the
+// undo puts the previous photo back — the same bytes under the same name —
+// or, where there was none, takes the new one away.
+async function visionSnapshot(name) {
+  const blob = await fetch(`/vision/${encodeURIComponent(name)}`).then(r => (r.ok ? r.blob() : null)).catch(() => null);
+  return blob && await readDataUrl(blob);
+}
+
 async function addVisionPhoto(file) {
   if (!file || !/^image\//.test(file.type)) { toast('That is not an image'); return; }
+  const prev = (state.vision || [])[0];
+  const prevData = prev && await visionSnapshot(prev);
   const res = await apiSendData('/api/vision', 'POST', { data: await fitVisionPhoto(file) });
   if (!res.ok) { toast(res.data.error || 'Could not add that photo'); return; }
   const name = res.data.name;
-  pushUndo('added a photo', async () => {
-    await apiSend(`/api/vision/${encodeURIComponent(name)}`, 'DELETE');
+  pushUndo(prev ? 'replaced the photo' : 'added a photo', async () => {
+    if (prevData) await apiSend('/api/vision', 'POST', { data: prevData, name: prev });
+    else await apiSend(`/api/vision/${encodeURIComponent(name)}`, 'DELETE');
     await refreshMap();
   });
-  if (hzView.slots) hzView.slots--;
   await refreshMap();
 }
 
-// The undo puts the same bytes back under the same name, so the photo returns
-// to where it was in the order.
 async function removeVisionPhoto(name) {
-  const url = encodeURIComponent(name);
-  const blob = await fetch(`/vision/${url}`).then(r => (r.ok ? r.blob() : null)).catch(() => null);
-  const res = await apiSendData(`/api/vision/${url}`, 'DELETE');
+  const data = await visionSnapshot(name);
+  const res = await apiSendData(`/api/vision/${encodeURIComponent(name)}`, 'DELETE');
   if (!res.ok) { toast(res.data.error || 'Could not remove that photo'); return; }
-  const data = blob && await readDataUrl(blob);
   if (data) {
-    pushUndo('removed a photo', async () => {
+    pushUndo('removed the photo', async () => {
       await apiSend('/api/vision', 'POST', { data, name });
       await refreshMap();
     });
@@ -11050,53 +11015,66 @@ async function removeVisionPhoto(name) {
 function renderHorizon(body) {
   const h = mapView.horizon;
   // A document being written in is not repainted under the cursor.
-  const live = body.querySelector(`.hz-doc[data-hz="${h}"]`);
+  const live = body.querySelector(`[data-hz="${h}"]`);
   if (live && live === document.activeElement) return;
-  if (HZ_DOC_KEYS[h]) {
-    const editor = `<div class="hz-doc${h === 'purpose' ? ' hz-doc-purpose' : ''}" contenteditable="true"
-      data-hz="${h}" data-ph="${escHtml(HZ_PLACEHOLDER[h])}" spellcheck="true"></div>`;
-    body.innerHTML = h === 'purpose'
-      ? `<div class="hz-purpose">${editor}</div>`
-      : `<div class="mp-page"><nav class="mp-index"></nav><div class="mp-main hz-main">${editor}</div></div>`;
+  const key = HZ_DOC_KEYS[h];
+  const saved = () => (state.settings || {})[key] || '';
+  if (h === 'purpose') {
+    body.innerHTML = `<div class="hz-purpose"><div class="hz-doc hz-doc-purpose" contenteditable="true"
+      data-hz="${h}" data-ph="${escHtml(HZ_PLACEHOLDER[h])}" spellcheck="true"></div></div>`;
     const el = body.querySelector('.hz-doc');
-    const saved = (state.settings || {})[HZ_DOC_KEYS[h]] || '';
-    if (h === 'purpose') el.textContent = saved; else el.innerHTML = saved;
-    wireHorizonDoc(el, h);
+    el.textContent = saved();
+    wireHorizonPurpose(el);
     return;
   }
-  // Vision: the photos edge to edge, then the empty frames, then + Add photo.
-  const photos = state.vision || [];
-  const slots = photos.length ? hzView.slots : Math.max(1, hzView.slots);
-  body.innerHTML = `<div class="hz-vision">${photos.map(n => `<div class="hz-photo" data-photo="${escHtml(n)}"
-      title="Right-click or hold to remove"><img src="/vision/${encodeURIComponent(n)}" alt=""></div>`).join('')}${
-    Array.from({ length: slots }, () => `<button class="hz-photo hz-slot">Drop a photo</button>`).join('')}
-    <button class="hz-add">+ Add photo</button>
+  // Areas and Goals are MARKDOWN DOCUMENTS (2026-10-19, Quentin's
+  // instruction): the Lists document's component, unchanged.
+  if (key) {
+    body.innerHTML = `<div class="mp-page"><nav class="mp-index"></nav><div class="mp-main hz-main">${
+      mdDocHtml(saved(), `data-hz="${h}"`, HZ_PLACEHOLDER[h])}</div></div>`;
+    wireMdDoc(body, {
+      label: `edited ${horizonName(h)}`,
+      saved,
+      save: value => saveHorizonDoc(key, value),
+      restore: async prev => {
+        await saveHorizonDoc(key, prev);
+        renderMap();
+      },
+    });
+    return;
+  }
+  // Vision: ONE photo filling the page, or the empty frame that takes one.
+  // Its menu (right-click, or the hold) replaces or removes it, and a photo
+  // dropped on it replaces it.
+  const photo = (state.vision || [])[0];
+  body.innerHTML = `<div class="hz-vision">${photo
+    ? `<div class="hz-photo" data-photo="${escHtml(photo)}" title="Right-click or hold to replace or remove">
+        <img src="/vision/${encodeURIComponent(photo)}" alt=""></div>`
+    : `<button class="hz-photo hz-slot"></button>`}
     <input type="file" accept="image/*" class="hidden" id="hz-file">
   </div>`;
-  const size = visionSize();
-  body.querySelectorAll('.hz-slot').forEach(slot => { slot.textContent = `Drop a ${size.w} × ${size.h} photo`; });
+  const frame = body.querySelector('.hz-photo');
+  // Measured once the frame is on the page: the size it asks for is its own.
+  if (!photo) { const size = visionSize(); frame.textContent = `Drop a ${size.w} × ${size.h} photo`; }
   const file = body.querySelector('#hz-file');
   file.addEventListener('change', () => { if (file.files[0]) addVisionPhoto(file.files[0]); file.value = ''; });
-  body.querySelectorAll('.hz-slot').forEach(slot => {
-    slot.addEventListener('click', () => file.click());
-    slot.addEventListener('dragover', e => { e.preventDefault(); slot.classList.add('hz-slot-over'); });
-    slot.addEventListener('dragleave', () => slot.classList.remove('hz-slot-over'));
-    slot.addEventListener('drop', e => {
+  if (!photo) frame.addEventListener('click', () => file.click());
+  frame.addEventListener('dragover', e => { e.preventDefault(); frame.classList.add('hz-slot-over'); });
+  frame.addEventListener('dragleave', () => frame.classList.remove('hz-slot-over'));
+  frame.addEventListener('drop', e => {
+    e.preventDefault();
+    frame.classList.remove('hz-slot-over');
+    const f = e.dataTransfer.files[0];
+    if (f) addVisionPhoto(f);
+  });
+  if (photo) {
+    frame.addEventListener('contextmenu', e => {
       e.preventDefault();
-      slot.classList.remove('hz-slot-over');
-      const f = e.dataTransfer.files[0];
-      if (f) addVisionPhoto(f);
+      openObjectMenu(e.clientX, e.clientY, 'vision', photo, [
+        { label: 'Replace photo…', run: () => file.click() },
+        { label: 'Remove photo', danger: true, run: () => removeVisionPhoto(photo) }]);
     });
-  });
-  body.querySelector('.hz-add').addEventListener('click', () => {
-    hzView.slots = (photos.length ? hzView.slots : Math.max(1, hzView.slots)) + 1;
-    renderMap();
-  });
-  body.querySelectorAll('.hz-photo[data-photo]').forEach(ph => {
-    const menu = (x, y) => openObjectMenu(x, y, 'vision', ph.dataset.photo, [
-      { label: 'Remove photo', danger: true, run: () => removeVisionPhoto(ph.dataset.photo) }]);
-    ph.addEventListener('contextmenu', e => { e.preventDefault(); menu(e.clientX, e.clientY); });
-  });
+  }
 }
 
 // MAP PAGE, 9a (2026-10-01, Quentin's design): the Now page's shell — the

@@ -6386,7 +6386,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 
 /* ── HORIZONS (2026-10-07, Quentin's design "Horizons Page") ─────────────
-   The four horizons above Projects. Areas and Goals are documents in the Now
+   The four horizons above Projects. Areas and Goals are markdown documents
+   (mdDocHtml, the Lists document's component) in the Now
    column (the Projects page's shell, no index); Purpose one sentence in the
    middle of the page; Vision photographs edge to edge. */
 .hz-doc {
@@ -6398,10 +6399,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .hz-main { padding-top: 30px; }
 .hz-doc:empty::before { content: attr(data-ph); color: var(--text-secondary); pointer-events: none; }
-.hz-doc h3 { font-size: 16px; font-weight: 600; margin: 22px 0 4px; }
-.hz-doc h3:first-child { margin-top: 0; }
-.hz-doc p { margin: 0 0 6px; }
-.hz-doc ul { margin: 0 0 6px; padding-left: 20px; }
 .hz-purpose {
   min-height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h));
   display: flex;
@@ -6420,7 +6417,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   line-height: 1.3;
   text-wrap: balance;
 }
-.hz-vision { display: flex; flex-direction: column; gap: 2px; padding-bottom: 14px; }
+.hz-vision { display: flex; flex-direction: column; }
 .hz-photo {
   display: block;
   width: 100%;
@@ -6438,15 +6435,6 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   cursor: pointer;
 }
 .hz-slot:hover, .hz-slot-over { color: var(--text-primary); }
-.hz-add {
-  align-self: center;
-  margin-top: 12px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 13.5px;
-  color: var(--text-secondary);
-}
-.hz-add:hover { background: var(--surface-2); color: var(--text-primary); }
 
 /* ── EACH PAGE'S SELECTOR AND SEARCH, in the strip (2026-10-01) ───────────
    Right of the page tools, before undo: a quiet pill that names what the
@@ -6586,7 +6574,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ref-doc-title { font-size: 24px; font-weight: 600; line-height: 1.3; color: var(--text-primary);
   padding: 4px 0 12px; }
-.ref-doc {
+.md-doc {
   display: block;
   width: 100%;
   /* A document takes the page's height, never a share of it (2026-10-08):
@@ -6600,9 +6588,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   font: 15px/1.65 var(--font-ui);
   color: var(--text-primary);
 }
-.ref-doc::placeholder { color: var(--text-secondary); }
-/* A document read formatted (mdHtml); double-click writes it in markdown. */
-.ref-doc-view { min-height: calc(100dvh - 200px); font: 15px/1.65 var(--font-ui); color: var(--text-primary);
+.md-doc::placeholder { color: var(--text-secondary); }
+/* A document read formatted (mdHtml); double-click writes it in markdown
+   (mdDocHtml: a Lists document, the Horizons' Areas and Goals). */
+.md-doc-view { min-height: calc(100dvh - 200px); font: 15px/1.65 var(--font-ui); color: var(--text-primary);
   cursor: text; overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; }
 .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 1.1em 0 0.4em; line-height: 1.3; font-weight: 600; }

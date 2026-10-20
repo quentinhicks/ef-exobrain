@@ -1627,6 +1627,7 @@ def init_db():
     _routines_to_lists(conn)
     # And this after THAT: the routines it made nest, so they are directories.
     _lists_to_files(conn)
+    _horizon_docs_to_markdown(conn)
     # Habits v2 (2026-08-11). An EXPERIMENT is an object with an ending: it
     # runs (one at a time), resolves with a note, and is EVALUATED only at the
     # weekly review — extend / habit / drop. A HABIT is a standing commitment
@@ -4412,6 +4413,10 @@ def vision_add(data, mime, name=None):
     os.makedirs(VISION_DIR, exist_ok=True)
     with open(os.path.join(VISION_DIR, name), 'wb') as f:
         f.write(data)
+    # VISION IS ONE PHOTO (2026-10-19): the new one replaces what was there.
+    for old in vision_photos():
+        if old != name:
+            os.remove(os.path.join(VISION_DIR, old))
     return name
 
 
@@ -5911,6 +5916,83 @@ def _routines_to_lists(conn):
     conn.commit()
     if lists:
         print('routines: %d list(s), %d item(s) - routines are lists now' % (lists, steps))
+
+
+# The Horizons' Areas and Goals became MARKDOWN documents (2026-10-19) ONCE,
+# recorded in setting.horizon_docs_markdown — never clear it, or a document
+# written since that happens to hold a `<` would be read as HTML again. They
+# were contenteditable HTML, and the editor only ever made <h3>, <ul><li>, <p>
+# / <div>, <br> and <b>/<i>, so each of those has its markdown and anything
+# else keeps its text.
+HORIZON_DOC_KEYS = ('horizon_areas', 'horizon_goals')
+
+
+def horizon_html_to_markdown(html):
+    from html.parser import HTMLParser
+    lines, cur = [], []
+    marks = {'b': '**', 'strong': '**', 'i': '*', 'em': '*', 's': '~~', 'strike': '~~', 'del': '~~'}
+
+    def end_line(prefix=''):
+        text = ''.join(cur).strip()
+        cur.clear()
+        if text:
+            lines.append(prefix + text)
+
+    class P(HTMLParser):
+        in_li = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ('p', 'div', 'li', 'ul', 'ol') or tag[:1] == 'h' and tag[1:].isdigit():
+                end_line('- ' if self.in_li else '')
+                self.in_li = tag == 'li'
+            elif tag == 'br':
+                end_line('- ' if self.in_li else '')
+            elif tag in marks:
+                cur.append(marks[tag])
+
+        def handle_endtag(self, tag):
+            if tag == 'li':
+                end_line('- ')
+                self.in_li = False
+            elif tag[:1] == 'h' and tag[1:].isdigit():
+                end_line('#' * int(tag[1:]) + ' ')
+            elif tag in ('p', 'div'):
+                end_line()
+            elif tag in marks:
+                cur.append(marks[tag])
+
+        def handle_data(self, data):
+            cur.append(data.replace('\xa0', ' '))
+
+    p = P(convert_charrefs=True)
+    p.feed(html)
+    p.close()
+    end_line()
+    # A heading starts a section: a blank line before it, as written by hand.
+    out = []
+    for line in lines:
+        if line.startswith('#') and out:
+            out.append('')
+        out.append(line)
+    return '\n'.join(out)
+
+
+def _horizon_docs_to_markdown(conn):
+    if conn.execute("SELECT value FROM setting WHERE key = 'horizon_docs_markdown'").fetchone():
+        return
+    done = 0
+    for key in HORIZON_DOC_KEYS:
+        row = conn.execute('SELECT value FROM setting WHERE key = ?', (key,)).fetchone()
+        if row and row['value'] and '<' in row['value']:
+            conn.execute('UPDATE setting SET value = ? WHERE key = ?',
+                         (horizon_html_to_markdown(row['value']), key))
+            done += 1
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('horizon_docs_markdown', ?)",
+        (date_cls.today().isoformat(),))
+    conn.commit()
+    if done:
+        print('horizons: %d document(s) are markdown now' % done)
 
 
 # Lists became a file system (2026-10-08) ONCE, recorded in
