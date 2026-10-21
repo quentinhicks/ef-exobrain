@@ -592,7 +592,7 @@ function renderDay() {
     const top = y(g.window.start_min), h = Math.max(22, y(g.window.end_min) - top);
     const locked = dragRefusal(g);
     const up = reach(it, -1), down = reach(it, 1);
-    return `<div class="gd-gate gd-st-${st}${G.sel === g.node_id ? ' gd-picked' : ''}${g.skipped ? ' gd-skipped' : ''}${
+    return `<div class="gd-gate gd-st-${st}${G.sel === g.node_id ? ' gd-picked' : ''}${g.skipped ? ' gd-skipped' : ''}${g.hidden ? ' gd-hidden' : ''}${
       g.window.all_day ? ' gd-allday' : ''}${locked ? ' gd-locked' : ''}" data-gate="${g.node_id}"
       style="top:${top}px;height:${h}px;left:calc(${lane} * (100% / ${lanes}));width:calc(100% / ${lanes} - 4px)"
       title="${escHtml(locked || (g.window_locked ? INWARD_ONLY : 'Drag the top or bottom edge to move this day only'))}">
@@ -762,14 +762,14 @@ async function restoreWindow(id, date, prev) {
 }
 
 // CALLING A DAY OFF writes qr_override.skipped — the store the judge reads, so
-// the day lands 'n/a' by the road a non-run weekday does. Skipping loosens and
-// takes the 24h lock; putting it back re-commits and never waits.
-async function setSkip(id, date, want) {
-  const res = want
-    ? await apiSendData(`/api/accountability/nodes/${id}/overrides`, 'POST', { date, skipped: true })
-    : await apiSendData(`/api/accountability/nodes/${id}/overrides/${date}`, 'DELETE');
+// the day lands 'n/a' by the road a non-run weekday does. Going off (called
+// off or hidden, common.js's gateDayState) loosens and takes the 24h lock;
+// putting it back re-commits and never waits.
+async function setDayState(id, date, from, to) {
+  const res = await apiSendData(`/api/accountability/nodes/${id}/overrides`, 'POST',
+    { date, ...gateDayBody(from, to) });
   if (!res.ok) {
-    toast(refusal(res, want ? 'Could not call that day off' : 'Could not put that day back'));
+    toast(refusal(res, `Could not ${GATE_DAY_WORDS[to].verb}`));
     return false;
   }
   if (date === G.date) await reloadDay();
@@ -792,6 +792,19 @@ function recordStrip(h) {
       red = missed, blank = not judged. ${money(h.charged_cents)} charged over them.</div>`;
 }
 
+// The day's other two states, as buttons. Going off from on is a loosening and
+// waits out the lock; between off and hidden nothing the judge reads changes.
+function dayStateButtons(g, lockedWhy) {
+  const from = gateDayState(g);
+  const btn = (to, text, gated) => `<button class="gd-btn" data-day-state="${to}" ${
+    (gated && lockedWhy) || g.judged ? 'disabled' : ''}>${text}</button>`;
+  return {
+    on: btn('off', 'Call this day off', true) + btn('hidden', 'Hide this day', true),
+    off: btn('on', 'Put this day back') + btn('hidden', 'Hide this day'),
+    hidden: btn('on', 'Put this day back') + btn('off', 'Show it, still called off'),
+  }[from];
+}
+
 function renderDetail() {
   const el = $('#gd-detail');
   if (!el) return;
@@ -809,7 +822,8 @@ function renderDetail() {
       : `✗ ${escHtml(gateReason(g.judged.failure_reason))} — ${escHtml(gateStatus(g.judged.charge_status))}`
         + (g.judged.amount_cents ? ` · ${money(g.judged.amount_cents)}` : '');
   } else if (!g.applies) {
-    verdict = g.skipped ? '○ Called off — this day lands "did not run".' : '○ Does not run this day.';
+    verdict = g.hidden ? '○ Called off and hidden from the calendar — this day lands "did not run".'
+      : g.skipped ? '○ Called off — this day lands "did not run".' : '○ Does not run this day.';
   } else {
     verdict = v.met ? '✓ Cleared. It settles at ' + escHtml(stamp(v.settles_at)) + '.'
       : `Not cleared yet. If the day ended now it would owe ${money(v.owed_cents)}`
@@ -845,22 +859,20 @@ function renderDetail() {
       `<li>${pg.label ? escHtml(pg.label) + ' → ' : ''}${escHtml(pg.text)} from ${escHtml(pg.effective_date)}</li>`).join('')}</ul>` : ''}
     <h4>Record</h4>${recordStrip(g.history)}
     <div class="gd-actions">
-      ${g.applies || g.skipped ? `<button class="gd-btn" id="gd-skip" ${lockedWhy || g.judged ? 'disabled' : ''}>${
-        g.skipped ? 'Put this day back' : 'Call this day off'}</button>` : ''}
+      ${g.applies || g.skipped ? dayStateButtons(g, lockedWhy) : ''}
       ${g.override && !g.override.skipped && !g.judged ? `<button class="gd-btn" id="gd-unov" ${g.remove_locked ? 'disabled title="Removing it would loosen this day, and it closes within 24h."' : ''}>Remove this day's change</button>` : ''}
       <button class="gd-btn" id="gd-edit">Edit gate ›</button>
     </div>
     ${lockedWhy ? `<div class="gd-hint">${lockedWhy} Calling it off is a loosening; dragging the window's edges inward is not.</div>` : ''}
   </div>`;
 
-  const skip = $('#gd-skip');
-  if (skip) skip.addEventListener('click', async () => {
-    const date = G.date, was = g.skipped, id = g.node_id, label = g.label;
-    if (await setSkip(id, date, !was)) {
-      pushUndo(`${was ? 'put back' : 'called off'} "${label}" on ${dayLabel(date)}`,
-        () => setSkip(id, date, was));
+  el.querySelectorAll('[data-day-state]').forEach(b => b.addEventListener('click', async () => {
+    const date = G.date, from = gateDayState(g), to = b.dataset.dayState, id = g.node_id;
+    if (await setDayState(id, date, from, to)) {
+      pushUndo(`${GATE_DAY_WORDS[to].undo} "${g.label}" on ${dayLabel(date)}`,
+        () => setDayState(id, date, to, from));
     }
-  });
+  }));
   const unov = $('#gd-unov');
   if (unov) unov.addEventListener('click', async () => {
     const date = G.date, prev = g.override, id = g.node_id;

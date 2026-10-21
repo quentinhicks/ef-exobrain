@@ -178,6 +178,28 @@ function clockHHMM(minutes) {
   return minutesToHHMM(((Math.round(minutes) % DAY_MIN) + DAY_MIN) % DAY_MIN);
 }
 
+// A GATE'S DAY IS ON, OFF OR HIDDEN (2026-10-21, Quentin's instruction): on
+// charges; off (called off) costs nothing and still draws and clips the
+// calendar; hidden is off and neither. `g` is a served gate day. The body is
+// what POST /api/accountability/nodes/<id>/overrides takes to move it, the
+// server's rules behind each (going off waits out the 24h lock; back on keeps
+// the window it was moved to). The calendar and /gates both ask these.
+function gateDayState(g) {
+  return g.hidden ? 'hidden' : g.skipped ? 'off' : 'on';
+}
+
+function gateDayBody(from, to) {
+  return to === 'on' ? { skipped: false }
+    : to === 'hidden' ? { hidden: true }
+    : from === 'hidden' ? { hidden: false } : { skipped: true };
+}
+
+const GATE_DAY_WORDS = {
+  on: { verb: 'put that day back on', done: 'is back on', undo: 'put back' },
+  off: { verb: 'call that day off', done: 'is called off', undo: 'called off' },
+  hidden: { verb: 'hide that day', done: 'is hidden', undo: 'hid' },
+};
+
 // Minutes from `then` to `now` on a clock that may have crossed midnight since
 // `then` was read: an end more than half a day AHEAD of the clock is a
 // semantic minute from before midnight (a row ending at 1450 read at 00:20),

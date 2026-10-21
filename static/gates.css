@@ -129,6 +129,8 @@ body.gd-sheet-open { overflow: hidden; }
 .gd-gate.gd-st-missed { background: var(--gate-missed); }
 .gd-gate.gd-st-off { background: var(--gate-dismissed); color: var(--on-gate-dismissed); }
 .gd-gate.gd-skipped .gd-gate-name { text-decoration: line-through; }
+/* Hidden from the calendar: an edge, not a fade, so its text keeps its contrast. */
+.gd-gate.gd-hidden { border-style: dashed; border-color: var(--on-gate-dismissed); }
 .gd-gate.gd-allday { border-style: dashed; border-color: var(--on-gate); }
 .gd-gate.gd-picked { outline: 2px solid var(--text-primary); outline-offset: 1px; }
 .gd-gate.gd-dragging { opacity: 0.85; z-index: 5; }

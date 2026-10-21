@@ -94,6 +94,7 @@ def gate_line(g):
         'window_set_by': w.get('from'), 'all_day': bool(w.get('all_day')),
         'locked_within_24h': bool(g.get('skip_locked')),
         'window_only_tightens': bool(g.get('window_locked')),
+        'hidden_from_calendar': bool(g.get('hidden')),
         'judged': bool(g.get('judged')), 'closed': bool(w.get('closed')),
         'settles_at': (g.get('verdict') or {}).get('settles_at'),
         'cleared_so_far': bool((g.get('verdict') or {}).get('met')),
@@ -148,9 +149,11 @@ def call_off_day(a):
 
 
 def put_day_back(a):
+    # Not a DELETE: the day keeps the window it was moved to while off.
     date, reason = need_date(a), need_reason(a)
-    call('DELETE', f"/api/accountability/nodes/{int(a['gate_id'])}/overrides/{date}", None, reason)
-    return {'ok': True, 'date': date, 'note': 'the gate runs that day again'}
+    call('POST', f"/api/accountability/nodes/{int(a['gate_id'])}/overrides",
+         {'date': date, 'skipped': False}, reason)
+    return {'ok': True, 'date': date, 'note': 'the gate runs that day again, at its window'}
 
 
 def set_weekly_schedule(a):

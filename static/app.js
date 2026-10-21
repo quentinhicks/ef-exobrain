@@ -956,6 +956,7 @@ function computeViewWindow() {
   const deadlineMin = (node) => {
     // The served day first — the same deadline the week and the judge use.
     const served = viewGatesFor(pageDate).find(g => g.node_id === node.id);
+    if (served && served.hidden) return null;     // a hidden day clips nothing
     if (served && served.window && served.window.end_min != null) return served.window.end_min;
     const ov = viewingToday ? node.today_override : (state.qrPageOverrides[`${node.id}:${pageDate}`] || null);
     const def = nodeWindowForDate(node, pageDate);
@@ -963,8 +964,8 @@ function computeViewWindow() {
     const offset = ov ? ov.window_end_offset_days : def.window_end_offset_days;
     return windowEndMin(end, offset);
   };
-  const start = deadlineMin(wake);
-  let end = deadlineMin(sleep);
+  const start = deadlineMin(wake) ?? 0;
+  let end = deadlineMin(sleep) ?? DAY_MIN;
   // A sleep deadline at/before wake means past midnight, offset flag or not
   if (end <= start) end += DAY_MIN;
   return gateSelBounds({ start, end });
@@ -2422,14 +2423,15 @@ async function refreshCalWeek() {
   if (calPin.cat) paintCalPin();
 }
 
-// The gates drawn on a day: running, or PAUSED, drawn muted: a paused gate is
-// not judged, and hiding it made the week look as if it had no gates at all.
-// A CALLED-OFF DAY IS HIDDEN (2026-10-21, Quentin's instruction, reversing
-// "a called-off day still draws"): off and on screen at once was two answers.
-// Its door back is the undo and /gates' day card, which still shows it.
+// The gates drawn on a day — and the ONLY gates that clip the calendar's
+// hours (calWeekRange, computeViewWindow): running, called off (the mark is
+// the answer), or PAUSED, drawn muted: a paused gate is not judged, and hiding
+// it made the week look as if it had no gates at all. A HIDDEN day (2026-10-21,
+// Quentin's instruction: on / called off / hidden) is neither drawn nor
+// clips; its doors back are the undo and /gates' day card, which shows it.
 function wkDayGatesFrom(list) {
   return (list || []).filter(g =>
-    g.applies && !g.skipped && g.window && g.window.end_min != null);
+    (g.applies || g.skipped) && !g.hidden && g.window && g.window.end_min != null);
 }
 
 function wkDayGates(d) {
@@ -2469,11 +2471,12 @@ function wkRole(nodeId) {
 }
 
 // The hours shown: from the wake gate's earliest deadline this week to the
-// sleep gate's latest, the two gates the day view is clipped by. Either one
-// unset leaves that edge at the day's own.
+// sleep gate's latest, the two gates the day view is clipped by — every drawn
+// one, a called-off day included (wkDayGatesFrom). Either one unset, or
+// hidden all week, leaves that edge at the day's own.
 function calWeekRange(dates) {
   const ends = role => dates.flatMap(d => wkDayGates(d)
-    .filter(g => g.applies && wkRole(g.node_id) === role).map(g => g.window.end_min));
+    .filter(g => wkRole(g.node_id) === role).map(g => g.window.end_min));
   const wakes = ends('wake'), sleeps = ends('sleep');
   const start = wakes.length ? Math.floor(Math.min(...wakes) / 60) * 60 : 0;
   let end = sleeps.length ? Math.ceil(Math.max(...sleeps) / 60) * 60 : DAY_MIN;
@@ -9927,13 +9930,13 @@ async function reloadCalGates(dateStr) {
   if (state.gateSel) await refreshGateSel(); else renderTimeline();
 }
 
-async function calGateSkip(nodeId, dateStr, want) {
-  const res = want
-    ? await apiSend(`/api/accountability/nodes/${nodeId}/overrides`, 'POST', { date: dateStr, skipped: true })
-    : await apiSend(`/api/accountability/nodes/${nodeId}/overrides/${dateStr}`, 'DELETE');
+// The three states and their bodies are common.js's (gateDayState).
+async function calGateSetState(nodeId, dateStr, from, to) {
+  const res = await apiSend(`/api/accountability/nodes/${nodeId}/overrides`, 'POST',
+    { date: dateStr, ...gateDayBody(from, to) });
   if (!res || !res.ok) {
     const msg = res ? await res.json().catch(() => ({})) : {};
-    toast(msg.error || (want ? 'Could not call that day off' : 'Could not put that day back'));
+    toast(msg.error || `Could not ${GATE_DAY_WORDS[to].verb}`);
     return false;
   }
   await reloadCalGates(dateStr);
@@ -9943,22 +9946,27 @@ async function calGateSkip(nodeId, dateStr, want) {
 // A GESTURE IS A BUTTON, and this one moves money: its inverse is the state
 // the day was in. Putting a day back re-commits it and the lock never refuses
 // that, so the undo of a call-off always lands. The forward act is toasted,
-// unlike most: it has no label on screen, and it is the real-money path.
-async function toggleCalGateSkip(nodeId, label, dateStr, skipped) {
-  if (!await calGateSkip(nodeId, dateStr, !skipped)) return;
+// unlike most: it has no label on screen (a hidden day has none at all), and
+// it is the real-money path.
+async function moveCalGateDay(nodeId, label, dateStr, from, to) {
+  if (!await calGateSetState(nodeId, dateStr, from, to)) return;
   const when = formatTodoDate(new Date(dateStr + 'T12:00:00'));
-  toast(skipped ? `"${label}" is back on for ${when}` : `"${label}" is called off for ${when}`);
-  pushUndo(skipped ? `put "${label}" back` : `called off "${label}"`,
-    () => calGateSkip(nodeId, dateStr, skipped));
+  toast(`"${label}" ${GATE_DAY_WORDS[to].done} for ${when}`);
+  pushUndo(`${GATE_DAY_WORDS[to].undo} "${label}"`, () => calGateSetState(nodeId, dateStr, to, from));
 }
 
 registerObjectVerbs('calendar-gate', (kind, id, el) => {
   if (kind !== 'gate' || !el.closest('#cal-week, #tl-qr-layer')) return [];
   const hit = calGateOn(el, id);
-  if (!hit || !hit.g.applies) return [];
+  if (!hit || (!hit.g.applies && !hit.g.skipped)) return [];
   const { g, d } = hit;
-  return [{ label: 'Call this day off', danger: true,
-            run: () => toggleCalGateSkip(g.node_id, g.label, d, false) }];
+  const from = gateDayState(g);
+  const move = to => () => moveCalGateDay(g.node_id, g.label, d, from, to);
+  return [
+    from === 'off' ? { label: 'Put this day back on', run: move('on') }
+      : { label: 'Call this day off', danger: true, run: move('off') },
+    { label: 'Hide this day', run: move('hidden') },
+  ];
 });
 
 // The inverse of a moved window: the day's own override as the server stored
@@ -9987,7 +9995,7 @@ function undoableGateWindow(nodeId, dateStr, prev, label) {
 // drag followed), and its opening cannot be pushed back past midnight. A mouse
 // drags on its left button and right-click calls the day off; a finger holds
 // 550ms and then drags, and a hold released WITHOUT moving is the finger's
-// right-click. A called-off day has no deadline to move.
+// right-click. A called-off day's mark drags too (its window moves freely).
 //   place(min)  draw the mark at a deadline while it is being dragged
 // WHAT A DRAG IS AT, while it moves (2026-10-08, Quentin: see the hour while
 // dragging a gate). A title tooltip never shows mid-drag, so a drag names
@@ -10013,7 +10021,7 @@ function dragTipHide() {
 }
 
 function initGateDrag(handle, g, dateStr, geo, place) {
-  if (g.skipped || !g.window || g.window.start_min == null || g.window.end_min == null) return;
+  if (!g.window || g.window.start_min == null || g.window.end_min == null) return;
   const s0 = g.window.start_min, e0 = g.window.end_min;
   onPointerDrag(handle, { keepClick: true, start(e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return null;
@@ -10044,11 +10052,15 @@ function initGateDrag(handle, g, dateStr, geo, place) {
         handle.title = title;
         dragTipHide();
         if (!moved) {
-          if (touch) toggleCalGateSkip(g.node_id, g.label, dateStr, !!g.skipped);
+          if (touch) {
+            const from = gateDayState(g);
+            moveCalGateDay(g.node_id, g.label, dateStr, from, from === 'off' ? 'on' : 'off');
+          }
           return;
         }
         if (!delta) { geo.repaint(); return; }
-        const prev = g.override && !g.override.skipped ? g.override : null;
+        // A called-off day's row is restored, never DELETEd: that would put it back on.
+        const prev = g.override || null;
         const ns = s0 + delta, ne = e0 + delta;
         const res = await apiSend(`/api/accountability/nodes/${g.node_id}/overrides`, 'POST', {
           date: dateStr, window_start: clockHHMM(ns), window_end: clockHHMM(ne),

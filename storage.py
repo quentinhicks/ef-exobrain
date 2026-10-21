@@ -1257,6 +1257,11 @@ def init_db():
             -- against. Skipping is a LOOSENING and takes the same 24h lock the
             -- window drag does; un-skipping re-commits the day and does not.
             skipped                INTEGER NOT NULL DEFAULT 0,
+            -- HIDDEN (2026-10-21): a called-off day the calendar does not
+            -- draw and is not clipped by. Only ever set WITH skipped -- a day
+            -- that charges is never hidden -- so nothing the judge reads
+            -- changes; it is a view fact about a day that is already off.
+            hidden                 INTEGER NOT NULL DEFAULT 0,
             UNIQUE(node_id, date)
         )''')
     conn.execute('''
@@ -1454,6 +1459,11 @@ def init_db():
         conn.execute('SELECT skipped FROM qr_override LIMIT 1')
     except Exception:
         conn.execute('ALTER TABLE qr_override ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0')
+        conn.commit()
+    try:
+        conn.execute('SELECT hidden FROM qr_override LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE qr_override ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
         conn.commit()
     # ONE-TIME: the gate half of timeline_dismissal is retired. Right-clicking a
     # gate used to file it there — a VIEW-only store the judge has no reason to
@@ -7487,22 +7497,25 @@ def qr_get_override(node_id, date):
 # `skipped=None` means the caller is saying nothing about the day being off —
 # dragging a window must not quietly re-commit a day that was called off, and
 # calling a day off must not disturb the window it resolved to. Two questions,
-# one row, so each write only answers its own.
+# one row, so each write only answers its own. `hidden` is the same: None
+# leaves it alone.
 def qr_set_override(node_id, date, window_start, window_end, offset_days=0,
-                    skipped=None):
+                    skipped=None, hidden=None):
+    skipped = None if skipped is None else int(bool(skipped))
+    hidden = None if hidden is None else int(bool(hidden))
     conn = get_conn()
     conn.execute(
         '''INSERT INTO qr_override (node_id, date, window_start, window_end,
-                                    window_end_offset_days, skipped)
-           VALUES (?,?,?,?,?,COALESCE(?,0))
+                                    window_end_offset_days, skipped, hidden)
+           VALUES (?,?,?,?,?,COALESCE(?,0),COALESCE(?,0))
            ON CONFLICT(node_id, date) DO UPDATE SET
              window_start = excluded.window_start,
              window_end = excluded.window_end,
              window_end_offset_days = excluded.window_end_offset_days,
-             skipped = COALESCE(?, qr_override.skipped)''',
+             skipped = COALESCE(?, qr_override.skipped),
+             hidden = COALESCE(?, qr_override.hidden)''',
         (node_id, date, window_start, window_end, offset_days,
-         None if skipped is None else int(bool(skipped)),
-         None if skipped is None else int(bool(skipped))))
+         skipped, hidden, skipped, hidden))
     conn.commit()
     conn.close()
 

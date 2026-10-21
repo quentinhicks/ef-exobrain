@@ -2782,6 +2782,8 @@ def _gate_day_payload(node, ymd, now=None):
         # read-out renders them — a client deciding for itself whether the 24h
         # lock had bitten would draw a verb the server is about to refuse.
         'skipped': skipped,
+        # Off AND not drawn — the calendar neither shows nor is clipped by it.
+        'hidden': bool(override and override.get('hidden')),
         'skip_locked': qr_judge.override_locked(node, ymd, now),
         # Whether the window may only move INWARD — the lock, unless the day
         # is called off (_window_moves_freely).
@@ -3847,19 +3849,40 @@ def post_accountability_override(id):
     # does not get to say which window it is calling off, and the row records
     # what was actually skipped. A skip on a day that already carries a dragged
     # window keeps that window, because resolve_window reads the override first.
-    if 'skipped' in d:
-        want = bool(d['skipped'])
-        # Skipping LOOSENS — same 24h lock the drag takes, so tonight's gate
+    # THREE STATES A DAY CAN BE IN (2026-10-21, Quentin's instruction): ON (it
+    # charges), CALLED OFF (it draws and clips the calendar, and costs
+    # nothing), HIDDEN (called off AND not drawn, so it clips nothing). Hiding
+    # a day that is on calls it off; putting a day back on un-hides it — a
+    # day that charges is never hidden.
+    if 'skipped' in d or 'hidden' in d:
+        existing = storage.qr_get_override(id, date) or {}
+        was_off = bool(existing.get('skipped'))
+        if 'hidden' in d:
+            hide = bool(d['hidden'])
+            off, hidden = (True if hide else None), hide
+        else:
+            off = bool(d['skipped'])
+            hidden = None if off else False
+        # Going off LOOSENS — same 24h lock the drag takes, so tonight's gate
         # cannot be dodged tonight. Un-skipping re-commits the day, which is a
         # tightening, and tightening is always allowed to land at once. It
         # cannot reach backwards either: a day the judge has already frozen as
         # 'n/a' stays 'n/a' (qr_judgment_exists), so re-committing a past day
-        # is inert rather than retroactively chargeable.
-        if want and qr_judge.override_locked(node, date):
+        # is inert rather than retroactively chargeable. Hiding or showing a
+        # day that is already off changes nothing the judge reads.
+        if off and not was_off and qr_judge.override_locked(node, date):
             return jsonify({'error': 'Locked — deadline within 24h'}), 403
         w = qr_judge.resolve_window(node, date)
-        storage.qr_set_override(id, date, w[0], w[1], w[2], skipped=want)
-        return jsonify({'ok': True, 'skipped': want})
+        # Back on: the window the day was moved to stays (a called-off day's
+        # window moves freely, so that is where it was put). A row that then
+        # only agrees with the window beneath it is no change, and goes.
+        beneath = qr_judge.resolve_window(node, date, override=False)
+        if off is False and (w[0], w[1], w[2] or 0) == (beneath[0], beneath[1], beneath[2] or 0):
+            storage.qr_delete_override(id, date)
+        else:
+            storage.qr_set_override(id, date, w[0], w[1], w[2], skipped=off, hidden=hidden)
+        ov = storage.qr_get_override(id, date) or {}
+        return jsonify({'ok': True, 'skipped': bool(ov.get('skipped')), 'hidden': bool(ov.get('hidden'))})
 
     offset = d.get('window_end_offset_days') or 0
     # Within 24h of the deadline the day can still be TIGHTENED — a window

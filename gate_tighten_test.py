@@ -125,6 +125,45 @@ conn.close()
 r = move(nid4, TODAY, '04:00', '15:00')
 check('a JUDGED called-off day is frozen and refuses a loosening', r.status_code == 403, r.get_json())
 
+# -- on / called off / hidden (2026-10-21) ---------------------------------
+def state(nid, ymd):
+    d = c.get(f'/api/accountability/nodes/{nid}/day?date={ymd}').get_json()
+    return 'hidden' if d['hidden'] else 'off' if d['skipped'] else 'on'
+
+
+def set_state(nid, ymd, body):
+    return c.post(f'/api/accountability/nodes/{nid}/overrides', json=dict(date=ymd, **body))
+
+
+nid5 = storage.qr_create_node('Read', 'tok-tight-5', '06:00', '08:00')
+r = set_state(nid5, TODAY, {'hidden': True})
+check('hiding a day that is ON calls it off, so the lock refuses it',
+      r.status_code == 403 and state(nid5, TODAY) == 'on', r.get_json())
+r = set_state(nid5, FAR, {'hidden': True})
+check('outside the lock, hiding a day that is on calls it off AND hides it',
+      r.status_code == 200 and state(nid5, FAR) == 'hidden', r.get_json())
+check('...and the judge sees an ordinary called-off day',
+      not qr_judge.applies_on(node_of(nid5), FAR, storage.qr_get_override(nid5, FAR)))
+set_state(nid5, FAR, {'hidden': False})
+check('showing it leaves it called off', state(nid5, FAR) == 'off')
+storage.qr_set_override(nid5, TODAY, '06:00', '08:00', 0, skipped=True)      # off before the lock
+r = set_state(nid5, TODAY, {'hidden': True})
+check('hiding a day already off is free inside the lock', r.status_code == 200 and state(nid5, TODAY) == 'hidden',
+      r.get_json())
+r = set_state(nid5, TODAY, {'hidden': False})
+check('...and so is showing it again', r.status_code == 200 and state(nid5, TODAY) == 'off', r.get_json())
+set_state(nid5, TODAY, {'hidden': True})
+move(nid5, TODAY, '10:00', '12:00')
+r = set_state(nid5, TODAY, {'skipped': False})
+check('putting a hidden day back on un-hides it - a day that charges is never hidden',
+      r.status_code == 200 and state(nid5, TODAY) == 'on', r.get_json())
+check('...and keeps the window it was moved to while off',
+      window(nid5, TODAY)[:2] == ('10:00', '12:00'), window(nid5, TODAY))
+storage.qr_set_override(nid5, FAR, '06:00', '08:00', 0, skipped=True)
+set_state(nid5, FAR, {'skipped': False})
+check('a day put back on whose row only agrees with its schedule leaves no row',
+      storage.qr_get_override(nid5, FAR) is None)
+
 # -- outside the lock nothing changes --------------------------------------
 check('a day a week out is not locked', not qr_judge.override_locked(node_of(nid), FAR))
 r = move(nid, FAR, '05:00', '10:00')
