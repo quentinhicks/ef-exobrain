@@ -1163,26 +1163,37 @@ async function toggleBlockCancelOn(blockId, dateStr, overrides, after) {
   await after();
 }
 
-// A WEEK COLUMN'S VERBS for a block: the same two the day view offers, for
-// the column's own date.
+// A WEEK COLUMN'S VERBS for a block, for the column's own date. Cancelling
+// HIDES it (drawnSegments), so the separate view-only "Hide for this day" is
+// gone: two verbs that both made a block vanish were two answers.
 registerObjectVerbs('week-block', (kind, id, el) => {
   if (kind !== 'block' || !el.closest('#cal-week')) return [];
   const blockEl = el.closest('.tl-block') || el;
   const d = blockEl.dataset.date;
   if (!d) return [];
   const overrides = (calWeek.days[d] || {}).overrides || [];
-  const ov = overrides.find(o => o.block_id === parseInt(id) && o.date === d);
-  const cancelled = ov && ov.cancelled === 1;
-  const label = blockEl.querySelector('.tl-block-label')?.textContent || 'Block';
   return [
     ...purposeItem(blockEl),
-    { label: cancelled ? 'Restore for this day' : 'Cancel for this day',
-      danger: !cancelled,
+    { label: 'Cancel for this day', danger: true,
       run: () => toggleBlockCancelOn(parseInt(id), d, overrides, refreshCalWeek) },
-    { label: 'Hide for this day',
-      run: () => hideTimelineItem('block', `${id}:${d}`, label) },
   ];
 });
+
+// THE WAY BACK TO A CANCELLED BLOCK, which is not drawn: the day header's menu
+// (right-click, or the hold) lists that day's cancelled blocks to restore.
+function wkRestoreMenu(e) {
+  const head = e.target.closest('.wk-day[data-date]');
+  if (!head) return false;
+  e.preventDefault();
+  const d = head.dataset.date;
+  const day = calWeek.days[d] || {};
+  const items = (day.segments || []).filter(s => s.cancelled && s.block_id && s.start >= 0)
+    .map(s => ({ label: `Restore ${s.label} ${clockHHMM(s.start)}–${wkClock(s.end)}`,
+                 run: () => toggleBlockCancelOn(s.block_id, d, day.overrides || [], refreshCalWeek) }));
+  openObjectMenu(e.clientX, e.clientY, 'calday', d,
+    items.length ? items : [{ info: true, label: 'Nothing cancelled this day' }]);
+  return true;
+}
 
 // THE TIMELINE'S OWN VERBS for a block, handed to the object menu. They need
 // the DAY being looked at, which is the surface's to know and not the menu's —
@@ -1191,22 +1202,13 @@ registerObjectVerbs('timeline-block', (kind, id, el) => {
   if (kind !== 'block' || !el.closest('#tl-qr-layer, #tl-body')) return [];
   const dateStr = viewDay();
   const blockEl = el.closest('.tl-block') || el;
-  const label = blockEl.querySelector('.tl-block-label')?.textContent || 'Block';
-  const ov = (state.overrides || []).find(o => o.block_id === parseInt(id) && o.date === dateStr);
-  const cancelled = ov && ov.cancelled === 1;
   return [
     ...purposeItem(blockEl),
-    { label: cancelled ? 'Restore for today' : 'Cancel for today',
-      danger: !cancelled,
+    { label: 'Cancel for today', danger: true,
       run: () => toggleBlockCancelOn(parseInt(id), dateStr, state.overrides, async () => {
         await fetchOverridesForDate(state.currentDate);
         renderTimeline();
       }) },
-    { label: 'Hide for today',
-      run: () => {
-        hideTimelineItem('block', `${id}:${dateStr}`, label);
-        renderTimeline();
-      } },
   ];
 });
 
@@ -1770,25 +1772,14 @@ function viewSegmentsFor(dateStr) {
     ? state.viewSegments.segments : [];
 }
 
-// A CANCELLED BLOCK IS DRAWN ONLY WHERE NOTHING LIVE STANDS ON IT (2026-10-04,
-// Quentin: the one-offs must not intersect the weeklys). Cancelling a weekly
-// stretch to make room for a block for one date is the common case, and
-// drawing both crossed two hatches over the same hours. The cancellation is
-// still served and still true; where a live block covers it, it is simply not
-// drawn, and any uncovered rest still is, struck through, with its door back.
+// A CANCELLED BLOCK IS HIDDEN (2026-10-21, Quentin's instruction: cancelled =
+// hidden, replacing 2026-10-04's "drawn struck through where nothing live
+// covers it"). The cancellation is still served and still true; it is simply
+// not drawn, on the calendar or on Engage — every surface that draws a day's
+// blocks asks here. Its doors back are the undo and the calendar day header's
+// menu (wkRestoreMenu), which lists the day's cancelled blocks.
 function drawnSegments(segs) {
-  const live = segs.filter(s => !s.cancelled);
-  const out = [];
-  segs.forEach(s => {
-    if (!s.cancelled) { out.push(s); return; }
-    let pieces = [[s.start, s.end]];
-    live.forEach(l => {
-      pieces = pieces.flatMap(([a, b]) => (l.end <= a || l.start >= b) ? [[a, b]]
-        : [[a, Math.min(b, l.start)], [Math.max(a, l.end), b]].filter(([x, y]) => y - x >= 5));
-    });
-    pieces.forEach(([a, b]) => out.push({ ...s, start: a, end: b }));
-  });
-  return out;
+  return segs.filter(s => !s.cancelled);
 }
 
 // One segment as the renderers want it: the day question is the SERVER's, the
@@ -2971,6 +2962,7 @@ function initCalWeek() {
     e.preventDefault();
     e.stopImmediatePropagation();
   }, true);
+  host.addEventListener('contextmenu', wkRestoreMenu);
 
   // Pressing a gate says which DAY its menu is about.
   host.addEventListener('pointerdown', e => {
@@ -13579,7 +13571,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   // The same served answer the timeline draws (viewSegmentsFor), so the two
   // cannot disagree about which blocks a day has. Yesterday's overnight tail
   // (a negative start) is skipped here: Engage lists the day's own commitments.
-  viewSegmentsFor(dateStr).filter(s => s.start >= 0).forEach(s => {
+  drawnSegments(viewSegmentsFor(dateStr)).filter(s => s.start >= 0).forEach(s => {
     const seg = { minute: s.start, endMin: s.end, id: s.block_id, dayBlockId: s.day_block_id,
                   label: s.label, cancelled: !!s.cancelled, color: s.color };
     if (routineAreaIds.has(s.area_id)) {

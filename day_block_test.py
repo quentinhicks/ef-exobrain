@@ -165,9 +165,12 @@ check('the assistant may add a day block', r.status_code == 201, r.get_json())
 r = client.patch(f'/api/day-blocks/{r.get_json()["id"]}', headers=H,
                  json={'start_min': 630, 'end_min': 750})
 check('...move one', r.status_code == 200, r.get_json())
+# The assistant can do what the interface can (2026-10-21), the undo's id
+# replay included — it re-inserts the original id, as the interface's undo does.
 r = client.post('/api/day-blocks', headers=H, json={
-    'id': 999, 'date': DAY, 'start_min': 600, 'end_min': 720, 'label': 'x', 'color': '#a3d9a5'})
-check('...but not replay an id (that is the undo\'s door, not a plan\'s)', r.status_code == 403)
+    'id': 999, 'date': DAY, 'start_min': 900, 'end_min': 960, 'label': 'x', 'color': '#a3d9a5'})
+check('...and replay an id, as the interface\'s undo does',
+      r.status_code == 201 and r.get_json()['id'] == 999, (r.status_code, r.get_json()))
 changes = storage.get_assistant_changes()
 check('the assistant\'s day-block writes are logged',
       any('/api/day-blocks' in c['path'] for c in changes), changes[:2])
