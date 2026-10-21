@@ -2783,6 +2783,10 @@ def _gate_day_payload(node, ymd, now=None):
         # lock had bitten would draw a verb the server is about to refuse.
         'skipped': skipped,
         'skip_locked': qr_judge.override_locked(node, ymd, now),
+        # Whether the window may only move INWARD — the lock, unless the day
+        # is called off (_window_moves_freely).
+        'window_locked': qr_judge.override_locked(node, ymd, now)
+                         and not _window_moves_freely(node['id'], ymd),
         # Inside the lock a day can still be tightened; whether REMOVING its
         # override would be one is the server's answer too.
         'remove_locked': _remove_override_locked(node, ymd, now),
@@ -3860,8 +3864,9 @@ def post_accountability_override(id):
     offset = d.get('window_end_offset_days') or 0
     # Within 24h of the deadline the day can still be TIGHTENED — a window
     # inside the one in force — and nothing else (qr_judge.window_tightens).
-    if qr_judge.override_locked(node, date) and not qr_judge.window_tightens(
-            node, date, (d['window_start'], d['window_end'], offset)):
+    # A called-off day is the exception (_window_moves_freely).
+    if not _window_moves_freely(id, date) and qr_judge.override_locked(node, date) \
+            and not qr_judge.window_tightens(node, date, (d['window_start'], d['window_end'], offset)):
         return jsonify({'error': 'Locked — within 24h of the deadline a day can only be tightened'}), 403
     # A deadline dragged above its own opening is an unsatisfiable gate — the
     # window would be empty and every day would judge absent. Never past the
@@ -3871,6 +3876,17 @@ def post_accountability_override(id):
         return jsonify({'error': 'A deadline cannot come before the window opens'}), 400
     storage.qr_set_override(id, date, d['window_start'], d['window_end'], offset)
     return jsonify({'ok': True})
+
+
+# A CALLED-OFF DAY'S WINDOW MOVES FREELY, lock or no lock (2026-10-21,
+# Quentin's instruction). The lock stops a commitment being made easier as it
+# comes due; a called-off day has none, and putting it back re-commits it at
+# whatever window it then holds — tighter than off, whichever way the window
+# moved. Moving it keeps the day off (qr_set_override leaves `skipped` alone).
+# A judged day is frozen and still refuses.
+def _window_moves_freely(node_id, ymd):
+    ov = storage.qr_get_override(node_id, ymd)
+    return bool(ov and ov.get('skipped')) and not storage.qr_judgment_exists(node_id, ymd)
 
 
 # Removing a day's window override puts the day back on the window beneath it

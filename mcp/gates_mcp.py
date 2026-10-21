@@ -93,6 +93,7 @@ def gate_line(g):
         'window': f"{w.get('start')}–{w.get('end')}" + (' (+1 day)' if w.get('offset_days') else ''),
         'window_set_by': w.get('from'), 'all_day': bool(w.get('all_day')),
         'locked_within_24h': bool(g.get('skip_locked')),
+        'window_only_tightens': bool(g.get('window_locked')),
         'judged': bool(g.get('judged')), 'closed': bool(w.get('closed')),
         'settles_at': (g.get('verdict') or {}).get('settles_at'),
         'cleared_so_far': bool((g.get('verdict') or {}).get('met')),
@@ -191,8 +192,9 @@ TOOLS = {
                 'called off. Without a date it returns the app\'s today and says which date that is.',
                 {'date': DATE}, []),
     'set_day_window': (set_day_window, 'Move ONE day\'s window for a gate (this day only). An end '
-                       'at or before the start closes the next morning. Refused within 24h of the '
-                       'close and on a judged day.',
+                       'at or before the start closes the next morning. Within 24h of the close '
+                       'only a tightening lands, unless the day is called off (it stays off); '
+                       'refused on a judged day.',
                        {'gate_id': GATE, 'date': DATE, 'start': TIME, 'end': TIME, 'reason': REASON},
                        ['gate_id', 'date', 'start', 'end', 'reason']),
     'clear_day_window': (clear_day_window, 'Remove a day\'s window change so the day follows its '

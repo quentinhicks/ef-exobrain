@@ -519,14 +519,14 @@ function dayState(g) {
 // Why this band cannot be dragged, in words — every reason is the server's.
 function dragRefusal(g) {
   if (g.judged) return 'This day is judged and frozen.';
-  if (g.skipped) return 'Called off — put the day back first.';
   if (g.window && g.window.closed) return 'This day has closed.';
   return null;
 }
 
 // INSIDE THE 24h LOCK A DAY CAN ONLY BE TIGHTENED (2026-10-08): its edges
 // still drag, but only INWARD — the server's rule (qr_judge.window_tightens),
-// which refuses anything else whatever this clamp lets through.
+// which refuses anything else whatever this clamp lets through. A called-off
+// day drags freely (2026-10-21); `window_locked` is the server's answer.
 const INWARD_ONLY = 'Within 24h of the deadline: drag an edge inward to tighten this day — it cannot be loosened now.';
 
 function renderDay() {
@@ -595,7 +595,7 @@ function renderDay() {
     return `<div class="gd-gate gd-st-${st}${G.sel === g.node_id ? ' gd-picked' : ''}${g.skipped ? ' gd-skipped' : ''}${
       g.window.all_day ? ' gd-allday' : ''}${locked ? ' gd-locked' : ''}" data-gate="${g.node_id}"
       style="top:${top}px;height:${h}px;left:calc(${lane} * (100% / ${lanes}));width:calc(100% / ${lanes} - 4px)"
-      title="${escHtml(locked || (g.skip_locked ? INWARD_ONLY : 'Drag the top or bottom edge to move this day only'))}">
+      title="${escHtml(locked || (g.window_locked ? INWARD_ONLY : 'Drag the top or bottom edge to move this day only'))}">
       ${locked ? '' : `<span class="gd-grab gd-grab-top" data-edge="start" style="top:${-up}px;height:${10 + up}px"></span>`}
       <div class="gd-gate-name">${escHtml(g.label)}</div>
       <div class="gd-gate-time">${clockHHMM(g.window.start_min)}–${clockLabel(g.window.end_min)}${
@@ -707,7 +707,7 @@ function startDrag(g, band, edge, y0, pid, handle) {
       moved = true;
       const dm = Math.round(dy / PX_PER_MIN / SNAP_MIN) * SNAP_MIN;
       // Locked: an edge only moves inward (INWARD_ONLY).
-      const inward = g.skip_locked;
+      const inward = g.window_locked;
       if (edge === 'start') {
         // The opening stays on this date and at least 5 minutes before the close.
         ns = Math.max(inward ? s0 : 0, Math.min(DAY_MIN - SNAP_MIN, e0 - SNAP_MIN, s0 + dm));
@@ -736,9 +736,10 @@ function startDrag(g, band, edge, y0, pid, handle) {
 
 // THIS DAY ONLY. What was in force before the drop is the day's own override
 // row as the server stored it (or none, and then the undo DELETEs) — an
-// override that merely agrees with the default is not an undo.
+// override that merely agrees with the default is not an undo. A called-off
+// day's row is always restored, never DELETEd — that would put the day back on.
 async function writeWindow(g, date, ns, ne, edge) {
-  const prev = g.override && !g.override.skipped ? g.override : null;
+  const prev = g.override || null;
   const res = await apiSendData(`/api/accountability/nodes/${g.node_id}/overrides`, 'POST', {
     date, window_start: clockHHMM(ns), window_end: clockHHMM(ne),
     window_end_offset_days: ne >= DAY_MIN ? 1 : 0,

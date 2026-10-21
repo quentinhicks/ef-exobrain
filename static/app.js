@@ -2422,12 +2422,14 @@ async function refreshCalWeek() {
   if (calPin.cat) paintCalPin();
 }
 
-// The gates drawn on a day: running, called off (a called-off day still draws
-// — the mark is the answer), or PAUSED, drawn muted: a paused gate is not
-// judged, and hiding it made the week look as if it had no gates at all.
+// The gates drawn on a day: running, or PAUSED, drawn muted: a paused gate is
+// not judged, and hiding it made the week look as if it had no gates at all.
+// A CALLED-OFF DAY IS HIDDEN (2026-10-21, Quentin's instruction, reversing
+// "a called-off day still draws"): off and on screen at once was two answers.
+// Its door back is the undo and /gates' day card, which still shows it.
 function wkDayGatesFrom(list) {
   return (list || []).filter(g =>
-    (g.applies || g.skipped) && g.window && g.window.end_min != null);
+    g.applies && !g.skipped && g.window && g.window.end_min != null);
 }
 
 function wkDayGates(d) {
@@ -9953,13 +9955,10 @@ async function toggleCalGateSkip(nodeId, label, dateStr, skipped) {
 registerObjectVerbs('calendar-gate', (kind, id, el) => {
   if (kind !== 'gate' || !el.closest('#cal-week, #tl-qr-layer')) return [];
   const hit = calGateOn(el, id);
-  if (!hit || (!hit.g.applies && !hit.g.skipped)) return [];
+  if (!hit || !hit.g.applies) return [];
   const { g, d } = hit;
-  return [{
-    label: g.skipped ? 'Put this day back on' : 'Call this day off',
-    danger: !g.skipped,
-    run: () => toggleCalGateSkip(g.node_id, g.label, d, !!g.skipped),
-  }];
+  return [{ label: 'Call this day off', danger: true,
+            run: () => toggleCalGateSkip(g.node_id, g.label, d, false) }];
 });
 
 // The inverse of a moved window: the day's own override as the server stored

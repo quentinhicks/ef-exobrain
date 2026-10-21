@@ -8,7 +8,9 @@ earlier was refused exactly like moving it later. The rule is now
 qr_judge.window_tightens: a window inside the one in force is a tightening
 (no scan it accepts was refused before); anything else - later, wider, or a
 translation either way - stays locked. Removing a day's override is the same
-question asked of the window beneath it. This is a MONEY file, tested through
+question asked of the window beneath it. A CALLED-OFF day is the exception
+(2026-10-21): it commits nothing, so its window moves freely and stays off.
+This is a MONEY file, tested through
 the routes, because the routes are where the refusal lives.
 """
 
@@ -97,6 +99,31 @@ check('...back on the default window', window(nid2, TODAY)[:2] == ('06:00', '08:
 # -- calling the day off is still a loosening ------------------------------
 r = c.post(f'/api/accountability/nodes/{nid2}/overrides', json={'date': TODAY, 'skipped': True})
 check('calling a day off inside the lock is still refused', r.status_code == 403, r.get_json())
+
+# -- a called-off day's window moves freely (2026-10-21) -------------------
+# Nothing is committed on it, and putting it back re-commits it at whatever
+# window it then holds, so the lock has nothing to protect.
+nid4 = storage.qr_create_node('Lift', 'tok-tight-4', '06:00', '08:00')
+storage.qr_set_override(nid4, TODAY, '06:00', '08:00', 0, skipped=True)   # called off before the lock
+day = c.get(f'/api/accountability/nodes/{nid4}/day?date={TODAY}').get_json()
+check('a called-off day inside the lock is served as free to move',
+      day.get('window_locked') is False and day.get('skip_locked') is True, day)
+r = move(nid4, TODAY, '12:00', '13:00')
+check('...a translation later is accepted', r.status_code == 200, r.get_json())
+r = move(nid4, TODAY, '04:00', '13:00')
+check('...and so is a wider window', r.status_code == 200, r.get_json())
+ov = storage.qr_get_override(nid4, TODAY)
+check('...and the day stays called off',
+      ov['skipped'] == 1 and (ov['window_start'], ov['window_end']) == ('04:00', '13:00'), dict(ov))
+check('the running day is still served as inward-only',
+      c.get(f'/api/accountability/nodes/{nid}/day?date={TODAY}').get_json().get('window_locked') is True)
+conn = storage.get_conn()
+conn.execute("INSERT INTO qr_charge_log (node_id, date, failure_reason) VALUES (?, ?, 'n/a')",
+             (nid4, TODAY))
+conn.commit()
+conn.close()
+r = move(nid4, TODAY, '04:00', '15:00')
+check('a JUDGED called-off day is frozen and refuses a loosening', r.status_code == 403, r.get_json())
 
 # -- outside the lock nothing changes --------------------------------------
 check('a day a week out is not locked', not qr_judge.override_locked(node_of(nid), FAR))
