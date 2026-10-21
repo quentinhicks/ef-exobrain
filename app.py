@@ -359,76 +359,18 @@ def _gzip(resp):
     return resp
 
 
-# AN ASSISTANT MAY CHANGE DEADLINES AND BLOCKS, AND NOTHING ELSE (2026-09-29
-# for deadlines, 2026-09-30 for the block schedule — Quentin's instructions).
-# The Claude Code tools (mcp/gates_mcp.py, mcp/blocks_mcp.py) mark every
-# request `X-QPA-Actor: assistant` and say why in `X-QPA-Reason`. A marked
-# write must be one of the routes below — for a gate: a day's window, calling
-# a day off or putting it back, a weekly rule, pointing a gate at a schedule;
-# for a block: the Block Editor's and the calendar's own writes — or it is
-# refused here. Every marked write is logged, refusals included.
-#
-# The mark is for the RECORD, not a lock: the app has no login, and anything
-# on the tailnet can leave the header off. What stops any client dodging a
-# gate is unchanged and applies to everyone — easings wait 24h, nothing moves
-# within 24h of a close, a judged day is frozen.
-ASSISTANT_WRITES = (
-    ('POST', re.compile(r'^/api/accountability/nodes/\d+/overrides$'),
-     {'date', 'window_start', 'window_end', 'window_end_offset_days', 'skipped'}),
-    ('DELETE', re.compile(r'^/api/accountability/nodes/\d+/overrides/\d{4}-\d{2}-\d{2}$'), set()),
-    ('POST', re.compile(r'^/api/schedules$'),
-     {'kind', 'title', 'start', 'duration', 'recurrenceRules'}),
-    ('PATCH', re.compile(r'^/api/accountability/nodes/\d+$'), {'source_uid', 'effective_from'}),
-    # THE WEEKLY BLOCK SCHEDULE (2026-09-30, Quentin's instruction), for
-    # mcp/blocks_mcp.py: add, edit, pause, delete or date a change to a block,
-    # and a day's own hours or cancellation. Blocks are off the money path —
-    # qr_judge reads none of them — so these are the same doors the Block
-    # Editor and the calendar use, logged like every marked write.
-    ('POST', re.compile(r'^/api/blocks$'),
-     {'label', 'color', 'days', 'start_time', 'end_time', 'area_id', 'domain_id',
-      'location_id', 'description', 'priority'}),
-    ('PATCH', re.compile(r'^/api/blocks/\d+$'),
-     set(storage.BLOCK_SCHEDULED_FIELDS) | {'effective_from'}),
-    ('DELETE', re.compile(r'^/api/blocks/\d+$'), set()),
-    ('DELETE', re.compile(r'^/api/blocks/\d+/scheduled/\w+$'), set()),
-    ('POST', re.compile(r'^/api/overrides$'),
-     {'block_id', 'date', 'cancelled', 'start_time', 'end_time'}),
-    ('DELETE', re.compile(r'^/api/overrides/\d+$'), set()),
-    # A BLOCK FOR ONE DATE (2026-10-03, Quentin's instruction): the planning
-    # skill places one-off hours — "20 hours of COS330 before the midterm" —
-    # and those are local facts, so they get the local store, never a weekly
-    # row. Same footing as the overrides above: off the money path, logged.
-    ('POST', re.compile(r'^/api/day-blocks$'),
-     {'date', 'start_min', 'end_min', 'label', 'color', 'area_id', 'domain_id',
-      'location_id', 'description'}),
-    ('PATCH', re.compile(r'^/api/day-blocks/\d+$'),
-     {'date', 'start_min', 'end_min', 'label', 'color', 'area_id', 'domain_id',
-      'location_id', 'description'}),
-    ('DELETE', re.compile(r'^/api/day-blocks/\d+$'), set()),
-)
-
-
+# AN ASSISTANT CAN DO WHAT THE INTERFACE CAN (2026-10-21, Quentin's
+# instruction, replacing "deadlines and blocks, and nothing else" of
+# 2026-09-29/30). The Claude Code tools (mcp/gates_mcp.py, mcp/blocks_mcp.py,
+# mcp/app_mcp.py) mark every request `X-QPA-Actor: assistant` and say why in
+# `X-QPA-Reason`, and every marked write is LOGGED (Settings -> AI changes),
+# refusals included. There is no allowlist: the assistant walks the same doors
+# the interface does, so it meets the same rules there — what stops anyone
+# dodging a gate applies to everyone: easings wait 24h, nothing loosens within
+# 24h of a close, a judged day is frozen.
 def _is_assistant_write():
     return (request.headers.get('X-QPA-Actor') == 'assistant'
             and request.method not in ('GET', 'HEAD', 'OPTIONS'))
-
-
-@app.before_request
-def _assistant_scope():
-    if not _is_assistant_write():
-        return None
-    body = request.get_json(silent=True) or {}
-    for method, pattern, keys in ASSISTANT_WRITES:
-        if request.method == method and pattern.match(request.path):
-            extra = set(body) - keys
-            if extra:
-                break
-            if request.path == '/api/schedules' and body.get('kind') != 'rule':
-                break
-            return None
-    return jsonify({'error': 'the assistant may only change gate deadlines (a day\'s '
-                             'window, calling a day off, the weekly schedule) and the '
-                             'block schedule (weekly blocks, and blocks for one date)'}), 403
 
 
 @app.after_request
@@ -3895,8 +3837,13 @@ def post_accountability_override(id):
     # window would be empty and every day would judge absent. Never past the
     # opening. (The drag is bounded client
     # side too; this is the lock on the money path.)
-    if qr_judge._hhmm_min(d['window_end']) + offset * 1440 < qr_judge._hhmm_min(d['window_start']):
+    span = qr_judge._hhmm_min(d['window_end']) + offset * 1440 - qr_judge._hhmm_min(d['window_start'])
+    if span < 0:
         return jsonify({'error': 'A deadline cannot come before the window opens'}), 400
+    # Nor more than a day after it: a window whose OPENING slid past midnight
+    # (a translated night gate) read as 03:00 today → 04:00 tomorrow, 25h open.
+    if span > 1440:
+        return jsonify({'error': 'A window cannot be open for more than a day'}), 400
     storage.qr_set_override(id, date, d['window_start'], d['window_end'], offset)
     return jsonify({'ok': True})
 

@@ -10061,7 +10061,10 @@ function initGateDrag(handle, g, dateStr, geo, place) {
         if (!delta) { geo.repaint(); return; }
         // A called-off day's row is restored, never DELETEd: that would put it back on.
         const prev = g.override || null;
-        const ns = s0 + delta, ne = e0 + delta;
+        // The opening stays on its own date: a night gate's mark dragged past
+        // the point where translating would carry its opening over midnight
+        // stretches from 23:55 instead (the server refuses a window over a day).
+        const ns = Math.min(s0 + delta, DAY_MIN - 5), ne = e0 + delta;
         const res = await apiSend(`/api/accountability/nodes/${g.node_id}/overrides`, 'POST', {
           date: dateStr, window_start: clockHHMM(ns), window_end: clockHHMM(ne),
           window_end_offset_days: ne >= DAY_MIN ? 1 : 0,

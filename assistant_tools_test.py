@@ -3,10 +3,11 @@
 mcp/blocks_mcp.py (2026-09-30, Quentin's instruction: "a tool such that AI
 could edit my weekly block schedule") drives the app's own routes with every
 write marked `X-QPA-Actor: assistant`. This drives each of its tools through
-the REAL routes and the REAL allowlist (app.ASSISTANT_WRITES) against a temp
-database — the HTTP hop is replaced by Flask's test client, nothing else — and
-checks the scope still refuses what it should: a marked write outside the
-allowlist is a 403, and every marked write is logged.
+the REAL routes against a temp database — the HTTP hop is replaced by Flask's
+test client, nothing else. Since 2026-10-21 the assistant can do whatever the
+interface can (mcp/app_mcp.py reaches any route), so the checks are that it
+meets the SAME rules there (the 24h lock refuses it too) and that every marked
+write is logged.
 
 Same shape as the other suites: a temp database, no framework.
 """
@@ -32,6 +33,7 @@ storage.set_setting('last_backup_date', date_cls.today().isoformat())
 import app              # noqa: E402
 import blocks_mcp       # noqa: E402
 import gates_mcp        # noqa: E402
+import app_mcp          # noqa: E402
 
 client = app.app.test_client()
 fails = []
@@ -161,20 +163,44 @@ check('every tool says which half it writes',
 T('week_delete_block', block_id=we, reason='drop wednesdays')
 check('delete_block deletes one weekday', we not in week() and mo in week(), list(week()))
 
-# ── the scope ─────────────────────────────────────────────────
-for label, method, path, body in [
-    ('an inbox write', 'POST', '/api/inbox', {'content': 'x'}),
-    ('a gate\'s stake', 'PATCH', '/api/accountability/nodes/1', {'charge_cents': 0}),
-    ('an unknown block field', 'PATCH', f'/api/blocks/{mo}', {'label': 'x', 'secret': 1}),
-    ('a setting', 'PATCH', '/api/settings', {'theme': 'light'}),
-]:
-    r = client.open(path, method=method, json=body, headers={'X-QPA-Actor': 'assistant'})
-    check(f'the assistant is refused {label}', r.status_code == 403, r.status_code)
+# ── the scope: whatever the interface can do (2026-10-21) ──────
+# No allowlist: app_request reaches any route the interface uses, and meets
+# the same rules there.
+app_mcp.call = fake_call
+out = app_mcp.app_request({'method': 'POST', 'path': '/api/inbox', 'body': {'content': 'buy milk'},
+                           'reason': 'captured for Quentin'})
+check('app_request writes through the interface\'s own route',
+      any(i.get('content') == 'buy milk' for i in client.get('/api/inbox').get_json()), out)
+check('...and reads too', isinstance(app_mcp.app_request({'method': 'GET', 'path': '/api/settings'}), dict))
+for label, args in [('a write without a reason', {'method': 'POST', 'path': '/api/inbox', 'body': {}}),
+                    ('a path outside /api', {'method': 'GET', 'path': '/settings'}),
+                    ('an unknown method', {'method': 'TRACE', 'path': '/api/inbox'})]:
+    try:
+        app_mcp.app_request(args)
+        check(f'app_request refuses {label}', False)
+    except gates_mcp.ToolError:
+        check(f'app_request refuses {label}', True)
+gid = storage.qr_create_node('Wake', 'tok-assist', '07:00', '08:00')
+far = (date_cls.today() + timedelta(days=6)).isoformat()
+gates_mcp.call = fake_call
+gates_mcp.hide_day({'gate_id': gid, 'date': far, 'reason': 'away'})
+day = client.get(f'/api/accountability/nodes/{gid}/day?date={far}').get_json()
+check('hide_day calls the day off and hides it', day['skipped'] and day['hidden'], day.get('override'))
+gates_mcp.show_day({'gate_id': gid, 'date': far, 'reason': 'back'})
+day = client.get(f'/api/accountability/nodes/{gid}/day?date={far}').get_json()
+check('show_day shows it, still called off', day['skipped'] and not day['hidden'], day.get('override'))
+today = date_cls.today().isoformat()
+try:
+    gates_mcp.call_off_day({'gate_id': gid, 'date': today, 'reason': 'try to dodge it'})
+    check('the money rules still hold for the assistant: no call-off inside the lock', False)
+except gates_mcp.ToolError as e:
+    check('the money rules still hold for the assistant: no call-off inside the lock', '403' in str(e), e)
 
 log = client.get('/api/assistant/changes').get_json()
 check('every marked write is logged, refusals included',
       any(e.get('status') == 403 or e.get('status_code') == 403 for e in log)
-      and any('/api/blocks' in (e.get('path') or '') for e in log), json.dumps(log[:2]))
+      and any('/api/blocks' in (e.get('path') or '') for e in log)
+      and any((e.get('path') or '') == '/api/inbox' for e in log), json.dumps(log[:2]))
 check('...with the reason given',
       any((e.get('reason') or '') == 'a morning of focus' for e in log), [e.get('reason') for e in log][:5])
 
@@ -192,4 +218,4 @@ print()
 if fails:
     print(f'{len(fails)} failure(s)')
     sys.exit(1)
-print('The assistant\'s tools write what they say, and nothing else.')
+print('The assistant\'s tools write what they say, under the interface\'s own rules.')

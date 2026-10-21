@@ -18,8 +18,8 @@
 # the same HTTP client, the same `X-QPA-Actor: assistant` mark with the reason
 # in `X-QPA-Reason`, the same JSON-RPC loop. It reads the week and one day, and
 # writes BLOCKS only — add, edit, pause, delete, date a change forward, and a
-# day's own hours or cancellation. app.py's ASSISTANT_WRITES admits exactly
-# those routes, and every marked write is logged (Settings -> AI changes).
+# day's own hours or cancellation. Every marked write is logged (Settings -> AI
+# changes); anything else the interface can do is mcp/app_mcp.py's.
 #
 # A block is not on the money path — qr_judge reads none of this — so there is
 # no 24h rule to respect. What a block DOES decide is the domain in force for

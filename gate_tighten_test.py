@@ -164,6 +164,14 @@ set_state(nid5, FAR, {'skipped': False})
 check('a day put back on whose row only agrees with its schedule leaves no row',
       storage.qr_get_override(nid5, FAR) is None)
 
+# -- a window is never open more than a day --------------------------------
+# A night gate's mark dragged past midnight used to translate its OPENING over
+# midnight too: 03:00 -> 04:00 (+1d) is 25 hours open.
+r = move(nid5, FAR, '03:00', '04:00', 1)
+check('a window open for more than a day is refused', r.status_code == 400, r.get_json())
+r = move(nid5, FAR, '23:55', '04:00', 1)
+check('...while one stretched from 23:55 is accepted', r.status_code == 200, r.get_json())
+
 # -- outside the lock nothing changes --------------------------------------
 check('a day a week out is not locked', not qr_judge.override_locked(node_of(nid), FAR))
 r = move(nid, FAR, '05:00', '10:00')

@@ -2,13 +2,14 @@
 # A CLAUDE CODE TOOL FOR GATE DEADLINES (2026-09-29, Quentin's instruction).
 #
 # An MCP server over stdio, standard library only: Claude Code starts it, and
-# it talks to the app's own HTTP API. It can read every gate's day and change
-# DEADLINES — a day's window, calling a day off or putting it back, a gate's
-# weekly schedule — and nothing else.
+# it talks to the app's own HTTP API. It reads every gate's day and changes
+# DEADLINES — a day's window, calling a day off, hiding it or putting it back,
+# a gate's weekly schedule. Anything else the interface can do is
+# mcp/app_mcp.py's (the assistant can do what the interface can, 2026-10-21).
 #
 # Every write is marked `X-QPA-Actor: assistant` with the reason Claude gave
-# in `X-QPA-Reason`. app.py refuses a marked write outside those four kinds
-# and logs every one, refusals included (Settings -> AI changes). The mark is a
+# in `X-QPA-Reason`. app.py logs every one, refusals included (Settings -> AI
+# changes). The mark is a
 # RECORD, not a lock: what keeps any client from dodging a gate is the
 # server's own rules, which this tool cannot bypass — an easing waits 24h,
 # nothing moves within 24h of a close, and a judged day is frozen.
@@ -156,6 +157,21 @@ def put_day_back(a):
     return {'ok': True, 'date': date, 'note': 'the gate runs that day again, at its window'}
 
 
+def hide_day(a):
+    date, reason = need_date(a), need_reason(a)
+    call('POST', f"/api/accountability/nodes/{int(a['gate_id'])}/overrides",
+         {'date': date, 'hidden': True}, reason)
+    return {'ok': True, 'date': date,
+            'note': 'called off and hidden: not drawn on the calendar, does not clip its hours'}
+
+
+def show_day(a):
+    date, reason = need_date(a), need_reason(a)
+    call('POST', f"/api/accountability/nodes/{int(a['gate_id'])}/overrides",
+         {'date': date, 'hidden': False}, reason)
+    return {'ok': True, 'date': date, 'note': 'shown again, still called off'}
+
+
 def set_weekly_schedule(a):
     reason = need_reason(a)
     days = [str(d).lower()[:2] for d in (a.get('days') or [])]
@@ -207,8 +223,16 @@ TOOLS = {
     'call_off_day': (call_off_day, 'Call a gate\'s day off, so it lands as "did not run" and costs '
                      'nothing. An easing: refused within 24h of the close.',
                      {'gate_id': GATE, 'date': DATE, 'reason': REASON}, ['gate_id', 'date', 'reason']),
-    'put_day_back': (put_day_back, 'Undo a call-off: the gate runs that day again. Always allowed.',
+    'put_day_back': (put_day_back, 'Undo a call-off (or a hide): the gate runs that day again, at '
+                     'the window it has. Always allowed.',
                      {'gate_id': GATE, 'date': DATE, 'reason': REASON}, ['gate_id', 'date', 'reason']),
+    'hide_day': (hide_day, 'Hide a gate\'s day: called off AND not drawn on the calendar, so it '
+                 'does not clip the calendar\'s hours. Hiding a day that is on calls it off, so it '
+                 'is refused within 24h of the close; hiding a day already off is always allowed.',
+                 {'gate_id': GATE, 'date': DATE, 'reason': REASON}, ['gate_id', 'date', 'reason']),
+    'show_day': (show_day, 'Un-hide a gate\'s day: drawn again and clipping the calendar, still '
+                 'called off (put_day_back turns it on).',
+                 {'gate_id': GATE, 'date': DATE, 'reason': REASON}, ['gate_id', 'date', 'reason']),
     'set_weekly_schedule': (set_weekly_schedule, 'Give a gate a new weekly schedule: the days it '
                             'runs and its window. Making it easier waits 24h (and can be called '
                             'off on /gates); making it stricter applies at once.',
