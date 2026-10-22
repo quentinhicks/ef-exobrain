@@ -26,6 +26,7 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 import storage
 import schedule
 import aggregator
+import coach
 import ntag
 import qr_judge
 import daybook
@@ -252,7 +253,7 @@ def index():
 # /projects, /lists/12, /settings/areas, /run/3 … are the same static shell;
 # app.js reads the path and opens that page. Still no data in the template —
 # the path is only an address.
-APP_PAGES = ('now', 'calendar', 'horizons', 'projects', 'lists', 'tracking', 'social',
+APP_PAGES = ('coach', 'now', 'calendar', 'horizons', 'projects', 'lists', 'tracking', 'social',
              'settings', 'run', 'clarify')
 
 
@@ -3888,6 +3889,15 @@ def delete_accountability_override(id, date):
 # owns only the windows and a localhost bridge for the global hotkeys.
 _CLIENT_SERVER = os.environ.get('PT_SERVER', '').rstrip('/')
 _client_panel_hidden = False
+# THE COACH (coach.py): its Claude Code session lives in THIS process, beside
+# the windows, because the laptop is where Claude Code is signed in. Made in
+# __main__ once the server's address is known.
+_coach = None
+
+
+def _coach_emit(evt):
+    if _main_window:
+        _main_window.evaluate_js('coachHear(%s)' % json.dumps(evt))
 
 
 class WindowApi:
@@ -3953,6 +3963,16 @@ class WindowApi:
         with open(path, 'w', encoding='utf-8', newline='') as f:
             f.write(text)
         return path
+
+    # The Coach page's three calls (coachSend / coachLoad in app.js).
+    def coach_history(self):
+        return _coach.history() if _coach else {'available': False, 'messages': []}
+
+    def coach_send(self, kind, text, context, docs):
+        return _coach.send(kind, text, context, docs)
+
+    def coach_reset(self):
+        return _coach.reset()
 
 
 # The clarify window's page is the app, so it gets the app's api and three
@@ -4290,6 +4310,7 @@ if __name__ == '__main__':
         t.start()
         panel_hidden = _panel_toggled_off()
 
+    _coach = coach.Coach(base, _REPO_DIR, _coach_emit)
     main_api = WindowApi()
     main_window = webview.create_window(
         'Productivity Tracker',

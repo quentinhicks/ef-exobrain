@@ -28,6 +28,7 @@
        from currentRoute() (paintTopNav), never kept beside it. -->
   <nav id="top-nav">
     <div class="tn-tabs">
+      <button class="tn-tab" data-nav="coach">Coach</button>
       <button class="tn-tab" data-nav="">Now</button>
       <button class="tn-tab" data-nav="calendar">Calendar</button>
       <button class="tn-tab" data-nav="map">Horizons</button>
@@ -47,6 +48,10 @@
       <label class="tn-search" id="map-search" title="Search the projects"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input type="text" id="map-q" placeholder="Search" autocomplete="off"></label>
       <span id="map-q-count" class="count tn-count"></span>
+    </div>
+    <!-- The Coach's one switch: the plan, or his rules for it. -->
+    <div class="tn-tools hidden" data-page="coach">
+      <button id="co-rules-pill" class="tn-pill">Your rules</button>
     </div>
     <div class="tn-tools hidden" data-page="calendar">
       <button id="cal-filter" class="tn-pill"></button>
@@ -156,6 +161,12 @@
          panel used to tick into. The runner renders the same REVIEW_KINDS
          bindings and the same live counts, so nothing was lost with it. -->
     <div id="ref-body"></div>
+  </div>
+
+  <!-- THE COACH (2026-10-22): a Claude Code session that keeps the day's plan
+       with him and says the one thing to do next (renderCoach, coach.py). -->
+  <div id="tab-coach" class="m-overlay hidden">
+    <div id="coach-body"></div>
   </div>
 
   <div id="tab-social" class="m-overlay hidden">

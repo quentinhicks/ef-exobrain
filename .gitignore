@@ -50,3 +50,5 @@ personal/
 
 # Google Drive sync duplicates ("app (1).js") — never code
 * (1)*
+# The Coach's day transcripts (coach.py) — his words, data like logs/.
+coach/

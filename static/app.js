@@ -6858,6 +6858,7 @@ function initTopNav() {
     e.stopPropagation();
     nowDoor();
   });
+  document.getElementById('co-rules-pill').addEventListener('click', toggleCoachRules);
   wireEdgeFade(nav);
   nav.querySelectorAll('.tn-search input').forEach(wireEdgeFade);
   window.addEventListener('resize', () =>
@@ -7097,6 +7098,7 @@ async function openSurface(dest, sub) {
     refreshRef();
   }
   else if (dest === 'map') { openMap(sub.horizon); }
+  else if (dest === 'coach') { await openCoach(sub.view); }
   else if (dest === 'tracking') { await openSurface('settings', { section: 'tracking' }); }
   else if (dest === 'gates') { await openSurface('settings', { section: 'qr' }); }
   else if (dest === 'social') {
@@ -7139,6 +7141,7 @@ function currentRoute() {
   if (shown('tab-lists')) {
     return refView.open != null ? `lists/${refView.open}` : 'lists';
   }
+  if (shown('tab-coach')) return coachView.rules ? 'coach/rules' : 'coach';
   if (shown('cal-overlay') && calWeek.week) return 'calendar/week';
   for (const [id, name] of [['cal-overlay', 'calendar'], ['tab-social', 'social']]) {
     if (shown(id)) return name;
@@ -7207,6 +7210,7 @@ async function openRoute(route) {
                                     say: routeView.fromAddress && a === 'week' });
   }
   else if (top === 'map') await openSurface('map', { horizon: a });
+  else if (top === 'coach') await openSurface('coach', { view: a });
   else if (['tracking', 'social'].includes(top)) await openSurface(top);
 }
 
@@ -7224,7 +7228,7 @@ async function initRoutes() {
   routeView.ready = true;
   const watch = new MutationObserver(syncRoute);
   ['modal-overlay', 'map-overlay', 'cal-overlay', 'tab-lists',
-   'tab-social'].forEach(id => {
+   'tab-social', 'tab-coach'].forEach(id => {
     const el = document.getElementById(id);
     if (el) watch.observe(el, { attributes: true, attributeFilter: ['class'] });
   });
@@ -9331,9 +9335,294 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('pagehide', () => {
     flushOpenNotes();
   });
-  loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); initRoutes(); });
-  setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); }, 60000);
+  loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); initRoutes(); coachLoad(); });
+  setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); coachTick(); }, 60000);
 });
+
+// ── THE COACH (2026-10-22, Quentin's instruction) ────────────
+//
+// A page BEFORE Now that keeps the day's plan with him and says the one thing
+// to do next — for the hours when worry and executive dysfunction make
+// starting the hard part. The session is a real Claude Code session run by
+// the desktop window's process (coach.py), reached through the window's api,
+// so the page works in the desktop app and says so anywhere else.
+//
+// IT WORKS INSIDE THE APP'S PLAN (Quentin's instruction): every message
+// carries the app's own reading of the moment — the block in force from
+// todaySegments, the day's rows from engageDayRows, the to-do list from
+// engageTodoList with its current task — never a second derivation of any of
+// them, plus his standing preferences (his rules for the coach, and the
+// Horizons documents), which coach.py passes on only when they changed.
+//
+// CHECK-INS ARE GENTLE: they ride the 60s tick, happen only once he has
+// talked to it today, after COACH_CHECKIN_MIN quiet or when the block in
+// force changes, stop after two go unanswered, and only light the tab's dot.
+// No sound, no focus, nothing raised.
+const COACH_CHECKIN_MIN = 40;
+const COACH_TODO_MAX = 40;
+const coachView = { available: null, messages: [], busy: false, tool: null, lastAct: 0,
+                    quiet: 0, block: undefined, rules: false };
+
+function coachApi() {
+  const api = !CLARIFY_WINDOW && window.pywebview && window.pywebview.api;
+  return api && api.coach_send ? api : null;
+}
+
+function coachOpen() {
+  const el = document.getElementById('tab-coach');
+  return !!el && !el.classList.contains('hidden');
+}
+
+// The block in force NOW, from today's served segments.
+function coachBlockNow(nowMin) {
+  if (todaySegments.date !== wallDay()) return null;
+  return todaySegments.segments.find(s => !s.cancelled && s.start <= nowMin && nowMin < s.end) || null;
+}
+
+function coachContext() {
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const today = wallDay();
+  const lines = [`It is ${weekdayOf(now).long} ${today}, ${clockHHMM(nowMin)}.`];
+  const blk = coachBlockNow(nowMin);
+  lines.push(blk ? `Block running now: ${blk.label} (${clockHHMM(blk.start)}–${clockHHMM(blk.end)}).`
+    : 'No block is running now.');
+  if (egDateStr() !== today) {
+    lines.push('The Now page is looking at another day, so the day and the to-do list are not '
+      + 'included: read GET /api/engage/day and GET /api/inbox/active.');
+    return lines.join('\n');
+  }
+  const { rows, placedIds, routineAreaIds } =
+    engageDayRows(now, today, egViewDate(), true, isoMin);
+  const left = rows.filter(r => !r.cancelled && (r.endMin != null ? r.endMin : r.minute) > nowMin);
+  const kinds = { block: 'block', routine: 'routine', event: 'event', qr: 'gate deadline', action: 'placed to-do' };
+  lines.push('', 'The rest of today:');
+  lines.push(...(left.length ? left.map(r => `- ${clockHHMM(r.minute)}${r.endMin > r.minute
+    ? '–' + clockHHMM(r.endMin) : ''} ${kinds[r.kind] || r.kind}: ${r.label}${
+    r.kind === 'qr' && r.outcome ? ` (${r.outcome})` : ''}`) : ['- nothing else scheduled']));
+  const { pool, currentId } = engageTodoList(nowMin, true, placedIds, routineAreaIds);
+  lines.push('', 'To-do list, in its order (▶ the current task — the last dot; ● dotted; ○ not):');
+  lines.push(...pool.slice(0, COACH_TODO_MAX).map(i => `${i.id === currentId ? '▶' : i.started_at ? '●' : '○'} `
+    + `${i.content} [id ${i.id}]${dueOf(i) ? ` (due ${dueOf(i)})` : ''}`));
+  if (!pool.length) lines.push('- empty');
+  if (pool.length > COACH_TODO_MAX) lines.push(`… and ${pool.length - COACH_TODO_MAX} more (GET /api/inbox/active)`);
+  return lines.join('\n');
+}
+
+// His standing preferences, as he wrote them.
+function coachDocs() {
+  const s = state.settings || {};
+  return [['His rules for you', s.coach_rules], [horizonName('areas'), s[HZ_DOC_KEYS.areas]],
+          [horizonName('goals'), s[HZ_DOC_KEYS.goals]], [horizonName('purpose'), s[HZ_DOC_KEYS.purpose]]]
+    .filter(([, v]) => v && String(v).trim())
+    .map(([k, v]) => `## ${k}\n${String(v).trim()}`).join('\n\n');
+}
+
+// A reply's first line is `NEXT: …`, which the page shows large.
+function coachSplit(text) {
+  const m = String(text || '').match(/^\s*\**NEXT\**:?\**\s*(.+?)\**\s*(?:\n|$)/i);
+  return m ? { next: m[1].trim(), rest: text.slice(m[0].length).trim() } : { next: '', rest: text || '' };
+}
+
+function coachNext() {
+  const last = [...coachView.messages].reverse().find(m => m.role === 'coach' && !m.error);
+  return last ? coachSplit(last.text).next : '';
+}
+
+async function coachLoad() {
+  const api = coachApi();
+  if (!api) {
+    coachView.available = false;
+    if (coachOpen()) renderCoach();
+    return;
+  }
+  const h = await api.coach_history();
+  coachView.available = !!h.available;
+  coachView.messages = h.messages || [];
+  coachView.busy = !!h.busy;
+  // Quiet is measured from the last thing said, on today's clock.
+  const last = coachView.messages[coachView.messages.length - 1];
+  const mid = new Date(wallDay() + 'T00:00:00').getTime();
+  coachView.lastAct = last && last.at ? mid + timeToMinutes(last.at) * 60000 : Date.now();
+  let quiet = 0;
+  for (let i = coachView.messages.length - 1; i >= 0 && coachView.messages[i].role !== 'user'; i--) {
+    if (coachView.messages[i].role === 'checkin') quiet++;
+  }
+  coachView.quiet = quiet;
+  if (coachOpen()) renderCoach();
+}
+window.addEventListener('pywebviewready', coachLoad);
+
+async function coachSend(kind, text) {
+  const api = coachApi();
+  if (!api || coachView.busy || !String(text).trim()) return false;
+  const res = await api.coach_send(kind, text, coachContext(), coachDocs());
+  if (!res || res.error) {
+    if (kind === 'user') toast((res && res.error) || 'The coach did not answer');
+    return false;
+  }
+  const now = new Date();
+  coachView.messages.push({ role: kind, text, at: clockHHMM(now.getHours() * 60 + now.getMinutes()) });
+  coachView.busy = true;
+  coachView.tool = null;
+  coachView.lastAct = Date.now();
+  coachView.quiet = kind === 'checkin' ? coachView.quiet + 1 : 0;
+  renderCoach();
+  return true;
+}
+
+// coach.py's events, through evaluate_js: a tool it is using, its reply, or
+// that it stopped.
+function coachHear(evt) {
+  if (evt.type === 'tool') coachView.tool = evt.name;
+  else if (evt.type === 'reply') {
+    coachView.busy = false;
+    coachView.tool = null;
+    coachView.messages.push(evt.message);
+    coachView.lastAct = Date.now();
+    // What it changed through the tools, every page on screen shows.
+    if ((evt.message.tools || []).length) refreshVisible();
+    if (!coachOpen()) paintCoachDot(true);
+  } else if (evt.type === 'error') {
+    coachView.busy = false;
+    coachView.tool = null;
+    toast(evt.text);
+  }
+  renderCoach();
+}
+
+function paintCoachDot(on) {
+  const tab = document.querySelector('#top-nav [data-nav="coach"]');
+  if (tab) tab.classList.toggle('has-due', on);
+}
+
+function coachTick() {
+  if (!coachApi() || coachView.busy || !coachView.messages.some(m => m.role === 'user')) return;
+  const now = new Date();
+  const blk = coachBlockNow(now.getHours() * 60 + now.getMinutes());
+  const label = blk ? blk.label : null;
+  const moved = coachView.block !== undefined && label !== coachView.block;
+  coachView.block = label;
+  if (coachView.quiet >= 2) return;
+  const idle = (Date.now() - coachView.lastAct) / 60000;
+  if (idle >= COACH_CHECKIN_MIN) {
+    coachSend('checkin', `${Math.round(idle)} minutes since he last heard from you.`);
+  } else if (moved && idle >= 5) {
+    coachSend('checkin', `The block changed: now ${label || 'nothing is scheduled'}.`);
+  }
+}
+
+function coachMsgHtml(m) {
+  if (m.role === 'checkin') return `<div class="co-mark">check-in · ${escHtml(m.at)}</div>`;
+  if (m.role === 'user') return `<div class="co-msg co-you">${escHtml(m.text)}</div>`;
+  const { next, rest } = coachSplit(m.text);
+  const tools = (m.tools || []).length;
+  return `<div class="co-msg co-coach${m.error ? ' co-error' : ''}">
+    ${next ? `<div class="co-msg-next">${escHtml(next)}</div>` : ''}
+    ${rest ? `<div class="md">${mdHtml(rest)}</div>` : ''}
+    <div class="co-meta">${escHtml(m.at)}${tools ? ` · used the app ${tools}×` : ''}</div>
+  </div>`;
+}
+
+function renderCoach() {
+  const body = document.getElementById('coach-body');
+  if (!body) return;
+  const pill = document.getElementById('co-rules-pill');
+  if (pill) pill.textContent = coachView.rules ? '‹ The plan' : 'Your rules';
+  if (coachView.rules) {
+    // The rules are a markdown document — the Horizons documents' component.
+    if (body.querySelector('[data-co-rules]')) return;
+    const saved = () => (state.settings || {}).coach_rules || '';
+    body.innerHTML = `<div class="co-rules">${mdDocHtml(saved(), 'data-co-rules',
+      'How the coach should work with you — what helps, what does not, words to avoid. Start a line with - for a list.')}</div>`;
+    wireMdDoc(body, {
+      label: 'edited your rules for the coach',
+      saved,
+      save: value => saveSettingDoc('coach_rules', value),
+      restore: async prev => { await saveSettingDoc('coach_rules', prev); renderCoach(); },
+    });
+    return;
+  }
+  // Built once; the field is never repainted — half-typed text is data.
+  if (!body.querySelector('.co-page')) {
+    body.innerHTML = `<div class="co-page">
+      <div class="co-next">
+        <div class="co-next-label">Next</div>
+        <div class="co-next-text"></div>
+        <div class="co-acts">
+          <button class="chip" data-co="done">Done</button>
+          <button class="chip" data-co="stuck">Stuck</button>
+          <button class="chip" data-co="came">Something came up</button>
+        </div>
+      </div>
+      <div class="co-log"></div>
+      <div class="co-compose">
+        <textarea id="co-input" rows="2" spellcheck="true"
+          placeholder="What's going on — a worry, what you just did, where you're stuck"></textarea>
+        <button class="chip" id="co-send">Send</button>
+      </div>
+    </div>`;
+    wireCoach(body);
+  }
+  const off = !coachView.available;
+  const next = coachNext();
+  body.querySelector('.co-next-text').innerHTML = off
+    ? emptyHtml(coachView.available === false
+      ? 'The coach runs in the desktop app on the laptop — that is where Claude Code is signed in.'
+      : 'Starting…')
+    : next ? escHtml(next)
+    : emptyHtml('Tell it what is on your plate, or how you are doing, and it will make a plan with you.');
+  body.querySelectorAll('[data-co], #co-send').forEach(b => { b.disabled = off || coachView.busy; });
+  body.querySelectorAll('[data-co="done"], [data-co="stuck"]').forEach(b => { b.disabled = b.disabled || !next; });
+  const log = body.querySelector('.co-log');
+  log.innerHTML = coachView.messages.map(coachMsgHtml).join('')
+    + (coachView.busy ? `<div class="co-mark co-busy">${coachView.tool
+      ? `reading the app · ${escHtml(coachView.tool)}` : 'thinking…'}</div>` : '');
+  log.scrollTop = log.scrollHeight;
+}
+
+function wireCoach(body) {
+  const ta = body.querySelector('#co-input');
+  try { ta.value = localStorage.getItem('coachDraft') || ''; } catch (e) { /* a convenience */ }
+  const keep = () => { try { localStorage.setItem('coachDraft', ta.value); } catch (e) { /* a convenience */ } };
+  ta.addEventListener('input', keep);
+  const send = async () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    if (await coachSend('user', text)) { ta.value = ''; keep(); }
+  };
+  body.querySelector('#co-send').addEventListener('click', send);
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ta.blur(); }
+  });
+  body.querySelectorAll('[data-co]').forEach(b => b.addEventListener('click', () => {
+    const next = coachNext();
+    if (b.dataset.co === 'done') coachSend('user', `Done: ${next}`);
+    else if (b.dataset.co === 'stuck') coachSend('user', `Stuck on: ${next}`);
+    else {
+      ta.focus();
+      if (!ta.value.trim()) document.execCommand('insertText', false, 'Something came up: ');
+    }
+  }));
+}
+
+async function openCoach(sub) {
+  coachView.rules = sub === 'rules';
+  openM('tab-coach');
+  paintCoachDot(false);
+  document.getElementById('coach-body').innerHTML = '';
+  renderCoach();
+  await coachLoad();
+}
+
+function toggleCoachRules() {
+  flushOpenNotes();
+  coachView.rules = !coachView.rules;
+  document.getElementById('coach-body').innerHTML = '';
+  renderCoach();
+  syncRoute();
+}
 
 // ── Accountability ────────────────────────────────────────────
 
@@ -10883,7 +11172,7 @@ document.addEventListener('keydown', e => {
   setHorizon(HORIZONS[to].key);
 });
 
-async function saveHorizonDoc(key, value) {
+async function saveSettingDoc(key, value) {
   state.settings = state.settings || {};
   state.settings[key] = value;
   const res = await apiSendData('/api/settings', 'PATCH', { [key]: value || null });
@@ -10910,11 +11199,11 @@ function wireHorizonPurpose(el) {
     if (!undoPushed) {
       undoPushed = true;
       pushUndo(`edited ${horizonName('purpose')}`, async () => {
-        await saveHorizonDoc(key, prev);
+        await saveSettingDoc(key, prev);
         renderMap();
       });
     }
-    await saveHorizonDoc(key, value);
+    await saveSettingDoc(key, value);
   };
   el.addEventListener('input', () => {
     pending = true;
@@ -11041,9 +11330,9 @@ function renderHorizon(body) {
     wireMdDoc(body, {
       label: `edited ${horizonName(h)}`,
       saved,
-      save: value => saveHorizonDoc(key, value),
+      save: value => saveSettingDoc(key, value),
       restore: async prev => {
-        await saveHorizonDoc(key, prev);
+        await saveSettingDoc(key, prev);
         renderMap();
       },
     });
@@ -13738,34 +14027,11 @@ async function addEngageTodo(content) {
   return item;
 }
 
-function renderEngage() {
-  const header = document.getElementById('engage-header');
-  const body = document.getElementById('engage-body');
-  if (!header || !body) return;
-  // A rename half-typed on a to-do row is data (the renderBar rule): the
-  // repaints from timers and focus would destroy the field. Its own finish
-  // drops the mark before it repaints.
-  if (document.activeElement && document.activeElement.classList.contains('eg-renaming')) return;
-
-  const now = new Date();
-  const dateStr = egDateStr();
-  const viewDate = egViewDate();
-  const isToday = dateStr === formatDateYMD(now);
-  // "Past" dimming is a statement about the wall clock, so it only exists on
-  // today's view: a future day has no past yet, and a past day is all past.
-  const nowMin = isToday ? now.getHours() * 60 + now.getMinutes()
-    : dateStr < formatDateYMD(now) ? 5760 : -1;
-  // What is happening RIGHT NOW. nowMin is -1 on a future day and 5760 on a
-  // past one, so containment can only ever be true on today — the same trick
-  // the past-dimming relies on. Every row whose span contains now is marked:
-  // a block and an event really can both be running, and unlike the NOW panel
-  // (which has room for one and picks by priority) the timeline can say so.
-  const isNow = r => r.endMin > r.minute && r.minute <= nowMin && nowMin < r.endMin;
-  const nowAttrs = r => ` data-s="${r.minute}" data-e="${r.endMin}"`;
-
-  const { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds } =
-    engageDayRows(now, dateStr, viewDate, isToday, isoMin);
-
+// THE TO-DO LIST, ONCE (2026-10-22): Engage draws it and the Coach tells its
+// session what it holds — the same rows, in the same order, with the same
+// current task, or the coach would be steering by a list nobody can see.
+// `placedIds` / `routineAreaIds` are engageDayRows' for the same day.
+function engageTodoList(nowMin, isToday, placedIds, routineAreaIds) {
   // NO DOMAIN FILTER (2026-09-30, Quentin's instruction: "remove the domain
   // button selection"). The to-do list used to narrow to the domain in force —
   // the block calendar's, or one picked from the header's context menu, plus
@@ -13806,6 +14072,38 @@ function renderEngage() {
   // THE CURRENT TASK (2026-10-11, Quentin's instruction): in FVP the LAST
   // dot down the list is the one to work on. A faint highlight says which.
   const currentId = (pool.filter(i => i.started_at).pop() || {}).id;
+  return { pool, currentId };
+}
+
+function renderEngage() {
+  const header = document.getElementById('engage-header');
+  const body = document.getElementById('engage-body');
+  if (!header || !body) return;
+  // A rename half-typed on a to-do row is data (the renderBar rule): the
+  // repaints from timers and focus would destroy the field. Its own finish
+  // drops the mark before it repaints.
+  if (document.activeElement && document.activeElement.classList.contains('eg-renaming')) return;
+
+  const now = new Date();
+  const dateStr = egDateStr();
+  const viewDate = egViewDate();
+  const isToday = dateStr === formatDateYMD(now);
+  // "Past" dimming is a statement about the wall clock, so it only exists on
+  // today's view: a future day has no past yet, and a past day is all past.
+  const nowMin = isToday ? now.getHours() * 60 + now.getMinutes()
+    : dateStr < formatDateYMD(now) ? 5760 : -1;
+  // What is happening RIGHT NOW. nowMin is -1 on a future day and 5760 on a
+  // past one, so containment can only ever be true on today — the same trick
+  // the past-dimming relies on. Every row whose span contains now is marked:
+  // a block and an event really can both be running, and unlike the NOW panel
+  // (which has room for one and picks by priority) the timeline can say so.
+  const isNow = r => r.endMin > r.minute && r.minute <= nowMin && nowMin < r.endMin;
+  const nowAttrs = r => ` data-s="${r.minute}" data-e="${r.endMin}"`;
+
+  const { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds } =
+    engageDayRows(now, dateStr, viewDate, isToday, isoMin);
+
+  const { pool, currentId } = engageTodoList(nowMin, isToday, placedIds, routineAreaIds);
 
   // WHAT COMES BACK ON THIS DAY. A deferred item vanishes from every surface
   // until its date, which is the point — but it also means walking forward to
