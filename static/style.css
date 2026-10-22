@@ -6644,6 +6644,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    (mdDocHtml: a Lists document, the Horizons' Areas and Goals). */
 .md-doc-view { min-height: calc(100dvh - 200px); font: 15px/1.65 var(--font-ui); color: var(--text-primary);
   cursor: text; overflow-wrap: anywhere; }
+/* Rendered markdown is text to read, so it can be selected and copied
+   (2026-10-22, Quentin's instruction) — the desktop window's pywebview puts
+   user-select: none on body, which every .md inherited. */
+.md { -webkit-user-select: text; user-select: text; }
 .md > :first-child { margin-top: 0; }
 .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 1.1em 0 0.4em; line-height: 1.3; font-weight: 600; }
 .md h1 { font-size: 1.6em; } .md h2 { font-size: 1.35em; } .md h3 { font-size: 1.15em; }
