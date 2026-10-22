@@ -15698,7 +15698,7 @@ const CLARIFY_FLOWS = [
 const CLARIFY_FLOW_HINT = {
   now: 'Marks it done and moves to the next item. Nothing is filed.',
   todo: 'Goes on the to-do list, available now.',
-  project: 'No project unless you click one on the Projects page; an area’s heading files it under that area. Either way it leaves the to-do list.',
+  project: 'Click a project on the Projects page to put it in one; click an area to file it there at once. Either way it leaves the to-do list.',
   calendar: 'Click a block or an event to add it there, or an empty time to put it at that time.',
   list: 'Click a list or document on the Lists page to add it there.',
 };
@@ -15718,8 +15718,8 @@ function clarifyOnProjects() {
 }
 
 // NO PROJECT IS THE DEFAULT (2026-10-08, Quentin's instruction): the Project
-// flow files an action loose on Projects unless a project is picked. An
-// area's heading, or the sheet's No project button, puts the pick back.
+// flow files an action loose on Projects unless a project is picked. The
+// sheet's No project button puts the pick back; a click on an area files it.
 function clarifyPickLoose(areaId) {
   clarifyView.projectId = null;
   clarifyView.projectName = '';
@@ -15869,7 +15869,8 @@ function calPickFrom(el, e) {
 // else on the page — a directory, the week's paging — works as it always does.
 const CLARIFY_PICK_TARGETS = {
   calendar: '#cal-overlay .tl-block, #cal-overlay .tl-gcal-event, #cal-overlay .wk-col[data-date]',
-  project: '#map-overlay .map-row-project[data-id], #map-overlay .mp-sec:not([data-sec="in"]) > .mp-sec-title',
+  project: '#map-overlay .map-row-project[data-id], #map-overlay .mp-sec[data-drop-area] > .mp-sec-title, '
+    + '#map-overlay .mp-sec[data-drop-area] > .add-zone > .add-zone-fill, #map-overlay .mp-idx[data-drop-area]',
   list: '#tab-lists .ref-row[data-id]',
 };
 window.addEventListener('click', e => {
@@ -15887,10 +15888,14 @@ window.addEventListener('click', e => {
     return;
   }
   e.preventDefault(); e.stopPropagation();
-  if (pk.flow === 'project' && el.classList.contains('mp-sec-title')) {
-    const obj = el.dataset.obj || '';
-    clarifyPickLoose(obj.startsWith('area:') ? parseInt(obj.slice(5)) : null);
+  // An AREA — its heading, its entry in the index, the blank space under it —
+  // files the action there in no project, in the one click (2026-10-22,
+  // Quentin's instruction). General is in no area.
+  if (pk.flow === 'project' && !el.classList.contains('map-row-project')) {
+    const area = el.closest('[data-drop-area]').dataset.dropArea;
+    clarifyPickLoose(area ? parseInt(area) : null);
     clarifyPicked();
+    fileClarifyFlow();
     return;
   }
   if (pk.flow === 'project') {
