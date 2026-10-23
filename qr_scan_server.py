@@ -224,8 +224,8 @@ def tap():
         _log_tap(now_iso, False, str(e))
         return _tap_page('Tag', 'Not a valid tap.', False, 403)
 
-    tag = storage.qr_tag_by_uid(uid)
-    if not tag:
+    tags = storage.qr_tags_by_uid(uid)
+    if not tags:
         # A real tag whose keys are configured but which no gate claims. Worth
         # saying, because it is the state between programming a tag and adding
         # it in Settings.
@@ -233,32 +233,44 @@ def tap():
                            uid=uid, counter=counter)
         return _tap_page('Tag %s' % uid, 'This tag is not attached to a gate yet.',
                          False, 404)
-    if not tag['active'] or not tag['node_active']:
-        pend = storage.qr_tag_pending(tag['id'])
-        _log_tap(now_iso, False,
-                           ('this tag starts counting %s' % pend[:16].replace('T', ' '))
-                           if pend else 'this tag is paused',
-                           node_id=tag['node_id'], tag_id=tag['id'],
-                           uid=uid, counter=counter)
-        return _tap_page(tag['label'],
-                         ('This tag starts counting %s.' % pend[:16].replace('T', ' '))
-                         if pend else 'This tag is paused.', False, 409)
 
-    if not storage.qr_accept_tap(tag['id'], counter, now_iso):
-        # The counter is not new: a refresh of the page, or a replay of a URL
-        # someone kept. Either way this tap is already history, and it must not
-        # log a second scan.
-        _log_tap(now_iso, False, 'read %d was already logged — a refresh, '
-                           'or a URL replayed' % counter, node_id=tag['node_id'],
-                           tag_id=tag['id'], uid=uid, counter=counter)
-        return _tap_page(tag['label'], 'Already logged — tap the tag again.', True, 200)
+    # ONE TAP, EVERY GATE THE TAG IS ON (2026-10-22): each gate's row answers
+    # for itself — paused, waiting its 24h, a replay, or logged — and writes its
+    # own attempt row, so each gate's "Last taps" reads true.
+    logged, replayed, refused = [], [], []
+    for tag in tags:
+        if not tag['active'] or not tag['node_active']:
+            pend = storage.qr_tag_pending(tag['id'])
+            refused.append(('This tag starts counting %s.' % pend[:16].replace('T', ' '))
+                           if pend else 'This tag is paused.')
+            _log_tap(now_iso, False,
+                     ('this tag starts counting %s' % pend[:16].replace('T', ' '))
+                     if pend else 'this tag is paused',
+                     node_id=tag['node_id'], tag_id=tag['id'], uid=uid, counter=counter)
+            continue
+        if not storage.qr_accept_tap(tag['id'], counter, now_iso):
+            # The counter is not new: a refresh of the page, or a replay of a
+            # URL someone kept. Either way this tap is already history, and it
+            # must not log a second scan.
+            replayed.append(tag)
+            _log_tap(now_iso, False, 'read %d was already logged — a refresh, '
+                     'or a URL replayed' % counter, node_id=tag['node_id'],
+                     tag_id=tag['id'], uid=uid, counter=counter)
+            continue
+        storage.qr_log_scan(tag['node_id'], now_iso, None, None, None, None,
+                            proof='tag', tag_id=tag['id'])
+        _log_tap(now_iso, True, None, node_id=tag['node_id'], tag_id=tag['id'],
+                 uid=uid, counter=counter)
+        logged.append(tag)
+    storage.qr_tag_seen(uid, counter)
 
-    storage.qr_log_scan(tag['node_id'], now_iso, None, None, None, None,
-                        proof='tag', tag_id=tag['id'])
-    _log_tap(now_iso, True, None, node_id=tag['node_id'], tag_id=tag['id'],
-                       uid=uid, counter=counter)
-    return _tap_page(tag['node_label'], 'Logged — %s, read %d.' % (tag['label'], counter),
-                     True, 200)
+    if logged:
+        return _tap_page(' · '.join(t['node_label'] for t in logged),
+                         'Logged — %s, read %d.' % (logged[0]['label'], counter), True, 200)
+    if replayed:
+        return _tap_page(replayed[0]['label'], 'Already logged — tap the tag again.',
+                         True, 200)
+    return _tap_page(tags[0]['label'], refused[0], False, 409)
 
 
 @app.route('/health')

@@ -1096,7 +1096,8 @@ function tagsHtml(n) {
       : '<div class="gd-hint">Set a Scan URL in the app\'s Settings → Connections first — a tag needs somewhere to point.</div>'}
     ${tags.map(t => `<div class="gd-tag">
         <div class="gd-row-line"><span class="gd-row-name">${escHtml(t.label)}</span><span class="gd-mono">${escHtml(t.uid)}</span></div>
-        <div class="gd-hint">${escHtml(tagState(t))}${t.keys_set ? ' · keys set (write-only)' : ''}</div>
+        <div class="gd-hint">${escHtml(tagState(t))}${t.keys_set ? ' · keys set (write-only)' : ''}${(t.also_on || []).length
+          ? ` · also clears ${escHtml(t.also_on.join(', '))} (one tag, one pair of keys)` : ''}</div>
         <div class="gd-actions">
           <button type="button" class="gd-btn gd-small" data-tagkeys="${t.id}">${t.keys_set ? 'Replace keys' : 'Set keys'}</button>
           <button type="button" class="gd-btn gd-small" data-tagactive="${t.id}" data-to="${t.active ? 0 : 1}">${t.active ? 'Pause' : 'Resume'}</button>
@@ -1121,7 +1122,8 @@ function tagsHtml(n) {
         </div>
         <div class="gd-hint">Generated keys come from this device's cryptographic random source and are stored in
           config.json on the server — never the database, which is backed up. On a tag-only gate a NEW tag starts
-          counting in 24h: it is another way to clear the gate.</div>
+          counting in 24h: it is another way to clear the gate. A tag already on another gate keeps its keys —
+          add it by UID and leave the keys blank, and one tap clears both.</div>
       </div>` : '<button type="button" class="gd-btn gd-small" id="gd-tagadd">+ Tag</button>'}
   </div>`;
 }

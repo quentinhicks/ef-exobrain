@@ -6,8 +6,9 @@ This is the money path, so the checks are about what CANNOT happen:
     honest either looks - that is the whole difference between the two modes
   * a captured tap URL is worth nothing the second time: the read counter is
     claimed by the UPDATE itself, so two processes racing cannot both win it
-  * a tag clears the gate it belongs to and no other, even when the gates share
-    keys
+  * a tag clears the gates it is on and no other, even when the gates share
+    keys; on several gates, one tap clears each whose row is live, and a URL
+    from before it joined a gate is not new to that gate
   * a new tag on a tag-only gate waits its 24h like every other loosening, and
     a paused one that never came due cannot clear anything
   * the last tag of a tag-only gate cannot be removed, because a gate nothing
@@ -75,7 +76,7 @@ tag = c.post(f"/api/accountability/nodes/{gate['id']}/tags",
 check('a tag is added to the gate', tag.get('id') and tag['uid'] == UID_A, tag)
 check('...and starts with no keys, so it cannot verify anything yet',
       tag.get('keys_set') is False, tag)
-check('a second gate cannot claim the same tag',
+check('the same gate cannot hold the same tag twice',
       c.post(f"/api/accountability/nodes/{gate['id']}/tags",
              json={'uid': UID_A}).status_code == 409)
 check('a UID that is not 7 bytes is refused',
@@ -211,7 +212,7 @@ conn.execute("UPDATE easing_pending SET apply_at = ? WHERE kind = 'gate_tag'",
 conn.commit()
 conn.close()
 check('once the 24h is up the tag goes live on the next read',
-      storage.qr_tag_by_uid('04FFEEDDCCBB80')['active'] == 1)
+      storage.qr_tags_by_uid('04FFEEDDCCBB80')[0]['active'] == 1)
 p3, m3 = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), '04FFEEDDCCBB80', 2)
 t.get(f'/t?e={p3}&c={m3}')
 check('...and then it clears the gate', len(storage.qr_scans_in_window(
@@ -235,6 +236,68 @@ check('dropping back to link proof waits 24h like every other easing',
 check('...so the gate still demands a tap in the meantime',
       [n for n in storage.qr_get_nodes()
        if n['id'] == gate['id']][0]['proof_mode'] == 'tag')
+
+# ── one tag on several gates (2026-10-22: the dorm tag clears Sleep and Mindful) ──
+def scans_of(node_id):
+    return storage.qr_scans_in_window(node_id, '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')
+
+
+gym_before, desk_before = len(scans_of(gate['id'])), len(scans_of(other['id']))
+on_desk = c.post(f"/api/accountability/nodes/{other['id']}/tags",
+                 json={'uid': UID_A, 'label': 'Gym door, from the desk'})
+check("a tag already on one gate can be added to another", on_desk.status_code == 201,
+      (on_desk.status_code, on_desk.get_json()))
+on_desk = on_desk.get_json()
+check('...live at once on a LINK gate, and its keys are already set (they are the UID\'s)',
+      on_desk['active'] == 1 and on_desk['keys_set'] is True, on_desk)
+check('...carrying the read counter the tag has already spent',
+      on_desk['last_counter'] == 8, on_desk['last_counter'])
+t.get(f'/t?e={bulk[0]}&c={bulk[1]}')
+check('a URL from BEFORE it joined the second gate clears neither',
+      (len(scans_of(gate['id'])), len(scans_of(other['id']))) == (gym_before, desk_before))
+p9, m9 = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), UID_A, 9)
+both = t.get(f'/t?e={p9}&c={m9}')
+check('one new tap clears BOTH gates, once each',
+      (len(scans_of(gate['id'])), len(scans_of(other['id']))) == (gym_before + 1, desk_before + 1)
+      and b'Gym' in both.data and b'Desk' in both.data, both.data[-300:])
+t.get(f'/t?e={p9}&c={m9}')
+check('...and replaying it clears neither again',
+      (len(scans_of(gate['id'])), len(scans_of(other['id']))) == (gym_before + 1, desk_before + 1))
+
+hard3 = c.post('/api/accountability/nodes',
+               json={'label': 'Mindful', 'window_start': '07:45', 'window_end': '08:15'}).get_json()
+c.post(f"/api/accountability/nodes/{hard3['id']}/tags", json={'uid': UID_B})
+c.patch(f"/api/accountability/nodes/{hard3['id']}", json={'proof_mode': 'tag'})
+joined = c.post(f"/api/accountability/nodes/{hard3['id']}/tags", json={'uid': UID_A}).get_json()
+check('on a TAG-ONLY gate the shared tag waits its 24h — it is a new way to clear THAT gate',
+      joined['active'] == 0 and joined.get('pending_live_at'), joined)
+p10, m10 = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), UID_A, 10)
+t.get(f'/t?e={p10}&c={m10}')
+check('...so a tap meanwhile clears the gates it is live on, and not the one it waits for',
+      len(scans_of(gate['id'])) == gym_before + 2 and len(scans_of(hard3['id'])) == 0)
+conn = storage.get_conn()
+conn.execute("UPDATE easing_pending SET apply_at = ? WHERE kind = 'gate_tag'",
+             ((datetime.datetime.now() - datetime.timedelta(minutes=1)).isoformat(),))
+conn.commit()
+conn.close()
+t.get(f'/t?e={p10}&c={m10}')
+check('once live, the tap it refused while waiting is NOT new to it — no replay',
+      len(scans_of(hard3['id'])) == 0, scans_of(hard3['id']))
+p11, m11 = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), UID_A, 11)
+t.get(f'/t?e={p11}&c={m11}')
+check('...and the next real tap clears all three',
+      len(scans_of(hard3['id'])) == 1 and len(scans_of(gate['id'])) == gym_before + 3)
+
+check('pausing it on one gate leaves it live on the others',
+      c.patch(f"/api/accountability/tags/{on_desk['id']}", json={'active': 0}).status_code == 200
+      and [r['active'] for r in storage.qr_tags_by_uid(UID_A)] == [1, 0, 1])
+desk_row = [t for n in c.get('/api/accountability/nodes').get_json() if n['id'] == other['id']
+            for t in n['tags'] if t['uid'] == UID_A][0]
+check('a shared tag says which other gates it clears, since its keys are theirs too',
+      sorted(desk_row['also_on']) == ['Gym', 'Mindful'], desk_row.get('also_on'))
+check('its keys cannot be cleared from ANY gate\'s row while a tag-only gate it is on '
+      'has nothing else to clear it',
+      c.delete(f"/api/accountability/tags/{on_desk['id']}/keys").status_code == 400)
 
 print('\n'.join(ok + bad))
 print('\n%d passed, %d failed' % (len(ok), len(bad)))

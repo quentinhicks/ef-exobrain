@@ -2337,9 +2337,14 @@ def _tag_payloads(node_id):
     # verify a tap, so saying so is the difference between "it is not working"
     # and "I never finished setting it up".
     keys = ntag.load_keys()
+    every = storage.qr_all_tags()
     out = []
     for t in storage.qr_tags_for_node(node_id):
-        out.append(dict(t, keys_set=t['uid'].upper() in keys,
+        # The other gates the same physical tag clears: its keys are shared
+        # with them, so replacing them here re-keys those too.
+        also = [r['node_label'] for r in every
+                if r['uid'].upper() == t['uid'].upper() and r['node_id'] != node_id]
+        out.append(dict(t, keys_set=t['uid'].upper() in keys, also_on=also,
                         pending_live_at=storage.qr_tag_pending(t['id'])))
     return out
 
@@ -3631,10 +3636,11 @@ def delete_location(id):
 
 # ── The tags a gate accepts ────────────────────────────────
 #
-# A tag belongs to ONE gate and a gate may have several (Quentin, 2026-08-19).
-# Everything here obeys the same 24h rule the gate's own fields do, in the same
-# store: a tag going LIVE is a new way to clear the gate, so on a tag-only gate
-# it waits; pausing or deleting one is tightening and lands at once.
+# A gate may have several tags (Quentin, 2026-08-19), and one tag may be on
+# several gates (2026-10-22) — a row per gate, so each obeys its own gate's
+# rules. Everything here obeys the same 24h rule the gate's own fields do, in
+# the same store: a tag going LIVE is a new way to clear the gate, so on a
+# tag-only gate it waits; pausing or deleting one is tightening and lands at once.
 @app.route('/api/accountability/nodes/<int:id>/tags', methods=['POST'])
 def post_accountability_tag(id):
     node = next((n for n in storage.qr_get_nodes() if n['id'] == id), None)
@@ -3651,7 +3657,7 @@ def post_accountability_tag(id):
     hard = (node.get('proof_mode') or 'link') == 'tag'
     tag = storage.qr_add_tag(id, label, uid, active=0 if hard else 1)
     if not tag:
-        return jsonify({'error': 'that UID already belongs to a gate'}), 409
+        return jsonify({'error': 'that tag is already on this gate'}), 409
     if hard:
         tag['pending_live_at'] = storage.qr_pend_tag_live(tag['id'])
     tag['keys_set'] = uid in ntag.load_keys()
@@ -3738,12 +3744,17 @@ def delete_accountability_tag_keys(tag_id):
     tag = next((t for t in storage.qr_all_tags() if t['id'] == tag_id), None)
     if not tag:
         return jsonify({'error': 'unknown tag'}), 404
-    if (tag.get('proof_mode') or 'link') == 'tag':
-        others = [t for t in storage.qr_tags_for_node(tag['node_id'], active_only=True)
-                  if t['id'] != tag_id and t['uid'].upper() in ntag.load_keys()]
+    # The keys are the PHYSICAL tag's, so clearing them disarms its row on
+    # every gate it is on — and each of those gates must stay clearable.
+    uid = tag['uid'].upper()
+    for row in storage.qr_all_tags():
+        if row['uid'].upper() != uid or (row.get('proof_mode') or 'link') != 'tag':
+            continue
+        others = [t for t in storage.qr_tags_for_node(row['node_id'], active_only=True)
+                  if t['uid'].upper() != uid and t['uid'].upper() in ntag.load_keys()]
         if not others:
             return jsonify({'error': 'clearing these keys would leave '
-                                     + tag['node_label'] + ' with no way to be '
+                                     + row['node_label'] + ' with no way to be '
                                      'cleared'}), 400
     keys = dict(_config_file().get('ntag_keys') or {})
     keys.pop(tag['uid'].upper(), None)

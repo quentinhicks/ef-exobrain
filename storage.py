@@ -139,6 +139,26 @@ def filing_updates(area_id=None, domain_id=None):
     return {'area_id': None, 'domain_id': domain_id or None}
 
 
+# qr_tag.uid was UNIQUE across every gate; since 2026-10-22 one physical tag
+# may clear several gates, so it is unique per GATE. Rebuilt under a new name
+# and renamed over the old one, the recurring_task precedent below.
+def _qr_tag_uid_per_gate(conn):
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' "
+                       "AND name = 'qr_tag'").fetchone()['sql']
+    if 'UNIQUE (node_id, uid)' in sql:
+        return
+    cols = ', '.join(r['name'] for r in conn.execute('PRAGMA table_info(qr_tag)'))
+    new = re.sub(r'(uid\s+TEXT\s+NOT NULL)\s+UNIQUE', r'\1', sql, count=1)
+    new = re.sub(r'\)\s*$', ',\n            UNIQUE (node_id, uid)\n        )', new, count=1)
+    new = re.sub(r'CREATE TABLE\s+(IF NOT EXISTS\s+)?"?qr_tag"?',
+                 'CREATE TABLE qr_tag_new', new, count=1)
+    conn.execute(new)
+    conn.execute(f'INSERT INTO qr_tag_new ({cols}) SELECT {cols} FROM qr_tag')
+    conn.execute('DROP TABLE qr_tag')
+    conn.execute('ALTER TABLE qr_tag_new RENAME TO qr_tag')
+    conn.commit()
+
+
 def _add_filing_columns(conn):
     for t in FILED_TABLES:
         cols = {r['name'] for r in conn.execute(f'PRAGMA table_info({t})')}
@@ -1192,14 +1212,16 @@ def init_db():
             id           INTEGER PRIMARY KEY,
             node_id      INTEGER NOT NULL REFERENCES qr_node(id),
             label        TEXT NOT NULL,
-            uid          TEXT NOT NULL UNIQUE,
+            uid          TEXT NOT NULL,
             -- The tag's own read counter, the highest one ACCEPTED. -1 means
             -- no tap yet; a tap at or below it is a replay and is refused.
             last_counter INTEGER NOT NULL DEFAULT -1,
             last_tap_at  TEXT,
             active       INTEGER NOT NULL DEFAULT 1,
-            created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE (node_id, uid)
         )''')
+    _qr_tag_uid_per_gate(conn)
     # EVERY TAP, VERIFIED OR NOT — the only place a REFUSED one is written.
     #
     # qr_scan holds taps that PROVED themselves, and the judge reads it. A tap
@@ -7283,10 +7305,13 @@ def qr_recent_taps(node_id, limit=8):
 
 # ── The tags a gate accepts ───────────────────────────────────────────────
 #
-# A tag belongs to ONE gate (Quentin, 2026-08-19): a gate may have several —
-# two doors into the same room — but a tap can only ever clear the gate its tag
-# is bound to. The AES keys are NOT here: they live in config.json, which is
-# not in the db and so not in the backups the db is dumped into.
+# A gate may have several tags — two doors into the same room — and since
+# 2026-10-22 (Quentin's instruction: the dorm tag clears Sleep AND Mindful) one
+# physical tag may be added to several gates. Each gate holds its OWN row for
+# it — its own label, its own 24h wait, its own pause — so a tap clears exactly
+# the gates whose row is live, and adding it to one gate is a new way to clear
+# THAT gate only. The AES keys are NOT here: they live in config.json, keyed by
+# UID, which is not in the db and so not in the backups the db is dumped into.
 def qr_tags_for_node(node_id, active_only=False):
     conn = get_conn()
     apply_due_tag_pendings(conn)
@@ -7308,26 +7333,33 @@ def qr_all_tags():
     return [dict(r) for r in rows]
 
 
-def qr_tag_by_uid(uid):
+def qr_tags_by_uid(uid):
+    """Every gate's row for this physical tag — what one tap is asked about."""
     conn = get_conn()
     apply_due_tag_pendings(conn)
-    row = conn.execute(
+    rows = conn.execute(
         '''SELECT t.*, n.label AS node_label, n.active AS node_active
            FROM qr_tag t JOIN qr_node n ON t.node_id = n.id
-           WHERE t.uid = ?''', ((uid or '').upper(),)).fetchone()
+           WHERE t.uid = ? ORDER BY t.id''', ((uid or '').upper(),)).fetchall()
     conn.close()
-    return dict(row) if row else None
+    return [dict(r) for r in rows]
 
 
 def qr_add_tag(node_id, label, uid, active=1):
     conn = get_conn()
+    uid = (uid or '').upper()
+    # A tag already on another gate brings its read counter with it. Starting
+    # this row at -1 would make every URL the tag ever produced — a captured
+    # one included — new to THIS gate, and clear it once.
+    seen = conn.execute('SELECT MAX(last_counter) AS c FROM qr_tag WHERE uid = ?',
+                        (uid,)).fetchone()['c']
     try:
         cur = conn.execute(
-            'INSERT INTO qr_tag (node_id, label, uid, active) VALUES (?,?,?,?)',
-            (node_id, label, (uid or '').upper(), 1 if active else 0))
+            'INSERT INTO qr_tag (node_id, label, uid, active, last_counter) VALUES (?,?,?,?,?)',
+            (node_id, label, uid, 1 if active else 0, -1 if seen is None else seen))
     except sqlite3.IntegrityError:
         conn.close()
-        return None                     # that UID is already some gate's tag
+        return None                     # that UID is already one of this gate's tags
     conn.commit()
     row = conn.execute('SELECT * FROM qr_tag WHERE id = ?', (cur.lastrowid,)).fetchone()
     conn.close()
@@ -7369,7 +7401,7 @@ def qr_delete_tag(tag_id):
 # (kind='gate_tag', row_id=tag_id, field='active'). Pausing or deleting a tag
 # is tightening and lands at once.
 #
-# Applied ON READ from both choke points (qr_tag_by_uid, which is what a tap
+# Applied ON READ from both choke points (qr_tags_by_uid, which is what a tap
 # asks, and qr_tags_for_node, which is what the settings sheet draws), the same
 # arrangement every on-read applier has — so the judge and the tap never wait
 # for a UI read to make a queued tag live.
@@ -7437,6 +7469,21 @@ def qr_accept_tap(tag_id, counter, when):
     accepted = bool(cur.rowcount)
     conn.close()
     return accepted
+
+
+def qr_tag_seen(uid, counter):
+    """A verified read is spent on EVERY gate's row for the tag, live or not.
+
+    A row that was paused or still waiting its 24h refused the tap without
+    claiming the counter, so once it went live the URL from that tap would be
+    new to it — a replay that clears a day. Run after the per-row claims, so
+    it cannot pre-empt them.
+    """
+    conn = get_conn()
+    conn.execute('UPDATE qr_tag SET last_counter = ? WHERE uid = ? AND last_counter < ?',
+                 (counter, (uid or '').upper(), counter))
+    conn.commit()
+    conn.close()
 
 
 def qr_scans_in_window(node_id, open_iso, close_iso):
