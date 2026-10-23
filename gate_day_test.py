@@ -231,6 +231,40 @@ check("yesterday called off does not make today's verdict off",
       day()['verdict']['off'] is False, day()['verdict'])
 check("...nor tomorrow's", day(tomorrow)['verdict']['off'] is False, day(tomorrow)['verdict'])
 
+# A QUEUED CHANGE IS PART OF A FUTURE DAY'S ANSWER (2026-10-22). Moving a
+# window is an easing, so it waits 24h — and in the meantime the day read-out
+# (what the calendar draws) showed the old time on days the new one governs,
+# while qr_gate_day_windows already showed the new. One answer: qr_node_as_of.
+mover = c.post('/api/accountability/nodes', json={
+    'label': 'Mover', 'window_start': '07:15', 'window_end': '08:15'}).get_json()
+src = c.post('/api/schedules', json={
+    'kind': 'rule', 'start': TODAY + 'T06:15:00', 'duration': 'PT1H',
+    'recurrenceRules': [{'@type': 'RecurrenceRule', 'frequency': 'weekly',
+                         'byDay': [{'@type': 'NDay', 'day': x}
+                                   for x in ('mo', 'tu', 'we', 'th', 'fr', 'sa', 'su')]}]}).get_json()
+moved = c.patch('/api/accountability/nodes/%s' % mover['id'], json={'source_uid': src['uid']}).get_json()
+when = moved['scheduled']['source_uid']['effective_date']
+before = (datetime.date.fromisoformat(when) - datetime.timedelta(days=1)).isoformat()
+later = (datetime.date.fromisoformat(when) + datetime.timedelta(days=3)).isoformat()
+check('moving a window earlier waits (it is a translation, not a tightening)',
+      'source_uid' in (moved.get('pending') or []), moved)
+rng = c.get('/api/gates/days?from=%s&to=%s' % (before, later)).get_json()
+mv = {dd: [g for g in v['gates'] if g['node_id'] == mover['id']][0]['window']
+      for dd, v in rng.items()}
+check('a day after the change takes effect draws the NEW window',
+      (mv[later]['start'], mv[later]['end']) == ('06:15', '07:15'), mv[later])
+check('...and the day before it still draws the old one',
+      (mv[before]['start'], mv[before]['end']) == ('07:15', '08:15'), mv[before])
+dw = [n for n in c.get('/api/accountability/nodes').get_json()
+      if n['id'] == mover['id']][0]['day_windows']
+check('...the same answer the gate list serves (qr_gate_day_windows)',
+      all(dw[dd]['window_start'] == mv[dd]['start'] for dd in mv if dd in dw),
+      {dd: (dw.get(dd) or {}).get('window_start') for dd in mv})
+c.post('/api/accountability/nodes/%s/overrides' % mover['id'], json={'date': later, 'skipped': True})
+ov = storage.qr_get_override(mover['id'], later)
+check('calling that day off stamps the window it WILL have, not today\'s',
+      (ov['window_start'], ov['window_end']) == ('06:15', '07:15'), ov)
+
 # A gate with nothing judged says so rather than showing an empty strip.
 fresh_gate = c.post('/api/accountability/nodes', json={
     'label': 'Brand new', 'window_start': '06:00', 'window_end': '10:00'}).get_json()

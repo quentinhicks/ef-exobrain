@@ -2004,6 +2004,17 @@ def qr_windows_from_source(uid, days=21):
     }
 
 
+# THE GATE AS IT WILL BE ON `ymd` — its queued changes dated on or before that
+# day laid over it (row_as_of), None if it is deleted by then. The ONE answer
+# for every reader of a future gate day: qr_gate_day_windows asked it and the
+# day read-out (/api/gates/day[s]) did not, so a window moved from Saturday
+# drew at its old time on the calendar until the change landed (2026-10-22).
+def qr_node_as_of(node, ymd, revisions=None):
+    if revisions is None:
+        revisions = revisions_for('gate', node['id'])
+    return row_as_of(node, revisions, ymd) if revisions else node
+
+
 def qr_gate_day_windows(node, days=17, start=None):
     """The gate's effective window for each of `days` dates, as the JUDGE
     resolves it (qr_judge.resolve_window). The client is given this rather
@@ -2027,7 +2038,7 @@ def qr_gate_day_windows(node, days=17, start=None):
     out = {}
     for i in range(days):
         day = (start + timedelta(days=i)).isoformat()
-        as_of = row_as_of(node, revisions, day) if revisions else node
+        as_of = qr_node_as_of(node, day, revisions)
         # Gone, or switched off, on that day: no window, so nothing is drawn
         # and nothing claims a deadline the gate will not have.
         if not as_of or falsy(as_of.get('active', 1)):

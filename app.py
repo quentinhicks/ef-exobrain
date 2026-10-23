@@ -2591,6 +2591,10 @@ HISTORY_DAYS = 14
 
 def _gate_day_payload(node, ymd, now=None):
     now = now or datetime.now()
+    # A FUTURE day is the gate as it will be then, queued changes included —
+    # the same answer qr_gate_day_windows serves. A gate deleted by then is
+    # off. Today and past days are unaffected: nothing queued dates to them.
+    node = storage.qr_node_as_of(node, ymd) or dict(node, active=0)
     override = storage.qr_get_override(node['id'], ymd)
     applies = qr_judge.applies_on(node, ymd, override)
     skipped = bool(override and override.get('skipped'))
@@ -3794,7 +3798,9 @@ def post_accountability_override(id):
     nodes = {n['id']: n for n in storage.qr_get_nodes()}
     if id not in nodes or not _YMD_RE.match(date):
         return jsonify({'error': 'unknown node or bad date'}), 400
-    node = nodes[id]
+    # The gate as it will be on THAT day: a day off stamps the window it would
+    # have had, not today's, when a change is queued to govern it.
+    node = storage.qr_node_as_of(nodes[id], date) or nodes[id]
 
     # CALLING THE DAY OFF is a day-level statement, so it is made here — on the
     # gate's day surface — and not with the view-only dismissal the timeline
@@ -3893,7 +3899,8 @@ def delete_accountability_override(id, date):
     # one exception — deleting that row puts the gate back on duty, which is a
     # tightening, and refusing it would be refusing to re-commit.
     existing = storage.qr_get_override(id, date)
-    if not (existing and existing.get('skipped')) and _remove_override_locked(nodes[id], date):
+    if not (existing and existing.get('skipped')) and _remove_override_locked(
+            storage.qr_node_as_of(nodes[id], date) or nodes[id], date):
         return jsonify({'error': 'Locked — within 24h of the deadline a day can only be tightened'}), 403
     storage.qr_delete_override(id, date)
     return jsonify({'ok': True})
