@@ -217,6 +217,20 @@ check('a judgment older than the window stays out of it',
 check('...and out of the total',
       h2['charged_cents'] == 750, h2['charged_cents'])
 
+# A called-off day in the strip is not THIS day called off. The history loop
+# once reused `off`, so a gate called off yesterday read "off" for two weeks.
+yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+conn = storage.get_conn()
+conn.execute('INSERT INTO qr_charge_log (node_id, date, failure_reason, '
+             'charge_status, amount_cents, credit_pct) VALUES (?,?,?,?,?,?)',
+             (GID, yesterday, None, 'n/a', None, None))
+conn.commit()
+conn.close()
+tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+check("yesterday called off does not make today's verdict off",
+      day()['verdict']['off'] is False, day()['verdict'])
+check("...nor tomorrow's", day(tomorrow)['verdict']['off'] is False, day(tomorrow)['verdict'])
+
 # A gate with nothing judged says so rather than showing an empty strip.
 fresh_gate = c.post('/api/accountability/nodes', json={
     'label': 'Brand new', 'window_start': '06:00', 'window_end': '10:00'}).get_json()

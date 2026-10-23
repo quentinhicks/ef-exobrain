@@ -2684,12 +2684,15 @@ def _gate_day_payload(node, ymd, now=None):
     days = []
     charged = 0
     for r in storage.qr_judged_rows_for_node(node['id'], hist_from, ymd):
-        off = (r.get('charge_status') or '') == 'n/a'
+        # Its own name: this loop once reused `off`, so the LAST row of the
+        # two weeks before a day decided that day's verdict.off — every day
+        # within 14 of a called-off one read "called off".
+        row_off = (r.get('charge_status') or '') == 'n/a'
         days.append({
             'date': r['date'],
             # 'off' is not a verdict, it is the absence of one: the gate did
             # not run that day (a non-run weekday, or one called off).
-            'outcome': 'off' if off else qr_judge.judged_outcome(r),
+            'outcome': 'off' if row_off else qr_judge.judged_outcome(r),
             'amount_cents': r.get('amount_cents') or 0,
         })
         charged += r.get('amount_cents') or 0
