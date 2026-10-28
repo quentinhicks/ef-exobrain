@@ -3315,20 +3315,14 @@ def get_engage_day():
                          'start': seg['start'], 'end': seg['end']})
     rows.extend(groups.values())
 
-    for e in conn.execute('SELECT * FROM gcal_event WHERE allday = 0').fetchall():
-        try:
-            s = datetime.fromisoformat(e['start'].replace('Z', '+00:00'))
-            t = datetime.fromisoformat(e['end'].replace('Z', '+00:00'))
-        except ValueError:
+    # The calendar's own read (get_gcal_events), so the panel's events are the
+    # ones the calendar draws: moved where they were moved, only from calendars
+    # that are on, and not where the day's plan covers them.
+    for e in get_gcal_events():
+        span = None if e['allday'] or e['plan_covered'] else _local_span(e['start'], e['end'])
+        if not span or span[0] != today_str:
             continue
-        if s.tzinfo is not None:
-            s = s.astimezone()
-            t = t.astimezone()
-        if s.date() != today:
-            continue
-        rows.append({'kind': 'event', 'label': e['summary'],
-                     'start': s.hour * 60 + s.minute,
-                     'end': t.hour * 60 + t.minute + (1440 if t.date() > s.date() else 0)})
+        rows.append({'kind': 'event', 'label': e['summary'], 'start': span[1], 'end': span[2]})
 
     routine_items = [dict(r) for r in conn.execute(
         'SELECT * FROM routine_item ORDER BY area_id, position, id').fetchall()]
@@ -3997,8 +3991,48 @@ def get_gcal_events():
            ORDER BY start''',
         (window_start, window_end)
     ).fetchall()
+    events = [dict(r) for r in rows]
+    _mark_plan_covered(conn, events)
     conn.close()
-    return [dict(r) for r in rows]
+    return events
+
+
+# Where a timed event sits on the local clock: its date, and its start and end
+# in minutes from that date's midnight (an end past midnight runs over 1440).
+def _local_span(start_iso, end_iso):
+    try:
+        s = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
+        t = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+    except (ValueError, AttributeError):
+        return None
+    if s.tzinfo is not None:
+        s, t = s.astimezone(), t.astimezone()
+    return (s.date().isoformat(), s.hour * 60 + s.minute,
+            t.hour * 60 + t.minute + 1440 * (t.date() - s.date()).days)
+
+
+# AN EVENT A DAY'S PLAN COVERS IS NOT DRAWN (2026-10-28, Quentin's
+# instruction). Decided HERE, once, and served as `plan_covered` on every
+# event: the calendar and Engage render the flag, and the NOW panel's rows
+# skip it (get_engage_day). Covered = any of its day's plan blocks overlaps it
+# at all, last night's tail included; an all-day event never is.
+def _mark_plan_covered(conn, events):
+    planned = {r['date'] for r in conn.execute('SELECT date FROM day_plan')}
+    days = planned | {(date_cls.fromisoformat(d) + timedelta(days=1)).isoformat() for d in planned}
+    spans = {}
+    for e in events:
+        e['plan_covered'] = False
+        if e.get('allday') or not days:
+            continue
+        span = _local_span(e['start'], e['end'])
+        if not span or span[0] not in days:
+            continue
+        d = span[0]
+        if d not in spans:
+            prev = (date_cls.fromisoformat(d) - timedelta(days=1)).isoformat()
+            spans[d] = [(p['start'], p['end']) for p in
+                        _plan_segments(conn, d, 0) + _plan_segments(conn, prev, -1440)]
+        e['plan_covered'] = any(span[1] < pe and ps < span[2] for ps, pe in spans[d])
 
 
 # The optimistic half of a calendar WRITE: the event just created on Google,

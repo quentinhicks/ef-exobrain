@@ -123,6 +123,28 @@ client.put(f'/api/day-plan/{day}', json={'body': '   '})
 check('blank text clears it, and the day comes back whole', storage.block_segments_for(day) == before)
 check('...with no row left', storage.get_conn().execute('SELECT COUNT(*) FROM day_plan').fetchone()[0] == 0)
 
+# ── 5. the events it covers, decided once and served ──
+conn = storage.get_conn()
+conn.execute("INSERT INTO calendar_source (name, url, color) VALUES ('Mine', 'x', '#888888')")
+src = conn.execute('SELECT id FROM calendar_source').fetchone()['id']
+for uid, summary, s, e, allday in (('e1', 'Gym', f'{day}T08:30:00', f'{day}T09:30:00', 0),
+                                   ('e2', 'Office hours', f'{day}T10:30:00', f'{day}T11:00:00', 0),
+                                   ('e3', 'Holiday', day, day, 1)):
+    conn.execute('INSERT INTO gcal_event (uid, summary, start, end, allday, source_id) VALUES (?,?,?,?,?,?)',
+                 (uid, summary, s, e, allday, src))
+conn.commit()
+conn.close()
+covered = lambda: {e['summary']: e['plan_covered'] for e in storage.get_gcal_events()}
+check('with no plan, no event is covered', not any(covered().values()), covered())
+client.put(f'/api/day-plan/{day}', json={'body': '9-10 COS333: Problem set'})
+check('an event the plan overlaps at all is covered; one in its gaps and an all-day one are not',
+      covered() == {'Gym': True, 'Office hours': False, 'Holiday': False}, covered())
+check('the calendar read serves the flag', all('plan_covered' in e for e in client.get('/api/gcal').get_json()))
+panel = [r['label'] for r in storage.get_engage_day()['rows'] if r['kind'] == 'event']
+check("the NOW panel's day skips the covered event", panel == ['Office hours'], panel)
+client.put(f'/api/day-plan/{day}', json={'body': ''})
+check('clearing the plan uncovers it', not any(covered().values()), covered())
+
 # ── 4. the route ──
 check('a bad date is refused', client.put('/api/day-plan/today', json={'body': 'x'}).status_code == 400)
 check('a body that is not text is refused', client.put(f'/api/day-plan/{day}', json={}).status_code == 400)

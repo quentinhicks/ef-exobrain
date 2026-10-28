@@ -1302,7 +1302,14 @@ async function saveDayPlan(d, body) {
     if (dayPlanSheet.open) paintDayPlanSheet(p);
   }
   if (calWeek.days[d]) calWeek.days[d].plan = p;
-  await refreshVisible();
+  await refreshAfterPlanWrite();
+}
+
+// A plan decides which events are drawn (`plan_covered`, served on each
+// event), so after any write to one the events are re-read before the day.
+async function refreshAfterPlanWrite(undo) {
+  state.gcalEvents = await apiGet('/api/gcal', state.gcalEvents);
+  await (undo ? refreshAfterUndo() : refreshVisible());
 }
 
 async function restoreDayPlan(d, body) {
@@ -1313,7 +1320,7 @@ async function restoreDayPlan(d, body) {
     // Undone back to here: the next edit is a new sitting.
     Object.assign(dayPlanSheet, { base: body, logged: false });
   }
-  await refreshAfterUndo();
+  await refreshAfterPlanWrite(true);
   if (dayPlanSheet.open && dayPlanSheet.date === d) paintDayPlanSheet(dayPlanOf(d) || { body, skipped: [] });
 }
 
@@ -1367,7 +1374,7 @@ registerObjectVerbs('plan', (kind, id, el) => kind !== 'plan' ? [] : [
     const res = await apiSend(`/api/day-plan/${id}`, 'PUT', { body: '' }).catch(() => null);
     if (!res || !res.ok) { toast('Could not clear that plan'); return; }
     if (p.body.trim()) pushUndo('Clear plan', () => restoreDayPlan(id, p.body));
-    await refreshVisible();
+    await refreshAfterPlanWrite();
   } },
 ]);
 
@@ -2751,22 +2758,19 @@ function renderCalWeek() {
 
     // Next-day events count when the week runs past midnight — the day view's
     // rule, for the same reason: the column IS that night.
-    // AN EVENT THE PLAN COVERS IS NOT DRAWN (2026-10-28, Quentin's
-    // instruction, narrowing "a planned day draws no events"): the plan was
-    // written with it in mind, so where they overlap the plan is what the
-    // hours are. An event the plan leaves alone still draws, all-day ones too.
-    const planSpans = (day.segments || []).filter(s => s.plan_date).map(s => [s.start, s.end]);
-    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e)
+    // An event a day's plan covers is not drawn: the SERVER decides it
+    // (`plan_covered`, storage._mark_plan_covered); the calendar, Engage and
+    // the NOW panel only read the answer.
+    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e) && !e.plan_covered
         && (sameDay(dt, e.start) || (end > DAY_MIN && sameDay(next, e.start))))
       .map(e => {
         const base = sameDay(next, e.start) ? DAY_MIN : 0;
         const s = base + isoMin(e.start);
         let en = base + isoMin(e.end);
         if (en <= s) en += DAY_MIN;
-        if (planSpans.some(([ps, pe]) => s < pe && ps < en)) return null;
         const [a, b] = clip(s, en);
         return { ev: e, s: a, e: b };
-      }).filter(x => x && x.e > x.s);
+      }).filter(x => x.e > x.s);
     // Where an event box is drawn — asked by the box and by the block tasks
     // that must stay out from under it.
     const evGeo = x => ({ top: y(x.s) + 1, h: Math.max(14, y(x.e) - y(x.s) - 2) });
@@ -4320,9 +4324,10 @@ function isoMin(iso) {
 // A day's timed events as the day draws them: the feed, minus what was
 // dismissed from that day. Engage's agenda and clarify's calendar picker ask
 // the same question, so they ask it here.
+// Neither hidden for the day nor covered by its plan (`plan_covered`, served).
 function dayTimedEvents(date) {
   return state.gcalEvents.filter(e => !e.allday && sameDay(date, e.start)
-    && !state.tlHidden.event[eventKey(e)]);
+    && !state.tlHidden.event[eventKey(e)] && !e.plan_covered);
 }
 
 function sameDay(date, isoStr) {
