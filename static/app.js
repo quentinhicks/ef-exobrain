@@ -1261,7 +1261,7 @@ function renderDayPlanSheet(p) {
     <textarea class="dp-text" id="dp-text" spellcheck="false" placeholder="${escHtml(DP_EXAMPLE)}"></textarea>
     <div class="dp-hint">One line per block: a time range, an optional category before a colon, then what.
       Indent a line to nest it; start a line with * to write it inside the block above. The plan takes the
-      hours it names and the day's other blocks stay around it; the day's calendar events are hidden.</div>
+      hours it names and the day's other blocks stay around it, and a calendar event it overlaps is hidden.</div>
     <div class="dp-skipped" id="dp-skipped"></div>
     <button class="dp-clear" id="dp-clear">Clear plan and restore blocks</button>`;
   const ta = sheet.querySelector('#dp-text');
@@ -2733,11 +2733,9 @@ function renderCalWeek() {
       <span class="wk-num">${new Date(d + 'T12:00:00').getDate()}</span></button>`;
   }).join('');
 
-  // A PLANNED DAY DRAWS NO EVENTS (2026-10-28, Quentin's call): the plan is
-  // what the day is, written already with them in mind.
   const alldayByDay = dates.map(d => {
     const dt = new Date(d + 'T12:00:00');
-    return isPlannedDay(d) ? [] : state.gcalEvents.filter(e =>
+    return state.gcalEvents.filter(e =>
       e.allday && sameDay(dt, e.start) && calShowsEvent(e));
   });
   const hasAllday = alldayByDay.some(list => list.length);
@@ -2753,16 +2751,22 @@ function renderCalWeek() {
 
     // Next-day events count when the week runs past midnight — the day view's
     // rule, for the same reason: the column IS that night.
-    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e) && !isPlannedDay(d)
+    // AN EVENT THE PLAN COVERS IS NOT DRAWN (2026-10-28, Quentin's
+    // instruction, narrowing "a planned day draws no events"): the plan was
+    // written with it in mind, so where they overlap the plan is what the
+    // hours are. An event the plan leaves alone still draws, all-day ones too.
+    const planSpans = (day.segments || []).filter(s => s.plan_date).map(s => [s.start, s.end]);
+    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e)
         && (sameDay(dt, e.start) || (end > DAY_MIN && sameDay(next, e.start))))
       .map(e => {
         const base = sameDay(next, e.start) ? DAY_MIN : 0;
         const s = base + isoMin(e.start);
         let en = base + isoMin(e.end);
         if (en <= s) en += DAY_MIN;
+        if (planSpans.some(([ps, pe]) => s < pe && ps < en)) return null;
         const [a, b] = clip(s, en);
         return { ev: e, s: a, e: b };
-      }).filter(x => x.e > x.s);
+      }).filter(x => x && x.e > x.s);
     // Where an event box is drawn — asked by the box and by the block tasks
     // that must stay out from under it.
     const evGeo = x => ({ top: y(x.s) + 1, h: Math.max(14, y(x.e) - y(x.s) - 2) });
