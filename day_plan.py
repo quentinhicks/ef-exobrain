@@ -38,8 +38,12 @@ def _pick(h, m, after, strict):
     if h > 23 or m > 59:
         return None
     base = (h if h > 12 else h % 12) * 60 + m
-    # Over 12 is already 24-hour, and 0 is only ever midnight.
-    cands = [base] if h > 12 else [base, base + 1440] if h == 0 else [base, base + 720, base + 1440]
+    # 0 is only ever midnight: this one, opening the plan, else the next.
+    if h == 0:
+        if not strict and after <= FIRST_REF:
+            return base
+        return base if base > after else base + 1440
+    cands = [base] if h > 12 else [base, base + 720, base + 1440]
     for c in cands:
         if (c > after) if strict else (c >= after):
             return c
