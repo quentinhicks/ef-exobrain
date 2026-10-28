@@ -326,7 +326,17 @@ function toast(msg) {
 function fitInViewport(el, x, y, pad = 8) {
   if (x != null) { el.style.left = `${x}px`; el.style.top = `${y}px`; }
   const vv = window.visualViewport;
-  const vw = window.innerWidth;
+  let vw = window.innerWidth;
+  // A popup HELD BY A PAGE (the week's cards are drawn inside the calendar's
+  // layer, a stacking context under the sheets) cannot rise over a docked
+  // column, so it is fitted to the page's side of it instead (style.css, THE
+  // LAYER BANDS). A phone's sheet spans the width, and is not a column.
+  if (!el.closest('.dock-panel') && el.closest('.m-overlay, #map-overlay')) {
+    document.querySelectorAll('.dock-panel:not(.hidden)').forEach(d => {
+      const r = d.getBoundingClientRect();
+      if (r.width && r.left > vw / 2) vw = Math.min(vw, r.left);
+    });
+  }
   const vh = vv ? Math.min(vv.height, window.innerHeight) : window.innerHeight;
   if (el.dataset.fitCap) { el.style.maxHeight = ''; el.style.maxWidth = ''; delete el.dataset.fitCap; }
   let r = el.getBoundingClientRect();

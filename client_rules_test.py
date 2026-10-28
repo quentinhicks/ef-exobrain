@@ -262,6 +262,58 @@ def dock_panel_fails():
             if not re.search(r'class="[^"]*(?<![\w-])dock-panel(?![\w-])', rest)]
 
 
+# THE LAYER BANDS (2026-10-28, Quentin: with clarify up, the calendar's
+# selector opened UNDER it — "fix the underlying error that causes certain
+# popups to stay above others"). Each popup had its own number, some below the
+# sheets, and two strip menus sat inside Projects' layer, where no number could
+# lift them. Two halves, both scanned: a strip menu stands at the BODY's level
+# in the shell, and every popup that sets a z-index sets the band's.
+STYLE_CSS = os.path.join(HERE, 'static', 'style.css')
+POPUP_SELECTORS = ('.tn-menu', '#obj-menu', '#blk-hover')
+
+
+def layer_band_fails():
+    from html.parser import HTMLParser
+
+    class Walk(HTMLParser):
+        VOID = {'br', 'img', 'input', 'meta', 'link', 'hr', 'source', 'wbr'}
+
+        def __init__(self):
+            super().__init__()
+            self.stack, self.out = [], []
+
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if 'tn-menu' in (a.get('class') or '').split():
+                held = [t for t in self.stack if t not in ('html', 'body')]
+                if held:
+                    self.out.append((0, '#' + (a.get('id') or tag),
+                                     'a popup at the body\'s level — inside %s it shares that '
+                                     'layer, and a sheet covers it' % held[-1]))
+            if tag not in self.VOID:
+                self.stack.append('#' + a['id'] if a.get('id') else tag)
+
+        def handle_endtag(self, tag):
+            if tag not in self.VOID and self.stack:
+                self.stack.pop()
+
+    w = Walk()
+    with open(INDEX_HTML, encoding='utf-8') as f:
+        w.feed(f.read())
+    out = w.out
+    with open(STYLE_CSS, encoding='utf-8') as f:
+        css = re.sub(r'/\*.*?\*/', '', f.read(), flags=re.S)
+    for sel, decls in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
+        names = [s.strip() for s in sel.split(',')]
+        if not any(n in POPUP_SELECTORS for n in names):
+            continue
+        z = re.search(r'z-index:\s*([^;]+);', decls)
+        if z and z.group(1).strip() != 'var(--z-popup)':
+            out.append((0, sel.strip()[:60], 'z-index: var(--z-popup) — a popup is above '
+                                             'every surface, sheets included'))
+    return out
+
+
 # ONE SHEET LIFECYCLE (2026-10-05). Eight sheets each hand-wired their own
 # backdrop and Esc rung; three re-wired the backdrop on every repaint, and the
 # schedule picker had neither, so Esc closed the sheet UNDER it. A sheet is
@@ -341,6 +393,7 @@ def main():
     fails = [('app.js',) + f for f in object_door_fails(body)]
     fails += [('app.js',) + f for f in settings_refresh_fails(lines)]
     fails += [('app.js',) + f for f in dock_panel_fails()]
+    fails += [('style.css',) + f for f in layer_band_fails()]
     sheet_fails, n_sheets = sheet_registry_fails(body)
     fails += [('app.js',) + f for f in sheet_fails]
     dated = []
@@ -409,6 +462,7 @@ midnight, a paused row, or a config change.""")
     print('  sheets        %d in the shell, each defined once (tap-off + Esc rung)'
           % n_sheets)
     print('  popups        placed by fitInViewport, no hand-set left beside it')
+    print('  layer bands   every popup above every sheet, strip menus at body level')
     return 0
 
 

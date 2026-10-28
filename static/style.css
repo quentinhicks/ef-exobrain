@@ -87,6 +87,19 @@
 /* Native form controls (iOS date/time pickers especially) follow the theme
    instead of popping up WHITE in the dark sheet. The light appendix flips it. */
 :root { color-scheme: dark; }
+
+/* THE LAYER BANDS (2026-10-28, Quentin's report: with clarify up, the
+   calendar's selector opened UNDER it). Two bands, not a number per kind.
+   SURFACES are what you work in — the pages (140–160), the strip and bar
+   (170), the docked read-outs (190) and the sheets (199/200). POPUPS are what
+   a surface opens for a moment — a strip menu, the object menu, the hover
+   label — and are always above every surface, since one is only ever opened
+   from something already on screen. A popup sits at the BODY's level: inside
+   a page (a stacking context) no z-index can lift it over a sheet, which is
+   how Projects' menus were trapped. Above the popups: the people timer (250),
+   the drag tip (260), the toasts (400). client_rules_test holds both halves;
+   popup_viewport_test measures it with a sheet docked. */
+:root { --z-popup: 210; }
 :root.theme-light { color-scheme: light; }
 
 /* PRIVACY MODE: the whole document at a quarter of its contrast (2026-09-16).
@@ -2688,12 +2701,12 @@ body.calendar-minimized #review-modal {
    mode meant the same tap did different things depending on invisible state,
    and a labelled item cannot be misread the way an overloaded gesture can.
 
-   Above the sheets (200), because a menu is always the innermost thing on
-   screen, and below the people timer (250), which
-   nothing may cover. */
+   In the popup band (THE LAYER BANDS), above every sheet, because a menu is
+   always the innermost thing on screen, and below the people timer (250),
+   which nothing may cover. */
 #obj-menu {
   position: fixed;
-  z-index: 205;
+  z-index: var(--z-popup);
   min-width: 168px;
   max-width: min(280px, calc(100vw - 24px));
   padding: 4px;
@@ -5645,7 +5658,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    than inside the block, so the events drawn over a block cannot cover it. */
 #blk-hover {
   position: fixed;
-  z-index: 175;
+  z-index: var(--z-popup);
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -6629,7 +6642,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   position: fixed;
   top: calc(var(--tnav-h) + 6px);
   right: 16px;
-  z-index: 175;
+  z-index: var(--z-popup);
   width: 320px;
   max-width: calc(100vw - 32px);
   max-height: calc(var(--vvh, 100dvh) - var(--tnav-h) - var(--gbar-h) - 20px);
@@ -6644,6 +6657,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   gap: 7px;
 }
 .tn-menu.hidden { display: none; }
+/* Projects' menus stand at the body's level (THE LAYER BANDS), so they go
+   with the page they belong to rather than with its element. */
+:root:has(#map-overlay.hidden) #map-filter-menu,
+:root:has(#map-overlay.hidden) #hz-menu { display: none; }
 
 /* The calendar's selector switching a layer off (calFilter, a stripMenu). */
 #cal-overlay.cal-hide-blocks .tl-block,

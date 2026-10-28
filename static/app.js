@@ -693,6 +693,13 @@ const sheetCatch = { el: null, x: 0, y: 0 };
 function catcherAt(x, y) {
   const open = [...document.querySelectorAll('.sheet-backdrop:not(.hidden)')];
   if (!open.length) return null;
+  // A PAGE'S TOOLS IN THE STRIP ARE NOT TAP-OFF (2026-10-28, Quentin: with
+  // clarify up the calendar's selector could not be opened). They open a
+  // popup, which stands over the sheet (style.css, THE LAYER BANDS); taking
+  // the click as tap-off put the sheet down and swallowed it, so the menu took
+  // two clicks and cost the sheet. The tabs stay tap-off: they leave the page.
+  const under = document.elementFromPoint(x, y);
+  if (under && under.closest('#top-nav .tn-tools')) return null;
   open.forEach(b => { b.style.pointerEvents = 'auto'; });
   const hit = document.elementFromPoint(x, y);
   open.forEach(b => { b.style.pointerEvents = ''; });

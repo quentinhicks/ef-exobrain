@@ -177,6 +177,10 @@
   </div>
 
   <!-- Person detail panel -->
+  <!-- Its strip menus, at the body's level so no sheet covers them (style.css,
+       THE LAYER BANDS). -->
+  <div id="map-filter-menu" class="tn-menu hidden"></div>
+  <div id="hz-menu" class="tn-menu hidden"></div>
   <!-- Horizons: Projects (GTD Horizon 1) and the four above it -->
   <div id="map-overlay" class="hidden">
     <div id="map-modal">
@@ -184,8 +188,6 @@
            button is kept, hidden: the Esc ladder and the runner close MAP
            through it, so nothing is skipped on the way down. -->
       <button id="map-close" class="modal-close-btn hidden">✕</button>
-      <div id="map-filter-menu" class="tn-menu hidden"></div>
-      <div id="hz-menu" class="tn-menu hidden"></div>
       <div id="map-body"></div>
     </div>
   </div>

@@ -71,6 +71,28 @@ async function check(page, size, label, sel) {
     m.opened ? '' : ' - did not open'}${m.out.length ? ' - ' + m.out.join('; ') : ''}` });
 }
 
+// THE LAYER BANDS (2026-10-28): a popup opened while a sheet is docked is
+// drawn ON TOP — nothing covers its middle. The clarify sheet covered the
+// calendar's selector menu, which measured inside the window all the same.
+async function checkOnTop(page, size, label, sel) {
+  await page.waitForTimeout(150);
+  const m = await page.evaluate(want => {
+    const els = [...document.querySelectorAll(want)].filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none';
+    });
+    const covered = els.map(el => {
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 24));
+      return el.contains(hit) ? null : (hit ? (hit.id ? '#' + hit.id : '.' + [...hit.classList].join('.')) : 'nothing');
+    }).filter(Boolean);
+    return { opened: els.length, covered };
+  }, sel);
+  const ok = m.opened > 0 && !m.covered.length;
+  results.push({ ok, line: `${ok ? 'PASS' : 'FAIL'}  ${size.name} ${label}${
+    m.opened ? '' : ' - did not open'}${m.covered.length ? ' - covered by ' + m.covered.join(', ') : ''}` });
+}
+
 const corners = s => [
   ['top-left', 4, 60], ['top-right', s.width - 4, 60], ['bottom-left', 4, s.height - 4],
   ['bottom-right', s.width - 4, s.height - 4], ['middle', s.width / 2, s.height / 2],
@@ -145,6 +167,18 @@ async function run(browser, size) {
   await page.click('#map-body .map-row .map-text');
   await page.waitForSelector('#clarify-sheet:not(.hidden)');
   await check(page, size, 'clarify sheet', '#clarify-sheet');
+  // Where a sheet docks as a column, what opens beside it stands over it.
+  const docked = size.width >= 900;
+  if (docked) {
+    for (const pill of ['#hz-pill', '#map-filter']) {
+      await page.click(pill);
+      await checkOnTop(page, size, `strip menu ${pill} over the clarify sheet`, '.tn-menu:not(.hidden)');
+      await page.evaluate(() => { mapFilter.close(); hzMenu.close(); });
+    }
+    await rightClickAt(page, '#map-body .map-row', size.width - 300, 120);
+    await checkOnTop(page, size, 'row menu over the clarify sheet', '#obj-menu');
+    await page.evaluate(() => closeObjectMenu());
+  }
 
   // ── Calendar: a block's card, the hours panel, the legend, its menu ──
   for (const path of ['/calendar', '/calendar/week']) {
@@ -164,6 +198,20 @@ async function run(browser, size) {
     await page.click('#cal-filter');
     await check(page, size, `${view} strip menu`, '.tn-menu');
     await page.keyboard.press('Escape');
+    if (size.width >= 900) {
+      // A day's plan docks at the right; the selector and a block's card,
+      // opened at the right edge, still stand over everything.
+      await page.click('#cal-week .wk-day[data-date]');
+      await page.waitForSelector('#dp-sheet:not(.hidden)');
+      await page.click('#cal-filter');
+      await checkOnTop(page, size, `${view} strip menu over a docked sheet`, '#cal-filter-menu');
+      await check(page, size, `${view} plan sheet still up under its menu`, '#dp-sheet');
+      await page.evaluate(() => calFilter.close());
+      await rightClickAt(page, '#cal-week .wk-block:not(.tl-block-cont)', size.width - 4, 200);
+      await checkOnTop(page, size, `${view} block card beside a docked sheet`, '.wk-task-pop');
+      await page.evaluate(() => { calWeek.pop = null; calWeek.taskPop = null; renderCalWeek(); });
+      await page.evaluate(() => closeDayPlan());
+    }
   }
 
   errors.forEach(e => results.push({ ok: false, line: `FAIL  ${size.name} page error - ${e}` }));
