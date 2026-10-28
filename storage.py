@@ -7,6 +7,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
+import day_plan
 import recurrence
 import schedule
 from datetime import date as date_cls, datetime, timedelta, timezone
@@ -1382,6 +1383,17 @@ def init_db():
             location_id INTEGER REFERENCES location(id),
             description TEXT NOT NULL DEFAULT '',
             created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )''')
+    # A DAY'S PLAN, AS TEXT (2026-10-28, Quentin's design "Calendar Plan"):
+    # one row per date, the text he wrote. Its blocks are never stored —
+    # block_segments_for parses it (day_plan.py) on every read, so editing a
+    # line moves the block with nothing to reconcile. LOCAL, like day_block:
+    # it takes the hours it names from whatever else is drawn there.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS day_plan (
+            date       TEXT PRIMARY KEY,
+            body       TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS study_entry (
@@ -3136,6 +3148,8 @@ def block_segments_for(date_str, with_cancelled=False):
     add((day.weekday() - 1) % 7, (day - timedelta(days=1)).isoformat(), -1440)
     add_day_blocks(date_str, 0)
     add_day_blocks((day - timedelta(days=1)).isoformat(), -1440)
+    out += _plan_segments(conn, date_str, 0)
+    out += _plan_segments(conn, (day - timedelta(days=1)).isoformat(), -1440)
     conn.close()
     out = _under_day_blocks(out)
     out.sort(key=lambda r: r['start'])
@@ -3151,13 +3165,21 @@ def block_segments_for(date_str, with_cancelled=False):
 # deleting the one-off gives the hours straight back. A sliver under 5 minutes
 # is dropped rather than drawn. A trimmed piece keeps its block_id (its
 # menu still acts on that weekly block for the day) and says `trimmed`.
+#
+# A DAY'S PLAN IS ONE LAYER HIGHER (2026-10-28, Quentin's instruction: a plan
+# takes only the hours it covers). It trims the one-offs AND the week the same
+# way, and nothing trims it — it is the latest thing said about those hours.
+def _layer(s):
+    return 2 if s.get('plan_date') else 1 if s.get('day_block_id') else 0
+
+
 def _under_day_blocks(segs):
-    cuts = [(s['start'], s['end']) for s in segs if s.get('day_block_id')]
-    if not cuts:
+    if not any(_layer(s) for s in segs):
         return segs
     out = []
     for s in segs:
-        if s.get('day_block_id') or s['cancelled']:
+        cuts = [(c['start'], c['end']) for c in segs if _layer(c) > _layer(s)]
+        if not cuts or s['cancelled']:
             out.append(s)
             continue
         pieces = [(s['start'], s['end'])]
@@ -3173,6 +3195,94 @@ def _under_day_blocks(segs):
             out.append(s if (x, y) == (s['start'], s['end'])
                        else dict(s, start=x, end=y, trimmed=True))
     return out
+
+
+# ── A day's plan (the day_plan table): read as text, drawn as blocks ──
+
+# A category nothing else has coloured still gets the same colour every day.
+PLAN_PALETTE = ('#78a569', '#d2a069', '#827dc8', '#6e9bc8', '#c8828c')
+PLAN_NO_CATEGORY = '#8c9298'
+
+
+def _plan_names(conn):
+    areas = {r['name'].strip().lower(): (r['id'], r['domain_id']) for r in conn.execute(
+        'SELECT id, name, domain_id FROM area WHERE active = 1 ORDER BY id DESC')}
+    places = {r['name'].strip().lower(): r['id'] for r in conn.execute(
+        'SELECT id, name FROM location ORDER BY id DESC')}
+    # A BLOCK CATEGORY IS ITS LABEL: a plan line named like one wears its
+    # colour, so "COS333:" is the colour COS333 already is on the calendar.
+    colors = {}
+    for r in conn.execute('SELECT label, color FROM recurring_block UNION ALL '
+                          'SELECT label, color FROM day_block'):
+        colors.setdefault(r['label'].strip().lower(), r['color'])
+    return areas, places, colors
+
+
+def _plan_color(colors, it):
+    for key in (it['cat'], it['title']):
+        if key and key.strip().lower() in colors:
+            return colors[key.strip().lower()]
+    if not it['cat']:
+        return PLAN_NO_CATEGORY
+    return PLAN_PALETTE[sum(map(ord, it['cat'].lower())) % len(PLAN_PALETTE)]
+
+
+def _plan_block(names, it, offset):
+    areas, places, colors = names
+    area_id, domain_id = areas.get(it['cat'].lower(), (None, None)) if it['cat'] else (None, None)
+    loc_id = places.get(it['loc'].lower()) if it['loc'] else None
+    label = day_plan.label_of(it)
+    if it['loc'] and not loc_id:
+        label += f" @ {it['loc']}"       # a place with no location row stays words
+    return {'label': label, 'start': it['start'] + offset, 'end': it['end'] + offset,
+            'color': _plan_color(colors, it), 'area_id': area_id, 'domain_id': domain_id,
+            'location_id': loc_id, 'notes': it['notes'], 'category': it['cat']}
+
+
+# The plan's blocks, shaped like every other segment so each surface that
+# draws a day draws them. `block_id` and `day_block_id` are None on purpose —
+# nothing weekly or one-off may match one; the plan's TEXT is its only editor.
+# A nested block rides inside its parent (`kids`) rather than as a segment of
+# its own, so a day's segments still never overlap.
+def _plan_segments(conn, on_date, offset):
+    row = conn.execute('SELECT body FROM day_plan WHERE date = ?', (on_date,)).fetchone()
+    if not row:
+        return []
+    names = _plan_names(conn)
+    out = []
+    for i, it in enumerate(day_plan.parse(row['body'])['items']):
+        seg = _plan_block(names, it, offset)
+        if seg['end'] <= 0:
+            continue
+        seg.update({'block_id': None, 'day_block_id': None, 'plan_date': on_date,
+                    'plan_index': i, 'date': on_date, 'overridden': False,
+                    'cancelled': False, 'description': '', 'priority': None,
+                    'scheduled_change': False,
+                    'kids': [_plan_block(names, k, offset) for k in it['kids']]})
+        out.append(seg)
+    return out
+
+
+def get_day_plan(ymd):
+    conn = get_conn()
+    row = conn.execute('SELECT body FROM day_plan WHERE date = ?', (ymd,)).fetchone()
+    conn.close()
+    body = row['body'] if row else ''
+    return {'date': ymd, 'body': body, 'skipped': day_plan.parse(body)['skipped']}
+
+
+# Blank text is no plan: the row goes, and the day's blocks come back.
+def set_day_plan(ymd, body):
+    conn = get_conn()
+    if (body or '').strip():
+        conn.execute("INSERT INTO day_plan (date, body) VALUES (?, ?) ON CONFLICT(date) DO "
+                     "UPDATE SET body = excluded.body, updated_at = datetime('now','localtime')",
+                     (ymd, body))
+    else:
+        conn.execute('DELETE FROM day_plan WHERE date = ?', (ymd,))
+    conn.commit()
+    conn.close()
+    return get_day_plan(ymd)
 
 
 def get_engage_day():

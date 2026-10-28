@@ -1180,7 +1180,9 @@ registerObjectVerbs('week-block', (kind, id, el) => {
 });
 
 // THE WAY BACK TO A CANCELLED BLOCK, which is not drawn: the day header's menu
-// (right-click, or the hold) lists that day's cancelled blocks to restore.
+// (right-click, or the hold) lists that day's cancelled blocks to restore. It
+// is also where the day ITSELF opens from, since a click on the header opens
+// its plan.
 function wkRestoreMenu(e) {
   const head = e.target.closest('.wk-day[data-date]');
   if (!head) return false;
@@ -1190,10 +1192,177 @@ function wkRestoreMenu(e) {
   const items = (day.segments || []).filter(s => s.cancelled && s.block_id && s.start >= 0)
     .map(s => ({ label: `Restore ${s.label} ${clockHHMM(s.start)}–${wkClock(s.end)}`,
                  run: () => toggleBlockCancelOn(s.block_id, d, day.overrides || [], refreshCalWeek) }));
-  openObjectMenu(e.clientX, e.clientY, 'calday', d,
-    items.length ? items : [{ info: true, label: 'Nothing cancelled this day' }]);
+  openObjectMenu(e.clientX, e.clientY, 'calday', d, [
+    { label: 'Plan this day…', run: () => openDayPlan(d) },
+    ...(calWeek.week ? [{ label: 'Open this day', run: async () => {
+      state.currentDate = new Date(d + 'T12:00:00');
+      await setCalView(false);
+    } }] : []),
+    ...(items.length ? items : [{ info: true, label: 'Nothing cancelled this day' }])]);
   return true;
 }
+
+// ── A DAY'S PLAN, WRITTEN AS TEXT (2026-10-28, Quentin's design "Calendar
+// Plan") ────────────────────────────────────────────────────────────────────
+// The day header opens a sheet holding the day's plan: one line per block,
+// the grammar day_plan.py reads (a time range, an optional category before a
+// colon, `@ place`, an indented line nested in the one above, a `*` line a
+// note inside its block). It saves as it is typed. The SERVER turns it into
+// the day's blocks (block_segments_for), so the calendar, Engage and the NOW
+// panel all draw the one answer and nothing here reads times out of the text.
+// A plan takes only the hours it names; the day's other blocks stay around it.
+const DP_EXAMPLE = '9-10 COS333: Problem set\n* start with Q3\n10-11:30 Lunch @ Quad\n  10-10:30 Indent to nest';
+const dayPlanSheet = { open: false, date: null, base: '', logged: false, failed: false };
+
+function dayPlanOf(d) {
+  const p = (calWeek.days[d] || {}).plan;
+  return p && typeof p.body === 'string' ? p : null;
+}
+
+// A plan block reads as it was written: its category, then what.
+function planLabelHtml(category, label) {
+  if (!category) return escHtml(label);
+  return `<b>${escHtml(category)}</b>${label !== category ? ` ${escHtml(label)}` : ''}`;
+}
+
+function isPlannedDay(d) {
+  const p = dayPlanOf(d);
+  return !!(p && p.body.trim());
+}
+
+async function openDayPlan(d) {
+  if (dayPlanSheet.open) await closeDayPlan();
+  const p = await apiGet(`/api/day-plan/${d}`, dayPlanOf(d));
+  if (!p) { toast('Could not read that day’s plan'); return; }
+  // One undo per sitting with a day's plan, back to the text it opened on.
+  Object.assign(dayPlanSheet, { open: true, date: d, base: p.body, logged: false, failed: false });
+  renderDayPlanSheet(p);
+  if (calWeek.on) renderCalWeek();
+}
+
+function renderDayPlanSheet(p) {
+  const sheet = document.getElementById('dp-sheet');
+  const name = new Date(dayPlanSheet.date + 'T12:00:00')
+    .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  showSheet('dp-sheet');
+  sheet.innerHTML = `
+    <div class="cl-head">
+      <span class="cl-eyebrow">Plan</span><span class="dp-day">${escHtml(name)}</span>
+      <span class="cl-spacer"></span>
+      <button class="modal-close-btn" id="dp-close">✕</button>
+    </div>
+    <textarea class="dp-text" id="dp-text" spellcheck="false" placeholder="${escHtml(DP_EXAMPLE)}"></textarea>
+    <div class="dp-hint">One line per block: a time range, an optional category before a colon, then what.
+      Indent a line to nest it; start a line with * to write it inside the block above. The plan takes the
+      hours it names and the day's other blocks stay around it; the day's calendar events are hidden.</div>
+    <div class="dp-skipped" id="dp-skipped"></div>
+    <button class="dp-clear" id="dp-clear">Clear plan and restore blocks</button>`;
+  const ta = sheet.querySelector('#dp-text');
+  const d = dayPlanSheet.date;
+  ta.value = p.body;
+  wireNotesAutosave(ta, body => saveDayPlan(d, body));
+  paintDayPlanSheet(p);
+  sheet.querySelector('#dp-close').addEventListener('click', () => closeDayPlan());
+  sheet.querySelector('#dp-clear').addEventListener('click', clearDayPlan);
+  ta.focus();
+}
+
+// What the server could not read is said, never guessed at.
+function paintDayPlanSheet(p) {
+  const sk = document.getElementById('dp-skipped');
+  if (!sk) return;
+  sk.innerHTML = (p.skipped || []).map(s =>
+    `<div>skipped line ${s.n}: ${escHtml(s.text)}</div>`).join('');
+  document.getElementById('dp-clear').classList.toggle('hidden', !p.body.trim());
+}
+
+async function saveDayPlan(d, body) {
+  const res = await apiSend(`/api/day-plan/${d}`, 'PUT', { body }).catch(() => null);
+  const mine = dayPlanSheet.date === d;
+  if (!res || !res.ok) {
+    if (mine) dayPlanSheet.failed = true;
+    toast('Could not save the plan — it is still in the box');
+    return;
+  }
+  const p = await res.json();
+  if (mine) {
+    dayPlanSheet.failed = false;
+    if (!dayPlanSheet.logged) {
+      dayPlanSheet.logged = true;
+      const was = dayPlanSheet.base;
+      pushUndo('Plan', () => restoreDayPlan(d, was));
+    }
+    if (dayPlanSheet.open) paintDayPlanSheet(p);
+  }
+  if (calWeek.days[d]) calWeek.days[d].plan = p;
+  await refreshVisible();
+}
+
+async function restoreDayPlan(d, body) {
+  await apiSend(`/api/day-plan/${d}`, 'PUT', { body });
+  if (dayPlanSheet.open && dayPlanSheet.date === d) {
+    const ta = document.getElementById('dp-text');
+    if (ta) ta.value = body;
+    // Undone back to here: the next edit is a new sitting.
+    Object.assign(dayPlanSheet, { base: body, logged: false });
+  }
+  await refreshAfterUndo();
+  if (dayPlanSheet.open && dayPlanSheet.date === d) paintDayPlanSheet(dayPlanOf(d) || { body, skipped: [] });
+}
+
+// Through the field, so its own Ctrl+Z still has the text; the save is the
+// autosave's, flushed at once.
+async function clearDayPlan() {
+  const ta = document.getElementById('dp-text');
+  if (!ta) return;
+  const d = dayPlanSheet.date, before = ta.value, first = !dayPlanSheet.logged;
+  ta.focus();
+  ta.select();
+  document.execCommand('insertText', false, '');
+  await ta.__flushNotes();
+  // The sitting's undo already goes back past this when the clear came first.
+  if (!first && before.trim() && !dayPlanSheet.failed) pushUndo('Clear plan', () => restoreDayPlan(d, before));
+}
+
+async function closeDayPlan() {
+  if (!dayPlanSheet.open) return;
+  const ta = document.getElementById('dp-text');
+  const d = dayPlanSheet.date;
+  if (ta && ta.__flushNotes) await ta.__flushNotes();
+  // Closed, or another day's plan opened, while the save was out.
+  if (!dayPlanSheet.open || dayPlanSheet.date !== d) return;
+  // An unsaved plan is data: the sheet stays up holding it.
+  if (dayPlanSheet.failed) return;
+  dayPlanSheet.open = false;
+  hideSheet('dp-sheet');
+  document.getElementById('dp-sheet').innerHTML = '';
+  if (calWeek.on) renderCalWeek();
+}
+
+defineSheet('dp-sheet', { rank: 54, isOpen: () => dayPlanSheet.open, close: closeDayPlan });
+
+// Tapping another day's header while a plan is open is asking for THAT plan:
+// the tap-off closes this one, then this opens the one under the finger.
+document.getElementById('dp-sheet-backdrop').addEventListener('click', e => {
+  const was = dayPlanSheet.date;
+  const head = document.elementsFromPoint(e.clientX, e.clientY)
+    .map(el => el.closest('.wk-day[data-date]')).find(Boolean);
+  if (head && head.dataset.date !== was) openDayPlan(head.dataset.date);
+});
+
+// A plan block's verbs: what it is, and the plan's own Clear. Its text is
+// opened by the menu's `Edit plan…` (OBJECT_KINDS.plan).
+registerObjectVerbs('plan', (kind, id, el) => kind !== 'plan' ? [] : [
+  ...purposeItem(el.closest('.tl-block') || el),
+  { label: 'Clear this day’s plan', danger: true, run: async () => {
+    const p = await apiGet(`/api/day-plan/${id}`, null);
+    if (!p) { toast('Could not read that plan'); return; }
+    const res = await apiSend(`/api/day-plan/${id}`, 'PUT', { body: '' }).catch(() => null);
+    if (!res || !res.ok) { toast('Could not clear that plan'); return; }
+    if (p.body.trim()) pushUndo('Clear plan', () => restoreDayPlan(id, p.body));
+    await refreshVisible();
+  } },
+]);
 
 // THE TIMELINE'S OWN VERBS for a block, handed to the object menu. They need
 // the DAY being looked at, which is the surface's to know and not the menu's —
@@ -1250,7 +1419,8 @@ function dayDragGeo() {
 // override on drop. Block defaults stay in the Block Editor.
 function initBlockBarDrag(layer, dateStr, geo) {
   const g = geo || dayDragGeo();
-  layer.querySelectorAll('.tl-block:not(.tl-block-cont):not(.tl-block-cancelled) .tl-block-bar').forEach(bar => {
+  // A plan's block moves when its line does — the text is its one editor.
+  layer.querySelectorAll('.tl-block:not(.tl-block-cont):not(.tl-block-cancelled):not(.tl-block-plan) .tl-block-bar').forEach(bar => {
     const blockEl = bar.parentElement;
     const blockId = parseInt(blockEl.dataset.blockId);
     const dayBlockId = parseInt(blockEl.dataset.dayBlockId);
@@ -1795,9 +1965,15 @@ function segmentRow(s) {
     cancelled: !!s.cancelled,
     label: s.label + (cont ? ' (cont.)' : ''),
     name: s.label,
-    cat: blockCatKey(s.label),
+    // A plan block's category is what came before its colon, so "COS333:"
+    // lights up with the week's COS333.
+    cat: blockCatKey(s.category || s.label),
     description: s.description || '',
     dayBlockId: s.day_block_id || null,
+    planDate: s.plan_date || null,
+    category: s.category || '',
+    kids: s.kids || [],
+    notes: s.notes || [],
     cont,
   };
 }
@@ -1809,6 +1985,8 @@ function segmentRow(s) {
 // and carries data-day-block-id INSTEAD, so nothing weekly can match it and
 // every verb it offers edits that date's row and nothing else.
 function blockObjAttrs(s) {
+  // A day's PLAN is neither: its one editor is its text (openDayPlan).
+  if (s.planDate) return `data-obj="plan:${s.planDate}"`;
   return s.dayBlockId
     ? `data-obj="dayblock:${s.dayBlockId}" data-day-block-id="${s.dayBlockId}"`
     : `data-obj="block:${s.b.id}" data-block-id="${s.b.id}"`;
@@ -2002,11 +2180,12 @@ function wkTaskTop(top, bottom, spans, n) {
 // tasks in very small font in the block/event as the primary way to view"):
 // each open task one tiny line inside what it is on. The card is the second
 // way in — the right-click, which is also where one is added.
-function wkTaskList(date, minute, cont, top, evKey) {
+// A plan's `*` lines (`notes`) are written the same way, above the tasks.
+function wkTaskList(date, minute, cont, top, evKey, notes) {
   if (cont) return '';
-  const tasks = wkTasksAt(date, minute, evKey);
-  return tasks.length ? `<div class="wk-tasks"${top != null ? ` style="top:${top}px"` : ''}>${tasks.map(t =>
-    `<div class="wk-task">${escHtml(t.content)}</div>`).join('')}</div>` : '';
+  const lines = [...(notes || []), ...wkTasksAt(date, minute, evKey).map(t => t.content)];
+  return lines.length ? `<div class="wk-tasks"${top != null ? ` style="top:${top}px"` : ''}>${lines.map(t =>
+    `<div class="wk-task">${escHtml(t)}</div>`).join('')}</div>` : '';
 }
 
 async function refreshCalTasks(start) {
@@ -2135,7 +2314,7 @@ function wkCardVerbs(t) {
     if (!el) return [];
     const [kind, id] = t.obj.split(':');
     return objectMenuItems(kind, [...verbsFor(kind, id, el).filter(v => !v.info),
-      { label: 'Change to another block…', change: true }]);
+      ...(kind === 'plan' ? [] : [{ label: 'Change to another block…', change: true }])]);
   }
   const ev = state.gcalEvents.find(x => eventKey(x) === t.evKey);
   if (!ev) return [];
@@ -2405,6 +2584,7 @@ async function refreshCalWeek() {
     apiGet(`/api/calendar/days?${range}`, null).then(byDate).then(rows => {
       fill('segments', r => (r && Array.isArray(r.segments) ? r.segments : null))(rows);
       fill('overrides', r => (r && Array.isArray(r.overrides) ? r.overrides : null))(rows);
+      fill('plan', r => (r && r.plan && typeof r.plan.body === 'string' ? r.plan : null))(rows);
     }),
     apiGet(`/api/gates/days?${range}`, null).then(byDate)
       .then(fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))),
@@ -2535,16 +2715,22 @@ function renderCalWeek() {
 
   const legendBlocks = new Map();
 
+  // A day header opens that day's PLAN (openDayPlan); it is lit while that
+  // plan is open, and a planned day says so.
   const heads = dates.map(d => {
     const on = d === today;
-    return `<button class="wk-day${on ? ' wk-today' : ''}" data-wk="day" data-date="${d}">
+    const open = dayPlanSheet.open && dayPlanSheet.date === d;
+    return `<button class="wk-day${on ? ' wk-today' : ''}${open ? ' wk-day-planning' : ''}${
+      isPlannedDay(d) ? ' wk-day-planned' : ''}" data-wk="day" data-date="${d}" title="Plan this day">
       <span class="wk-dow">${weekdayOf(new Date(d + 'T12:00:00')).name.toUpperCase()}</span>
       <span class="wk-num">${new Date(d + 'T12:00:00').getDate()}</span></button>`;
   }).join('');
 
+  // A PLANNED DAY DRAWS NO EVENTS (2026-10-28, Quentin's call): the plan is
+  // what the day is, written already with them in mind.
   const alldayByDay = dates.map(d => {
     const dt = new Date(d + 'T12:00:00');
-    return state.gcalEvents.filter(e =>
+    return isPlannedDay(d) ? [] : state.gcalEvents.filter(e =>
       e.allday && sameDay(dt, e.start) && calShowsEvent(e));
   });
   const hasAllday = alldayByDay.some(list => list.length);
@@ -2560,7 +2746,7 @@ function renderCalWeek() {
 
     // Next-day events count when the week runs past midnight — the day view's
     // rule, for the same reason: the column IS that night.
-    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e)
+    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e) && !isPlannedDay(d)
         && (sameDay(dt, e.start) || (end > DAY_MIN && sameDay(next, e.start))))
       .map(e => {
         const base = sameDay(next, e.start) ? DAY_MIN : 0;
@@ -2583,14 +2769,29 @@ function renderCalWeek() {
         const [a, b] = clip(s.startMin, s.endMin);
         if (b <= a) return '';
         if (!s.cancelled) legendBlocks.set(s.label.replace(/ \(cont\.\)$/, ''), s.b.color);
-        return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}${s.dayBlockId ? ' tl-block-day' : ''}"
+        // A plan's nested blocks stand inside it, each at its own hours.
+        // The parent's own name is carried by its first child, which covers
+        // the top of it.
+        const kids = s.kids.map((k, i) => {
+          const [ka, kb] = clip(k.start, k.end);
+          if (kb <= ka) return '';
+          return `<div class="wk-plan-kid${y(kb) - y(ka) < 16 ? ' wk-plan-tight' : ''}" style="top:${y(ka) - y(a)}px;height:${y(kb) - y(ka)}px;--block-color:${k.color}"
+            title="${escHtml(`${k.label} · ${hhmmToAmPm(clockHHMM(k.start))}–${hhmmToAmPm(clockHHMM(k.end))}`)}">
+            <span class="tl-block-label">${i === 0 ? planLabelHtml(s.category || s.label, k.label) : escHtml(k.label)}</span>${
+              wkTaskList(d, k.start, false, null, null, k.notes)}</div>`;
+        }).join('');
+        return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}${s.dayBlockId ? ' tl-block-day' : ''}${
+          s.planDate ? ` tl-block-plan${kids ? ' tl-plan-nest' : ''}${y(b) - y(a) < 16 ? ' wk-plan-tight' : ''}` : ''}"
           ${blockObjAttrs(s)}
           data-date="${d}" data-start-min="${a}" data-end-min="${b}" data-occ-min="${s.startMin}"
           data-purpose="${escHtml(blockPurpose(s))}" ${blockCatAttrs(s)}
           style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
           <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
-            escHtml(s.label)}</span></div>${wkTaskList(d, s.startMin, s.cont,
-            wkTaskTop(y(a), y(b), evSpans, wkTasksAt(d, s.startMin).length))}</div>`;
+            s.planDate ? planLabelHtml(s.category, s.label) : escHtml(s.label)}</span></div>${kids || wkTaskList(d, s.startMin, s.cont,
+            // A plan block's label is drawn and nothing covers it, so its lines
+            // start under the label rather than under the hover's.
+            s.planDate ? 15 : wkTaskTop(y(a), y(b), evSpans, wkTasksAt(d, s.startMin).length + s.notes.length),
+            null, s.notes)}</div>`;
       }).join('');
 
     const evs = wkLanes(boxes).map(x => {
@@ -3007,10 +3208,10 @@ function initCalWeek() {
       e.preventDefault();
       openGatesDashboard(a.dataset.node, a.dataset.date);
     } else if (act === 'day') {
-      // A week's day header opens that day; the one-day grid's is its own.
-      if (!calWeek.week) return;
-      state.currentDate = new Date(a.dataset.date + 'T12:00:00');
-      await setCalView(false);
+      // A DAY HEADER OPENS ITS PLAN (2026-10-28, Quentin's "Calendar Plan"
+      // design), on the week and the one day alike. Opening the day itself is
+      // the header's menu (wkRestoreMenu) and Day | Week.
+      await openDayPlan(a.dataset.date);
     } else if (act === 'add-event') {
       openEvSheet();
     } else if (act === 'refresh') {
@@ -6390,6 +6591,9 @@ const OBJECT_KINDS = {
       const r = await apiGet(`/api/day-blocks/${id}`, null);
       return r && r.id ? r : null;
     } },
+  // A block of a day's PLAN, keyed by its date: its editor is the plan's text.
+  plan: { noun: 'plan', opensLabel: 'Edit plan…', opens: d => openDayPlan(d),
+    find: d => d },
 };
 
 // The block list's own numbering, in one place so the settings index and the
@@ -13862,7 +14066,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   // (a negative start) is skipped here: Engage lists the day's own commitments.
   drawnSegments(viewSegmentsFor(dateStr)).filter(s => s.start >= 0).forEach(s => {
     const seg = { minute: s.start, endMin: s.end, id: s.block_id, dayBlockId: s.day_block_id,
-                  label: s.label, cancelled: !!s.cancelled, color: s.color };
+                  planDate: s.plan_date, label: s.label, cancelled: !!s.cancelled, color: s.color };
     if (routineAreaIds.has(s.area_id)) {
       (routineGroups[s.area_id] = routineGroups[s.area_id] || []).push(seg);
       return;
@@ -14143,8 +14347,9 @@ function renderEngage() {
     if (r.kind === 'block') {
       // A block for one date is not a weekly block: no data-block, so the
       // ⌘-click cancel (an override of the WEEK's block) cannot reach it.
-      return `<div class="eg-row eg-block${r.dayBlockId ? ' eg-block-day' : ''}${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
-        ${r.dayBlockId ? `data-obj="dayblock:${r.dayBlockId}" data-obj-tap="1" title="This date only"`
+      return `<div class="eg-row eg-block${r.dayBlockId || r.planDate ? ' eg-block-day' : ''}${r.cancelled ? ' eg-cancelled' : ''}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
+        ${r.planDate ? `data-obj="plan:${r.planDate}" data-obj-tap="1" title="From this day's plan"`
+          : r.dayBlockId ? `data-obj="dayblock:${r.dayBlockId}" data-obj-tap="1" title="This date only"`
           : `data-block="${r.id}" data-obj="block:${r.id}" data-obj-tap="1"
         title="${r.cancelled ? '⌘-click to restore' : '⌘-click to cancel for this day'}"`}>
         <span class="eg-time">${hhmm(r.minute)}</span>

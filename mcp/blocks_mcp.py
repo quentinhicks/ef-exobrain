@@ -160,10 +160,15 @@ def events_on(date, events):
 
 
 def seg_line(s):
-    out = {'kind': 'day' if s.get('day_block_id') else 'weekly', 'label': s['label'],
+    kind = 'plan' if s.get('plan_date') else 'day' if s.get('day_block_id') else 'weekly'
+    out = {'kind': kind, 'label': s['label'],
            'start': 'from the day before' if s['start'] < 0 else fmt(s['start']),
            'end': fmt(s['end']), 'minutes': s['end'] - max(0, s['start'])}
-    if s.get('day_block_id'):
+    if kind == 'plan':
+        # Written by Quentin as text on the calendar; no tool here edits it.
+        out['inside'] = [f"{k['label']} {fmt(k['start'])}–{fmt(k['end'])}" for k in s.get('kids') or []]
+        out['notes'] = s.get('notes') or []
+    elif s.get('day_block_id'):
         out['day_block_id'] = s['day_block_id']
     else:
         out['block_id'] = s['block_id']
@@ -207,7 +212,7 @@ def days_view(a):
         for s in live:
             if s['start'] >= 0:
                 t = totals.setdefault(s['label'], [0, 0])
-                t[1 if s.get('day_block_id') else 0] += s['end'] - s['start']
+                t[1 if s.get('day_block_id') or s.get('plan_date') else 0] += s['end'] - s['start']
         busy = [(s['start'], s['end']) for s in live] + [(e['start'], e['end']) for e in evs]
         days.append({'date': ymd, 'weekday': DAY_NAMES[d.weekday()],
                      'blocks': [seg_line(s) for s in segs],

@@ -143,6 +143,7 @@ TITLES = {
     'observation': 'Observations',
     'block_override': 'Block changes',
     'day_block': 'Blocks for this day only',
+    'day_plan': 'Plan written for the day',
     'block_feedback': 'Block feedback',
     'daily_todo': 'Day plan',
     'daily_review': 'Daily review',

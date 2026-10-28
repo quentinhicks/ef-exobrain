@@ -1027,7 +1027,8 @@ def get_calendar_days_route():
     if dates is None:
         return jsonify({'error': 'from and to are YYYY-MM-DD, in order'}), 400
     return jsonify({d: {'segments': storage.block_segments_for(d, with_cancelled=True),
-                        'overrides': storage.get_overrides_for_date(d)} for d in dates})
+                        'overrides': storage.get_overrides_for_date(d),
+                        'plan': storage.get_day_plan(d)} for d in dates})
 
 
 @app.route('/api/engage/day')
@@ -1632,6 +1633,21 @@ def day_block_route(id):
     if err:
         return jsonify({'error': err}), 400
     return jsonify(storage.update_day_block(id, body))
+
+
+# A DAY'S PLAN (2026-10-28): the text, by date. LOCAL like a day block — the
+# date is in the path and never defaulted. Its blocks are read back through
+# /api/calendar/days and every other day read, resolved from this text.
+@app.route('/api/day-plan/<ymd>', methods=['GET', 'PUT'])
+def day_plan_route(ymd):
+    if not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    if request.method == 'GET':
+        return jsonify(storage.get_day_plan(ymd))
+    data = request.get_json(force=True) or {}
+    if not isinstance(data.get('body'), str):
+        return jsonify({'error': 'send the plan as body (text; blank clears it)'}), 400
+    return jsonify(storage.set_day_plan(ymd, data['body']))
 
 
 # Local snapshot only. Git is no longer a sync or backup layer for data: the
