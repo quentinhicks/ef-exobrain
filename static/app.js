@@ -11901,7 +11901,7 @@ function wireMapRows(body, byId, afterFn) {
   body.querySelectorAll('.map-text').forEach(span => {
     onTapOrDouble(span, () => {
       const item = byId[parseInt(span.closest('.map-row').dataset.id)];
-      if (item) openClarifyForItem(item, after, mapClarifyFlow(item));
+      if (item) mapOpenRow(item, after);
     }, () => {
       const row = span.closest('.map-row');
       const id = parseInt(row.dataset.id);
@@ -11925,9 +11925,25 @@ function wireMapRows(body, byId, afterFn) {
   body.querySelectorAll('.map-open').forEach(btn => {
     btn.addEventListener('click', () => {
       const item = byId[parseInt(btn.dataset.id)];
-      if (item) openClarifyForItem(item, after, mapClarifyFlow(item));
+      if (item) mapOpenRow(item, after);
     });
   });
+}
+
+// A ROW OPENED WHILE AN INBOX ITEM IS BEING FILED HERE (2026-10-28) is a
+// detour, the project pill's: the item's half-made sheet — its flow, its
+// pick, its queue — is put back when the row's own clarify closes.
+function mapOpenRow(item, after) {
+  if (!clarifyView.open || !clarifyView.picking) return openClarifyForItem(item, after, mapClarifyFlow(item));
+  const snap = clarifySnapshot();
+  // The pick is the item's, kept in the snapshot: the row's sheet has none, or
+  // closing it would give the pick up and leave Projects.
+  clarifyView.picking = null;
+  return openClarifyForItem(item, async () => {
+    await after();
+    clarifyRestore(snap);
+    renderClarify();
+  }, mapClarifyFlow(item));
 }
 
 // A FILED row opened from Projects opens on the Project flow (2026-10-14); a
@@ -12246,7 +12262,7 @@ function renderMap() {
   const general = body.querySelector('.mp-sec[data-sec="none"] .mp-sec-title');
   if (general) general.addEventListener('contextmenu', e => {
     e.preventDefault();
-    openObjectMenu(e.clientX, e.clientY, null, null, areaMoveVerbs(0));
+    openObjectMenu(e.clientX, e.clientY, null, null, [...clarifyPickVerb({ area: '' }), ...areaMoveVerbs(0)]);
   });
 
   dragEdgeScroll(body);
@@ -12371,7 +12387,8 @@ function wireAreaOrderDrag(body) {
 registerObjectVerbs('mp-area', (kind, id, el) => {
   if (kind !== 'area' || !el || !el.closest('#map-body')) return [];
   const aid = parseInt(id);
-  return [{ label: 'Rename', run: () => mapRenameArea(aid) }, ...areaMoveVerbs(aid)];
+  return [...clarifyPickVerb({ area: aid }),
+    { label: 'Rename', run: () => mapRenameArea(aid) }, ...areaMoveVerbs(aid)];
 });
 
 // Move up / Move down for one entry of the order — an area, or General (0).
@@ -12656,7 +12673,7 @@ function mapRowVerbs(item) {
     label: `${own.includes(tag) ? 'Clear estimate' : 'Estimate'} ${tag}`,
     run: () => mapToggleIn(item, tag, x => EST_TAGS.includes(x) || /^\d+[mh]$/.test(x), 'estimate') });
   return [
-    { key: 'Enter', hint: '⏎', label: 'Clarify…', run: () => openClarifyForItem(item, mapAfterWrite, mapClarifyFlow(item)) },
+    { key: 'Enter', hint: '⏎', label: 'Clarify…', run: () => mapOpenRow(item, mapAfterWrite) },
     // The row's own rename (its double-click), not a second editor.
     { key: 'r', label: 'Rename', run: () => {
       const text = document.querySelector('#map-body .map-row-sel .map-text');
@@ -12704,14 +12721,16 @@ function mapRowVerbs(item) {
 
 document.addEventListener('contextmenu', e => {
   const row = e.target.closest && e.target.closest('#map-overlay .map-row[data-id]');
-  if (!row || clarifyView.picking) return;
+  if (!row) return;
   e.preventDefault();
   mapView.sel = parseInt(row.dataset.id);
   mapSelSync();
   const item = mapSelItem();
   if (!item) return;
-  openObjectMenu(e.clientX, e.clientY, 'item', item.id, mapRowVerbs(item).map(v => ({
-    label: v.label, hint: v.hint || v.key.toUpperCase(), danger: v.danger, run: v.pick || v.run })));
+  openObjectMenu(e.clientX, e.clientY, 'item', item.id, [
+    ...(item.kind === 'project' ? clarifyPickVerb({ projectId: item.id }) : []),
+    ...mapRowVerbs(item).map(v => ({
+      label: v.label, hint: v.hint || v.key.toUpperCase(), danger: v.danger, run: v.pick || v.run }))]);
 });
 
 // ── Export — the list as Markdown ────────────────────────────
@@ -15942,7 +15961,7 @@ const CLARIFY_FLOWS = [
 const CLARIFY_FLOW_HINT = {
   now: 'Marks it done and moves to the next item. Nothing is filed.',
   todo: 'Goes on the to-do list, available now.',
-  project: 'Click a project on the Projects page to put it in one; click an area to file it there at once. Either way it leaves the to-do list.',
+  project: 'Ctrl-click (⌘ on a Mac) a project or an area on the Projects page, or choose File here from its menu, then File it. Projects works as usual otherwise. Either way it leaves the to-do list.',
   calendar: 'Click a block or an event to add it there, or an empty time to put it at that time.',
   list: 'Click a list or document on the Lists page to add it there.',
 };
@@ -16082,6 +16101,31 @@ function clarifyPicked() {
   renderClarify();
 }
 
+// The Project flow's two picks, asked by the Ctrl-click and the menus alike.
+// An area files the action there in no project; General ('') is in no area.
+function clarifyPickProject(id) {
+  const p = (state.projects || []).find(x => x.id === id)
+    || (state.mapItems || []).find(x => x.id === id);
+  clarifyView.projectId = id;
+  clarifyView.projectName = p ? p.content : '';
+  clarifyPicked();
+}
+
+function clarifyPickArea(area) {
+  clarifyPickLoose(area ? parseInt(area) : null);
+  clarifyPicked();
+}
+
+// `File here` on a project's or an area's menu while the Project flow is
+// picking — the touch path to the Ctrl-click. `area` is an id, or 0 / '' for
+// General; a project row passes `projectId`.
+function clarifyPickVerb({ projectId, area }) {
+  const pk = clarifyView.picking;
+  if (!clarifyView.open || !pk || pk.flow !== 'project') return [];
+  return [{ label: 'File here', run: () => (projectId
+    ? clarifyPickProject(projectId) : clarifyPickArea(area)) }];
+}
+
 // What a click on the Calendar picked: an event by its key (its real start,
 // moved or not, and its own date — a next-day event drawn past midnight is
 // that next day's), a block by its column's date and its drawn start, empty
@@ -16131,23 +16175,17 @@ window.addEventListener('click', e => {
     clarifyPicked();
     return;
   }
+  // PROJECTS STAYS AN ORDINARY PAGE WHILE AN ITEM IS FILED ON IT (2026-10-28,
+  // Quentin's instruction: interact with it "without forcing me to click and
+  // submit"). A plain click does what it always does there; Ctrl-click (⌘ on a
+  // Mac) on a project or an area PICKS it, and nothing is filed until File it
+  // — reversing 2026-10-22's area-files-at-once. A finger picks with the
+  // row's or heading's menu: File here (clarifyPickVerb).
+  if (pk.flow === 'project' && !(e.ctrlKey || e.metaKey)) return;
   e.preventDefault(); e.stopPropagation();
-  // An AREA — its heading, its entry in the index, the blank space under it —
-  // files the action there in no project, in the one click (2026-10-22,
-  // Quentin's instruction). General is in no area.
-  if (pk.flow === 'project' && !el.classList.contains('map-row-project')) {
-    const area = el.closest('[data-drop-area]').dataset.dropArea;
-    clarifyPickLoose(area ? parseInt(area) : null);
-    clarifyPicked();
-    fileClarifyFlow();
-    return;
-  }
   if (pk.flow === 'project') {
-    const p = (state.projects || []).find(x => String(x.id) === el.dataset.id);
-    const text = el.querySelector('.map-text');
-    clarifyView.projectId = parseInt(el.dataset.id);
-    clarifyView.projectName = p ? p.content : (text ? text.textContent.trim() : '');
-    clarifyPicked();
+    if (el.classList.contains('map-row-project')) clarifyPickProject(parseInt(el.dataset.id));
+    else clarifyPickArea(el.closest('[data-drop-area]').dataset.dropArea);
     return;
   }
   const pick = calPickFrom(el.closest('.tl-block, .tl-gcal-event') || el, e);
