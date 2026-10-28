@@ -1174,7 +1174,7 @@ registerObjectVerbs('week-block', (kind, id, el) => {
   const overrides = (calWeek.days[d] || {}).overrides || [];
   return [
     ...purposeItem(blockEl),
-    { label: 'Cancel for this day', danger: true,
+    { label: 'Cancel for this day', danger: true, cancel: true,
       run: () => toggleBlockCancelOn(parseInt(id), d, overrides, refreshCalWeek) },
   ];
 });
@@ -2322,7 +2322,7 @@ function wkCardVerbs(t) {
   return [
     { label: 'Event details', run: () => openEventPop(t.evKey, el) },
     ...(ev.moved ? [{ label: 'Put back at its calendar time', run: () => unmoveEvent(ev.uid, ev.orig_start) }] : []),
-    { label: 'Hide for this day', danger: true,
+    { label: 'Hide for this day', danger: true, cancel: true,
       run: () => hideTimelineItem('event', t.evKey, ev.summary || 'Event') },
   ];
 }
@@ -3706,7 +3706,7 @@ async function removeDayBlock(id) {
 // Its one day-level verb. The date is the ROW's own, never the viewed day, so
 // the verb is the same wherever the block is drawn.
 registerObjectVerbs('dayblock', (kind, id) => kind !== 'dayblock' ? [] : [
-  { label: 'Remove from this date', danger: true,
+  { label: 'Remove from this date', danger: true, cancel: true,
     run: () => removeDayBlock(parseInt(id)) },
 ]);
 
@@ -6774,6 +6774,45 @@ function verbsFor(kind, id, el) {
 // block's day, calling a gate's day off and hiding an event are NAMED items on
 // the menu now; a calendar block or event opens its card, which is its menu
 // with its tasks above it.
+// TWO RIGHT-CLICKS CANCEL, ON THE DESKTOP (2026-10-28, Quentin's
+// instruction). A second right-click on the same calendar block, event or
+// gate, quickly and in the same place, runs the item its menu already names
+// for cancelling it that day — `cancel: true`: Cancel for this day, Remove
+// from this date, Call this day off, Hide for this day — so the shortcut, the
+// menu and their undo are one verb. The first right-click opens the menu as
+// always (it cannot know a second is coming). A mouse only: a hold's
+// translated right-click is not trusted, and a finger keeps the named item.
+// A plan's block has no cancel; its text is its editor.
+const DBL_RIGHT_MS = 450;
+const dblRight = { at: 0, x: 0, y: 0, verb: null };
+
+function cancelVerbAt(el) {
+  const ev = el.closest('#cal-week .wk-ev[data-ev-key]');
+  if (ev) return wkCardVerbs({ isBlock: false, evKey: ev.dataset.evKey }).find(v => v.cancel);
+  const obj = el.closest('#cal-week .wk-block[data-obj], #cal-week .wk-gate[data-obj]');
+  if (!obj) return null;
+  const [kind, id] = obj.dataset.obj.split(':');
+  return verbsFor(kind, id, obj).find(v => v.cancel);
+}
+
+document.addEventListener('contextmenu', e => {
+  if (!e.isTrusted) return;
+  const now = performance.now();
+  const again = dblRight.verb && now - dblRight.at < DBL_RIGHT_MS
+    && Math.abs(e.clientX - dblRight.x) < 6 && Math.abs(e.clientY - dblRight.y) < 6;
+  if (again) {
+    const verb = dblRight.verb;
+    dblRight.verb = null;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    closeObjectMenu();
+    closeCalWeekPops();
+    verb.run();
+    return;
+  }
+  Object.assign(dblRight, { at: now, x: e.clientX, y: e.clientY, verb: cancelVerbAt(e.target) || null });
+}, true);
+
 function openObjectMenuOrRemove(x, y, kind, id, el) {
   // A block on the Calendar opens its CARD — tasks, then this same menu's
   // verbs (2026-10-11, Quentin's instruction, reversing right-click-removes):
@@ -10449,7 +10488,7 @@ registerObjectVerbs('calendar-gate', (kind, id, el) => {
   const move = to => () => moveCalGateDay(g.node_id, g.label, d, from, to);
   return [
     from === 'off' ? { label: 'Put this day back on', run: move('on') }
-      : { label: 'Call this day off', danger: true, run: move('off') },
+      : { label: 'Call this day off', danger: true, cancel: true, run: move('off') },
     { label: 'Hide this day', run: move('hidden') },
   ];
 });
