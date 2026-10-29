@@ -3151,7 +3151,7 @@ def block_segments_for(date_str, with_cancelled=False):
     out += _plan_segments(conn, date_str, 0)
     out += _plan_segments(conn, (day - timedelta(days=1)).isoformat(), -1440)
     conn.close()
-    out = _under_day_blocks(out)
+    out = [s for s in _under_day_blocks(out) if not s.get('crossed')]
     out.sort(key=lambda r: r['start'])
     return out
 
@@ -3244,6 +3244,10 @@ def _plan_block(names, it, offset):
 # nothing weekly or one-off may match one; the plan's TEXT is its only editor.
 # A nested block rides inside its parent (`kids`) rather than as a segment of
 # its own, so a day's segments still never overlap.
+# A CROSSED-OUT block (`~~ … ~~`, day_plan.py) comes back `crossed`: it still
+# trims what is under it and covers the events it overlaps, and
+# block_segments_for drops it after trimming, so its hours draw empty. A
+# crossed-out child of a block still drawn is a crossed segment of its own.
 def _plan_segments(conn, on_date, offset):
     row = conn.execute('SELECT body FROM day_plan WHERE date = ?', (on_date,)).fetchone()
     if not row:
@@ -3257,9 +3261,14 @@ def _plan_segments(conn, on_date, offset):
         seg.update({'block_id': None, 'day_block_id': None, 'plan_date': on_date,
                     'plan_index': i, 'date': on_date, 'overridden': False,
                     'cancelled': False, 'description': '', 'priority': None,
-                    'scheduled_change': False,
-                    'kids': [_plan_block(names, k, offset) for k in it['kids']]})
+                    'scheduled_change': False, 'crossed': it['struck'],
+                    'kids': [_plan_block(names, k, offset) for k in it['kids']
+                             if not k['struck']]})
         out.append(seg)
+        if not it['struck']:
+            for k in it['kids']:
+                if k['struck'] and k['end'] + offset > 0:
+                    out.append(dict(seg, **_plan_block(names, k, offset), kids=[], crossed=True))
     return out
 
 

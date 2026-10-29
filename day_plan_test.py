@@ -72,6 +72,39 @@ zero = day_plan.parse('0-1:30 Sleep\n13-14 Lunch')['items']
 check('hour 0 is midnight and an hour over 12 is 24-hour',
       [(i['start'], i['end']) for i in zero] == [(0, 90), (780, 840)], zero)
 
+# Crossed out with ~~ … ~~: on one line, across lines, a parent and its kids.
+X = day_plan.parse('''8-9 Gym
+~~9-10 COS333: Problem set~~
+* a note under a crossed block
+~~10-11 Lunch
+11-12 Walk~~
+1-2 ENT200:
+  1-2 Write
+  ~~2-3 Read~~
+~~4-6 Club:
+  4-5 Meet
+  * agenda~~
+7-8 Dinner ~~with Sam~~
+~~not a time line~~
+9-10 Open ~~ended''')
+xi = X['items']
+check('a line wrapped in ~~ is crossed out, its times still read',
+      [(i['title'] or i['cat'], i['struck']) for i in xi] ==
+      [('Gym', False), ('Problem set', True), ('Lunch', True), ('Walk', True),
+       ('ENT200', False), ('Club', True), ('Dinner', False), ('Open ~~ended', False)], xi)
+check('a ~~ spanning lines crosses out each of them', xi[2]['struck'] and xi[3]['struck'])
+check('a crossed-out block keeps its times', (xi[1]['start'], xi[1]['end']) == (540, 600), xi[1])
+check('a note under a crossed block is dropped', xi[1]['notes'] == [], xi[1]['notes'])
+ent = xi[4]
+check('a crossed-out child is crossed; its sibling is not',
+      [(k['title'], k['struck']) for k in ent['kids']] == [('Write', False), ('Read', True)], ent['kids'])
+check('a parent stretches only over the children it still draws',
+      (ent['start'], ent['end']) == (780, 840), (ent['start'], ent['end']))
+check('crossing out a parent crosses out what is nested in it', all(k['struck'] for k in xi[5]['kids']))
+check('struck words inside a kept line are dropped from it', xi[6]['title'] == 'Dinner', xi[6])
+check('a crossed-out line that is not a block is not reported as skipped', X['skipped'] == [], X['skipped'])
+check('an unclosed ~~ is only text', xi[7]['title'] == 'Open ~~ended' and not xi[7]['struck'])
+
 # ── 2 + 3. drawn by the one resolution, taking only its own hours ──
 day = date_cls.today().isoformat()
 conn = storage.get_conn()
@@ -119,6 +152,19 @@ check('nothing but the text is stored', storage.get_conn().execute(
 check('the calendar read carries the plan', client.get(
     f'/api/calendar/days?from={day}&to={day}').get_json()[day]['plan']['body'].startswith('9-10'))
 
+client.put(f'/api/day-plan/{day}', json={'body': '~~10-11 Errands~~\n'
+                                                  '3-4 ENT200:\n'
+                                                  '  3-4 Write\n'
+                                                  '  ~~4-5 Read~~'})
+segs = storage.block_segments_for(day)
+check('a crossed-out block draws nothing', not any(s['label'] == 'Errands' for s in segs), segs)
+deep = [(s['start'], s['end']) for s in segs if s['label'] == 'deep work']
+check('...and still clears the week under it, as does a crossed-out child past its parent',
+      deep == [(540, 600), (660, 720), (840, 900)], deep)
+ent = [s for s in segs if s.get('plan_date') == day]
+check('the parent draws with the child it keeps, without the crossed one',
+      [(s['start'], s['end'], [k['label'] for k in s['kids']]) for s in ent] == [(900, 960, ['Write'])], ent)
+
 client.put(f'/api/day-plan/{day}', json={'body': '   '})
 check('blank text clears it, and the day comes back whole', storage.block_segments_for(day) == before)
 check('...with no row left', storage.get_conn().execute('SELECT COUNT(*) FROM day_plan').fetchone()[0] == 0)
@@ -142,6 +188,8 @@ check('an event the plan overlaps at all is covered; one in its gaps and an all-
 check('the calendar read serves the flag', all('plan_covered' in e for e in client.get('/api/gcal').get_json()))
 panel = [r['label'] for r in storage.get_engage_day()['rows'] if r['kind'] == 'event']
 check("the NOW panel's day skips the covered event", panel == ['Office hours'], panel)
+client.put(f'/api/day-plan/{day}', json={'body': '~~9-10 COS333: Problem set~~'})
+check('a crossed-out block still hides the event under it', covered()['Gym'] is True, covered())
 client.put(f'/api/day-plan/{day}', json={'body': ''})
 check('clearing the plan uncovers it', not any(covered().values()), covered())
 

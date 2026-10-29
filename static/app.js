@@ -1261,7 +1261,8 @@ function renderDayPlanSheet(p) {
     <textarea class="dp-text" id="dp-text" spellcheck="false" placeholder="${escHtml(DP_EXAMPLE)}"></textarea>
     <div class="dp-hint">One line per block: a time range, an optional category before a colon, then what.
       Indent a line to nest it; start a line with * to write it inside the block above. The plan takes the
-      hours it names and the day's other blocks stay around it, and a calendar event it overlaps is hidden.</div>
+      hours it names and the day's other blocks stay around it, and a calendar event it overlaps is hidden.
+      Wrap lines in ~~ … ~~ to cross them out: they draw nothing, and the hours stay clear.</div>
     <div class="dp-skipped" id="dp-skipped"></div>
     <button class="dp-clear" id="dp-clear">Clear plan and restore blocks</button>`;
   const ta = sheet.querySelector('#dp-text');
