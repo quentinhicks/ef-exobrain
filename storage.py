@@ -3297,10 +3297,6 @@ def _plan_segments(conn, on_date, offset):
     names = _plan_names(conn)
     out = []
     for i, it in enumerate(day_plan.parse(row['body'])['items']):
-        # A `!` line is a PHOTO GATE, not a block (qr_judge, PHOTO GATES): it
-        # draws as a gate and takes no hours, here or nested.
-        if it['gate']:
-            continue
         seg = _plan_block(names, it, offset)
         if seg['end'] <= 0:
             continue
@@ -3309,11 +3305,11 @@ def _plan_segments(conn, on_date, offset):
                     'cancelled': False, 'description': '', 'priority': None,
                     'scheduled_change': False, 'crossed': it['struck'],
                     'kids': [_plan_block(names, k, offset) for k in it['kids']
-                             if not k['struck'] and not k['gate']]})
+                             if not k['struck']]})
         out.append(seg)
         if not it['struck']:
             for k in it['kids']:
-                if k['struck'] and not k['gate'] and k['end'] + offset > 0:
+                if k['struck'] and k['end'] + offset > 0:
                     out.append(dict(seg, **_plan_block(names, k, offset), kids=[], crossed=True))
     return out
 

@@ -152,10 +152,10 @@ check('the judge reads the line (with the category it inherits), its notes and i
                                    'Inside the block: COS333: Problem set\n- questions 1-4',
       lines[(710, 720)]['task'])
 items = day_plan.parse(PLAN)['items']
-check('a nested gate does not stretch its block (9-11:50 stays 9-11:50)',
-      (items[0]['start'], items[0]['end']) == (540, 710), items[0])
+check('a nested gate line is a block in its block, which stretches over it (9-12)',
+      (items[0]['start'], items[0]['end']) == (540, 720), items[0])
 
-# A gate is NOT a block: it draws as a gate, takes no hours, hides no event.
+# A `!` line is a BLOCK, hours and all; its gate rides on it.
 conn = storage.get_conn()
 conn.execute('INSERT INTO recurring_block (label, color, day_of_week, start_time, end_time) '
              "VALUES ('deep work', '#5f7f54', 1, '13:00', '16:00')")       # 2031-03-04 is a Tuesday
@@ -168,17 +168,17 @@ conn.commit()
 conn.close()
 storage.set_day_plan('2031-03-04', PLAN)
 segs = storage.block_segments_for('2031-03-04')
-check('a `!` line draws no block, nested or not',
-      not any(s['label'] in ('Inbox zero', 'Photo of Q1-4 written out') for s in segs)
-      and not any(k['label'] == 'Photo of Q1-4 written out' for s in segs for k in s.get('kids', [])),
+check('a `!` line draws its block, nested or not',
+      any(s['label'] == 'Inbox zero' and (s['start'], s['end']) == (840, 850) for s in segs)
+      and any(k['label'] == 'Photo of Q1-4 written out' for s in segs for k in s.get('kids', [])),
       [s['label'] for s in segs])
-check('...and takes no hours: the week stays whole around it',
-      [(s['start'], s['end']) for s in segs if s['label'] == 'deep work'] == [(780, 960)],
+check('...and takes its hours from the week, like any plan block',
+      [(s['start'], s['end']) for s in segs if s['label'] == 'deep work'] == [(780, 840), (850, 900), (910, 960)],
       [(s['label'], s['start'], s['end']) for s in segs])
 storage.set_day_plan('2031-03-04', '')
 storage.set_day_plan(SOON, '!1:50-2:10 Gate over the call')
-check('...and hides no event', storage.get_gcal_events()[0]['plan_covered'] is False,
-      storage.get_gcal_events())
+check('...and hides the event it overlaps, like any plan block',
+      storage.get_gcal_events()[0]['plan_covered'] is True, storage.get_gcal_events())
 storage.set_day_plan(SOON, '')
 
 # ── 2 + 3. the lock, and the commitment it is written with ──

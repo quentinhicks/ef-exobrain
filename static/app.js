@@ -14372,8 +14372,9 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
                 started: !!item.started_at });
   });
 
-  // A PHOTO GATE is a `!` line in the plan, nested or not: a gate, not a
-  // block - its row stands where a gate's does, at its window's close.
+  // A PHOTO GATE is a `!` line in the plan, nested or not: the line is a
+  // block like any other, and its gate stands where a gate's does, at the
+  // block's close, named as the block is.
   engageView.planGates.gates.filter(g => g.date === dateStr).forEach(g => {
     rows.push({ kind: 'pgate', minute: g.end_min, endMin: g.end_min, gate: g });
   });

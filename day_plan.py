@@ -26,11 +26,12 @@
 # `~~` is just text, as in markdown, so a half-typed one hides nothing.
 #
 # A GATE (2026-10-30, Quentin's instruction): `!` before the time,
-# `!12-12:10 Photo of problems 1-4 written out`, makes the line a PHOTO GATE
-# and NOT A BLOCK — it takes no hours, stretches no parent and covers no
-# event; the app draws it as a gate, a dot at its window's close. Its range is
-# the window photos are sent in, and what Claude judges them against is the
-# gate's task: the line, its `*` notes and the block it sits in. It is the
+# `!12-12:10 Photo of problems 1-4 written out`, makes the line a block AND a
+# PHOTO GATE on that block — the block takes its hours like any other, and
+# the gate, described by the block's name, is drawn as a gate's dot at the
+# block's close. The block's range is the window photos are sent in, and
+# what Claude judges them against is the gate's task: the block's name, its
+# `*` notes and the block it sits in. It is the
 # money path: qr_judge commits, judges and charges it. The line LOCKS the
 # moment its window opens (`locked_change`): until then it is text like any
 # other.
@@ -136,10 +137,9 @@ def parse(text):
             ref = it['start']
         last = it
     # A parent stretches over the children it still draws; a crossed-out
-    # parent over all of them, since it clears all of their hours. A gate is
-    # no block, so it stretches nothing.
+    # parent over all of them, since it clears all of their hours.
     for it in items:
-        kids = [k for k in it['kids'] if not k['gate'] and (it['struck'] or not k['struck'])]
+        kids = [k for k in it['kids'] if it['struck'] or not k['struck']]
         if kids:
             it['start'] = min([it['start']] + [k['start'] for k in kids])
             it['end'] = max([it['end']] + [k['end'] for k in kids])
