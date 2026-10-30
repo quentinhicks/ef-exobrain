@@ -12,6 +12,10 @@ daybook/
 # The Vision horizon's photos (data dir): a local run from the repo would
 # otherwise put them in a public repository (backup_test).
 vision/
+# A photo gate's proofs (storage.GATE_PHOTO_DIR), and the photo judge's
+# working directory (photo_judge.py) - data, like vision/.
+gate-photos/
+photo-judge/
 __pycache__/
 *.pyc
 

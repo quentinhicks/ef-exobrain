@@ -26,6 +26,7 @@ import urllib.parse
 import urllib.request
 from datetime import date as date_cls, datetime, timedelta
 
+import day_plan
 import storage
 import schedule
 
@@ -432,6 +433,7 @@ def judge(now=None, verbose=False):
             _commit(node, ymd, now, settings)
         for ymd in _days_to_judge(node, today):
             _settle(node, ymd, now, today, lines)
+    plan_judge(now, settings, lines)
 
     if verbose:
         for line in lines:
@@ -1033,18 +1035,31 @@ def charge_for_failure(node, ymd, reason, staked_cents, sender=None, window=None
     WHOLE stake; credit_pct is stamped 0 because judged_outcome reads it.
     """
     storage.qr_ensure_charge_columns()
+    return _bill(
+        staked_cents, node_charge_cents, ymd,
+        lambda status, amount: storage.qr_reserve_judgment(
+            node['id'], ymd, reason, status, amount,
+            window=window, credit_pct=0, hours=hours),
+        lambda final, charge_id, amount: storage.qr_settle_charge(
+            node['id'], ymd, final, charge_id, amount),
+        '%s: %s on %s' % (node['label'], reason, ymd), sender, node)
+
+
+# THE ONE MONEY PATH, for a gate's day and a photo gate alike: price, cap,
+# reserve, bill, settle. `reserve(status, amount)` writes the judgment and
+# returns whether THIS call won it; `settle(final, charge_id, amount)` records
+# what Beeminder said. `default(node, settings)` prices an unstaked failure for
+# the record.
+def _bill(staked_cents, default, through_date, reserve, settle, note, sender, node=None):
     s = charge_settings()
-    amount = int(staked_cents) if staked_cents else node_charge_cents(node, s)
-    spent = storage.qr_weekly_spent_cents(ymd)
+    amount = int(staked_cents) if staked_cents else default(node, s)
+    spent = storage.qr_weekly_spent_cents(through_date)
     staked = bool(staked_cents) and s['live']
     capped = staked and (spent + amount) > s['cap_cents']
     will_charge = staked and not capped
 
     status = 'capped' if capped else ('charging' if will_charge else 'would_fire')
-    won = storage.qr_reserve_judgment(
-        node['id'], ymd, reason, status, amount if will_charge else None,
-        window=window, credit_pct=0, hours=hours)
-    if not won:
+    if not reserve(status, amount if will_charge else None):
         return None          # another tick owns this day; do not touch money
 
     if not will_charge:
@@ -1055,13 +1070,278 @@ def charge_for_failure(node, ymd, reason, staked_cents, sender=None, window=None
     # failure costs. Beeminder's own $1 floor still applies to the remainder,
     # so a stake under fee + $1 costs slightly more than it says; set stakes
     # at or above that line.
-    bill = amount - s['fee_cents']
-    final, charge_id = beeminder_charge(
-        s, bill, '%s: %s on %s' % (node['label'], reason, ymd), sender)
+    final, charge_id = beeminder_charge(s, amount - s['fee_cents'], note, sender)
     # 'failed' means nothing was sent, so it must not count against the cap.
-    storage.qr_settle_charge(node['id'], ymd, final, charge_id,
-                             None if final == 'failed' else amount)
+    settle(final, charge_id, None if final == 'failed' else amount)
     return final
+
+
+# ── PHOTO GATES (2026-10-30, Quentin's instruction) ───────────────────────
+#
+# A `!` line in a day's plan — `!12-12:10 Photo of problems 1-4 written out`
+# — is a gate whose proof is PHOTOS, judged by Claude Code on the desktop
+# (photo_judge.py) the way Forfeit's AI reviewer judges a photo goal: do
+# these reasonably show the task done or nearly done? The range is the
+# window photos are sent in; the line, its notes and its block are the task.
+#
+# It rides every rule a gate's day already has, in the same functions:
+#
+#   THE COMMITMENT   provisional on every look before the window opens (the
+#                    plan's save, the judge's ticks), SEALED at the first look
+#                    after, only if a look within COMMIT_LEAD_MIN saw it
+#                    coming. No sealed row, no money, ever.
+#   THE LOCK         the line cannot be touched once its window opens
+#                    (day_plan.locked_change, refused at the plan's PUT).
+#   ONE VERDICT      plan_gate_state is the one answer to where a gate
+#                    stands, read by the settle below, the served view and the
+#                    desktop's notifications alike.
+#   ONE MONEY PATH   _bill, with the default stake, the switch, the fee and
+#                    the GLOBAL weekly cap; only yesterday and today pay.
+#
+# A FAILURE IS NOT FINAL FOR AN HOUR (Quentin's instruction): a proof Claude
+# rejects, a window with no proof, or a proof Claude could not judge within
+# PHOTO_JUDGE_GRACE_MIN (Claude Code unreachable fails the gate — his rule)
+# opens an hour to disagree. Each disagreement is an APPEAL Claude re-judges
+# with everything sent; there may be several, and none is final until the
+# hour ends. Nothing is charged before then, nor while an appeal sent inside
+# the hour is still being judged.
+PHOTO_APPEAL_MIN = 60
+PHOTO_JUDGE_GRACE_MIN = 10
+# The desktop judge says it is alive on every poll (20s); unheard for this
+# long, it is shown as unreachable.
+PHOTO_JUDGE_STALE_S = 120
+
+
+def _plan_dt(ymd, minute):
+    return _local_dt(ymd, '00:00') + timedelta(minutes=minute)
+
+
+def plan_commit(ymd, now=None, settings=None):
+    """THE COMMITMENT for one date's photo gates. Idempotent; every look calls it."""
+    now = now or datetime.now()
+    settings = settings or charge_settings()
+    stake = int(settings['default_cents']) if settings['live'] else None
+    rows = {(r['start_min'], r['end_min']): r for r in storage.plan_gates_on(ymd)}
+    lines = day_plan.gate_lines(storage.get_day_plan(ymd)['body'])
+    stamp = now.isoformat(timespec='seconds')
+    for key, g in lines.items():
+        opens = _plan_dt(ymd, key[0])
+        r = rows.get(key)
+        if now < opens:
+            storage.plan_gate_put(ymd, key[0], key[1], g['title'], g['task'], stake, stamp)
+        elif r and not r['sealed_at'] and r['charge_status'] is None and r['checked_at'] \
+                and datetime.fromisoformat(r['checked_at']) >= opens - timedelta(minutes=COMMIT_LEAD_MIN):
+            storage.plan_gate_seal(r['id'], stamp, r['staked_cents'] if settings['live'] else None)
+    for key, r in rows.items():
+        if key not in lines and now < _plan_dt(ymd, key[0]):
+            storage.plan_gate_drop(r['id'])
+
+
+def plan_lock_refusal(ymd, body, now=None):
+    """Why this save of a day's plan is refused, or None (THE LOCK)."""
+    now = now or datetime.now()
+    now_min = int((now - _local_dt(ymd, '00:00')).total_seconds() // 60)
+    title = day_plan.locked_change(storage.get_day_plan(ymd)['body'], body, now_min)
+    if title is None:
+        return None
+    return ('"%s" is a gate whose window has opened, so it can no longer be added, '
+            'changed or removed' % title)
+
+
+def plan_gate_state(g, proofs, now=None):
+    """Where a photo gate stands. THE one answer.
+
+    state: upcoming · open · judging · met · failed (an hour to disagree) ·
+    missed (final) · off (never committed, costs nothing). `final` is what the
+    settle writes once it is set: (failure_reason or None, met?).
+    """
+    now = now or datetime.now()
+    opens, closes = _plan_dt(g['date'], g['start_min']), _plan_dt(g['date'], g['end_min'])
+    grace = timedelta(minutes=PHOTO_JUDGE_GRACE_MIN)
+    out = {'opens': opens, 'closes': closes, 'appeal_until': None, 'fail_key': None,
+           'reason': None, 'final': None, 'can_prove': False, 'can_appeal': False}
+    if g['charge_status'] is not None:
+        st = ('met' if g['charge_status'] == 'ok' else
+              'off' if g['charge_status'] == 'n/a' else 'missed')
+        return dict(out, state=st, reason=g['failure_reason'])
+    if not g['sealed_at']:
+        # Never committed: a line the judge did not see coming. Nothing it
+        # does can cost anything; it is frozen n/a once its window has passed.
+        if now < opens:
+            return dict(out, state='upcoming')
+        return dict(out, state='off', final=(None, False) if now >= closes else None)
+
+    def decided(p):
+        # When a proof stopped being able to change anything: judged, or
+        # unjudged past the grace — which is Claude Code being unreachable.
+        if p['verdict']:
+            return datetime.fromisoformat(p['judged_at'])
+        return datetime.fromisoformat(p['created_at']) + grace
+
+    passed = [p for p in proofs if p['verdict'] == 'pass']
+    if passed:
+        return dict(out, state='met', reason=passed[-1]['reason'], final=(None, True))
+    waiting = [p for p in proofs if not p['verdict'] and now < decided(p)]
+    done = [p for p in proofs if p not in waiting]
+    last = done[-1] if done else None
+    if last:
+        out['reason'] = last['reason'] if last['verdict'] else 'unjudged'
+        out['fail_key'] = '%s%d' % ('' if last['verdict'] else 'u', last['id'])
+    if now < opens:
+        return dict(out, state='upcoming')
+    if now < closes:
+        return dict(out, state='judging' if waiting else ('failed' if last else 'open'),
+                    can_prove=True)
+
+    sent = [p for p in proofs if p['kind'] == 'proof']
+    if not sent:
+        out.update(reason=out['reason'] or 'absent', fail_key=out['fail_key'] or 'absent')
+    if any(p in waiting for p in sent):
+        # A proof sent inside the window is still with the judge.
+        return dict(out, state='judging')
+    failed_at = max([closes] + [decided(p) for p in sent])
+    until = failed_at + timedelta(minutes=PHOTO_APPEAL_MIN)
+    out['appeal_until'] = until
+    if now < until:
+        return dict(out, state='judging' if waiting else 'failed', can_appeal=True)
+    if waiting:
+        return dict(out, state='judging')
+    reason = 'rejected' if (last and last['verdict']) else ('unjudged' if last else 'absent')
+    return dict(out, state='missed', final=(reason, False))
+
+
+def _plan_settle(g, now, today, lines):
+    st = plan_gate_state(g, storage.plan_gate_proofs(g['id']), now)
+    if not st['final']:
+        return
+    reason, met = st['final']
+    if met:
+        storage.plan_gate_reserve(g['id'], None, 'ok', None)
+        return
+    if not g['sealed_at']:
+        storage.plan_gate_reserve(g['id'], None, 'n/a', None)
+        return
+    label = 'Plan: %s' % g['title']
+    if g['date'] < _date_plus(today, -1):
+        if storage.plan_gate_reserve(g['id'], reason, 'stale', None):
+            lines.append('X   %s (%s): %s -> stale' % (label, g['date'], reason))
+        return
+    status = plan_charge(g, reason)
+    if status is not None:
+        lines.append('X   %s (%s): %s -> %s' % (label, g['date'], reason, status))
+
+
+def plan_charge(g, reason, sender=None):
+    return _bill(
+        g['staked_cents'], lambda node, s: int(s['default_cents']), g['date'],
+        lambda status, amount: storage.plan_gate_reserve(g['id'], reason, status, amount),
+        lambda final, charge_id, amount: storage.plan_gate_settle_charge(
+            g['id'], final, charge_id, amount),
+        'Plan: %s: %s on %s' % (g['title'], reason, g['date']), sender)
+
+
+def plan_judge(now=None, settings=None, lines=None):
+    """The photo gates' tick: commit the days around now, settle what is due."""
+    now = now or datetime.now()
+    today = now.date().isoformat()
+    lines = [] if lines is None else lines
+    for ymd in (_date_plus(today, -1), today, _date_plus(today, 1)):
+        plan_commit(ymd, now, settings)
+    for g in storage.plan_gates_open():
+        if g['date'] >= _date_plus(today, -BACKFILL_MAX_DAYS):
+            _plan_settle(g, now, today, lines)
+    return lines
+
+
+def photo_judge_status(now=None):
+    """Is the desktop's Claude Code there to judge? Served beside every view."""
+    now = now or datetime.now()
+    st = storage.get_settings() or {}
+    seen = st.get('photo_judge_seen_at') or None
+    fresh = bool(seen) and (now - datetime.fromisoformat(seen)).total_seconds() < PHOTO_JUDGE_STALE_S
+    return {'seen_at': seen, 'online': fresh and st.get('photo_judge_claude') == '1'}
+
+
+def _plan_view(g, now):
+    proofs = storage.plan_gate_proofs(g['id'])
+    st = plan_gate_state(g, proofs, now)
+    iso = lambda d: d.isoformat(timespec='seconds') if d else None
+    return {'id': g['id'], 'date': g['date'], 'start_min': g['start_min'],
+            'end_min': g['end_min'], 'title': g['title'], 'task': g['task'],
+            'state': st['state'], 'reason': st['reason'], 'fail_key': st['fail_key'],
+            'can_prove': st['can_prove'], 'can_appeal': st['can_appeal'],
+            'opens': iso(st['opens']), 'closes': iso(st['closes']),
+            'appeal_until': iso(st['appeal_until']),
+            'committed': bool(g['sealed_at']), 'staked_cents': g['staked_cents'],
+            'charge_status': g['charge_status'], 'amount_cents': g['amount_cents'],
+            'notified': g['notified'],
+            'proofs': [{k: p[k] for k in ('id', 'kind', 'photos', 'comment', 'verdict',
+                                         'reason', 'created_at', 'judged_at')} for p in proofs]}
+
+
+def plan_gates_view(ymd, now=None):
+    """A date's photo gates as the app draws them, after a look (plan_commit)."""
+    now = now or datetime.now()
+    plan_commit(ymd, now)
+    return {'gates': [_plan_view(g, now) for g in storage.plan_gates_on(ymd)],
+            'judge': photo_judge_status(now)}
+
+
+def photo_judge_poll(claude, now=None):
+    """The desktop judge's heartbeat. What it must judge, and what it must announce."""
+    now = now or datetime.now()
+    storage.set_setting('photo_judge_seen_at', now.isoformat(timespec='seconds'))
+    storage.set_setting('photo_judge_claude', '1' if claude else '0')
+    today = now.date().isoformat()
+    queue, notify = [], []
+    for ymd in (_date_plus(today, -1), today):
+        plan_commit(ymd, now)
+        for g in storage.plan_gates_on(ymd):
+            v = _plan_view(g, now)
+            grace = timedelta(minutes=PHOTO_JUDGE_GRACE_MIN)
+            for p in v['proofs']:
+                if not p['verdict'] and now < datetime.fromisoformat(p['created_at']) + grace \
+                        and v['state'] in ('judging', 'open', 'failed'):
+                    queue.append({'proof': p, 'gate': v,
+                                  'earlier': [q for q in v['proofs'] if q['id'] < p['id']]})
+            if v['fail_key'] and v['state'] in ('failed', 'missed') and v['fail_key'] != g['notified']:
+                notify.append(v)
+    return {'queue': queue, 'notify': notify}
+
+
+def photo_verdict_refusal(proof, now=None):
+    """Why a verdict for this proof is refused, or None. Once, and in time."""
+    now = now or datetime.now()
+    if not proof:
+        return 'No such proof'
+    if proof['verdict']:
+        return 'This proof was already judged'
+    if now >= datetime.fromisoformat(proof['created_at']) + timedelta(minutes=PHOTO_JUDGE_GRACE_MIN):
+        return 'Too late: an unjudged proof counts as failed after %d minutes' % PHOTO_JUDGE_GRACE_MIN
+    return None
+
+
+def photo_proof_kind(g, now=None):
+    """What sending photos to this gate now would be: 'proof', 'appeal', or a refusal."""
+    now = now or datetime.now()
+    if not g:
+        return None, 'No such gate'
+    plan_commit(g['date'], now)
+    g = storage.plan_gate_get(g['id'])
+    st = plan_gate_state(g, storage.plan_gate_proofs(g['id']), now)
+    if st['can_prove']:
+        return 'proof', None
+    if st['can_appeal']:
+        return 'appeal', None
+    if st['state'] == 'met':
+        return None, 'This gate is already met'
+    if st['state'] == 'judging':
+        return None, 'Claude is still judging what was sent'
+    if st['state'] == 'upcoming':
+        return None, 'Its window has not opened yet'
+    if st['state'] == 'off':
+        return None, 'This gate was never committed, so it costs nothing and takes no proof'
+    return None, 'Its window and the hour to disagree are both over'
 
 
 # The entry point stays at the BOTTOM of the file, and that is load-bearing:

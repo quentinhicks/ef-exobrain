@@ -65,6 +65,18 @@ LEDGERS = {
         None,
         'storage.qr_delete_node',
         ''),
+    # Not ledger-shaped by NAME, so it is listed here to be held all the same
+    # (main() checks every table named in LEDGERS, suffix or not).
+    'plan_gate': (
+        'storage.plan_gate_put',
+        'storage.plan_gate_drop',
+        'storage.plan_gate_drop',
+        'qr_judge.plan_commit, on every look: a provisional row whose `!` line '
+        'is no longer in the plan for its day is dropped while its window has not '
+        'opened — the line edited away, the plan cleared (its owner going is a '
+        'source change, so the same drop is the cascade). A SEALED row is '
+        'never dropped or reconciled: it is the commitment, frozen on purpose '
+        'like qr_charge_log, and a PUT of the plan refuses to touch its line.'),
     'sheets_item_seed': (
         'storage.seed_sheets_items',
         'storage.seed_sheets_items',
@@ -112,7 +124,8 @@ def main():
         "SELECT name FROM sqlite_master WHERE type='table'"))
     conn.close()
 
-    candidates = [t for t in tables if any(t.endswith(s) for s in SUFFIXES)]
+    candidates = [t for t in tables if any(t.endswith(s) for s in SUFFIXES)
+                  or t in LEDGERS]
     fails = []
 
     for t in candidates:

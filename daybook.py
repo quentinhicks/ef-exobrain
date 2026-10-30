@@ -144,6 +144,8 @@ TITLES = {
     'block_override': 'Block changes',
     'day_block': 'Blocks for this day only',
     'day_plan': 'Plan written for the day',
+    'plan_gate': 'Photo gates — what each was held to, and judged',
+    'plan_gate_proof': 'Photo gate proofs and verdicts',
     'block_feedback': 'Block feedback',
     'daily_todo': 'Day plan',
     'daily_review': 'Daily review',

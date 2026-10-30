@@ -27,6 +27,7 @@ import storage
 import schedule
 import aggregator
 import coach
+import photo_judge
 import ntag
 import qr_judge
 import daybook
@@ -1647,7 +1648,87 @@ def day_plan_route(ymd):
     data = request.get_json(force=True) or {}
     if not isinstance(data.get('body'), str):
         return jsonify({'error': 'send the plan as body (text; blank clears it)'}), 400
-    return jsonify(storage.set_day_plan(ymd, data['body']))
+    # A `!` line is a PHOTO GATE: locked once its window opens, and committed
+    # by the same look that saves it (qr_judge, PHOTO GATES).
+    refusal = qr_judge.plan_lock_refusal(ymd, data['body'])
+    if refusal:
+        return jsonify({'error': refusal}), 409
+    plan = storage.set_day_plan(ymd, data['body'])
+    qr_judge.plan_commit(ymd)
+    return jsonify(plan)
+
+
+# PHOTO GATES (2026-10-30, Quentin's instruction): a `!` line in a day's plan,
+# cleared by photos Claude Code judges on the desktop (photo_judge.py). Every
+# answer about one is qr_judge's; these routes only carry it. Photos are files
+# in the data dir's gate-photos/, never the db. Nothing here is undoable: a
+# proof is a statement to the judge, like a scan.
+@app.route('/api/plan-gates')
+def get_plan_gates():
+    ymd = request.args.get('date') or date_cls.today().isoformat()
+    if not _YMD_RE.match(ymd):
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+    return jsonify(qr_judge.plan_gates_view(ymd))
+
+
+# THE PROOF IS HIS: an assistant may read a gate and may not send, judge or
+# silence one — a verdict from the session he can ask for one is no verdict.
+@app.route('/api/plan-gates/<int:id>/proof', methods=['POST'])
+def post_plan_gate_proof(id):
+    if _is_assistant_write():
+        return jsonify({'error': 'Only he sends proof for a gate'}), 403
+    data = request.get_json() or {}
+    kind, refusal = qr_judge.photo_proof_kind(storage.plan_gate_get(id))
+    if refusal:
+        return jsonify({'error': refusal}), 409
+    shots = [re.match(r'^data:([\w/+.-]+);base64,(.*)$', d or '', re.S)
+             for d in data.get('photos') or []]
+    if not all(m and m.group(1) in storage.VISION_TYPES for m in shots):
+        return jsonify({'error': 'Photos must be JPEG, PNG, WebP or GIF images'}), 400
+    comment = str(data.get('comment') or '').strip()[:2000]
+    if not shots and (kind == 'proof' or not comment):
+        return jsonify({'error': 'Paste a photo' + (' or say why' if kind == 'appeal' else '')}), 400
+    photos = [storage.save_photo(storage.GATE_PHOTO_DIR, base64.b64decode(m.group(2)), m.group(1))
+              for m in shots]
+    return jsonify({'id': storage.plan_gate_add_proof(id, kind, photos, comment), 'kind': kind})
+
+
+# The desktop judge's heartbeat: it says whether Claude Code is there, and is
+# handed what to judge and which failures to announce.
+@app.route('/api/plan-gates/judge', methods=['POST'])
+def post_photo_judge_poll():
+    if _is_assistant_write():
+        return jsonify({'error': 'The photo judge is not an assistant tool'}), 403
+    return jsonify(qr_judge.photo_judge_poll(bool((request.get_json() or {}).get('claude'))))
+
+
+@app.route('/api/plan-gates/proofs/<int:id>/verdict', methods=['POST'])
+def post_photo_verdict(id):
+    if _is_assistant_write():
+        return jsonify({'error': 'The photo judge is not an assistant tool'}), 403
+    data = request.get_json() or {}
+    if not isinstance(data.get('pass'), bool):
+        return jsonify({'error': 'send pass (true or false) and a reason'}), 400
+    refusal = qr_judge.photo_verdict_refusal(storage.plan_gate_proof_get(id))
+    if refusal or not storage.plan_gate_verdict(id, 'pass' if data['pass'] else 'fail',
+                                                str(data.get('reason') or '')[:2000]):
+        return jsonify({'error': refusal or 'This proof was already judged'}), 409
+    return jsonify({'ok': True})
+
+
+@app.route('/api/plan-gates/<int:id>/notified', methods=['POST'])
+def post_plan_gate_notified(id):
+    if _is_assistant_write():
+        return jsonify({'error': 'The photo judge is not an assistant tool'}), 403
+    storage.plan_gate_notified(id, str((request.get_json() or {}).get('key') or ''))
+    return jsonify({'ok': True})
+
+
+@app.route('/gate-photos/<name>')
+def gate_photo_file(name):
+    if not storage.VISION_NAME.match(name):
+        return jsonify({'error': 'No such photo'}), 404
+    return send_from_directory(os.path.abspath(storage.GATE_PHOTO_DIR), name)
 
 
 # Local snapshot only. Git is no longer a sync or backup layer for data: the
@@ -2399,8 +2480,23 @@ def get_gates_billing():
         'commitments': [dict(c, sealed=bool(c['sealed_at']),
                              label=labels.get(c['node_id'], f'gate {c["node_id"]}'))
                         for c in storage.qr_commitments_between(
-                            today.isoformat(), (today + timedelta(days=1)).isoformat())],
+                            today.isoformat(), (today + timedelta(days=1)).isoformat())]
+        + _plan_commitments(today),
+        # Claude Code on the desktop, which a photo gate's proof needs.
+        'photo_judge': qr_judge.photo_judge_status(),
     })
+
+
+# A photo gate still to be judged, in the shape the At stake list reads.
+def _plan_commitments(today):
+    clock = lambda m: '%02d:%02d' % divmod(m % 1440, 60)
+    return [{'date': g['date'], 'label': 'Photo · ' + g['title'],
+             'window_start': clock(g['start_min']), 'window_end': clock(g['end_min']),
+             'offset_days': g['end_min'] // 1440, 'staked_cents': g['staked_cents'],
+             'sealed': bool(g['sealed_at']), 'sealed_at': g['sealed_at']}
+            for g in storage.plan_gates_between(today.isoformat(),
+                                                (today + timedelta(days=1)).isoformat())
+            if g['charge_status'] is None]
 
 
 @app.route('/api/gates/billing', methods=['PATCH'])
@@ -3938,6 +4034,13 @@ def _coach_emit(evt):
         _main_window.evaluate_js('coachHear(%s)' % json.dumps(evt))
 
 
+# THE PHOTO JUDGE (photo_judge.py) runs here for the coach's reason; when it
+# has judged or announced something, the day on screen re-reads its gates.
+def _photo_emit():
+    if _main_window:
+        _main_window.evaluate_js('photoGatesHeard()')
+
+
 class WindowApi:
     # Underscored for the reason PanelApi's is: pywebview walks public attributes.
     _window = None
@@ -4349,6 +4452,7 @@ if __name__ == '__main__':
         panel_hidden = _panel_toggled_off()
 
     _coach = coach.Coach(base, _REPO_DIR, _coach_emit)
+    photo_judge.PhotoJudge(base, _photo_emit).start()
     main_api = WindowApi()
     main_window = webview.create_window(
         'Productivity Tracker',

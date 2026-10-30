@@ -241,7 +241,7 @@ function minutesSince(now, then) {
 // a photo. Everything else answers in well under a second or is not coming.
 let REQUEST_MS = 12000;      // `let`: a headless run shortens it rather than waiting it out
 const SLOW_REQUEST_MS = 90000;
-const SLOW_REQUEST = /\/api\/(gcal|sheets)\/refresh|\/api\/vision|\/api\/calendars/;
+const SLOW_REQUEST = /\/api\/(gcal|sheets)\/refresh|\/api\/vision|\/api\/calendars|\/api\/plan-gates\/\d+\/proof/;
 let lastStallToast = 0;
 
 (function limitRequests() {

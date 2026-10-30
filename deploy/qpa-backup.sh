@@ -62,6 +62,8 @@ TARGETS=("$STAGE/tracker.db")
 [ -d "$APP_DIR/daybook" ] && TARGETS+=("$APP_DIR/daybook")
 # vision/ holds the Vision horizon's photos — files, not rows.
 [ -d "$APP_DIR/vision" ] && TARGETS+=("$APP_DIR/vision")
+# gate-photos/ holds the photo gates' proofs — what each verdict was made on.
+[ -d "$APP_DIR/gate-photos" ] && TARGETS+=("$APP_DIR/gate-photos")
 [ -f "$APP_DIR/config.json" ] && TARGETS+=("$APP_DIR/config.json")
 
 # ── The escape hatch ────────────────────────────────────────────────────────
@@ -81,6 +83,7 @@ if [ ! -f "$ARCHIVE" ]; then
   [ -d "$APP_DIR/daybook" ] && ESCAPE_PATHS+=(daybook)
   # The Vision photos are files nothing else holds (backup_test).
   [ -d "$APP_DIR/vision" ] && ESCAPE_PATHS+=(vision)
+  [ -d "$APP_DIR/gate-photos" ] && ESCAPE_PATHS+=(gate-photos)
   tar czf "$STAGE/escape.tar.gz" \
       -C "$STAGE" tracker.db \
       -C "$APP_DIR" "${ESCAPE_PATHS[@]}" 2>/dev/null

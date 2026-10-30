@@ -135,7 +135,8 @@ os.makedirs('logs', exist_ok=True)
 open('logs/private.md', 'w').write('private')
 for path in ('/tracker.db', '/config.json', f'/backups/tracker-{TODAY}.db', '/backups/tracker.sql',
              '/logs/private.md', f'/daybook/{TODAY[:4]}/{TODAY}.md', '/static/../config.json',
-             '/static/..%2Fconfig.json', '/vision/..%2Fconfig.json', '/vision/../tracker.db'):
+             '/static/..%2Fconfig.json', '/vision/..%2Fconfig.json', '/vision/../tracker.db',
+             '/gate-photos/..%2Fconfig.json', '/gate-photos/../tracker.db'):
     r = client.get(path)
     leaked = r.status_code == 200 and (b'SQLite format' in r.data or b'private' in r.data
                                        or b'beeminder' in r.data or b'INSERT INTO' in r.data)
@@ -145,7 +146,7 @@ git = shutil.which('git')
 if git:
     for path in ('tracker.db', 'config.json', 'credentials.json', 'backups/tracker-2026-01-01.db',
                  'backups/tracker.sql', 'logs/x.md', 'daybook/2026/2026-01-01.md',
-                 'vision/20260101000000-abcdef.jpg'):
+                 'vision/20260101000000-abcdef.jpg', 'gate-photos/20260101000000-abcdef.jpg'):
         r = subprocess.run([git, 'check-ignore', '-q', path], cwd=REPO)
         check(f'git ignores {path}', r.returncode == 0)
 else:
@@ -162,11 +163,13 @@ promises = [
     ('restic gets logs/', 'TARGETS+=("$APP_DIR/logs")' in code),
     ('restic gets daybook/', 'TARGETS+=("$APP_DIR/daybook")' in code),
     ('restic gets vision/', 'TARGETS+=("$APP_DIR/vision")' in code),
+    ('restic gets gate-photos/', 'TARGETS+=("$APP_DIR/gate-photos")' in code),
     ('restic gets config.json', 'TARGETS+=("$APP_DIR/config.json")' in code),
     ('restic gets the escape archives', 'TARGETS+=("$ESCAPE_DIR")' in code),
     ('the escape archive is gpg AES256', '--symmetric --cipher-algo AES256' in code),
     ('the escape archive carries daybook/', 'ESCAPE_PATHS+=(daybook)' in code),
     ('the escape archive carries vision/', 'ESCAPE_PATHS+=(vision)' in code),
+    ('the escape archive carries gate-photos/', 'ESCAPE_PATHS+=(gate-photos)' in code),
     ('the escape archive is 0600', 'chmod 600 "$ARCHIVE"' in code),
     ('the unencrypted tarball is removed', 'rm -f "$STAGE/escape.tar.gz"' in code),
     ('a failed restic backup is reported as a failure', 'restic backup' in code

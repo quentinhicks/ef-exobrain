@@ -5818,6 +5818,69 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .eg-qr-failed .eg-swatch-gate::before { background: var(--gate-missed); }
 .eg-qr-partial .eg-swatch-gate::before { background: var(--gate-half); }
 
+/* A PHOTO GATE that needs him stands under the chip (2026-10-30): its window
+   is open, it is being judged, or the hour to disagree is running. The `!`
+   says Claude Code cannot be reached to judge it. */
+#engage-body .eg-pg-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 8px 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  /* --surface, not the chip's --surface-2: the red "not met" words measure
+     4.37:1 on that in light and 4.72:1 here. */
+  background: var(--surface);
+}
+.eg-pg-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.eg-pg-title { flex: 1; min-width: 0; font-size: 15px; color: var(--text-primary); }
+.eg-pg-words { font-size: 13px; color: var(--text-secondary); }
+.eg-pg-card.eg-qr-failed .eg-pg-words { color: var(--danger); }
+.eg-pg-warn { flex: none; font: 700 13px var(--font-mono); color: var(--danger); cursor: help; }
+.eg-pg-shots { display: flex; flex-wrap: wrap; gap: 8px; }
+.eg-pg-shots:empty { display: none; }
+.eg-pg-shot { position: relative; }
+.eg-pg-shot img { display: block; width: 64px; height: 64px; object-fit: cover; border-radius: 4px; }
+.eg-pg-unshot {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.eg-pg-note {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: 13px var(--font-ui);
+  resize: vertical;
+}
+.eg-pg-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.eg-pg-pick,
+.eg-pg-send {
+  padding: 6px 12px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 6px;
+  background: none;
+  color: var(--text-primary);
+  font: 13px var(--font-ui);
+  cursor: pointer;
+}
+.eg-pg-send { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.eg-pg-send:disabled { opacity: 0.6; cursor: default; }
+
 /* The agenda. */
 .eg-day-closed { display: none; }
 #engage-body .eg-day:not(:empty) { padding-bottom: 8px; border-bottom: none; }

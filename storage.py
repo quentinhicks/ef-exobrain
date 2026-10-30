@@ -1395,6 +1395,48 @@ def init_db():
             body       TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
         )''')
+    # A PHOTO GATE (2026-10-30, Quentin's instruction): a `!` line in a day's
+    # plan (day_plan.gate_lines), as committed. The plan's text is the source;
+    # this row is the commitment projected from it — written provisionally on
+    # every look before the window opens, SEALED at the first look after
+    # (qr_judge, THE COMMITMENT, the qr_commitment rule), then judged and
+    # frozen like qr_charge_log: charge_status NULL until then. Keyed by the
+    # window, so rewording a line before it opens is the same gate.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS plan_gate (
+            id             INTEGER PRIMARY KEY,
+            date           TEXT NOT NULL,
+            start_min      INTEGER NOT NULL,
+            end_min        INTEGER NOT NULL,
+            title          TEXT NOT NULL,
+            task           TEXT NOT NULL,
+            staked_cents   INTEGER,
+            checked_at     TEXT,
+            sealed_at      TEXT,
+            failure_reason TEXT,
+            charge_status  TEXT,
+            amount_cents   INTEGER,
+            charge_id      TEXT,
+            judged_at      TEXT,
+            notified       TEXT,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(date, start_min, end_min)
+        )''')
+    # What was sent to clear one, and what Claude said: 'proof' inside the
+    # window, 'appeal' in the hour after a failure. verdict NULL is waiting
+    # for the judge on the desktop; it is written once (plan_gate_verdict).
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS plan_gate_proof (
+            id         INTEGER PRIMARY KEY,
+            gate_id    INTEGER NOT NULL REFERENCES plan_gate(id),
+            kind       TEXT NOT NULL,
+            photos     TEXT NOT NULL,
+            comment    TEXT NOT NULL DEFAULT '',
+            verdict    TEXT,
+            reason     TEXT,
+            judged_at  TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS study_entry (
             node_id    INTEGER NOT NULL REFERENCES qr_node(id),
@@ -3236,7 +3278,8 @@ def _plan_block(names, it, offset):
         label += f" @ {it['loc']}"       # a place with no location row stays words
     return {'label': label, 'start': it['start'] + offset, 'end': it['end'] + offset,
             'color': _plan_color(colors, it), 'area_id': area_id, 'domain_id': domain_id,
-            'location_id': loc_id, 'notes': it['notes'], 'category': it['cat']}
+            'location_id': loc_id, 'notes': it['notes'], 'category': it['cat'],
+            'gate': it['gate']}
 
 
 # The plan's blocks, shaped like every other segment so each surface that
@@ -3292,6 +3335,142 @@ def set_day_plan(ymd, body):
     conn.commit()
     conn.close()
     return get_day_plan(ymd)
+
+
+# ── Photo gates (plan_gate / plan_gate_proof): the store only ──
+# What a row MEANS — committed, met, failed, appealable, owed — is
+# qr_judge.plan_gate_state, the one answer. Every write that decides
+# anything is guarded in its own WHERE, as qr_commitment's are.
+
+def plan_gates_on(ymd):
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM plan_gate WHERE date = ? ORDER BY start_min',
+                        (ymd,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def plan_gates_between(from_date, to_date):
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM plan_gate WHERE date >= ? AND date <= ? '
+                        'ORDER BY date, start_min', (from_date, to_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# Not yet judged: the rows the judge's ticks still settle.
+def plan_gates_open():
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM plan_gate WHERE charge_status IS NULL '
+                        'ORDER BY date, start_min').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def plan_gate_get(id):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM plan_gate WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def plan_gate_put(ymd, start, end, title, task, staked_cents, checked_at):
+    conn = get_conn()
+    conn.execute(
+        '''INSERT INTO plan_gate (date, start_min, end_min, title, task, staked_cents, checked_at)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(date, start_min, end_min) DO UPDATE SET
+             title = excluded.title, task = excluded.task,
+             staked_cents = excluded.staked_cents, checked_at = excluded.checked_at
+           WHERE plan_gate.sealed_at IS NULL AND plan_gate.charge_status IS NULL''',
+        (ymd, start, end, title, task, staked_cents, checked_at))
+    conn.commit()
+    conn.close()
+
+
+def plan_gate_seal(id, sealed_at, staked_cents):
+    conn = get_conn()
+    conn.execute('UPDATE plan_gate SET sealed_at = ?, staked_cents = ? '
+                 'WHERE id = ? AND sealed_at IS NULL AND charge_status IS NULL',
+                 (sealed_at, staked_cents, id))
+    conn.commit()
+    conn.close()
+
+
+# A line taken out of the plan before its window opened: its provisional
+# row goes. Never a sealed one, never a judged one.
+def plan_gate_drop(id):
+    conn = get_conn()
+    conn.execute('DELETE FROM plan_gate WHERE id = ? AND sealed_at IS NULL '
+                 'AND charge_status IS NULL', (id,))
+    conn.commit()
+    conn.close()
+
+
+def plan_gate_proofs(gate_id):
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM plan_gate_proof WHERE gate_id = ? ORDER BY id',
+                        (gate_id,)).fetchall()
+    conn.close()
+    return [dict(r, photos=json.loads(r['photos'])) for r in rows]
+
+
+def plan_gate_proof_get(id):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM plan_gate_proof WHERE id = ?', (id,)).fetchone()
+    conn.close()
+    return dict(row, photos=json.loads(row['photos'])) if row else None
+
+
+def plan_gate_add_proof(gate_id, kind, photos, comment):
+    conn = get_conn()
+    cur = conn.execute('INSERT INTO plan_gate_proof (gate_id, kind, photos, comment) '
+                       'VALUES (?,?,?,?)', (gate_id, kind, json.dumps(photos), comment or ''))
+    conn.commit()
+    id = cur.lastrowid
+    conn.close()
+    return id
+
+
+# ONCE: a verdict never changes. Returns whether this call wrote it.
+def plan_gate_verdict(proof_id, verdict, reason):
+    conn = get_conn()
+    cur = conn.execute("UPDATE plan_gate_proof SET verdict = ?, reason = ?, "
+                       "judged_at = datetime('now','localtime') "
+                       'WHERE id = ? AND verdict IS NULL', (verdict, reason, proof_id))
+    conn.commit()
+    won = cur.rowcount > 0
+    conn.close()
+    return won
+
+
+# THE RESERVATION, qr_reserve_judgment's rule: the gate is judged by
+# whichever call sets charge_status first, before anything acts on it.
+def plan_gate_reserve(id, failure_reason, charge_status, amount_cents):
+    conn = get_conn()
+    cur = conn.execute("UPDATE plan_gate SET failure_reason = ?, charge_status = ?, "
+                       "amount_cents = ?, judged_at = datetime('now','localtime') "
+                       'WHERE id = ? AND charge_status IS NULL',
+                       (failure_reason, charge_status, amount_cents, id))
+    conn.commit()
+    won = cur.rowcount > 0
+    conn.close()
+    return won
+
+
+def plan_gate_settle_charge(id, charge_status, charge_id, amount_cents):
+    conn = get_conn()
+    conn.execute('UPDATE plan_gate SET charge_status = ?, charge_id = ?, amount_cents = ? '
+                 'WHERE id = ?', (charge_status, charge_id, amount_cents, id))
+    conn.commit()
+    conn.close()
+
+
+def plan_gate_notified(id, key):
+    conn = get_conn()
+    conn.execute('UPDATE plan_gate SET notified = ? WHERE id = ?', (key, id))
+    conn.commit()
+    conn.close()
 
 
 def get_engage_day():
@@ -4599,16 +4778,28 @@ def vision_photos():
     return sorted(n for n in os.listdir(VISION_DIR) if VISION_NAME.match(n))
 
 
-def vision_add(data, mime, name=None):
+# A photo is a FILE in the data dir, never the db. ONE writer, shared by
+# Vision and the photo gates' proofs; None for anything not an image.
+def save_photo(folder, data, mime, name=None):
     ext = VISION_TYPES.get(mime)
     if not ext:
         return None
     if not (name and VISION_NAME.match(name) and name.endswith('.' + ext)
-            and not os.path.exists(os.path.join(VISION_DIR, name))):
+            and not os.path.exists(os.path.join(folder, name))):
         name = '%s-%s.%s' % (datetime.now().strftime('%Y%m%d%H%M%S'), uuid.uuid4().hex[:6], ext)
-    os.makedirs(VISION_DIR, exist_ok=True)
-    with open(os.path.join(VISION_DIR, name), 'wb') as f:
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, name), 'wb') as f:
         f.write(data)
+    return name
+
+
+GATE_PHOTO_DIR = 'gate-photos'
+
+
+def vision_add(data, mime, name=None):
+    name = save_photo(VISION_DIR, data, mime, name)
+    if not name:
+        return None
     # VISION IS ONE PHOTO (2026-10-19): the new one replaces what was there.
     for old in vision_photos():
         if old != name:
@@ -8059,11 +8250,17 @@ def qr_weekly_spent_cents(through_date):
     # A rolling 7 local days ending on through_date.
     since = (date_cls.fromisoformat(through_date) - timedelta(days=6)).isoformat()
     conn = get_conn()
+    # THE CAP IS GLOBAL: a photo gate's charges count against it beside the
+    # gates', and theirs against a photo gate's.
     rows = conn.execute(
         '''SELECT amount_cents FROM qr_charge_log
            WHERE date >= ? AND date <= ?
+             AND charge_status IN ('succeeded', 'charging', 'unknown')
+           UNION ALL
+           SELECT amount_cents FROM plan_gate
+           WHERE date >= ? AND date <= ?
              AND charge_status IN ('succeeded', 'charging', 'unknown')''',
-        (since, through_date)).fetchall()
+        (since, through_date, since, through_date)).fetchall()
     conn.close()
     return sum(int(r['amount_cents'] or 0) for r in rows)
 

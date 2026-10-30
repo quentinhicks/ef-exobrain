@@ -1262,7 +1262,9 @@ function renderDayPlanSheet(p) {
     <div class="dp-hint">One line per block: a time range, an optional category before a colon, then what.
       Indent a line to nest it; start a line with * to write it inside the block above. The plan takes the
       hours it names and the day's other blocks stay around it, and a calendar event it overlaps is hidden.
-      Wrap lines in ~~ … ~~ to cross them out: they draw nothing, and the hours stay clear.</div>
+      Wrap lines in ~~ … ~~ to cross them out: they draw nothing, and the hours stay clear.
+      Start a line with ! to make it a photo gate (!12-12:10 Photo of Q1–4 on paper): send photos in that
+      window from Now, Claude judges them, and the line locks when the window opens.</div>
     <div class="dp-skipped" id="dp-skipped"></div>
     <button class="dp-clear" id="dp-clear">Clear plan and restore blocks</button>`;
   const ta = sheet.querySelector('#dp-text');
@@ -1289,7 +1291,9 @@ async function saveDayPlan(d, body) {
   const mine = dayPlanSheet.date === d;
   if (!res || !res.ok) {
     if (mine) dayPlanSheet.failed = true;
-    toast('Could not save the plan — it is still in the box');
+    // A refusal says why (a photo gate's line locks when its window opens).
+    const why = res ? (await res.json().catch(() => ({}))).error : null;
+    toast(why ? `${why} — the plan is still in the box` : 'Could not save the plan — it is still in the box');
     return;
   }
   const p = await res.json();
@@ -9596,7 +9600,7 @@ document.addEventListener('DOMContentLoaded', () => {
     flushOpenNotes();
   });
   loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); initRoutes(); coachLoad(); });
-  setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); coachTick(); }, 60000);
+  setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); coachTick(); pgTick(); }, 60000);
 });
 
 // ── THE COACH (2026-10-22, Quentin's instruction) ────────────
@@ -11504,10 +11508,12 @@ function visionSize() {
   return { w: 1920, h: Math.round(1920 * h / Math.max(1, w)) };
 }
 
-// Cropped from the middle to the page's proportions and reduced to 1920
-// wide when it is larger — never enlarged. A GIF is left as it is: a canvas
-// would keep one frame.
-async function fitVisionPhoto(file) {
+// ONE photo fitter. `size` {w, h}: cropped from the middle to those
+// proportions and reduced to w wide when larger (Vision). `size` {max}: kept
+// whole, its long edge reduced to max, as a JPEG (a gate's proof — what the
+// judge reads well and the upload carries quickly). Never enlarged. A GIF is
+// left as it is: a canvas would keep one frame.
+async function fitPhoto(file, size) {
   const data = await readDataUrl(file);
   if (!data || file.type === 'image/gif') return data;
   const img = await new Promise(res => {
@@ -11517,16 +11523,16 @@ async function fitVisionPhoto(file) {
     im.src = data;
   });
   if (!img) return data;
-  const { w, h } = visionSize();
-  const sw = Math.min(img.naturalWidth, img.naturalHeight * w / h);
-  const sh = sw * h / w;
-  const scale = Math.min(1, w / sw);
+  const { w, h, max } = size;
+  const sw = max ? img.naturalWidth : Math.min(img.naturalWidth, img.naturalHeight * w / h);
+  const sh = max ? img.naturalHeight : sw * h / w;
+  const scale = Math.min(1, max ? max / Math.max(sw, sh) : w / sw);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(sw * scale);
   canvas.height = Math.round(sh * scale);
   canvas.getContext('2d').drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) / 2,
     sw, sh, 0, 0, canvas.width, canvas.height);
-  const type = /^image\/(png|jpeg|webp)$/.test(file.type) ? file.type : 'image/png';
+  const type = max ? 'image/jpeg' : /^image\/(png|jpeg|webp)$/.test(file.type) ? file.type : 'image/png';
   return canvas.toDataURL(type, 0.92);
 }
 
@@ -11543,7 +11549,7 @@ async function addVisionPhoto(file) {
   if (!file || !/^image\//.test(file.type)) { toast('That is not an image'); return; }
   const prev = (state.vision || [])[0];
   const prevData = prev && await visionSnapshot(prev);
-  const res = await apiSendData('/api/vision', 'POST', { data: await fitVisionPhoto(file) });
+  const res = await apiSendData('/api/vision', 'POST', { data: await fitPhoto(file, visionSize()) });
   if (!res.ok) { toast(res.data.error || 'Could not add that photo'); return; }
   const name = res.data.name;
   pushUndo(prev ? 'replaced the photo' : 'added a photo', async () => {
@@ -13836,7 +13842,11 @@ const engageView = { placements: [], pool: [], allItems: [], overrides: [],
                      dragId: null,
                      // Which routine's details card is open (area id). Session
                      // state; survives the re-render a checkoff triggers.
-                     routinePop: null };
+                     routinePop: null,
+                     // The viewed day's photo gates and whether their judge is
+                     // reachable (GET /api/plan-gates), and the photos and
+                     // note being made for each — half-made proof is data.
+                     planGates: { gates: [], judge: { online: true } }, pgDraft: {} };
 
 function initUndo() {
   document.addEventListener('keydown', e => {
@@ -13963,7 +13973,7 @@ async function refreshEngage() {
   // and a network drop must not blank the day that is already rendered. See the
   // note on loadAll.
   const [placements, futurePlaced, pool, all, overrides, daySegments, routineItems,
-         schedules, deferred] = await Promise.all([
+         schedules, deferred, planGates] = await Promise.all([
     apiGet(`/api/engage/placements?date=${dateStr}`, engageView.placements),
     // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
     // shows what still NEEDS a day, and these have one).
@@ -13981,6 +13991,7 @@ async function refreshEngage() {
     // Everything parked on a future date, unfiltered — walking the calendar
     // then costs no round trip, same as the pool.
     apiGet('/api/inbox/deferred', engageView.deferred),
+    apiGet(`/api/plan-gates?date=${dateStr}`, engageView.planGates),
   ]);
   // A write that started while these reads were out is not in them: drawing
   // them would put a just-completed row back, or drop a just-added one. That
@@ -13995,6 +14006,7 @@ async function refreshEngage() {
   engageView.routineItems = routineItems;
   state.schedules = Array.isArray(schedules) ? schedules : [];
   engageView.deferred = Array.isArray(deferred) ? deferred : [];
+  engageView.planGates = planGates;
   renderEngage();
 }
 
@@ -14097,6 +14109,150 @@ function engagePoolGates(nowMin, isToday) {
            tagLoc, tagDev, tagTime, gateOn };
 }
 
+// ── PHOTO GATES (2026-10-30, Quentin's instruction) ──
+// A `!` line in the day's plan, cleared by photos Claude Code judges on the
+// desktop. WHERE ONE STANDS IS SERVED (qr_judge.plan_gate_state): these only
+// put it in words. The card stands under the chip while one needs him — its
+// window is open, it is being judged, or it failed and the hour to disagree
+// is running — on any device: a finger picks photos, a desktop pastes them.
+// Sending is NOT undoable: a proof is a statement to the judge, like a scan.
+const PG_FINAL = ['met', 'missed', 'off'];
+const PG_AWAY = 'Claude Code is not reachable on your PC, so photos cannot be judged — '
+  + 'and a gate whose photos are not judged fails.';
+
+function pgUnjudgeable(g) {
+  return !engageView.planGates.judge.online && !PG_FINAL.includes(g.state);
+}
+
+function pgNeedsYou(g) {
+  return g.can_prove || g.can_appeal || g.state === 'judging';
+}
+
+function pgOutcome(g) {
+  return g.state === 'met' ? ' eg-qr-success'
+    : g.state === 'failed' || g.state === 'missed' ? ' eg-qr-failed' : '';
+}
+
+function pgMark(g) {
+  if (g.state === 'met') return '<span class="eg-qr-tick">✓</span>';
+  return pgUnjudgeable(g) ? `<span class="eg-pg-warn" title="${escHtml(PG_AWAY)}">!</span>` : '';
+}
+
+function pgReason(g) {
+  return { absent: 'no photos were sent in its window',
+           unjudged: 'Claude Code could not judge the photos in time' }[g.reason] || g.reason || '';
+}
+
+function pgWords(g) {
+  const at = iso => (iso || '').slice(11, 16);
+  switch (g.state) {
+    case 'upcoming': return `Photo gate — send photos that show it done between ${at(g.opens)} and ${at(g.closes)}.`;
+    case 'open': return `Send photos that show it done, by ${at(g.closes)}.`;
+    case 'judging': return 'Claude is judging the photos…';
+    case 'met': return g.reason ? `Met — ${g.reason}` : 'Met.';
+    case 'off': return 'Not a commitment: it was not seen before its window opened, so it costs nothing.';
+    case 'missed': return `Missed — ${pgReason(g)}.${g.charge_status === 'would_fire' || !g.staked_cents
+      ? ' Nothing was at stake.' : ''}`;
+  }
+  return g.can_appeal
+    ? `Not met — ${pgReason(g)}. You can disagree until ${at(g.appeal_until)}: say why, with photos if they help.`
+    : `Not met — ${pgReason(g)}. Send more photos by ${at(g.closes)}.`;
+}
+
+function pgShotsHtml(d) {
+  return d.photos.map((p, i) => `<span class="eg-pg-shot"><img src="${p}" alt="">
+    <button class="eg-pg-unshot" data-i="${i}" title="Take this photo out">×</button></span>`).join('');
+}
+
+function pgCardHtml(g) {
+  const d = engageView.pgDraft[g.id] || { photos: [], note: '' };
+  const open = g.can_prove || g.can_appeal;
+  return `<div class="eg-pg-card${pgOutcome(g)}" data-pg="${g.id}">
+    <div class="eg-pg-head"><span class="eg-swatch eg-swatch-gate"></span>
+      <span class="eg-pg-title">${escHtml(g.title)}</span>${pgMark(g)}</div>
+    <div class="eg-pg-words">${escHtml(pgWords(g))}</div>
+    ${open ? `<div class="eg-pg-shots">${pgShotsHtml(d)}</div>
+    <textarea class="eg-pg-note" rows="2" placeholder="${g.can_appeal
+      ? 'Why the verdict is wrong — paste photos here too' : 'Paste photos here — and a note for the judge'}">${escHtml(d.note)}</textarea>
+    <div class="eg-pg-actions">
+      <label class="eg-pg-pick">Add photos<input type="file" accept="image/*" multiple hidden></label>
+      <button class="eg-pg-send">${g.can_appeal ? 'Disagree' : 'Send'}</button>
+    </div>` : ''}
+  </div>`;
+}
+
+// Photos are staged in place — a repaint is held off while the note has the
+// focus — so a paste never costs the note or the photos before it.
+function wirePgCard(card) {
+  const id = Number(card.dataset.pg);
+  const note = card.querySelector('.eg-pg-note');
+  if (!note) return;
+  const draft = engageView.pgDraft[id] = engageView.pgDraft[id] || { photos: [], note: '' };
+  const paint = () => {
+    const box = card.querySelector('.eg-pg-shots');
+    box.innerHTML = pgShotsHtml(draft);
+    box.querySelectorAll('.eg-pg-unshot').forEach(b => b.addEventListener('click', () => {
+      draft.photos.splice(Number(b.dataset.i), 1);
+      paint();
+    }));
+  };
+  const stage = async files => {
+    for (const f of files) {
+      if (!f.type.startsWith('image/')) continue;
+      const data = await fitPhoto(f, { max: 1568 });
+      if (data) draft.photos.push(data);
+    }
+    paint();
+  };
+  const images = list => [...(list || [])].filter(f => f.type.startsWith('image/'));
+  paint();
+  note.addEventListener('input', () => { draft.note = note.value; });
+  card.addEventListener('paste', e => {
+    const files = images(e.clipboardData && e.clipboardData.files);
+    if (!files.length) return;
+    e.preventDefault();
+    stage(files);
+  });
+  card.addEventListener('dragover', e => e.preventDefault());
+  card.addEventListener('drop', e => {
+    const files = images(e.dataTransfer && e.dataTransfer.files);
+    if (!files.length) return;
+    e.preventDefault();
+    stage(files);
+  });
+  const pick = card.querySelector('.eg-pg-pick input');
+  pick.addEventListener('change', () => { stage(images(pick.files)); pick.value = ''; });
+  card.querySelector('.eg-pg-send').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    const res = await apiSendData(`/api/plan-gates/${id}/proof`, 'POST',
+      { photos: draft.photos, comment: draft.note.trim() });
+    btn.disabled = false;
+    // Refused or not sent: the photos and the note stay where they are.
+    if (!res.ok) { toast(res.data.error || 'Not sent'); return; }
+    delete engageView.pgDraft[id];
+    note.blur();
+    await refreshPlanGates();
+  });
+}
+
+async function refreshPlanGates() {
+  engageView.planGates = await apiGet(`/api/plan-gates?date=${egDateStr()}`, engageView.planGates);
+  renderEngage();
+}
+
+// The 60s tick: a gate opens, closes and is judged by the clock and the
+// desktop, so while one of today's is still moving the day re-reads them.
+function pgTick() {
+  if (engageView.date) return;
+  if (engageView.planGates.gates.some(g => !PG_FINAL.includes(g.state))) refreshPlanGates();
+}
+
+// The desktop's photo judge has judged or announced something (app.py).
+function photoGatesHeard() {
+  refreshPlanGates();
+}
+
 // THE DAY'S FIXED POINTS — everything that already has a time on it, in one
 // list of semantic minutes: gates and the routines they gate, blocks, routine
 // areas, calendar events, and the actions placed between them.
@@ -14139,7 +14295,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   // The same served answer the timeline draws (viewSegmentsFor), so the two
   // cannot disagree about which blocks a day has. Yesterday's overnight tail
   // (a negative start) is skipped here: Engage lists the day's own commitments.
-  drawnSegments(viewSegmentsFor(dateStr)).filter(s => s.start >= 0).forEach(s => {
+  drawnSegments(viewSegmentsFor(dateStr)).filter(s => s.start >= 0 && !s.gate).forEach(s => {
     const seg = { minute: s.start, endMin: s.end, id: s.block_id, dayBlockId: s.day_block_id,
                   planDate: s.plan_date, label: s.label, cancelled: !!s.cancelled, color: s.color };
     if (routineAreaIds.has(s.area_id)) {
@@ -14197,6 +14353,12 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
     placedIds.add(item.id);
     rows.push({ kind: 'action', minute: p.minute, id: item.id, label: item.content,
                 started: !!item.started_at });
+  });
+
+  // A PHOTO GATE is a `!` line in the plan, nested or not: its own row at its
+  // window, in the gate's vocabulary, standing in for the block it draws as.
+  engageView.planGates.gates.filter(g => g.date === dateStr).forEach(g => {
+    rows.push({ kind: 'pgate', minute: g.start_min, endMin: g.end_min, gate: g, label: g.title });
   });
 
   rows.sort((a, b) => a.minute - b.minute || (a.kind === 'action') - (b.kind === 'action'));
@@ -14362,6 +14524,7 @@ function renderEngage() {
   // repaints from timers and focus would destroy the field. Its own finish
   // drops the mark before it repaints.
   if (document.activeElement && document.activeElement.classList.contains('eg-renaming')) return;
+  if (document.activeElement && document.activeElement.classList.contains('eg-pg-note')) return;
 
   const now = new Date();
   const dateStr = egDateStr();
@@ -14417,6 +14580,18 @@ function renderEngage() {
         <span class="eg-swatch eg-swatch-gate"></span>
         <span class="eg-text eg-qr-label">${escHtml(r.label)}</span>
         ${r.outcome === 'success' ? '<span class="eg-qr-tick">✓</span>' : ''}
+      </div>`;
+    }
+    if (r.kind === 'pgate') {
+      // Its door is the plan it was written in.
+      const g = r.gate;
+      return `<div class="eg-row eg-qr${pgOutcome(g)}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
+        data-obj="plan:${g.date}" data-obj-tap="1" title="${escHtml(pgWords(g))}">
+        <span class="eg-time">${hhmm(r.minute)}</span>
+        <span class="eg-swatch eg-swatch-gate"></span>
+        <span class="eg-text eg-qr-label">${escHtml(g.title)}</span>
+        ${pgMark(g)}
+        <span class="eg-end">${hhmm(r.endMin)}</span>
       </div>`;
     }
     if (r.kind === 'block') {
@@ -14561,7 +14736,7 @@ function renderEngage() {
   // and a tap opens the whole agenda — the same rows, gaps and doors as ever.
   // A per-viewer convenience, so it is remembered in localStorage (the
   // private-mode desktop window forgets it, which only means it starts shut).
-  const nowRow = rows.find(r => (r.kind === 'block' || r.kind === 'routine')
+  const nowRow = rows.find(r => (r.kind === 'block' || r.kind === 'routine' || r.kind === 'pgate')
     && !r.cancelled && isNow(r));
   const chipLabel = nowRow ? nowRow.label : isToday ? 'Free' : 'The day';
   const agendaOpen = egAgendaOpen();
@@ -14570,6 +14745,8 @@ function renderEngage() {
       <span class="eg-swatch ${nowRow ? 'eg-swatch-block' : 'eg-swatch-free'}"${
         nowRow ? ` style="--block-color:${escHtml(nowRow.color || '#888888')}"` : ''}></span>
       <span class="eg-now-name">${escHtml(chipLabel)}</span>
+      ${isToday && engageView.planGates.gates.some(pgUnjudgeable)
+        ? `<span class="eg-pg-warn" title="${escHtml(PG_AWAY)}">!</span>` : ''}
       <svg class="eg-now-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
     </button>`;
@@ -14586,6 +14763,7 @@ function renderEngage() {
   main.innerHTML = `
     <div class="eg-side">
       ${chipHtml}
+      ${isToday ? engageView.planGates.gates.filter(pgNeedsYou).map(pgCardHtml).join('') : ''}
       <div class="eg-day${agendaOpen ? '' : ' eg-day-closed'}">${parts.join('')}</div>
     </div>
     <div class="eg-list">
@@ -14611,6 +14789,7 @@ function renderEngage() {
     </div>
   `;
   egCursorSync();
+  main.querySelectorAll('.eg-pg-card').forEach(wirePgCard);
   main.querySelector('#eg-agenda-btn').addEventListener('click', () => {
     setEgAgendaOpen(!egAgendaOpen());
     renderEngage();

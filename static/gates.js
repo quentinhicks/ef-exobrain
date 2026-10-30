@@ -390,6 +390,11 @@ function renderMoney() {
     + '<h3>The locks, in the order they are checked</h3>'
     + row(mark(!judgeStale(b.judge_last_run)), 'The judge', escHtml(agoLabel(b.judge_last_run)),
       'Runs on the server every few minutes and freezes each finished day. Stale = nothing is being decided.')
+    + row(mark(b.photo_judge && b.photo_judge.online), 'Photo judge',
+      b.photo_judge && b.photo_judge.online ? 'Claude Code is reachable'
+        : `not reachable${b.photo_judge && b.photo_judge.seen_at ? ` — last heard ${escHtml(agoLabel(b.photo_judge.seen_at))}` : ''}`,
+      'Claude Code on your PC judges the photos for a ! line in a day\'s plan. While it cannot be reached, '
+        + 'photos are not judged — and a photo gate whose photos are not judged fails.')
     + row(mark(!!b.armed_at, !b.armed_at), 'Armed',
       b.armed_at ? `since ${escHtml(stamp(b.armed_at))}` : 'no',
       'The one switch. Only this page\'s Live button arms it, and the time is recorded.')

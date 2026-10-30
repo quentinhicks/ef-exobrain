@@ -62,6 +62,34 @@ READS = {
         'schedule_source — a gate\'s source change runs through '
         'schedule.demands_less and pends if looser.',
 
+    # ── photo gates (2026-10-30): a `!` line in a day's plan ──
+    'get_day_plan':
+        'day_plan — his text, written through PUT /api/day-plan, which refuses '
+        'any save that adds, removes, crosses out, moves or rewords a `!` line '
+        'whose window has opened (qr_judge.plan_lock_refusal over '
+        'day_plan.locked_change). Before it opens the text is free, and the '
+        'judge reads it only to write a PROVISIONAL row; what is sealed at the '
+        'opening is what is judged.',
+    'plan_gate_proofs':
+        'plan_gate_proof — the photos are his, taken only inside the window or '
+        'the hour after a failure (qr_judge.photo_proof_kind, decided here on '
+        'this box\'s clock). The VERDICT is the desktop judge\'s (photo_judge.py, '
+        'Claude Code): written ONCE (plan_gate_verdict guards verdict IS NULL), '
+        'only inside PHOTO_JUDGE_GRACE_MIN of the proof (photo_verdict_refusal), '
+        'and never by the assistant (the route refuses X-QPA-Actor). The honest '
+        'weak spot, stated: the route has no auth, so a verdict is believed '
+        'from whoever on the LAN posts it first — the honor system the link '
+        'gates already run on. A missing verdict fails the gate; nothing '
+        'defaults to a pass.',
+    'plan_gate_get': 'the judge\'s own photo-gate rows, read back.',
+    'plan_gates_on': 'the judge\'s own photo-gate rows, read back.',
+    'plan_gates_open': 'the judge\'s own photo-gate rows — what is still to settle.',
+    'plan_gate_put': 'written BY the judge before a window opens; refuses a sealed row in its own WHERE.',
+    'plan_gate_seal': 'written BY the judge at the first look after the window opens.',
+    'plan_gate_drop': 'written BY the judge; refuses a sealed or judged row in its own WHERE.',
+    'plan_gate_reserve': 'written BY the judge; the guarded UPDATE is the lock.',
+    'plan_gate_settle_charge': 'written BY the judge, after the API call.',
+
     # ── a change dated forward (2026-08-17) ──
     'effective_date_for':
         'not data — the ONE rounding rule turning "when does this land" into '
