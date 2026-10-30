@@ -2605,8 +2605,10 @@ async function refreshCalWeek() {
       fill('overrides', r => (r && Array.isArray(r.overrides) ? r.overrides : null))(rows);
       fill('plan', r => (r && r.plan && typeof r.plan.body === 'string' ? r.plan : null))(rows);
     }),
-    apiGet(`/api/gates/days?${range}`, null).then(byDate)
-      .then(fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))),
+    apiGet(`/api/gates/days?${range}`, null).then(byDate).then(rows => {
+      fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))(rows);
+      fill('plan_gates', (r, d) => (r && r.date === d && Array.isArray(r.plan_gates) ? r.plan_gates : null))(rows);
+    }),
     refreshCalTasks(start),
   ]);
   // A lit-up category's count is of these segments, so it is re-counted.
@@ -2843,6 +2845,14 @@ function renderCalWeek() {
           data-wk="gate" data-node="${g.node_id}" data-date="${d}" data-obj="gate:${g.node_id}"
           data-obj-date="${d}" title="${escHtml(`${g.label} · ${say} ${hhmmToAmPm(clockHHMM(g.window.end_min))}`)}"
           style="top:${y(g.window.end_min) - 7}px">${mark}</button>`;
+      }).join('') + ((calWeek.days[d] || {}).plan_gates || [])
+      .filter(g => g.end_min >= start && g.end_min <= end).map(g => {
+        // A PHOTO GATE (a `!` line in the plan): the same mark at its close,
+        // in the same words. Its door is the plan; no drag - its line is its
+        // one editor.
+        return `<button class="wk-gate wk-gate-${pgCalState(g)}" data-obj="plan:${d}" data-obj-date="${d}"
+          title="${escHtml(`${g.title} · photo gate · ${pgWords(g)}`)}"
+          style="top:${y(g.end_min) - 7}px"><span class="wk-gate-dot"></span></button>`;
       }).join('');
 
     const nowLine = d === today && nowMin >= start && nowMin <= end
@@ -14128,6 +14138,13 @@ function pgNeedsYou(g) {
   return g.can_prove || g.can_appeal || g.state === 'judging';
 }
 
+// The calendar's four words for one: met, missed, called off (never
+// committed), or still due.
+function pgCalState(g) {
+  return g.state === 'met' ? 'met' : g.state === 'failed' || g.state === 'missed' ? 'missed'
+    : g.state === 'off' ? 'off' : 'open';
+}
+
 function pgOutcome(g) {
   return g.state === 'met' ? ' eg-qr-success'
     : g.state === 'failed' || g.state === 'missed' ? ' eg-qr-failed' : '';
@@ -14295,7 +14312,7 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
   // The same served answer the timeline draws (viewSegmentsFor), so the two
   // cannot disagree about which blocks a day has. Yesterday's overnight tail
   // (a negative start) is skipped here: Engage lists the day's own commitments.
-  drawnSegments(viewSegmentsFor(dateStr)).filter(s => s.start >= 0 && !s.gate).forEach(s => {
+  drawnSegments(viewSegmentsFor(dateStr)).filter(s => s.start >= 0).forEach(s => {
     const seg = { minute: s.start, endMin: s.end, id: s.block_id, dayBlockId: s.day_block_id,
                   planDate: s.plan_date, label: s.label, cancelled: !!s.cancelled, color: s.color };
     if (routineAreaIds.has(s.area_id)) {
@@ -14355,10 +14372,10 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
                 started: !!item.started_at });
   });
 
-  // A PHOTO GATE is a `!` line in the plan, nested or not: its own row at its
-  // window, in the gate's vocabulary, standing in for the block it draws as.
+  // A PHOTO GATE is a `!` line in the plan, nested or not: a gate, not a
+  // block - its row stands where a gate's does, at its window's close.
   engageView.planGates.gates.filter(g => g.date === dateStr).forEach(g => {
-    rows.push({ kind: 'pgate', minute: g.start_min, endMin: g.end_min, gate: g, label: g.title });
+    rows.push({ kind: 'pgate', minute: g.end_min, endMin: g.end_min, gate: g });
   });
 
   rows.sort((a, b) => a.minute - b.minute || (a.kind === 'action') - (b.kind === 'action'));
@@ -14585,13 +14602,12 @@ function renderEngage() {
     if (r.kind === 'pgate') {
       // Its door is the plan it was written in.
       const g = r.gate;
-      return `<div class="eg-row eg-qr${pgOutcome(g)}${r.endMin <= nowMin ? ' eg-past' : ''}${isNow(r) ? ' eg-now' : ''}"${nowAttrs(r)}
+      return `<div class="eg-row eg-qr${pgOutcome(g)}"
         data-obj="plan:${g.date}" data-obj-tap="1" title="${escHtml(pgWords(g))}">
         <span class="eg-time">${hhmm(r.minute)}</span>
         <span class="eg-swatch eg-swatch-gate"></span>
         <span class="eg-text eg-qr-label">${escHtml(g.title)}</span>
         ${pgMark(g)}
-        <span class="eg-end">${hhmm(r.endMin)}</span>
       </div>`;
     }
     if (r.kind === 'block') {
@@ -14736,7 +14752,7 @@ function renderEngage() {
   // and a tap opens the whole agenda — the same rows, gaps and doors as ever.
   // A per-viewer convenience, so it is remembered in localStorage (the
   // private-mode desktop window forgets it, which only means it starts shut).
-  const nowRow = rows.find(r => (r.kind === 'block' || r.kind === 'routine' || r.kind === 'pgate')
+  const nowRow = rows.find(r => (r.kind === 'block' || r.kind === 'routine')
     && !r.cancelled && isNow(r));
   const chipLabel = nowRow ? nowRow.label : isToday ? 'Free' : 'The day';
   const agendaOpen = egAgendaOpen();

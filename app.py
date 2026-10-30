@@ -3077,7 +3077,9 @@ def gates_days():
     now = datetime.now()
     with storage.read_scope():
         nodes = storage.qr_get_nodes()
-        return jsonify({d: {'date': d, 'gates': [_gate_day_payload(n, d, now) for n in nodes]}
+        # A `!` line in a day's plan is a gate too (qr_judge, PHOTO GATES).
+        return jsonify({d: {'date': d, 'gates': [_gate_day_payload(n, d, now) for n in nodes],
+                            'plan_gates': qr_judge.plan_gates_read(d)}
                         for d in dates})
 
 

@@ -1279,12 +1279,17 @@ def _plan_view(g, now):
                                          'reason', 'created_at', 'judged_at')} for p in proofs]}
 
 
+def plan_gates_read(ymd, now=None):
+    """A date's photo gates as the app draws them, as they stand - no look."""
+    now = now or datetime.now()
+    return [_plan_view(g, now) for g in storage.plan_gates_on(ymd)]
+
+
 def plan_gates_view(ymd, now=None):
-    """A date's photo gates as the app draws them, after a look (plan_commit)."""
+    """The same after a look (plan_commit), with the judge's reachability."""
     now = now or datetime.now()
     plan_commit(ymd, now)
-    return {'gates': [_plan_view(g, now) for g in storage.plan_gates_on(ymd)],
-            'judge': photo_judge_status(now)}
+    return {'gates': plan_gates_read(ymd, now), 'judge': photo_judge_status(now)}
 
 
 def photo_judge_poll(claude, now=None):

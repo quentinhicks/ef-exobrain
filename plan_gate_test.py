@@ -152,7 +152,34 @@ check('the judge reads the line (with the category it inherits), its notes and i
                                    'Inside the block: COS333: Problem set\n- questions 1-4',
       lines[(710, 720)]['task'])
 items = day_plan.parse(PLAN)['items']
-check('a gate is still a block on the day', items[1]['title'] == 'Inbox zero' and items[1]['gate'])
+check('a nested gate does not stretch its block (9-11:50 stays 9-11:50)',
+      (items[0]['start'], items[0]['end']) == (540, 710), items[0])
+
+# A gate is NOT a block: it draws as a gate, takes no hours, hides no event.
+conn = storage.get_conn()
+conn.execute('INSERT INTO recurring_block (label, color, day_of_week, start_time, end_time) '
+             "VALUES ('deep work', '#5f7f54', 1, '13:00', '16:00')")       # 2031-03-04 is a Tuesday
+conn.execute("INSERT INTO calendar_source (name, url, color) VALUES ('Mine', 'x', '#888888')")
+# The calendar is read around the REAL today, so the event-cover check uses it.
+SOON = (datetime.now() + timedelta(days=3)).date().isoformat()
+conn.execute("INSERT INTO gcal_event (uid, summary, start, end, allday, source_id) "
+             "VALUES ('e1', 'Call', ?, ?, 0, 1)", (SOON + 'T14:00:00', SOON + 'T14:30:00'))
+conn.commit()
+conn.close()
+storage.set_day_plan('2031-03-04', PLAN)
+segs = storage.block_segments_for('2031-03-04')
+check('a `!` line draws no block, nested or not',
+      not any(s['label'] in ('Inbox zero', 'Photo of Q1-4 written out') for s in segs)
+      and not any(k['label'] == 'Photo of Q1-4 written out' for s in segs for k in s.get('kids', [])),
+      [s['label'] for s in segs])
+check('...and takes no hours: the week stays whole around it',
+      [(s['start'], s['end']) for s in segs if s['label'] == 'deep work'] == [(780, 960)],
+      [(s['label'], s['start'], s['end']) for s in segs])
+storage.set_day_plan('2031-03-04', '')
+storage.set_day_plan(SOON, '!1:50-2:10 Gate over the call')
+check('...and hides no event', storage.get_gcal_events()[0]['plan_covered'] is False,
+      storage.get_gcal_events())
+storage.set_day_plan(SOON, '')
 
 # ── 2 + 3. the lock, and the commitment it is written with ──
 at('09:00')
@@ -204,6 +231,9 @@ check('a proof inside the window is taken, as a proof', r.status_code == 200 and
 check('its photo is a file in gate-photos/, served back',
       client.get('/gate-photos/' + storage.plan_gate_proof_get(p1)['photos'][0]).status_code == 200)
 check('the day reads it as judging', view(710)['state'] == 'judging', view(710))
+cal = client.get(f'/api/gates/days?from={D}&to={D}').get_json()[D]['plan_gates']
+check("the calendar's gate read carries it, at its window, in the same words",
+      [(g['end_min'], g['state']) for g in cal] == [(720, 'judging'), (850, 'upcoming')], cal)
 
 work = client.post('/api/plan-gates/judge', json={'claude': True}).get_json()
 check("the desktop judge is handed it, with the gate's task",
