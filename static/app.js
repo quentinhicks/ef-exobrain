@@ -13962,7 +13962,7 @@ async function refreshEngage() {
   // Catches fall back to the current values, not [] — this is the home screen,
   // and a network drop must not blank the day that is already rendered. See the
   // note on loadAll.
-  const [placements, futurePlaced, pool, all, overrides, daySegments, routineItems, flows,
+  const [placements, futurePlaced, pool, all, overrides, daySegments, routineItems,
          schedules, deferred] = await Promise.all([
     apiGet(`/api/engage/placements?date=${dateStr}`, engageView.placements),
     // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
