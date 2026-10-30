@@ -14217,7 +14217,10 @@ function wirePgCard(card) {
     for (const f of files) {
       if (!f.type.startsWith('image/')) continue;
       const data = await fitPhoto(f, { max: 1568 });
-      if (data) draft.photos.push(data);
+      // A photo this window cannot draw (an iPhone's HEIC) came back as it
+      // was and the server would refuse it: say so now, never stage a blank.
+      if (data && /^data:image\/(jpeg|png|webp|gif);/.test(data)) draft.photos.push(data);
+      else toast(`${f.name || 'That photo'} can't be read here (HEIC?) — save it as JPEG or PNG, or send it from the phone`);
     }
     paint();
   };
