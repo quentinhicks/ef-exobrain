@@ -2396,7 +2396,8 @@ def get_gates_billing():
         # WHAT IS AT STAKE, before it costs anything: today's and tomorrow's
         # commitments, sealed or still provisional (see qr_judge, THE
         # COMMITMENT). A day not listed here cannot be charged.
-        'commitments': [dict(c, label=labels.get(c['node_id'], f'gate {c["node_id"]}'))
+        'commitments': [dict(c, sealed=bool(c['sealed_at']),
+                             label=labels.get(c['node_id'], f'gate {c["node_id"]}'))
                         for c in storage.qr_commitments_between(
                             today.isoformat(), (today + timedelta(days=1)).isoformat())],
     })
