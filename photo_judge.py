@@ -58,6 +58,13 @@ An APPEAL is his disagreement with an earlier failure. Judge everything sent
 afresh, with his explanation. Accept a reasonable explanation the photos
 support. Insisting, with nothing to show for it, is not enough.
 
+A VALID EXCUSE also passes: he says the task stopped applying or became
+impossible for a reason outside his control (he is not eligible, it was
+cancelled, the deadline moved), AND a photo shows that reason (an eligibility
+rule, a cancellation notice, a confirmation). The photo must back the excuse
+itself; an excuse in words alone, however plausible, is not enough, and not
+having had the time or the will is never one.
+
 reason: one or two plain sentences addressed to him, saying what you saw."""
 
 SCHEMA = json.dumps({'type': 'object', 'additionalProperties': False,
