@@ -4768,7 +4768,11 @@ def set_setting(key, value):
 # name it had, so it lands where it was.
 VISION_DIR = 'vision'
 VISION_TYPES = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif'}
-VISION_NAME = re.compile(r'^\d{14}-[0-9a-f]{6}\.(jpg|png|webp|gif)$')
+# The one name a stored photo has. heic/heif only ever reach gate-photos/.
+VISION_NAME = re.compile(r'^\d{14}-[0-9a-f]{6}\.(jpg|png|webp|gif|heic|heif)$')
+# A gate's proof also takes an iPhone's HEIC as it is: no browser can draw
+# one, so the desktop judge converts it for Claude (photo_judge.readable).
+GATE_PHOTO_TYPES = dict(VISION_TYPES, **{'image/heic': 'heic', 'image/heif': 'heif'})
 
 
 def vision_photos():
@@ -4779,8 +4783,8 @@ def vision_photos():
 
 # A photo is a FILE in the data dir, never the db. ONE writer, shared by
 # Vision and the photo gates' proofs; None for anything not an image.
-def save_photo(folder, data, mime, name=None):
-    ext = VISION_TYPES.get(mime)
+def save_photo(folder, data, mime, name=None, types=VISION_TYPES):
+    ext = types.get(mime)
     if not ext:
         return None
     if not (name and VISION_NAME.match(name) and name.endswith('.' + ext)

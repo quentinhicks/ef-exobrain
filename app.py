@@ -1683,12 +1683,13 @@ def post_plan_gate_proof(id):
         return jsonify({'error': refusal}), 409
     shots = [re.match(r'^data:([\w/+.-]+);base64,(.*)$', d or '', re.S)
              for d in data.get('photos') or []]
-    if not all(m and m.group(1) in storage.VISION_TYPES for m in shots):
-        return jsonify({'error': 'Photos must be JPEG, PNG, WebP or GIF images'}), 400
+    if not all(m and m.group(1) in storage.GATE_PHOTO_TYPES for m in shots):
+        return jsonify({'error': 'Photos must be JPEG, PNG, WebP, GIF or HEIC images'}), 400
     comment = str(data.get('comment') or '').strip()[:2000]
     if not shots and (kind == 'proof' or not comment):
         return jsonify({'error': 'Paste a photo' + (' or say why' if kind == 'appeal' else '')}), 400
-    photos = [storage.save_photo(storage.GATE_PHOTO_DIR, base64.b64decode(m.group(2)), m.group(1))
+    photos = [storage.save_photo(storage.GATE_PHOTO_DIR, base64.b64decode(m.group(2)), m.group(1),
+                                 types=storage.GATE_PHOTO_TYPES)
               for m in shots]
     return jsonify({'id': storage.plan_gate_add_proof(id, kind, photos, comment), 'kind': kind})
 

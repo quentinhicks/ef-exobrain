@@ -5842,6 +5842,18 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .eg-pg-shots:empty { display: none; }
 .eg-pg-shot { position: relative; }
 .eg-pg-shot img { display: block; width: 64px; height: 64px; object-fit: cover; border-radius: 4px; }
+/* A HEIC no browser can draw: a named tile in the photo's place. */
+.eg-pg-heic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font: 12px var(--font-mono);
+}
 .eg-pg-unshot {
   position: absolute;
   top: -7px;

@@ -22,8 +22,10 @@
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -93,6 +95,34 @@ def notify(title, body):
                           'with title (system attribute "QPA_TITLE") sound name "Basso"'], env=env)
 
 
+# AN IPHONE'S HEIC, made readable (2026-10-30, Quentin's instruction: take HEIC
+# directly). Neither a browser nor Claude reads HEIC, so the proof is stored
+# as sent and converted HERE, on the desktop, to a JPEG of at most 1568px
+# (what Claude reads well): ffmpeg (decoded whole first — an iPhone HEIC is a
+# grid of tiles, which a one-pass scale refuses), or macOS's own sips. No
+# converter raises, and the proof waits like any unanswered one — fails once
+# its grace is gone, never passes.
+def readable(heic):
+    with tempfile.TemporaryDirectory() as d:
+        src, png, jpg = (os.path.join(d, n) for n in ('in.heic', 'full.png', 'out.jpg'))
+        with open(src, 'wb') as f:
+            f.write(heic)
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        if shutil.which('ffmpeg'):
+            for args in (['-i', src, '-frames:v', '1', png],
+                         ['-i', png, '-vf', "scale='if(gt(iw,ih),min(1568,iw),-2)':"
+                                          "'if(gt(iw,ih),-2,min(1568,ih))'", '-q:v', '3', jpg]):
+                subprocess.run(['ffmpeg', '-v', 'error', '-y'] + args, check=True,
+                               capture_output=True, timeout=60, creationflags=flags)
+        elif sys.platform == 'darwin':
+            subprocess.run(['sips', '-s', 'format', 'jpeg', '-Z', '1568', src, '--out', jpg],
+                           check=True, capture_output=True, timeout=60)
+        else:
+            raise OSError('no HEIC converter on this computer (install ffmpeg)')
+        with open(jpg, 'rb') as f:
+            return f.read()
+
+
 def failure_words(g):
     reason = {'absent': 'No photos were sent in its window.',
               'unjudged': 'Claude Code could not judge the photos in time.'}.get(
@@ -127,9 +157,14 @@ class PhotoJudge:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read() or b'{}')
 
+    # (media type, base64) as Claude can read it — a HEIC is converted first.
     def _photo(self, name):
         with urllib.request.urlopen(self.server + '/gate-photos/' + name, timeout=30) as r:
-            return base64.b64encode(r.read()).decode()
+            data = r.read()
+        ext = name.rsplit('.', 1)[-1]
+        if ext in ('heic', 'heif'):
+            data, ext = readable(data), 'jpg'
+        return MEDIA.get(ext, 'image/jpeg'), base64.b64encode(data).decode()
 
     def tick(self):
         claude = coach._claude()
@@ -169,9 +204,9 @@ class PhotoJudge:
             for name in q['photos']:
                 n += 1
                 content.append({'type': 'text', 'text': 'Photo %d:' % n})
+                media, data = self._photo(name)
                 content.append({'type': 'image', 'source': {
-                    'type': 'base64', 'media_type': MEDIA.get(name.rsplit('.', 1)[-1], 'image/jpeg'),
-                    'data': self._photo(name)}})
+                    'type': 'base64', 'media_type': media, 'data': data}})
         return {'type': 'user', 'message': {'role': 'user', 'content': content}}
 
     # {pass, reason}, or None when Claude Code gave no usable answer — the
@@ -188,7 +223,7 @@ class PhotoJudge:
                                  capture_output=True, text=True, encoding='utf-8',
                                  cwd=os.path.abspath(JUDGE_DIR), timeout=JUDGE_TIMEOUT_S,
                                  creationflags=flags).stdout
-        except (OSError, subprocess.TimeoutExpired) as e:
+        except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
             print('photo judge: claude failed:', e, datetime.now().isoformat())
             return None
         for line in out.splitlines():

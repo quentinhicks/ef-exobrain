@@ -230,6 +230,12 @@ check('a proof inside the window is taken, as a proof', r.status_code == 200 and
       r.get_json())
 check('its photo is a file in gate-photos/, served back',
       client.get('/gate-photos/' + storage.plan_gate_proof_get(p1)['photos'][0]).status_code == 200)
+# An iPhone's HEIC is taken as it is (the desktop judge converts it for Claude).
+heic = storage.save_photo(storage.GATE_PHOTO_DIR, b'\x00\x00\x00\x18ftypheic', 'image/heic',
+                          types=storage.GATE_PHOTO_TYPES)
+check('a HEIC is stored as .heic and served back',
+      heic.endswith('.heic') and client.get('/gate-photos/' + heic).status_code == 200, heic)
+check('...but never as Vision', storage.save_photo('vision', b'x', 'image/heic') is None)
 check('the day reads it as judging', view(710)['state'] == 'judging', view(710))
 cal = client.get(f'/api/gates/days?from={D}&to={D}').get_json()[D]['plan_gates']
 check("the calendar's gate read carries it, at its window, in the same words",

@@ -14176,8 +14176,17 @@ function pgWords(g) {
     : `Not met — ${pgReason(g)}. Send more photos by ${at(g.closes)}.`;
 }
 
+// A HEIC (an iPhone's photo) is sent as it is — no browser can draw one, and
+// the desktop judge converts it for Claude — so it stages as a named tile.
+const PG_HEIC = /\.(heic|heif)$/i;
+
+function pgIsHeic(f) {
+  return /^image\/hei[cf]/.test(f.type) || PG_HEIC.test(f.name || '');
+}
+
 function pgShotsHtml(d) {
-  return d.photos.map((p, i) => `<span class="eg-pg-shot"><img src="${p}" alt="">
+  return d.photos.map((p, i) => `<span class="eg-pg-shot">${p.startsWith('data:image/hei')
+      ? '<span class="eg-pg-heic">HEIC</span>' : `<img src="${p}" alt="">`}
     <button class="eg-pg-unshot" data-i="${i}" title="Take this photo out">×</button></span>`).join('');
 }
 
@@ -14192,7 +14201,7 @@ function pgCardHtml(g) {
     <textarea class="eg-pg-note" rows="2" placeholder="${g.can_appeal
       ? 'Why the verdict is wrong — paste photos here too' : 'Paste photos here — and a note for the judge'}">${escHtml(d.note)}</textarea>
     <div class="eg-pg-actions">
-      <label class="eg-pg-pick">Add photos<input type="file" accept="image/*" multiple hidden></label>
+      <label class="eg-pg-pick">Add photos<input type="file" accept="image/*,.heic,.heif" multiple hidden></label>
       <button class="eg-pg-send">${g.can_appeal ? 'Disagree' : 'Send'}</button>
     </div>` : ''}
   </div>`;
@@ -14215,16 +14224,22 @@ function wirePgCard(card) {
   };
   const stage = async files => {
     for (const f of files) {
-      if (!f.type.startsWith('image/')) continue;
+      if (pgIsHeic(f)) {
+        // As it is, under the one type the server stores it as (Windows
+        // often hands a HEIC over with no type at all).
+        const raw = await readDataUrl(f);
+        if (raw) draft.photos.push('data:image/heic;base64,' + raw.slice(raw.indexOf(',') + 1));
+        continue;
+      }
       const data = await fitPhoto(f, { max: 1568 });
-      // A photo this window cannot draw (an iPhone's HEIC) came back as it
-      // was and the server would refuse it: say so now, never stage a blank.
+      // A photo this window cannot draw came back as it was and the server
+      // would refuse it: say so now, never stage a blank.
       if (data && /^data:image\/(jpeg|png|webp|gif);/.test(data)) draft.photos.push(data);
-      else toast(`${f.name || 'That photo'} can't be read here (HEIC?) — save it as JPEG or PNG, or send it from the phone`);
+      else toast(`${f.name || 'That photo'} can't be read — send it as JPEG, PNG or HEIC`);
     }
     paint();
   };
-  const images = list => [...(list || [])].filter(f => f.type.startsWith('image/'));
+  const images = list => [...(list || [])].filter(f => f.type.startsWith('image/') || pgIsHeic(f));
   paint();
   note.addEventListener('input', () => { draft.note = note.value; });
   card.addEventListener('paste', e => {
