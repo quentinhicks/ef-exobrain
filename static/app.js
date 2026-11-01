@@ -16192,7 +16192,7 @@ const CLARIFY_FLOWS = [
 const CLARIFY_FLOW_HINT = {
   now: 'Marks it done and moves to the next item. Nothing is filed.',
   todo: 'Goes on the to-do list, available now.',
-  project: 'Ctrl-click (⌘ on a Mac) a project or an area on the Projects page, or choose File here from its menu, then File it. Projects works as usual otherwise. Either way it leaves the to-do list.',
+  project: 'Click a project or an area on the Projects page to pick it, then File it. Projects works as usual otherwise. Either way it leaves the to-do list.',
   calendar: 'Click a block or an event to add it there, or an empty time to put it at that time.',
   list: 'Click a list or document on the Lists page to add it there.',
 };
@@ -16332,7 +16332,7 @@ function clarifyPicked() {
   renderClarify();
 }
 
-// The Project flow's two picks, asked by the Ctrl-click and the menus alike.
+// The Project flow's two picks, asked by the click and the menus alike.
 // An area files the action there in no project; General ('') is in no area.
 function clarifyPickProject(id) {
   const p = (state.projects || []).find(x => x.id === id)
@@ -16348,7 +16348,7 @@ function clarifyPickArea(area) {
 }
 
 // `File here` on a project's or an area's menu while the Project flow is
-// picking — the touch path to the Ctrl-click. `area` is an id, or 0 / '' for
+// picking — beside the click. `area` is an id, or 0 / '' for
 // General; a project row passes `projectId`.
 function clarifyPickVerb({ projectId, area }) {
   const pk = clarifyView.picking;
@@ -16406,13 +16406,13 @@ window.addEventListener('click', e => {
     clarifyPicked();
     return;
   }
-  // PROJECTS STAYS AN ORDINARY PAGE WHILE AN ITEM IS FILED ON IT (2026-10-28,
-  // Quentin's instruction: interact with it "without forcing me to click and
-  // submit"). A plain click does what it always does there; Ctrl-click (⌘ on a
-  // Mac) on a project or an area PICKS it, and nothing is filed until File it
-  // — reversing 2026-10-22's area-files-at-once. A finger picks with the
-  // row's or heading's menu: File here (clarifyPickVerb).
-  if (pk.flow === 'project' && !(e.ctrlKey || e.metaKey)) return;
+  // A CLICK PICKS, IT NEVER FILES (2026-11-01, Quentin's instruction,
+  // narrowing 2026-10-28's Ctrl-click-only: "I don't want you to automatically
+  // file for me, that's all"). A click on a project or an area selects it in
+  // the sheet, and nothing is filed until File it — 2026-10-22's
+  // area-files-at-once stays reversed. Every other row on Projects still works
+  // as usual (opening one is a detour, `mapOpenRow`); a finger can also pick
+  // with the row's or heading's menu: File here (clarifyPickVerb).
   e.preventDefault(); e.stopPropagation();
   if (pk.flow === 'project') {
     if (el.classList.contains('map-row-project')) clarifyPickProject(parseInt(el.dataset.id));
