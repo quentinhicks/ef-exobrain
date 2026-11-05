@@ -1415,20 +1415,23 @@ function renderRules() {
 // How to program a tag — moved here with the tag apparatus (it was the app's
 // TAG_SETUP_INFO; the dashboard is now the only place a tag is set up).
 const TAG_STEPS = `<ol class="gd-rules">
-  <li>Read the tag with NFC.cool to get its UID: on Tag detail it is the <b>Serial number</b>, e.g.
-    04:86:57:52:1F:1E:90 — enter it without the colons (048657521F1E90), 7 bytes, 14 hex characters. A real
-    NXP UID starts with 04. It is NOT the picc_data or cmac in an already-programmed tag's URL — picc_data is
-    the UID encrypted (with the read counter), and cmac is a signature, so both change on every tap.</li>
+  <li>In NFC.cool, if the tag already shows "SUN Authenticity", tap <b>Disable SUN Verification</b> first,
+    so the SUN set up below is the only one on the tag.</li>
+  <li>Read the tag's UID — 7 bytes, 14 hex characters, starting 04 for a genuine NXP tag. It is NOT the
+    picc_data or cmac in a programmed tag's URL: picc_data is the UID encrypted with the read counter, and cmac
+    is a signature, so both change on every tap.</li>
   <li>Add the tag here NOW (+ Tag → name, UID, then Generate both keys), so a half-failed write never leaves
     you holding a configured tag whose keys are nowhere. Copy both keys while the form is open.</li>
   <li>Copy the tap URL. The zeros are placeholders; the tag overwrites them on every tap.</li>
   <li>In NFC.cool Tools, write the full tap URL as the NDEF URL, zeros included.</li>
   <li>Turn on SUN / SDM on the NDEF file (file 02): encrypted PICC data mirror at the e= zeros with UID and
     read-counter mirroring on (not the plain uid=…&amp;ctr=… variant — it is rejected deliberately); SDMMAC mirror
-    at the c= zeros; no encrypted file data; MAC input offset = MAC offset; NDEF read access free; the SDM Meta
-    Read key and SDM File Read key set to the two keys.</li>
-  <li>Change the keys LAST, entered as hex, not as a passphrase. If you also change key 0, write it down
-    somewhere durable. Leave it in AES mode, not LRP.</li>
+    at the c= zeros; no encrypted file data; MAC input offset = MAC offset; NDEF read access free;
+    <b>SDM Meta Read = key 1, SDM File Read = key 2</b>.</li>
+  <li>In the tag's NTAG 424 DNA key settings, set <b>key 1 to the Meta key</b> and <b>key 2 to the File
+    key</b> from this form — all 32 hex characters, never a short value like 1 (NFC.cool reads "1" as
+    000…001, a key anyone can guess, which makes the tap no proof at all). Do this LAST. If you also change key 0,
+    write it down somewhere durable. Leave it in AES mode, not LRP.</li>
   <li>Back here: set Proof to "NFC tag only". It refuses until the tag and its keys are in place — that refusal
     is the check working.</li>
   <li>Tap it. You should see "Logged — &lt;tag&gt;, read N". If not, Last taps above says which stage failed.
