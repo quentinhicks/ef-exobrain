@@ -2003,6 +2003,13 @@ def _adopt_gate_schedules(conn):
     if 'source_uid' not in cols:
         conn.execute('ALTER TABLE qr_node ADD COLUMN source_uid TEXT')
         conn.commit()
+    # WHEN THE GATE WAS MADE (2026-11-05). A gate created at 10:12 used to run
+    # that morning's 07:00 window — drawn on today as missed, a day it was
+    # never a commitment for. Local, like every stamp; NULL on the gates that
+    # predate the column, which have always existed as far as any day can tell.
+    if 'created_at' not in cols:
+        conn.execute('ALTER TABLE qr_node ADD COLUMN created_at TEXT')
+        conn.commit()
     rows = conn.execute('SELECT * FROM qr_node WHERE source_uid IS NULL').fetchall()
     for n in rows:
         uid = _gate_source_from_windows(conn, n)
@@ -7549,15 +7556,19 @@ def qr_get_node_by_token(token):
 
 
 def qr_create_node(label, token, window_start, window_end, offset_days=0,
-                   lat=None, lng=None, radius=None, days='0123456', weekly=None):
+                   lat=None, lng=None, radius=None, days='0123456', weekly=None,
+                   created_at=None):
+    # created_at is the ROUTE's stamp (POST /api/accountability/nodes). NULL is
+    # a gate with no birth day, which runs on every day its schedule names.
     conn = get_conn()
     cur = conn.execute(
         '''INSERT INTO qr_node (label, token, window_start, window_end,
                                 window_end_offset_days, geofence_lat, geofence_lng,
-                                geofence_radius_m, days_of_week, weekly_windows)
-           VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                                geofence_radius_m, days_of_week, weekly_windows,
+                                created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
         (label, token, window_start, window_end, offset_days, lat, lng, radius,
-         days, weekly))
+         days, weekly, created_at))
     conn.commit()
     node_id = cur.lastrowid
     conn.close()

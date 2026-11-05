@@ -371,5 +371,40 @@ fields = sorted(p['field'] for p in storage.qr_get_pending_changes(nid))
 check('queueing a second easing does not delete the first',
       fields == ['geofence_radius_m', 'window_end'], fields)
 
+# ── NOT BEFORE IT EXISTED (2026-11-05) ───────────────────────────────────
+#
+# Quentin's report: a gate made at 10:12 appeared on that morning's closed
+# 07:30 window. A day whose window opened before the gate was created was never
+# a commitment, so applies_on — the one answer every drawing asks — says no.
+TOMORROW = _date_plus_day(TODAY)
+r = client.post('/api/accountability/nodes', json={'label': 'Born now'})
+born = node_row(r.get_json()['id'])['created_at']
+check('the create route stamps when the gate was born, on the local clock',
+      bool(born) and abs((datetime.fromisoformat(born) - datetime.now()).total_seconds()) < 60, born)
+nid = storage.qr_create_node('Late', 'tok-born-1', '06:00', '08:00',
+                             created_at=f'{TODAY} 07:00:00')
+check('a gate born after today\'s window opened does not run today',
+      not qr_judge.applies_on(node_row(nid), TODAY))
+check('...nor on any day before it existed',
+      not qr_judge.applies_on(node_row(nid), YESTERDAY))
+check('...and runs from tomorrow', qr_judge.applies_on(node_row(nid), TOMORROW))
+tick_through(TODAY, datetime.fromisoformat(f'{TODAY}T09:00:00'))
+rows = [x for x in storage.qr_charge_rows_between(TODAY, TODAY) if x['node_id'] == nid]
+check('...and that day settles n/a, never money',
+      all(x['charge_status'] == 'n/a' and not x.get('amount_cents') for x in rows), rows)
+nid = storage.qr_create_node('Early', 'tok-born-2', '06:00', '08:00',
+                             created_at=f'{TODAY} 05:50:00')
+check('a gate born before the window opens runs that day',
+      qr_judge.applies_on(node_row(nid), TODAY))
+nid = storage.qr_create_node('Gym', 'tok-born-3', '06:00', '08:00',
+                             created_at=f'{TODAY} 00:30:00')
+storage.qr_update_node(nid, {'all_day': 1})
+check('an all-day gate born after midnight starts tomorrow (its commitment is the wall day)',
+      not qr_judge.applies_on(node_row(nid), TODAY)
+      and qr_judge.applies_on(node_row(nid), TOMORROW))
+nid = storage.qr_create_node('Old', 'tok-born-4', '06:00', '08:00')
+check('a gate with no stamp (made before the column) runs as it always did',
+      qr_judge.applies_on(node_row(nid), YESTERDAY))
+
 print(f'\n{len(fails)} FAILED: {"; ".join(fails)}' if fails else '\nAll checks passed.')
 raise SystemExit(1 if fails else 0)

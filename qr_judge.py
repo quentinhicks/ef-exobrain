@@ -174,6 +174,13 @@ def applies_on(node, ymd, override=None):
         override = storage.qr_get_override(node['id'], ymd)
     if override and override.get('skipped'):
         return False
+    # NOT BEFORE IT EXISTED (2026-11-05, Quentin's report: a gate made at 10:12
+    # appeared on that morning's closed 07:30 window). A day whose window had
+    # already opened when the gate was created was never a commitment — the
+    # judge could not have sealed it, so it settles 'n/a' — and answering it
+    # HERE is what keeps every drawing from showing it as a day the gate ran.
+    if opened_before_created(node, ymd, override):
+        return False
     # A RETIRED PROOF NEVER RUNS. Routine gates are gone (2026-10-05): nothing
     # runs a routine any more, so a row still saying 'routine' has nothing that
     # could clear it, and a gate nothing can clear is not a commitment, it is a
@@ -194,6 +201,20 @@ def applies_on(node, ymd, override=None):
             return bool(_starting_occurrence(node, ymd, resolve))
     days = node.get('days_of_week')
     return days is None or _dow_of(ymd) in str(days)
+
+
+def opened_before_created(node, ymd, override=None):
+    # When the day's commitment would have begun: the window's opening, or
+    # midnight for an all-day gate, whose commitment is the wall day. Compared
+    # as datetimes, never as strings. A gate with no stamp predates the column.
+    born = node.get('created_at')
+    if not born:
+        return False
+    if is_all_day(node):
+        opens = datetime.strptime(ymd, '%Y-%m-%d')
+    else:
+        opens = _local_dt(ymd, resolve_window(node, ymd, override)[0])
+    return datetime.strptime(born[:19], '%Y-%m-%d %H:%M:%S') > opens
 
 
 def _local_dt(ymd, hhmm):

@@ -2668,7 +2668,10 @@ def accountability_nodes():
             d.get('window_start', '09:00'), d.get('window_end', '10:00'),
             d.get('window_end_offset_days') or 0,
             d.get('geofence_lat'), d.get('geofence_lng'), d.get('geofence_radius_m'),
-            d.get('days_of_week') or '0123456', d.get('weekly_windows'))
+            d.get('days_of_week') or '0123456', d.get('weekly_windows'),
+            # Stamped HERE, where a gate is born, on this box's clock — never
+            # from the body. qr_judge.opened_before_created reads it.
+            created_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         # A new gate gets its schedule immediately, rather than waiting for the
         # next start-up's adoption pass.
         if d.get('source_uid'):
