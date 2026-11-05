@@ -604,6 +604,44 @@ def describe_rule(src):
     return ' '.join(bits)
 
 
+def weekly_rows(src, resolve=None):
+    """A source as the gate sheet's rows: [{days, from, to}, ...], or None.
+
+    Answered only for what the sheet can write back unchanged — a plain weekly
+    rule, or a schedule whose members are all plain weekly rules (2026-11-05: a
+    Wake gate with a weekday window and a weekend window). Anything else (an
+    interval, an override, a derived source, an end) is None, and the sheet
+    offers to replace it rather than pretending to edit it.
+    """
+    if not src:
+        return None
+    resolve = resolve or (lambda uid: None)
+    kind = src.get('sf:kind') or src.get('kind') or 'rule'
+    if kind == 'schedule':
+        members = [resolve(u) for u in src.get('entries') or []]
+        if not members or not all(members) or src.get('sf:ends') or src.get('ends'):
+            return None
+        rows = [weekly_rows(m, resolve) for m in members]
+        if not all(r and len(r) == 1 for r in rows):
+            return None
+        return [r[0] for r in rows]
+    if kind != 'rule' or len(src.get('recurrenceRules') or []) != 1:
+        return None
+    rule = _first_rule(src)
+    if (str(rule.get('frequency', '')).lower() != 'weekly' or int(rule.get('interval') or 1) != 1
+            or rule.get('byMonthDay') or src.get('recurrenceOverrides') or src.get('overrides')
+            or src.get('sf:ends') or src.get('ends')):
+        return None
+    days = [d.get('day') if isinstance(d, dict) else d for d in rule.get('byDay') or []]
+    if not days:
+        return None
+    start = _start_dt(src)
+    dur = parse_duration(src.get('duration')) or timedelta(0)
+    return [{'days': [d for d in _DAYS if d in days],
+             'from': start.strftime('%H:%M'),
+             'to': (start + dur).strftime('%H:%M')}]
+
+
 def describe(src, resolve=None):
     """One sentence for any source. `resolve` is only needed to name what a
     derived source follows and to read a schedule's members."""

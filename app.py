@@ -2411,6 +2411,10 @@ def _node_payload(node, today):
                 today_override=ov,
                 today_state=state_now,
                 schedule_label=label,
+                # The schedule as the sheet's rows (several, since 2026-11-05),
+                # or None for one the sheet cannot write back as it is.
+                schedule_rows=schedule.weekly_rows(resolve(node.get('source_uid')), resolve)
+                if node.get('source_uid') else None,
                 day_windows=storage.qr_gate_day_windows(node),
                 pending_changes=pending,
                 tags=_tag_payloads(node['id']),
@@ -2442,8 +2446,11 @@ def _tag_payloads(node_id):
         # with them, so replacing them here re-keys those too.
         also = [r['node_label'] for r in every
                 if r['uid'].upper() == t['uid'].upper() and r['node_id'] != node_id]
+        days_pending = storage.qr_tag_days_pending(t['id'])
         out.append(dict(t, keys_set=t['uid'].upper() in keys, also_on=also,
-                        pending_live_at=storage.qr_tag_pending(t['id'])))
+                        pending_live_at=storage.qr_tag_pending(t['id']),
+                        pending_days=days_pending[0] if days_pending else None,
+                        pending_days_at=days_pending[1] if days_pending else None))
     return out
 
 
@@ -2751,9 +2758,9 @@ def _gate_day_payload(node, ymd, now=None):
     # filtering it out leaves "nothing happened", which is a lie about the day.
     # Each one carries the distance the scan server measured it at and whether
     # it clears the gate, asked of scan_satisfies - the ONE predicate.
-    # qr_scans_between is the judge's HISTORY read and selects three columns;
-    # this needs the position and the proof, so it goes through the per-node
-    # query instead. Its bounds are arguments, and the ones passed here are the
+    # qr_scans_between is the judge's HISTORY read across every gate; this
+    # needs one gate's scans with their positions, so it goes through the
+    # per-node query instead. Its bounds are arguments, and the ones passed here are the
     # whole day rather than the window - which is the point.
     scans = []
     for sc in storage.qr_scans_in_window(
@@ -2766,7 +2773,7 @@ def _gate_day_payload(node, ymd, now=None):
         scans.append(dict(sc, distance_m=dist,
                           local_time=_scan_local_hhmm(sc['scanned_at']),
                           in_window=open_iso <= sc['scanned_at'] <= close_iso,
-                          satisfies=bool(qr_judge.scan_satisfies(node, sc))))
+                          satisfies=bool(qr_judge.scan_satisfies(node, sc, ymd))))
 
     settings = qr_judge.charge_settings()
     # WHERE THE DAY STANDS, priced. The same predicate the judge charges on
@@ -3165,6 +3172,12 @@ def patch_accountability_node(id):
         if not live:
             return jsonify({'error': 'add a tag with its keys first — a tag-only gate '
                                      'with no live tag could never be cleared'}), 400
+        bare = qr_judge.uncovered_days(dict(node, proof_mode='tag'),
+                                       storage.qr_tags_for_node(id),
+                                       {u.upper() for u in ntag.load_keys()})
+        if bare:
+            return jsonify({'error': 'no live tag clears it on ' + _day_names(bare)
+                                     + ' — give a tag those days first'}), 400
     immediate, pending = qr_judge.schedule_node_patch(node, data, effective_from)
     if immediate:
         storage.qr_update_node(id, immediate)
@@ -3790,23 +3803,43 @@ def post_accountability_tag(id):
     return jsonify(tag), 201
 
 
+def _uncovered_if(node_id, tag_id, change, keyed=None):
+    # The days a tag-only gate would be left with nothing to clear it, were
+    # this tag changed as described (`change` None = gone). The rule is the
+    # judge's (uncovered_days); this only builds the tag list it is asked of.
+    node = next((n for n in storage.qr_get_nodes() if n['id'] == node_id), None)
+    if not node:
+        return []
+    tags = [t if t['id'] != tag_id else (dict(t, **change) if change is not None else None)
+            for t in storage.qr_tags_for_node(node_id)]
+    keyed = ntag.load_keys().keys() if keyed is None else keyed
+    return qr_judge.uncovered_days(node, [t for t in tags if t],
+                                   {str(u).upper() for u in keyed})
+
+
+WEEKDAY_NAMES = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
+
+
+def _day_names(digits):
+    return ', '.join(WEEKDAY_NAMES[int(d)] for d in digits)
+
+
 @app.route('/api/accountability/tags/<int:tag_id>', methods=['PATCH', 'DELETE'])
 def patch_accountability_tag(tag_id):
     tag = next((t for t in storage.qr_all_tags() if t['id'] == tag_id), None)
     if not tag:
         return jsonify({'error': 'unknown tag'}), 404
     hard = (tag.get('proof_mode') or 'link') == 'tag'
-    others = [t for t in storage.qr_tags_for_node(tag['node_id'], active_only=True)
-              if t['id'] != tag_id and t['uid'].upper() in ntag.load_keys()]
 
     if request.method == 'DELETE':
-        # The last live tag of a tag-only gate cannot go: the gate would charge
-        # for a day nothing could have cleared. Named in words, with the two
-        # ways out, rather than silently loosening the gate to link proof.
-        if hard and not others:
-            return jsonify({'error': 'this is the only tag that can clear ' + tag['node_label']
-                                     + ' — move the gate to link proof, or pause the gate '
-                                       'first'}), 400
+        # A tag-only gate may not be left with a day nothing can clear: it
+        # would charge for it. Named in words, with the ways out, rather than
+        # silently loosening the gate to link proof.
+        bare = _uncovered_if(tag['node_id'], tag_id, None)
+        if bare:
+            return jsonify({'error': 'without this tag nothing could clear ' + tag['node_label']
+                                     + ' on ' + _day_names(bare) + ' — give another tag those '
+                                     'days, move the gate to link proof, or pause it first'}), 400
         storage.qr_delete_tag(tag_id)
         return jsonify({'ok': True})
 
@@ -3826,12 +3859,32 @@ def patch_accountability_tag(tag_id):
                                 'apply_at': storage.qr_pend_tag_live(tag_id)})
             fields['active'] = 1
         elif not want and tag['active']:
-            if hard and not others:
-                return jsonify({'error': 'this is the only tag that can clear '
-                                         + tag['node_label'] + ' — pausing it would '
-                                         'make the gate impossible to clear'}), 400
+            bare = _uncovered_if(tag['node_id'], tag_id, {'active': 0})
+            if bare:
+                return jsonify({'error': 'pausing it would leave nothing to clear '
+                                         + tag['node_label'] + ' on ' + _day_names(bare)}), 400
             storage.qr_unpend_tag(tag_id)      # a queued wake-up is off
             fields['active'] = 0
+    if 'days_of_week' in d:
+        # WHICH DAYS IT CLEARS (2026-11-05). More days is another way to clear
+        # the gate, so on a tag-only gate it waits 24h like a new tag; fewer
+        # lands at once, unless it would leave a running day uncovered.
+        want = qr_judge.norm_days(d.get('days_of_week'))
+        if want == '':
+            return jsonify({'error': 'a tag needs at least one day — pause it instead'}), 400
+        if want == tag.get('days_of_week'):
+            storage.qr_unpend_tag_days(tag_id)  # back to what it is: the easing is off
+        else:
+            if hard and qr_judge.tag_days_loosen(tag.get('days_of_week'), want):
+                return jsonify({'pending': True,
+                                'apply_at': storage.qr_pend_tag_days(tag_id, want)})
+            bare = _uncovered_if(tag['node_id'], tag_id, {'days_of_week': want})
+            if bare:
+                return jsonify({'error': 'nothing else clears ' + tag['node_label'] + ' on '
+                                         + _day_names(bare) + ' — give another tag those days '
+                                         'first'}), 400
+            storage.qr_unpend_tag_days(tag_id)  # the newest intent wins
+            fields['days_of_week'] = want
     if not fields:
         return jsonify(tag)
     return jsonify(storage.qr_update_tag(tag_id, fields))
@@ -3876,12 +3929,12 @@ def delete_accountability_tag_keys(tag_id):
     for row in storage.qr_all_tags():
         if row['uid'].upper() != uid or (row.get('proof_mode') or 'link') != 'tag':
             continue
-        others = [t for t in storage.qr_tags_for_node(row['node_id'], active_only=True)
-                  if t['uid'].upper() != uid and t['uid'].upper() in ntag.load_keys()]
-        if not others:
+        keyed = {u.upper() for u in ntag.load_keys()} - {uid}
+        bare = _uncovered_if(row['node_id'], None, None, keyed)
+        if bare:
             return jsonify({'error': 'clearing these keys would leave '
                                      + row['node_label'] + ' with no way to be '
-                                     'cleared'}), 400
+                                     'cleared on ' + _day_names(bare)}), 400
     keys = dict(_config_file().get('ntag_keys') or {})
     keys.pop(tag['uid'].upper(), None)
     _update_config({'ntag_keys': keys})

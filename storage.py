@@ -1223,6 +1223,12 @@ def init_db():
             UNIQUE (node_id, uid)
         )''')
     _qr_tag_uid_per_gate(conn)
+    # WHICH DAYS A TAG CLEARS (2026-11-05, Quentin's instruction: one Wake gate,
+    # a weekday tag and a weekend tag). The gate's own weekday digits, '0' =
+    # Monday (qr_judge._dow_of); NULL is every day the gate runs. A tap counts
+    # only on its tag's days — qr_judge.scan_satisfies, the one answer.
+    if 'days_of_week' not in [r[1] for r in conn.execute('PRAGMA table_info(qr_tag)')]:
+        conn.execute('ALTER TABLE qr_tag ADD COLUMN days_of_week TEXT')
     # EVERY TAP, VERIFIED OR NOT — the only place a REFUSED one is written.
     #
     # qr_scan holds taps that PROVED themselves, and the judge reads it. A tap
@@ -7735,7 +7741,7 @@ def qr_add_tag(node_id, label, uid, active=1):
     return dict(row)
 
 
-QR_TAG_FIELDS = ('label', 'active')
+QR_TAG_FIELDS = ('label', 'active', 'days_of_week')
 
 
 def qr_update_tag(tag_id, fields):
@@ -7758,6 +7764,7 @@ def qr_delete_tag(tag_id):
     # exactly as a completed item's after_id does.
     cur = conn.execute('DELETE FROM qr_tag WHERE id = ?', (tag_id,))
     _unpend_row(conn, 'gate_tag', tag_id, 'active')
+    _unpend_row(conn, 'gate_tag', tag_id, 'days_of_week')
     conn.commit()
     gone = bool(cur.rowcount)
     conn.close()
@@ -7813,6 +7820,37 @@ def qr_tag_pending(tag_id):
     return row['apply_at'] if row else None
 
 
+def qr_pend_tag_days(tag_id, days):
+    """Queue more days for a tag (an easing, 24h), and say when it lands."""
+    conn = get_conn()
+    _pend_row(conn, 'gate_tag', tag_id, 'days_of_week', days)
+    conn.commit()
+    row = conn.execute(
+        """SELECT apply_at FROM easing_pending
+           WHERE kind = 'gate_tag' AND row_id = ? AND field = 'days_of_week'""",
+        (tag_id,)).fetchone()
+    conn.close()
+    return row['apply_at'] if row else None
+
+
+def qr_tag_days_pending(tag_id):
+    """(days, apply_at) queued for this tag, or None."""
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT value, apply_at FROM easing_pending
+           WHERE kind = 'gate_tag' AND row_id = ? AND field = 'days_of_week'""",
+        (tag_id,)).fetchone()
+    conn.close()
+    return (_pending_value(row['value']), row['apply_at']) if row else None
+
+
+def qr_unpend_tag_days(tag_id):
+    conn = get_conn()
+    _unpend_row(conn, 'gate_tag', tag_id, 'days_of_week')
+    conn.commit()
+    conn.close()
+
+
 def qr_unpend_tag(tag_id):
     conn = get_conn()
     _unpend_row(conn, 'gate_tag', tag_id, 'active')
@@ -7855,12 +7893,20 @@ def qr_tag_seen(uid, counter):
     conn.close()
 
 
+# A scan carries its TAG'S DAYS (tag_days), read at the moment of judging, and
+# any tag easing that has come due is applied first — the judge must never read
+# a tag as tighter than it has become.
+_SCAN_COLS = '''s.*, t.days_of_week AS tag_days
+           FROM qr_scan s LEFT JOIN qr_tag t ON t.id = s.tag_id'''
+
+
 def qr_scans_in_window(node_id, open_iso, close_iso):
     conn = get_conn()
+    apply_due_tag_pendings(conn)
     rows = conn.execute(
-        '''SELECT * FROM qr_scan
-           WHERE node_id = ? AND scanned_at >= ? AND scanned_at <= ?
-           ORDER BY scanned_at DESC''', (node_id, open_iso, close_iso)).fetchall()
+        'SELECT ' + _SCAN_COLS + '''
+           WHERE s.node_id = ? AND s.scanned_at >= ? AND s.scanned_at <= ?
+           ORDER BY s.scanned_at DESC''', (node_id, open_iso, close_iso)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -8392,10 +8438,14 @@ def qr_overrides_between(from_date, to_date):
 
 
 def qr_scans_between(from_iso, to_iso):
+    # The whole scan, proof and tag included: scan_satisfies asks both, and
+    # reading only (node_id, scanned_at, geofence_pass) painted every unjudged
+    # tapped day of a tag-only gate as failed.
     conn = get_conn()
+    apply_due_tag_pendings(conn)
     rows = conn.execute(
-        '''SELECT node_id, scanned_at, geofence_pass FROM qr_scan
-           WHERE scanned_at >= ? AND scanned_at <= ?''', (from_iso, to_iso)).fetchall()
+        'SELECT ' + _SCAN_COLS + '''
+           WHERE s.scanned_at >= ? AND s.scanned_at <= ?''', (from_iso, to_iso)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

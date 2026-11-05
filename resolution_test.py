@@ -68,6 +68,13 @@ RESOLUTIONS = {
         'it). date override > source > weekly > defaults — qr_override is an '
         'INPUT to that ladder, already day-keyed, so it projects nothing '
         'itself and is deliberately absent below.'),
+    'qr_tag': (
+        'qr_judge.tag_clears_on',
+        'asked ONLY by qr_judge.scan_satisfies, with the gate\'s day (not the '
+        'tap\'s wall date), so the judge, outcomes and the read-out\'s '
+        'per-scan `satisfies` share one answer. The sheet is served the raw '
+        'days_of_week and only prints them as words; nothing client-side asks '
+        'whether a tap counts.'),
     'flow': (
         None,
         'RETIRED 2026-10-05: routines are plain lists (storage._routines_to_'

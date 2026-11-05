@@ -271,7 +271,7 @@ def day_verdict(node, ymd, scans, now=None, hours=None):
         passed = (hours or hours_satisfies(node, ymd))[0]
         return (True, None) if passed else (False, 'hours_short')
 
-    return ((True, None) if any(scan_satisfies(node, sc) for sc in scans)
+    return ((True, None) if any(scan_satisfies(node, sc, ymd) for sc in scans)
             else (False, 'absent'))
 
 
@@ -521,7 +521,7 @@ def outcomes(from_date, to_date, now=None):
                     ok = hours_satisfies(node, ymd)[0]
                 else:
                     ok = any(
-                        open_iso <= s['scanned_at'] <= close_iso and scan_satisfies(node, s)
+                        open_iso <= s['scanned_at'] <= close_iso and scan_satisfies(node, s, ymd)
                         for s in by_node.get(node['id'], []))
                 out.append({'node_id': node['id'], 'date': ymd,
                             'outcome': 'success' if ok else 'failed'})
@@ -558,7 +558,7 @@ def judged_outcome(judgment):
     return 'partial' if (judgment.get('credit_pct') or 0) > 0 else 'failed'
 
 
-def scan_satisfies(node, scan):
+def scan_satisfies(node, scan, ymd):
     """Does this scan clear that gate? THE one answer, asked in two places.
 
     It was written twice — once in judge() and once in outcomes() — and the two
@@ -575,11 +575,62 @@ def scan_satisfies(node, scan):
     — and accepts a tap too, because a tap is strictly stronger evidence than
     the thing being asked for.
     """
+    # A TAP COUNTS ONLY ON ITS TAG'S DAYS (2026-11-05, Quentin's instruction:
+    # one Wake gate, a weekday tag and a weekend tag). `ymd` is the gate's DAY,
+    # not the wall date of the tap, so a 00:30 tap on a 23:00 window is asked
+    # about the night it belongs to.
+    if scan.get('proof') == 'tag' and not tag_clears_on(scan.get('tag_days'), ymd):
+        return False
     if (node.get('proof_mode') or 'link') == 'tag':
         return scan.get('proof') == 'tag'
     if scan.get('proof') == 'tag':
         return True
     return node.get('geofence_lat') is None or scan.get('geofence_pass') == 1
+
+
+# ── Which days a tag clears ───────────────────────────────────────────────
+#
+# qr_tag.days_of_week: the gate's weekday digits ('0' = Monday), NULL = every
+# day. Stored SORTED and never as all seven — every day is NULL — so one set
+# has one spelling and "did it change" is a string comparison.
+ALL_DAYS = '0123456'
+
+
+def norm_days(days):
+    got = ''.join(sorted(set(str(days or '')) & set(ALL_DAYS)))
+    return None if days is None or got == ALL_DAYS else got
+
+
+def tag_clears_on(tag_days, ymd):
+    return tag_days is None or _dow_of(ymd) in str(tag_days)
+
+
+def tag_days_loosen(old, new):
+    # More days is another way to clear the gate — an easing, 24h. Fewer is
+    # tighter and lands at once.
+    return bool(set(new or ALL_DAYS) - set(old or ALL_DAYS))
+
+
+def uncovered_days(node, tags, keyed_uids):
+    """The weekdays a TAG-ONLY gate runs on that no live, keyed tag clears.
+
+    A gate nothing can clear is not a commitment, it is a daily charge — the
+    rule that already refuses pausing or deleting the last tag, asked per day
+    now that a tag may clear only some of them. "Runs on" is the schedule's
+    next seven days, so a weekday the gate never runs is not owed a tag.
+    """
+    if (node.get('proof_mode') or 'link') != 'tag':
+        return []
+    live = [t for t in tags if t.get('active') and str(t['uid']).upper() in keyed_uids]
+    out = []
+    today = date_cls.today()
+    for i in range(7):
+        ymd = (today + timedelta(days=i)).isoformat()
+        runs = (bool(_starting_occurrence(node, ymd)) if node.get('source_uid')
+                else _dow_of(ymd) in str(node.get('days_of_week') or ALL_DAYS))
+        if runs and not any(tag_clears_on(t.get('days_of_week'), ymd) for t in live):
+            out.append(_dow_of(ymd))
+    return sorted(out)
 
 
 # ── The hours gate (2026-09-02, Quentin's design) ────────────────────────

@@ -105,20 +105,21 @@ check('with a live keyed tag, going tag-only applies AT ONCE (it is a tightening
 node = [n for n in storage.qr_get_nodes() if n['id'] == gate['id']][0]
 
 # ── what clears it, and what does not ──
+D = '2030-01-07'          # any day: these taps' tags clear every day
 LINK_SCAN = {'proof': 'link', 'geofence_pass': 1}
 TAP = {'proof': 'tag', 'geofence_pass': None}
 check('a tag-only gate is NOT cleared by a link scan',
-      not qr_judge.scan_satisfies(node, LINK_SCAN))
+      not qr_judge.scan_satisfies(node, LINK_SCAN, D))
 check('...not even by one that passed a geofence',
-      not qr_judge.scan_satisfies(dict(node, geofence_lat=1.0, geofence_lng=2.0), LINK_SCAN))
-check('a tag-only gate is cleared by a verified tap', qr_judge.scan_satisfies(node, TAP))
+      not qr_judge.scan_satisfies(dict(node, geofence_lat=1.0, geofence_lng=2.0), LINK_SCAN, D))
+check('a tag-only gate is cleared by a verified tap', qr_judge.scan_satisfies(node, TAP, D))
 link_node = dict(node, proof_mode='link')
-check('a link gate is still cleared by a link scan', qr_judge.scan_satisfies(link_node, LINK_SCAN))
+check('a link gate is still cleared by a link scan', qr_judge.scan_satisfies(link_node, LINK_SCAN, D))
 check('a link gate with a fence is not cleared by a scan outside it',
       not qr_judge.scan_satisfies(dict(link_node, geofence_lat=1.0, geofence_lng=2.0),
-                                  {'proof': 'link', 'geofence_pass': 0}))
+                                  {'proof': 'link', 'geofence_pass': 0}, D))
 check('a tap clears a link gate too — it is stronger evidence than what was asked',
-      qr_judge.scan_satisfies(dict(link_node, geofence_lat=1.0, geofence_lng=2.0), TAP))
+      qr_judge.scan_satisfies(dict(link_node, geofence_lat=1.0, geofence_lng=2.0), TAP, D))
 
 # ── the public tap endpoint ──
 import qr_scan_server                                              # noqa: E402
@@ -131,7 +132,7 @@ scans = storage.qr_scans_in_window(gate['id'], '2000-01-01T00:00:00Z', '2100-01-
 check('...as a scan of THIS gate, marked as tag-proved',
       len(scans) == 1 and scans[0]['proof'] == 'tag' and scans[0]['tag_id'] == tag['id'], scans)
 check('...and it satisfies the gate it was tapped for',
-      qr_judge.scan_satisfies(node, scans[0]))
+      qr_judge.scan_satisfies(node, scans[0], D))
 
 again = t.get(f'/t?e={picc}&c={cm}')
 check('the SAME tap replayed logs nothing more — the read counter is spent',

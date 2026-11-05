@@ -940,11 +940,11 @@ function openEditor(id) {
     allDay: n.all_day ? '1' : '0', allDay0: n.all_day ? '1' : '0',
     stake: n.charge_cents == null ? '' : (n.charge_cents / 100).toFixed(2),
     location: '', radius: n.geofence_radius_m || '',
-    sched: false, days: [], from: '', to: '',
+    sched: false, rows: [],
     effective: '',
-  } : { label: '', sched: true, days: ['mo', 'tu', 'we', 'th', 'fr'], from: '09:00', to: '10:00',
+  } : { label: '', sched: true, rows: [newSchedRow(['mo', 'tu', 'we', 'th', 'fr'], '09:00', '10:00')],
         location: '', radius: '' };
-  G.edit = { id: n ? n.id : null, v, tag: null, confirmDelete: false, error: '' };
+  G.edit = { id: n ? n.id : null, v, tag: null, tagDays: null, confirmDelete: false, error: '' };
   if (n) loadTaps(n.id);
   $('#gd-sheet').classList.remove('hidden');
   $('#gd-sheet-back').classList.remove('hidden');
@@ -979,13 +979,34 @@ function passesWhen(v, n) {
   ].filter(Boolean).join(', ');
 }
 
+// SEVERAL SCHEDULES, ONE GATE (2026-11-05, Quentin's instruction: a Wake gate
+// at 07:00 on weekdays and 09:00 at the weekend). Each row is a weekly rule;
+// two or more are saved as one union schedule. A day belongs to ONE row — the
+// judge takes the occurrence that starts each day, so a day in two rows would
+// be judged against whichever came first.
+function newSchedRow(days, from, to) {
+  return { days: days.slice(), from, to };
+}
+
 function schedFields(v) {
-  return `${weekdayToggles(v.days, { value: w => w.nday })}
-    <div class="gd-form gd-inline">
-      <label>From <input type="time" data-k="from" value="${escHtml(v.from)}"></label>
-      <label>To <input type="time" data-k="to" value="${escHtml(v.to)}"></label>
-    </div>
-    <div class="gd-hint">A "To" earlier than "From" closes the next morning.</div>`;
+  return v.rows.map((r, i) => `<div class="gd-sched-row">
+      ${weekdayToggles(r.days, { value: w => w.nday, wrapAttrs: `data-row="${i}"` })}
+      <div class="gd-form gd-inline">
+        <label>From <input type="time" data-rk="from" data-row="${i}" value="${escHtml(r.from)}"></label>
+        <label>To <input type="time" data-rk="to" data-row="${i}" value="${escHtml(r.to)}"></label>
+      </div>
+      ${v.rows.length > 1 ? `<button type="button" class="gd-btn gd-small" data-rowdel="${i}">Remove these times</button>` : ''}
+    </div>`).join('')
+    + `<button type="button" class="gd-btn gd-small" id="gd-rowadd">+ Other days, other times</button>
+    <div class="gd-hint">A "To" earlier than "From" closes the next morning. A day belongs to one row: picking
+      it in one row takes it out of the others. To clear each row with its own tag, set the tags' days below.</div>`;
+}
+
+// A tag's days as words: the gate's digits, '0' = Monday (WEEKDAYS.i).
+function tagDaysPhrase(digits) {
+  if (digits == null) return 'every day';
+  const on = WEEKDAYS.filter(w => String(digits).includes(String(w.i)));
+  return on.length ? on.map(w => w.name).join(', ') : 'no days';
 }
 
 function locationSelect(v, keepLabel) {
@@ -1048,9 +1069,11 @@ function renderSheet() {
           : 'The window IS the deadline. Making it all-day is the largest easing there is, so it waits 24h.'}</div>`}
 
       <div class="gd-field"><div class="gd-flabel">When it runs</div>
-        <div>${escHtml(n.schedule_label || 'no schedule')}</div>
-        ${v.sched ? schedFields(v) + '<div class="gd-hint">Saving writes a NEW weekly schedule and points the gate at it; the old one is left untouched for everything else using it. Fewer days or a shorter window apply at once; anything easier waits 24h.</div>'
-          : '<button type="button" class="gd-btn gd-small" id="gd-sched">Replace with a weekly schedule</button>'}
+        ${n.schedule_rows ? n.schedule_rows.map(r => `<div>${escHtml(WEEKDAYS.filter(w => r.days.includes(w.nday))
+          .map(w => w.name).join(', '))} · ${escHtml(r.from)}–${escHtml(r.to)}</div>`).join('')
+          : `<div>${escHtml(n.schedule_label || 'no schedule')}</div>`}
+        ${v.sched ? schedFields(v) + '<div class="gd-hint">Saving writes a NEW schedule and points the gate at it; the old one is left untouched for everything else using it. Fewer days or a shorter window apply at once; anything easier waits 24h.</div>'
+          : `<button type="button" class="gd-btn gd-small" id="gd-sched">${n.schedule_rows ? 'Change days and times' : 'Replace with a weekly schedule'}</button>`}
       </div>
 
       ${v.proof === 'link' ? `<div class="gd-form gd-inline">
@@ -1120,7 +1143,20 @@ function tagsHtml(n) {
         <div class="gd-row-line"><span class="gd-row-name">${escHtml(t.label)}</span><span class="gd-mono">${escHtml(t.uid)}</span></div>
         <div class="gd-hint">${escHtml(tagState(t))}${t.keys_set ? ' · keys set (write-only)' : ''}${(t.also_on || []).length
           ? ` · also clears ${escHtml(t.also_on.join(', '))} (one tag, one pair of keys)` : ''}</div>
+        <div class="gd-hint">Clears it on ${escHtml(tagDaysPhrase(t.days_of_week))}${t.pending_days_at
+          ? ` · ${escHtml(tagDaysPhrase(t.pending_days))} from ${escHtml(stamp(t.pending_days_at))}` : ''}</div>
+        ${E.tagDays && E.tagDays.id === t.id ? `<div class="gd-tagform">
+            ${weekdayToggles(E.tagDays.days, { attr: 'tagday' })}
+            <div class="gd-actions">
+              <button type="button" class="gd-btn gd-small gd-primary" id="gd-tagdays-save">Save days</button>
+              <button type="button" class="gd-btn gd-small" id="gd-tagdays-cancel">Cancel</button>
+            </div>
+            <div class="gd-hint">A tap counts only on these days — on the gate's day, so a 00:30 tap on a
+              23:00 window counts for the night it belongs to. More days waits 24h on a tag-only gate; fewer
+              lands at once, unless some day the gate runs would be left with no tag to clear it.</div>
+          </div>` : ''}
         <div class="gd-actions">
+          <button type="button" class="gd-btn gd-small" data-tagdays="${t.id}">Days</button>
           <button type="button" class="gd-btn gd-small" data-tagkeys="${t.id}">${t.keys_set ? 'Replace keys' : 'Set keys'}</button>
           <button type="button" class="gd-btn gd-small" data-tagactive="${t.id}" data-to="${t.active ? 0 : 1}">${t.active ? 'Pause' : 'Resume'}</button>
           <button type="button" class="gd-btn gd-small gd-danger" data-tagdel="${t.id}">Delete</button>
@@ -1172,19 +1208,44 @@ function wireSheet(n) {
     });
   });
   el.querySelectorAll('[data-tk]').forEach(inp => inp.addEventListener('input', () => { E.tag[inp.dataset.tk] = inp.value; }));
-  el.querySelectorAll('[data-day]').forEach(b => b.addEventListener('click', () => {
+  el.querySelectorAll('[data-row] [data-day]').forEach(b => b.addEventListener('click', () => {
     const d = b.dataset.day;
-    v.days = v.days.includes(d) ? v.days.filter(x => x !== d) : v.days.concat(d);
+    const i = +b.closest('[data-row]').dataset.row;
+    const row = v.rows[i];
+    if (row.days.includes(d)) row.days = row.days.filter(x => x !== d);
+    else {
+      // One row per day: taking it here takes it from the others.
+      v.rows.forEach((r, j) => { if (j !== i) r.days = r.days.filter(x => x !== d); });
+      row.days = row.days.concat(d);
+    }
     E.forceRender = true;
     renderSheet();
   }));
+  el.querySelectorAll('[data-rk]').forEach(inp => inp.addEventListener('change', () => {
+    v.rows[+inp.dataset.row][inp.dataset.rk] = inp.value;
+  }));
+  el.querySelectorAll('[data-rowdel]').forEach(b => b.addEventListener('click', () => {
+    v.rows.splice(+b.dataset.rowdel, 1);
+    E.forceRender = true;
+    renderSheet();
+  }));
+  const rowAdd = el.querySelector('#gd-rowadd');
+  if (rowAdd) rowAdd.addEventListener('click', () => {
+    const used = v.rows.flatMap(r => r.days);
+    const last = v.rows[v.rows.length - 1] || newSchedRow([], '09:00', '10:00');
+    v.rows.push(newSchedRow(WEEKDAYS.map(w => w.nday).filter(d => !used.includes(d)), last.from, last.to));
+    E.forceRender = true;
+    renderSheet();
+  });
   el.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => copyAndSay(b.dataset.copy, b.dataset.what)));
   const sched = el.querySelector('#gd-sched');
   if (sched) sched.addEventListener('click', () => {
     v.sched = true;
-    v.days = v.days.length ? v.days : ['mo', 'tu', 'we', 'th', 'fr'];
-    v.from = v.from || (n && n.window_start) || '09:00';
-    v.to = v.to || (n && n.window_end) || '10:00';
+    // The rows the server read off the gate's schedule, or one row from its
+    // window when the schedule is something the sheet cannot write back.
+    v.rows = (n && n.schedule_rows ? n.schedule_rows : [{ days: ['mo', 'tu', 'we', 'th', 'fr'],
+      from: (n && n.window_start) || '09:00', to: (n && n.window_end) || '10:00' }])
+      .map(r => newSchedRow(r.days, r.from, r.to));
     E.forceRender = true;
     renderSheet();
   });
@@ -1210,6 +1271,30 @@ function wireSheet(n) {
     E.tag = { id: +b.dataset.tagkeys, meta: '', mac: '', reveal: false };
     E.forceRender = true; renderSheet();
   }));
+  el.querySelectorAll('[data-tagdays]').forEach(b => b.addEventListener('click', () => {
+    const t = (n.tags || []).find(x => x.id === +b.dataset.tagdays);
+    const cur = t.pending_days_at ? t.pending_days : t.days_of_week;
+    E.tagDays = { id: t.id, days: WEEKDAYS.map(w => w.i).filter(i => cur == null || String(cur).includes(String(i))) };
+    E.forceRender = true; renderSheet();
+  }));
+  el.querySelectorAll('[data-tagday]').forEach(b => b.addEventListener('click', () => {
+    const d = +b.dataset.tagday;
+    E.tagDays.days = E.tagDays.days.includes(d) ? E.tagDays.days.filter(x => x !== d) : E.tagDays.days.concat(d);
+    E.forceRender = true; renderSheet();
+  }));
+  const tdCancel = el.querySelector('#gd-tagdays-cancel');
+  if (tdCancel) tdCancel.addEventListener('click', () => { E.tagDays = null; E.forceRender = true; renderSheet(); });
+  const tdSave = el.querySelector('#gd-tagdays-save');
+  if (tdSave) tdSave.addEventListener('click', async () => {
+    if (!E.tagDays.days.length) { toast('A tag needs at least one day — pause it instead'); return; }
+    const res = await apiSendData(`/api/accountability/tags/${E.tagDays.id}`, 'PATCH',
+      { days_of_week: E.tagDays.days.slice().sort().join('') });
+    if (!res.ok) { toast(refusal(res, 'Those days were refused')); return; }
+    toast(res.data && res.data.pending ? `The new days start ${stamp(res.data.apply_at)}` : 'Days saved');
+    E.tagDays = null;
+    E.forceRender = true;
+    await reloadConfig();
+  });
   const cancel = el.querySelector('#gd-tagcancel');
   if (cancel) cancel.addEventListener('click', () => { E.tag = null; E.forceRender = true; renderSheet(); });
   const gen = el.querySelector('#gd-genkeys');
@@ -1276,23 +1361,35 @@ async function saveTag(n) {
   await reloadConfig();
 }
 
-// A weekly schedule as the picker writes one: a rule source anchored today.
-// Always a NEW source — PATCHing the one the gate points at would rewrite every
-// day that follows it, with no 24h test (the stated LIMIT of the dated-change
-// work); pointing the gate at a new one goes through schedule_node_patch.
-async function createWeeklySource(v, title) {
-  const s = hhmmMin(v.from), e = hhmmMin(v.to);
-  if (s == null || e == null) return { error: 'Set both times.' };
-  if (!v.days.length) return { error: 'Pick at least one day.' };
-  let dur = e - s;
-  if (dur <= 0) dur += DAY_MIN;
-  const res = await apiSendData('/api/schedules', 'POST', {
-    kind: 'rule', title: null,
-    start: `${wallDay()}T${clockHHMM(s)}:00`,
-    duration: `PT${Math.floor(dur / 60)}H${dur % 60}M`,
-    recurrenceRules: [{ '@type': 'RecurrenceRule', frequency: 'weekly',
-      byDay: WEEKDAYS.map(w => w.nday).filter(d => v.days.includes(d)).map(day => ({ '@type': 'NDay', day })) }],
-  });
+// A gate's schedule as the sheet writes it: one weekly rule per row, anchored
+// today, and a union of them when there is more than one row. Always NEW
+// sources — PATCHing the one the gate points at would rewrite every day that
+// follows it, with no 24h test (the stated LIMIT of the dated-change work);
+// pointing the gate at a new one goes through schedule_node_patch, which asks
+// schedule.demands_less of the occurrences, unions included.
+async function createWeeklySource(v) {
+  const rows = v.rows.filter(r => r.days.length);
+  if (!rows.length) return { error: 'Pick at least one day.' };
+  for (const r of rows) {
+    if (hhmmMin(r.from) == null || hhmmMin(r.to) == null) return { error: 'Set both times on every row.' };
+  }
+  const uids = [];
+  for (const r of rows) {
+    const s = hhmmMin(r.from), e = hhmmMin(r.to);
+    let dur = e - s;
+    if (dur <= 0) dur += DAY_MIN;
+    const res = await apiSendData('/api/schedules', 'POST', {
+      kind: 'rule', title: null,
+      start: `${wallDay()}T${clockHHMM(s)}:00`,
+      duration: `PT${Math.floor(dur / 60)}H${dur % 60}M`,
+      recurrenceRules: [{ '@type': 'RecurrenceRule', frequency: 'weekly',
+        byDay: WEEKDAYS.map(w => w.nday).filter(d => r.days.includes(d)).map(day => ({ '@type': 'NDay', day })) }],
+    });
+    if (!res.ok || !res.data.uid) return { error: refusal(res, 'The schedule was not saved') };
+    uids.push(res.data.uid);
+  }
+  if (uids.length === 1) return { uid: uids[0] };
+  const res = await apiSendData('/api/schedules', 'POST', { kind: 'schedule', title: null, entries: uids });
   if (!res.ok || !res.data.uid) return { error: refusal(res, 'The schedule was not saved') };
   return { uid: res.data.uid };
 }

@@ -55,7 +55,11 @@ READS = {
         '"tag" only after ntag.verify accepts the CMAC of the tap and '
         'storage.qr_accept_tap claims a read counter the tag has never used — '
         'a client cannot ask for it, and qr_judge.scan_satisfies is the one '
-        'place that says which proof clears which gate.',
+        'place that says which proof clears which gate. Each row carries its '
+        'tag\'s `tag_days` (qr_tag.days_of_week): written only through PATCH '
+        '/api/accountability/tags/<id>, which PENDS more days 24h on a tag-only '
+        'gate and refuses fewer if a running day would be left uncovered '
+        '(qr_judge.uncovered_days); a due easing is applied in the read itself.',
     'qr_scans_between':
         'same rows, read for the ✓/✗ history.',
     'schedule_resolver':
