@@ -1415,7 +1415,10 @@ function renderRules() {
 // How to program a tag — moved here with the tag apparatus (it was the app's
 // TAG_SETUP_INFO; the dashboard is now the only place a tag is set up).
 const TAG_STEPS = `<ol class="gd-rules">
-  <li>Read the tag with NFC.cool to get its UID — the 7-byte, 14-hex-character value.</li>
+  <li>Read the tag with NFC.cool to get its UID: on Tag detail it is the <b>Serial number</b>, e.g.
+    04:86:57:52:1F:1E:90 — enter it without the colons (048657521F1E90), 7 bytes, 14 hex characters. A real
+    NXP UID starts with 04. It is NOT the picc_data or cmac in an already-programmed tag's URL — picc_data is
+    the UID encrypted (with the read counter), and cmac is a signature, so both change on every tap.</li>
   <li>Add the tag here NOW (+ Tag → name, UID, then Generate both keys), so a half-failed write never leaves
     you holding a configured tag whose keys are nowhere. Copy both keys while the form is open.</li>
   <li>Copy the tap URL. The zeros are placeholders; the tag overwrites them on every tap.</li>
