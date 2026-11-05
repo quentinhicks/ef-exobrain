@@ -264,9 +264,24 @@ async function loadAll() {
   renderAll();
 }
 
+// THE PAGE BESIDE THIS FRAME (2026-11-05, Quentin's report: a new gate did
+// not appear until a reload). Mounted in Settings, /gates is a frame docked
+// beside the Calendar or the day, and those cache the gates they drew. A write
+// here changed what they show, so the host re-reads the way it does after any
+// sheet write — refreshVisible, never a second refresher of its own. Both
+// reloads below run after every write on this page, so this is the one door
+// (paging to another day reloads too, and says it is not a write).
+function tellHost() {
+  try {
+    if (window.parent !== window && typeof window.parent.refreshVisible === 'function') {
+      window.parent.refreshVisible();
+    }
+  } catch (e) { /* a parent of another origin: nothing to tell */ }
+}
+
 // After a day-level write: the day's own answers, and the nodes (their
 // today_override and pending lists) — re-asked, never patched in place.
-async function reloadDay() {
+async function reloadDay(afterWrite = true) {
   const date = G.date;
   const c = claim(['day', 'nodes', 'segments']);
   const [day, nodes, segments] = await Promise.all([
@@ -278,6 +293,7 @@ async function reloadDay() {
   if (current(c, 'day')) G.day = day;
   if (current(c, 'nodes')) G.nodes = Array.isArray(nodes) ? nodes : G.nodes;
   if (current(c, 'segments')) G.segments = Array.isArray(segments) ? segments : G.segments;
+  if (afterWrite) tellHost();
   if (!current(c, 'day')) return;          // a newer read will paint
   renderDay();
   renderGates();
@@ -297,6 +313,7 @@ async function reloadConfig() {
   if (current(c, 'day') && G.date === date) G.day = day;
   if (current(c, 'billing')) G.billing = billing;
   if (current(c, 'ledger')) G.ledger = ledger;
+  tellHost();
   renderAll();
 }
 
@@ -649,7 +666,7 @@ function renderDay() {
 async function goDay(ymd) {
   G.date = ymd;
   writeRoute();
-  await reloadDay();
+  await reloadDay(false);                   // paging days is a read
 }
 
 // A DRAG ON A FINGER is a 550ms still hold, then a drag; on a mouse it starts
