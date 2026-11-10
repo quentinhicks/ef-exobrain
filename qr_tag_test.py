@@ -300,6 +300,21 @@ check('its keys cannot be cleared from ANY gate\'s row while a tag-only gate it 
       'has nothing else to clear it',
       c.delete(f"/api/accountability/tags/{on_desk['id']}/keys").status_code == 400)
 
+# Deleting a gate takes ITS tag rows and what was queued on them, never the
+# same tag's rows on other gates, nor the physical tag's keys (2026-11-09).
+storage.qr_pend_tag_live(on_desk['id'])
+before = len(storage.qr_tags_by_uid(UID_A))
+storage.qr_delete_node(other['id'])
+conn = storage.get_conn()
+left = conn.execute('SELECT COUNT(*) FROM qr_tag WHERE node_id = ?', (other['id'],)).fetchone()[0]
+queued = conn.execute("SELECT COUNT(*) FROM easing_pending WHERE kind = 'gate_tag' AND row_id = ?",
+                      (on_desk['id'],)).fetchone()[0]
+conn.close()
+check('deleting a gate deletes its tag rows', left == 0, left)
+check('...and what was queued on them', queued == 0, queued)
+check('...and leaves the same tag on its other gates', len(storage.qr_tags_by_uid(UID_A)) == before - 1)
+check('...and keeps the tag\'s keys', UID_A in ntag.load_keys())
+
 print('\n'.join(ok + bad))
 print('\n%d passed, %d failed' % (len(ok), len(bad)))
 sys.exit(1 if bad else 0)

@@ -7614,6 +7614,13 @@ def qr_delete_node(node_id):
         conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (node_id,))
     conn.execute("DELETE FROM easing_pending WHERE kind = 'gate' AND row_id = ?",
                  (node_id,))
+    # Its tag rows go with it, and what was queued on them (qr_delete_tag's
+    # rule). The PHYSICAL tag's keys stay in config.json: they are the tag's,
+    # and the same tag may still be on another gate.
+    for (tag_id,) in conn.execute('SELECT id FROM qr_tag WHERE node_id = ?', (node_id,)).fetchall():
+        _unpend_row(conn, 'gate_tag', tag_id, 'active')
+        _unpend_row(conn, 'gate_tag', tag_id, 'days_of_week')
+    conn.execute('DELETE FROM qr_tag WHERE node_id = ?', (node_id,))
     conn.execute('DELETE FROM qr_node WHERE id = ?', (node_id,))
     conn.commit()
     conn.close()
