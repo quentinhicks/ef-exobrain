@@ -4299,8 +4299,37 @@ function wireMdDoc(scope, { label, saved, save, restore }) {
   ta.addEventListener('keydown', e => {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ta.blur(); }
   });
+  // AN IMAGE PASTED OR DROPPED IN IS UPLOADED and its link written where the
+  // cursor is (2026-11-09, Quentin's instruction). Through insertText like
+  // every markdown mutation, so the field's own undo and the autosave follow.
+  let uploading = 0;
+  const addImages = async (e, list) => {
+    const files = [...(list || [])].filter(f => f.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    uploading++;
+    const links = [];
+    for (const f of files) {
+      const data = await fitPhoto(f, { max: 1920, keep: true });
+      const res = data && /^data:image\/(jpeg|png|webp|gif);/.test(data)
+        ? await apiSendData('/api/doc-images', 'POST', { data }) : null;
+      if (res && res.ok && res.data.url) links.push(`![](${res.data.url})`);
+      else toast(res ? (res.data && res.data.error) || 'The image was not saved' :`${f.name || 'That image'} can't be read — paste a JPEG, PNG, WebP or GIF`);
+    }
+    uploading--;
+    if (!links.length) return;
+    if (ta.classList.contains('hidden')) write(e);
+    ta.focus();
+    document.execCommand('insertText', false, links.join('\n'));
+  };
+  ta.addEventListener('paste', e => addImages(e, e.clipboardData && e.clipboardData.files));
+  ta.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+  ta.addEventListener('drop', e => addImages(e, e.dataTransfer && e.dataTransfer.files));
   ta.addEventListener('blur', async () => {
     await ta.__flushNotes();
+    // An upload still in flight comes back into the field; the view would
+    // swap it out from under the link.
+    if (uploading) return;
     if (!ta.value.trim()) return;
     view.innerHTML = mdHtml(ta.value);
     ta.classList.add('hidden');
@@ -11521,8 +11550,10 @@ function visionSize() {
 // ONE photo fitter. `size` {w, h}: cropped from the middle to those
 // proportions and reduced to w wide when larger (Vision). `size` {max}: kept
 // whole, its long edge reduced to max, as a JPEG (a gate's proof — what the
-// judge reads well and the upload carries quickly). Never enlarged. A GIF is
-// left as it is: a canvas would keep one frame.
+// judge reads well and the upload carries quickly); with `keep` too, in its
+// own type (a document's image — a screenshot stays a sharp PNG, and a JPEG
+// would paint its transparency black). Never enlarged. A GIF is left as it
+// is: a canvas would keep one frame.
 async function fitPhoto(file, size) {
   const data = await readDataUrl(file);
   if (!data || file.type === 'image/gif') return data;
@@ -11533,7 +11564,7 @@ async function fitPhoto(file, size) {
     im.src = data;
   });
   if (!img) return data;
-  const { w, h, max } = size;
+  const { w, h, max, keep } = size;
   const sw = max ? img.naturalWidth : Math.min(img.naturalWidth, img.naturalHeight * w / h);
   const sh = max ? img.naturalHeight : sw * h / w;
   const scale = Math.min(1, max ? max / Math.max(sw, sh) : w / sw);
@@ -11542,7 +11573,7 @@ async function fitPhoto(file, size) {
   canvas.height = Math.round(sh * scale);
   canvas.getContext('2d').drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) / 2,
     sw, sh, 0, 0, canvas.width, canvas.height);
-  const type = max ? 'image/jpeg' : /^image\/(png|jpeg|webp)$/.test(file.type) ? file.type : 'image/png';
+  const type = max && !keep ? 'image/jpeg' : /^image\/(png|jpeg|webp)$/.test(file.type) ? file.type : 'image/png';
   return canvas.toDataURL(type, 0.92);
 }
 

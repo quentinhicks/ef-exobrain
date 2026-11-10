@@ -16,6 +16,8 @@ vision/
 # working directory (photo_judge.py) - data, like vision/.
 gate-photos/
 photo-judge/
+# Images pasted into markdown documents (storage.DOC_IMAGE_DIR) - data.
+doc-images/
 __pycache__/
 *.pyc
 

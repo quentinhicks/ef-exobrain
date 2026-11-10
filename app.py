@@ -1833,6 +1833,25 @@ def vision_file(name):
     return send_from_directory(os.path.abspath(storage.VISION_DIR), name)
 
 
+# AN IMAGE PASTED INTO A DOCUMENT (2026-11-09): a data URL through the one
+# JSON door, like Vision's, answered with the address the markdown links to.
+@app.route('/api/doc-images', methods=['POST'])
+def post_doc_image():
+    data = request.get_json() or {}
+    m = re.match(r'^data:([\w/+.-]+);base64,(.*)$', data.get('data') or '', re.S)
+    name = m and storage.save_photo(storage.DOC_IMAGE_DIR, base64.b64decode(m.group(2)), m.group(1))
+    if not name:
+        return jsonify({'error': 'That is not a JPEG, PNG, WebP or GIF image'}), 400
+    return jsonify({'url': '/doc-images/' + name}), 201
+
+
+@app.route('/doc-images/<name>')
+def doc_image_file(name):
+    if not storage.VISION_NAME.match(name):
+        return jsonify({'error': 'No such image'}), 404
+    return send_from_directory(os.path.abspath(storage.DOC_IMAGE_DIR), name)
+
+
 @app.route('/api/timezones')
 def get_timezones():
     return jsonify(VALID_TIMEZONES)

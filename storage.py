@@ -4810,6 +4810,11 @@ def save_photo(folder, data, mime, name=None, types=VISION_TYPES):
 
 
 GATE_PHOTO_DIR = 'gate-photos'
+# An image pasted into a markdown document (2026-11-09, Quentin's
+# instruction): the document holds `![](/doc-images/<name>)`, the file lives
+# here. Never deleted with the text — an undo puts the link back, and the
+# file has to still be there to answer it.
+DOC_IMAGE_DIR = 'doc-images'
 
 
 def vision_add(data, mime, name=None):
