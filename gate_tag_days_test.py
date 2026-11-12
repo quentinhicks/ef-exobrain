@@ -2,7 +2,7 @@
 
 Quentin's instruction (2026-11-05): a gate may run on several schedules and
 each may have its own tag. A tag carries the days it clears
-(qr_tag.days_of_week, NULL = every day) and a tap counts only on them. This
+(qr_gate_tag.days_of_week — a tag assigned to a schedule's days, NULL = every day) and a tap counts only on them. This
 is the money path, so the checks are about what CANNOT happen:
 
   * a weekday tag does not clear the gate on a Saturday
@@ -73,10 +73,12 @@ conn = storage.get_conn()
 conn.execute('UPDATE qr_node SET created_at = NULL WHERE id = ?', (gid,))
 conn.commit()
 conn.close()
-w = c.post(f'/api/accountability/nodes/{gid}/tags', json={'uid': UID_W, 'label': 'Desk'}).get_json()
-e = c.post(f'/api/accountability/nodes/{gid}/tags', json={'uid': UID_E, 'label': 'Kitchen'}).get_json()
-for t in (w, e):
-    c.put(f"/api/accountability/tags/{t['id']}/keys", json={'meta': META, 'mac': MAC})
+pw = c.post('/api/nfc-tags', json={'uid': UID_W, 'label': 'Desk'}).get_json()
+pe = c.post('/api/nfc-tags', json={'uid': UID_E, 'label': 'Kitchen'}).get_json()
+w = c.post(f'/api/accountability/nodes/{gid}/tags', json={'tag_id': pw['id']}).get_json()
+e = c.post(f'/api/accountability/nodes/{gid}/tags', json={'tag_id': pe['id']}).get_json()
+for t in (pw, pe):
+    c.put(f"/api/nfc-tags/{t['id']}/keys", json={'meta': META, 'mac': MAC})
 r = c.patch(f'/api/accountability/nodes/{gid}', json={'proof_mode': 'tag'})
 check('the gate goes tag-only with both tags live', r.status_code == 200, r.get_json())
 
@@ -108,6 +110,9 @@ check('...the tag still clears only the weekend until then',
       tag_row(e['id'])['days_of_week'] == '56')
 payload = next(t for t in c.get('/api/accountability/nodes').get_json()
                if t['id'] == gid)['tags']
+check('the gate sheet is served which days nothing clears — none, while every day has a tag',
+      next(t for t in c.get('/api/accountability/nodes').get_json() if t['id'] == gid)
+      .get('tags_uncovered') == [])
 check('...and the gate sheet is told what is coming',
       next(t for t in payload if t['id'] == e['id'])['pending_days'] == '456', payload)
 r = days(e['id'], '56')
@@ -121,7 +126,7 @@ conn.commit()
 conn.close()
 storage.qr_scans_in_window(gid, '2000', '2001')        # the judge's read, alone
 conn = storage.get_conn()
-raw = conn.execute('SELECT days_of_week FROM qr_tag WHERE id = ?', (e['id'],)).fetchone()[0]
+raw = conn.execute('SELECT days_of_week FROM qr_gate_tag WHERE id = ?', (e['id'],)).fetchone()[0]
 conn.close()
 check('once due, the judge\'s own read applies it — never a tag read as tighter than it is',
       raw == '456', raw)
@@ -133,7 +138,7 @@ r = c.delete(f"/api/accountability/tags/{e['id']}")
 check('deleting the kitchen tag is refused: the weekend would be uncovered',
       r.status_code == 400 and 'Saturday' in r.get_json().get('error', ''), r.get_json())
 check('...and so is clearing its keys — a physical tag\'s keys are what make it live',
-      c.delete(f"/api/accountability/tags/{e['id']}/keys").status_code == 400)
+      c.delete(f"/api/nfc-tags/{pe['id']}/keys").status_code == 400)
 
 # ── what the judge and the history make of a tap ──
 node = next(n for n in storage.qr_get_nodes() if n['id'] == gid)

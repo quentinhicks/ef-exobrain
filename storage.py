@@ -140,23 +140,48 @@ def filing_updates(area_id=None, domain_id=None):
     return {'area_id': None, 'domain_id': domain_id or None}
 
 
-# qr_tag.uid was UNIQUE across every gate; since 2026-10-22 one physical tag
-# may clear several gates, so it is unique per GATE. Rebuilt under a new name
-# and renamed over the old one, the recurring_task precedent below.
-def _qr_tag_uid_per_gate(conn):
-    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' "
-                       "AND name = 'qr_tag'").fetchone()['sql']
-    if 'UNIQUE (node_id, uid)' in sql:
+# TAGS ARE THEIR OWN CONFIGURATION (2026-11-12, Quentin's instruction): a
+# physical tag is one `nfc_tag` row — its name, its UID, its read counter — and
+# a gate holds an ASSIGNMENT of it to the days of its schedule
+# (`qr_gate_tag`). Before, `qr_tag` was a row per gate per tag carrying the
+# tag's name and counter, so one tag on two gates was two rows that each had
+# to be told the same things. Split ONCE: a tag per UID (the first row's name,
+# the highest counter, the latest tap), and every old row kept as an
+# assignment UNDER ITS OWN ID — qr_scan.tag_id, qr_tap_attempt.tag_id and the
+# 24h waits (easing_pending kind 'gate_tag') all name those ids. Then qr_tag
+# goes; the guard is its absence.
+def _split_qr_tags(conn):
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'qr_tag'").fetchone():
         return
-    cols = ', '.join(r['name'] for r in conn.execute('PRAGMA table_info(qr_tag)'))
-    new = re.sub(r'(uid\s+TEXT\s+NOT NULL)\s+UNIQUE', r'\1', sql, count=1)
-    new = re.sub(r'\)\s*$', ',\n            UNIQUE (node_id, uid)\n        )', new, count=1)
-    new = re.sub(r'CREATE TABLE\s+(IF NOT EXISTS\s+)?"?qr_tag"?',
-                 'CREATE TABLE qr_tag_new', new, count=1)
-    conn.execute(new)
-    conn.execute(f'INSERT INTO qr_tag_new ({cols}) SELECT {cols} FROM qr_tag')
+    cols = {r['name'] for r in conn.execute('PRAGMA table_info(qr_tag)')}
+    rows = [dict(r) for r in conn.execute('SELECT * FROM qr_tag ORDER BY id')]
+    by_uid = {}
+    for r in rows:
+        uid = (r['uid'] or '').upper()
+        t = by_uid.get(uid)
+        if t is None:
+            by_uid[uid] = {'label': r['label'], 'last_counter': r['last_counter'],
+                           'last_tap_at': r['last_tap_at'], 'created_at': r['created_at']}
+            continue
+        t['last_counter'] = max(t['last_counter'], r['last_counter'])
+        if (r['last_tap_at'] or '') > (t['last_tap_at'] or ''):
+            t['last_tap_at'] = r['last_tap_at']
+    ids = {}
+    for uid, t in by_uid.items():
+        cur = conn.execute(
+            'INSERT INTO nfc_tag (label, uid, last_counter, last_tap_at, created_at) '
+            'VALUES (?,?,?,?,?)',
+            (t['label'], uid, t['last_counter'], t['last_tap_at'], t['created_at']))
+        ids[uid] = cur.lastrowid
+    for r in rows:
+        conn.execute(
+            'INSERT INTO qr_gate_tag (id, node_id, tag_id, days_of_week, active, created_at) '
+            'VALUES (?,?,?,?,?,?)',
+            (r['id'], r['node_id'], ids[(r['uid'] or '').upper()],
+             r['days_of_week'] if 'days_of_week' in cols else None,
+             r['active'], r['created_at']))
     conn.execute('DROP TABLE qr_tag')
-    conn.execute('ALTER TABLE qr_tag_new RENAME TO qr_tag')
     conn.commit()
 
 
@@ -1208,27 +1233,37 @@ def init_db():
             geofence_pass INTEGER,
             accuracy_m    REAL
         )''')
+    # A PHYSICAL TAG — its own configuration, on no gate until assigned. Its AES
+    # keys are NOT here: config.json, keyed by UID, never the db (backed up).
     conn.execute('''
-        CREATE TABLE IF NOT EXISTS qr_tag (
+        CREATE TABLE IF NOT EXISTS nfc_tag (
             id           INTEGER PRIMARY KEY,
-            node_id      INTEGER NOT NULL REFERENCES qr_node(id),
             label        TEXT NOT NULL,
-            uid          TEXT NOT NULL,
-            -- The tag's own read counter, the highest one ACCEPTED. -1 means
-            -- no tap yet; a tap at or below it is a replay and is refused.
+            uid          TEXT NOT NULL UNIQUE,
+            -- The tag's read counter, the highest one ACCEPTED. -1 means no
+            -- tap yet; a tap at or below it is a replay and is refused. ONE
+            -- counter per tag, so a tap is spent once whatever it clears.
             last_counter INTEGER NOT NULL DEFAULT -1,
             last_tap_at  TEXT,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )''')
+    # A TAG ASSIGNED TO A GATE'S SCHEDULE. Which days it clears are the gate's
+    # weekday digits, '0' = Monday (qr_judge._dow_of); NULL is every day the
+    # gate runs. A tap counts only on its assignment's days —
+    # qr_judge.scan_satisfies, the one answer. The sheet shows each schedule
+    # row with the tags whose days cover it; a day belongs to one row, so the
+    # days ARE the row. `active` is this gate's pause, and its 24h wait.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS qr_gate_tag (
+            id           INTEGER PRIMARY KEY,
+            node_id      INTEGER NOT NULL REFERENCES qr_node(id),
+            tag_id       INTEGER NOT NULL REFERENCES nfc_tag(id),
+            days_of_week TEXT,
             active       INTEGER NOT NULL DEFAULT 1,
             created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-            UNIQUE (node_id, uid)
+            UNIQUE (node_id, tag_id)
         )''')
-    _qr_tag_uid_per_gate(conn)
-    # WHICH DAYS A TAG CLEARS (2026-11-05, Quentin's instruction: one Wake gate,
-    # a weekday tag and a weekend tag). The gate's own weekday digits, '0' =
-    # Monday (qr_judge._dow_of); NULL is every day the gate runs. A tap counts
-    # only on its tag's days — qr_judge.scan_satisfies, the one answer.
-    if 'days_of_week' not in [r[1] for r in conn.execute('PRAGMA table_info(qr_tag)')]:
-        conn.execute('ALTER TABLE qr_tag ADD COLUMN days_of_week TEXT')
+    _split_qr_tags(conn)
     # EVERY TAP, VERIFIED OR NOT — the only place a REFUSED one is written.
     #
     # qr_scan holds taps that PROVED themselves, and the judge reads it. A tap
@@ -7614,13 +7649,13 @@ def qr_delete_node(node_id):
         conn.execute('DELETE FROM ' + t + ' WHERE node_id = ?', (node_id,))
     conn.execute("DELETE FROM easing_pending WHERE kind = 'gate' AND row_id = ?",
                  (node_id,))
-    # Its tag rows go with it, and what was queued on them (qr_delete_tag's
-    # rule). The PHYSICAL tag's keys stay in config.json: they are the tag's,
-    # and the same tag may still be on another gate.
-    for (tag_id,) in conn.execute('SELECT id FROM qr_tag WHERE node_id = ?', (node_id,)).fetchall():
+    # Its tag ASSIGNMENTS go with it, and what was queued on them
+    # (qr_delete_tag's rule). The tag itself stays in the registry, keys and
+    # all: it is its own configuration, and may be on another gate.
+    for (tag_id,) in conn.execute('SELECT id FROM qr_gate_tag WHERE node_id = ?', (node_id,)).fetchall():
         _unpend_row(conn, 'gate_tag', tag_id, 'active')
         _unpend_row(conn, 'gate_tag', tag_id, 'days_of_week')
-    conn.execute('DELETE FROM qr_tag WHERE node_id = ?', (node_id,))
+    conn.execute('DELETE FROM qr_gate_tag WHERE node_id = ?', (node_id,))
     conn.execute('DELETE FROM qr_node WHERE id = ?', (node_id,))
     conn.commit()
     conn.close()
@@ -7682,7 +7717,8 @@ def qr_recent_taps(node_id, limit=8):
     rows = conn.execute(
         '''SELECT a.*, t.label AS tag_label
              FROM qr_tap_attempt a
-             LEFT JOIN qr_tag t ON t.id = a.tag_id
+             LEFT JOIN qr_gate_tag g ON g.id = a.tag_id
+             LEFT JOIN nfc_tag t ON t.id = g.tag_id
             WHERE a.node_id = ? OR a.node_id IS NULL
             ORDER BY a.id DESC LIMIT ?''',
         (node_id, limit)).fetchall()
@@ -7690,93 +7726,155 @@ def qr_recent_taps(node_id, limit=8):
     return [dict(r, orphan=r['node_id'] is None) for r in rows]
 
 
-# ── The tags a gate accepts ───────────────────────────────────────────────
+# ── Tags: the registry, and what each gate is assigned ───────────────────
 #
-# A gate may have several tags — two doors into the same room — and since
-# 2026-10-22 (Quentin's instruction: the dorm tag clears Sleep AND Mindful) one
-# physical tag may be added to several gates. Each gate holds its OWN row for
-# it — its own label, its own 24h wait, its own pause — so a tap clears exactly
-# the gates whose row is live, and adding it to one gate is a new way to clear
-# THAT gate only. The AES keys are NOT here: they live in config.json, keyed by
-# UID, which is not in the db and so not in the backups the db is dumped into.
+# A TAG IS ITS OWN CONFIGURATION (2026-11-12, Quentin's instruction). `nfc_tag`
+# is the physical tag — name, UID, read counter — set up once, on no gate.
+# `qr_gate_tag` assigns it to a gate's schedule: the days it clears there, its
+# pause there and its 24h wait there. A gate may have several (two doors into
+# one room, or a weekday tag and a weekend tag) and one tag may be on several
+# gates (the dorm tag clears Sleep and Mindful); a tap clears exactly the gates
+# whose assignment is live. The AES keys are in config.json keyed by UID, not
+# here — the db is dumped into backups.
+#
+# The assignment reads below carry the TAG's fields beside their own (label,
+# uid, last_counter, last_tap_at, and tag_id), so a reader asks one question.
+_ASSIGNED = """g.*, t.label, t.uid, t.last_counter, t.last_tap_at
+           FROM qr_gate_tag g JOIN nfc_tag t ON t.id = g.tag_id"""
+
+
+def nfc_tags():
+    conn = get_conn()
+    rows = conn.execute('SELECT * FROM nfc_tag ORDER BY label COLLATE NOCASE, id').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def nfc_tag(tag_id):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM nfc_tag WHERE id = ?', (tag_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def nfc_tag_by_uid(uid):
+    conn = get_conn()
+    row = conn.execute('SELECT * FROM nfc_tag WHERE uid = ?', ((uid or '').upper(),)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def nfc_add_tag(label, uid):
+    conn = get_conn()
+    try:
+        cur = conn.execute('INSERT INTO nfc_tag (label, uid) VALUES (?,?)',
+                           (label, (uid or '').upper()))
+    except sqlite3.IntegrityError:
+        conn.close()
+        return None                     # that UID is already a tag
+    conn.commit()
+    row = conn.execute('SELECT * FROM nfc_tag WHERE id = ?', (cur.lastrowid,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def nfc_rename_tag(tag_id, label):
+    conn = get_conn()
+    conn.execute('UPDATE nfc_tag SET label = ? WHERE id = ?', (label, tag_id))
+    conn.commit()
+    row = conn.execute('SELECT * FROM nfc_tag WHERE id = ?', (tag_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def nfc_delete_tag(tag_id):
+    """The tag and every assignment of it, with what was queued on them."""
+    conn = get_conn()
+    for (aid,) in conn.execute('SELECT id FROM qr_gate_tag WHERE tag_id = ?', (tag_id,)).fetchall():
+        _unpend_row(conn, 'gate_tag', aid, 'active')
+        _unpend_row(conn, 'gate_tag', aid, 'days_of_week')
+    conn.execute('DELETE FROM qr_gate_tag WHERE tag_id = ?', (tag_id,))
+    cur = conn.execute('DELETE FROM nfc_tag WHERE id = ?', (tag_id,))
+    conn.commit()
+    gone = bool(cur.rowcount)
+    conn.close()
+    return gone
+
+
 def qr_tags_for_node(node_id, active_only=False):
     conn = get_conn()
     apply_due_tag_pendings(conn)
     rows = conn.execute(
-        'SELECT * FROM qr_tag WHERE node_id = ?'
-        + (' AND active = 1' if active_only else '') + ' ORDER BY id',
+        'SELECT ' + _ASSIGNED + ' WHERE g.node_id = ?'
+        + (' AND g.active = 1' if active_only else '') + ' ORDER BY g.id',
         (node_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def qr_all_tags():
+    """Every assignment, with its gate's name and proof."""
     conn = get_conn()
+    apply_due_tag_pendings(conn)
     rows = conn.execute(
-        '''SELECT t.*, n.label AS node_label, n.proof_mode
-           FROM qr_tag t JOIN qr_node n ON t.node_id = n.id ORDER BY t.node_id, t.id'''
-    ).fetchall()
+        'SELECT n.label AS node_label, n.proof_mode, ' + _ASSIGNED
+        + ' JOIN qr_node n ON g.node_id = n.id ORDER BY g.node_id, g.id').fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def qr_tags_by_uid(uid):
-    """Every gate's row for this physical tag — what one tap is asked about."""
+    """Every gate's assignment of this physical tag — what one tap is asked about."""
     conn = get_conn()
     apply_due_tag_pendings(conn)
     rows = conn.execute(
-        '''SELECT t.*, n.label AS node_label, n.active AS node_active
-           FROM qr_tag t JOIN qr_node n ON t.node_id = n.id
-           WHERE t.uid = ? ORDER BY t.id''', ((uid or '').upper(),)).fetchall()
+        'SELECT n.label AS node_label, n.active AS node_active, ' + _ASSIGNED
+        + ' JOIN qr_node n ON g.node_id = n.id WHERE t.uid = ? ORDER BY g.id',
+        ((uid or '').upper(),)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def qr_add_tag(node_id, label, uid, active=1):
+def qr_assign_tag(node_id, tag_id, days_of_week=None, active=1):
     conn = get_conn()
-    uid = (uid or '').upper()
-    # A tag already on another gate brings its read counter with it. Starting
-    # this row at -1 would make every URL the tag ever produced — a captured
-    # one included — new to THIS gate, and clear it once.
-    seen = conn.execute('SELECT MAX(last_counter) AS c FROM qr_tag WHERE uid = ?',
-                        (uid,)).fetchone()['c']
     try:
         cur = conn.execute(
-            'INSERT INTO qr_tag (node_id, label, uid, active, last_counter) VALUES (?,?,?,?,?)',
-            (node_id, label, uid, 1 if active else 0, -1 if seen is None else seen))
+            'INSERT INTO qr_gate_tag (node_id, tag_id, days_of_week, active) VALUES (?,?,?,?)',
+            (node_id, tag_id, days_of_week, 1 if active else 0))
     except sqlite3.IntegrityError:
         conn.close()
-        return None                     # that UID is already one of this gate's tags
+        return None                     # that tag is already on this gate
     conn.commit()
-    row = conn.execute('SELECT * FROM qr_tag WHERE id = ?', (cur.lastrowid,)).fetchone()
+    row = conn.execute('SELECT ' + _ASSIGNED + ' WHERE g.id = ?', (cur.lastrowid,)).fetchone()
     conn.close()
     return dict(row)
 
 
-QR_TAG_FIELDS = ('label', 'active', 'days_of_week')
+QR_TAG_FIELDS = ('active', 'days_of_week')
 
 
-def qr_update_tag(tag_id, fields):
+def qr_update_tag(assign_id, fields):
     sets = [(k, v) for k, v in fields.items() if k in QR_TAG_FIELDS]
     if not sets:
         return None
     conn = get_conn()
-    conn.execute('UPDATE qr_tag SET ' + ', '.join(k + ' = ?' for k, _ in sets)
-                 + ' WHERE id = ?', [v for _, v in sets] + [tag_id])
+    conn.execute('UPDATE qr_gate_tag SET ' + ', '.join(k + ' = ?' for k, _ in sets)
+                 + ' WHERE id = ?', [v for _, v in sets] + [assign_id])
     conn.commit()
-    row = conn.execute('SELECT * FROM qr_tag WHERE id = ?', (tag_id,)).fetchone()
+    row = conn.execute('SELECT ' + _ASSIGNED + ' WHERE g.id = ?', (assign_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
 
 
-def qr_delete_tag(tag_id):
+def qr_delete_tag(assign_id):
+    """Take a tag off a gate. The tag itself stays in the registry."""
     conn = get_conn()
     # The SCANS it proved stay: a tap that cleared a day is history, and the
     # judgment for that day was written against it. tag_id simply dangles,
     # exactly as a completed item's after_id does.
-    cur = conn.execute('DELETE FROM qr_tag WHERE id = ?', (tag_id,))
-    _unpend_row(conn, 'gate_tag', tag_id, 'active')
-    _unpend_row(conn, 'gate_tag', tag_id, 'days_of_week')
+    cur = conn.execute('DELETE FROM qr_gate_tag WHERE id = ?', (assign_id,))
+    _unpend_row(conn, 'gate_tag', assign_id, 'active')
+    _unpend_row(conn, 'gate_tag', assign_id, 'days_of_week')
     conn.commit()
     gone = bool(cur.rowcount)
     conn.close()
@@ -7786,7 +7884,7 @@ def qr_delete_tag(tag_id):
 # THE TAG KIND of easing_pending. A new tag on a HARD gate is a new way to
 # clear it — stick one by the desk and the gym gate is satisfied from the desk
 # — so it waits 24h like every other loosening, in the one store, keyed
-# (kind='gate_tag', row_id=tag_id, field='active'). Pausing or deleting a tag
+# (kind='gate_tag', row_id=the ASSIGNMENT's id, field='active'). Pausing or deleting a tag
 # is tightening and lands at once.
 #
 # Applied ON READ from both choke points (qr_tags_by_uid, which is what a tap
@@ -7800,7 +7898,7 @@ def apply_due_tag_pendings(conn):
            ORDER BY row_id, apply_at""", (now,)).fetchall()
     for r in rows:
         if r['field'] in QR_TAG_FIELDS:
-            conn.execute('UPDATE qr_tag SET ' + r['field'] + ' = ? WHERE id = ?',
+            conn.execute('UPDATE qr_gate_tag SET ' + r['field'] + ' = ? WHERE id = ?',
                          (_pending_value(r['value']), r['row_id']))
         conn.execute(
             "DELETE FROM easing_pending WHERE kind = 'gate_tag' AND row_id = ? AND field = ?",
@@ -7870,46 +7968,33 @@ def qr_unpend_tag(tag_id):
     conn.close()
 
 
-def qr_accept_tap(tag_id, counter, when):
-    """Claim a read counter for this tag, or refuse it as already seen.
+def nfc_accept_tap(uid, counter, when):
+    """Claim a read counter for this physical tag, or refuse it as already seen.
 
     THE REPLAY GUARD, and it is one statement on purpose: two processes write
     scans (the app and the public scan server), so a read-then-write would let
     the same captured URL through twice if both landed at once. The UPDATE's
     own WHERE decides, and rowcount is the answer — the same rule the
-    experiment writers follow.
+    experiment writers follow. ONE counter per tag (2026-11-12): a tap is spent
+    once, whichever gates it clears and whether or not each is live — a gate
+    paused or waiting its 24h must not later accept the URL as new.
     """
     conn = get_conn()
     cur = conn.execute(
-        '''UPDATE qr_tag SET last_counter = ?, last_tap_at = ?
-           WHERE id = ? AND active = 1 AND last_counter < ?''',
-        (counter, when, tag_id, counter))
+        """UPDATE nfc_tag SET last_counter = ?, last_tap_at = ?
+           WHERE uid = ? AND last_counter < ?""",
+        (counter, when, (uid or '').upper(), counter))
     conn.commit()
     accepted = bool(cur.rowcount)
     conn.close()
     return accepted
 
 
-def qr_tag_seen(uid, counter):
-    """A verified read is spent on EVERY gate's row for the tag, live or not.
-
-    A row that was paused or still waiting its 24h refused the tap without
-    claiming the counter, so once it went live the URL from that tap would be
-    new to it — a replay that clears a day. Run after the per-row claims, so
-    it cannot pre-empt them.
-    """
-    conn = get_conn()
-    conn.execute('UPDATE qr_tag SET last_counter = ? WHERE uid = ? AND last_counter < ?',
-                 (counter, (uid or '').upper(), counter))
-    conn.commit()
-    conn.close()
-
-
 # A scan carries its TAG'S DAYS (tag_days), read at the moment of judging, and
 # any tag easing that has come due is applied first — the judge must never read
 # a tag as tighter than it has become.
 _SCAN_COLS = '''s.*, t.days_of_week AS tag_days
-           FROM qr_scan s LEFT JOIN qr_tag t ON t.id = s.tag_id'''
+           FROM qr_scan s LEFT JOIN qr_gate_tag t ON t.id = s.tag_id'''
 
 
 def qr_scans_in_window(node_id, open_iso, close_iso):

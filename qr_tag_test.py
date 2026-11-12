@@ -6,8 +6,10 @@ This is the money path, so the checks are about what CANNOT happen:
     honest either looks - that is the whole difference between the two modes
   * a captured tap URL is worth nothing the second time: the read counter is
     claimed by the UPDATE itself, so two processes racing cannot both win it
-  * a tag clears the gates it is on and no other, even when the gates share
-    keys; on several gates, one tap clears each whose row is live, and a URL
+  * a tag is its OWN configuration (2026-11-12): set up once in the registry,
+    on no gate, and assigned to gates' schedules; it clears the gates it is on
+    and no other, even when the gates share keys; on several gates, one tap
+    clears each whose assignment is live, and its ONE read counter means a URL
     from before it joined a gate is not new to that gate
   * a new tag on a tag-only gate waits its 24h like every other loosening, and
     a paused one that never came due cannot clear anything
@@ -52,11 +54,21 @@ UID_A = '04AABBCCDDEE80'
 UID_B = '0411223344556680'[:14]
 
 
-def keys_in_config(uid, meta=META, mac=MAC):
-    # The same door the settings sheet uses, so the test exercises the merge
-    # rather than writing config.json behind it.
-    return c.put(f'/api/accountability/tags/{uid}/keys',
-                 json={'meta': meta, 'mac': mac})
+def keys_in_config(tag_id, meta=META, mac=MAC):
+    # The same door the Tags section uses, so the test exercises the merge
+    # rather than writing config.json behind it. tag_id is the REGISTRY's.
+    return c.put(f'/api/nfc-tags/{tag_id}/keys', json={'meta': meta, 'mac': mac})
+
+
+def register(uid, label=None):
+    r = c.post('/api/nfc-tags', json={'uid': uid, 'label': label or ''})
+    assert r.status_code == 201, (r.status_code, r.get_json())
+    return r.get_json()
+
+
+def assign(node_id, tag, days=None):
+    return c.post(f'/api/accountability/nodes/{node_id}/tags',
+                  json={'tag_id': tag['id'], 'days_of_week': days})
 
 
 gate = c.post('/api/accountability/nodes',
@@ -71,30 +83,38 @@ hard = c.patch(f"/api/accountability/nodes/{gate['id']}", json={'proof_mode': 't
 check('a gate cannot go tag-only with no tag — that gate could never be cleared',
       hard.status_code == 400, (hard.status_code, hard.get_json()))
 
-tag = c.post(f"/api/accountability/nodes/{gate['id']}/tags",
-             json={'uid': UID_A, 'label': 'Gym door'}).get_json()
-check('a tag is added to the gate', tag.get('id') and tag['uid'] == UID_A, tag)
+phys_a = register(UID_A, 'Gym door')
+check('a tag is set up in the registry, on no gate',
+      phys_a.get('id') and phys_a['uid'] == UID_A and phys_a['gates'] == [], phys_a)
 check('...and starts with no keys, so it cannot verify anything yet',
-      tag.get('keys_set') is False, tag)
-check('the same gate cannot hold the same tag twice',
-      c.post(f"/api/accountability/nodes/{gate['id']}/tags",
-             json={'uid': UID_A}).status_code == 409)
+      phys_a.get('keys_set') is False, phys_a)
+check('the registry holds one tag per UID',
+      c.post('/api/nfc-tags', json={'uid': UID_A.lower()}).status_code == 409)
 check('a UID that is not 7 bytes is refused',
-      c.post(f"/api/accountability/nodes/{gate['id']}/tags",
-             json={'uid': 'AABB'}).status_code == 400)
+      c.post('/api/nfc-tags', json={'uid': 'AABB'}).status_code == 400)
+check('a gate is given only a tag from the registry',
+      c.post(f"/api/accountability/nodes/{gate['id']}/tags", json={'uid': UID_A}).status_code == 400)
+tag = assign(gate['id'], phys_a).get_json()
+check('a registered tag is assigned to the gate',
+      tag.get('id') and tag['uid'] == UID_A and tag['tag_id'] == phys_a['id']
+      and tag['label'] == 'Gym door', tag)
+check('the same gate cannot hold the same tag twice',
+      assign(gate['id'], phys_a).status_code == 409)
+check('the registry says which gates a tag is on',
+      [g['node_label'] for g in c.get('/api/nfc-tags').get_json()[0]['gates']] == ['Gym'])
 
 still = c.patch(f"/api/accountability/nodes/{gate['id']}", json={'proof_mode': 'tag'})
 check('a tag with no keys still cannot make a gate tag-only', still.status_code == 400,
       still.get_json())
-check('the keys go in write-only', keys_in_config(tag['id']).status_code == 200)
+check('the keys go in write-only', keys_in_config(phys_a['id']).status_code == 200)
 check('...into config.json, never the database',
-      'ntag_keys' not in json.dumps([dict(r) for r in storage.get_conn().execute(
-          'SELECT * FROM qr_tag').fetchall()]))
+      META not in json.dumps([dict(r) for r in storage.get_conn().execute(
+          'SELECT * FROM nfc_tag').fetchall()]))
 check('...and are reported only as SET, never read back',
       c.get('/api/accountability/nodes').get_json()[0]['tags'][0]['keys_set'] is True
       and 'meta' not in c.get('/api/accountability/nodes').get_json()[0]['tags'][0])
 check('a key that is not 16 bytes is refused',
-      c.put(f"/api/accountability/tags/{tag['id']}/keys",
+      c.put(f"/api/nfc-tags/{phys_a['id']}/keys",
             json={'meta': 'AABB', 'mac': MAC}).status_code == 400)
 
 went = c.patch(f"/api/accountability/nodes/{gate['id']}", json={'proof_mode': 'tag'})
@@ -180,9 +200,9 @@ check('...and neither logged anything', len(storage.qr_scans_in_window(
 # ── a tag belongs to ONE gate ──
 other = c.post('/api/accountability/nodes',
                json={'label': 'Desk', 'window_start': '09:00', 'window_end': '17:00'}).get_json()
-tag_b = c.post(f"/api/accountability/nodes/{other['id']}/tags",
-               json={'uid': UID_B, 'label': 'Desk tag'}).get_json()
-keys_in_config(tag_b['id'])
+phys_b = register(UID_B, 'Desk tag')
+tag_b = assign(other['id'], phys_b).get_json()
+keys_in_config(phys_b['id'])
 pb, mb = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), UID_B, 2)
 t.get(f'/t?e={pb}&c={mb}')
 gym = storage.qr_scans_in_window(gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')
@@ -191,11 +211,11 @@ check('a tap with the SAME keys but another tag clears only its own gate',
       len(gym) == 4 and len(desk) == 1, (len(gym), len(desk)))
 
 # ── a new tag on a tag-only gate waits its 24h ──
-second = c.post(f"/api/accountability/nodes/{gate['id']}/tags",
-                json={'uid': '04FFEEDDCCBB80', 'label': 'Back door'}).get_json()
+phys_back = register('04FFEEDDCCBB80', 'Back door')
+second = assign(gate['id'], phys_back).get_json()
 check('a second tag on a TAG-ONLY gate is queued, not live',
       second['active'] == 0 and second.get('pending_live_at'), second)
-keys_in_config(second['id'])
+keys_in_config(phys_back['id'])
 p2, m2 = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), '04FFEEDDCCBB80', 1)
 queued = t.get(f'/t?e={p2}&c={m2}')
 check('...so a tap on it does not clear the gate yet', queued.status_code == 409,
@@ -228,7 +248,10 @@ check('...nor let it be paused',
       c.patch(f"/api/accountability/tags/{tag['id']}",
               json={'active': 0}).status_code == 400)
 check('...nor have its keys cleared',
-      c.delete(f"/api/accountability/tags/{tag['id']}/keys").status_code == 400)
+      c.delete(f"/api/nfc-tags/{phys_a['id']}/keys").status_code == 400)
+check('...nor be deleted from the registry',
+      c.delete(f"/api/nfc-tags/{phys_a['id']}").status_code == 400
+      and storage.nfc_tag(phys_a['id']) is not None)
 
 # ── going back to the link is the loosening, and waits ──
 back = c.patch(f"/api/accountability/nodes/{gate['id']}", json={'proof_mode': 'link'})
@@ -244,14 +267,13 @@ def scans_of(node_id):
 
 
 gym_before, desk_before = len(scans_of(gate['id'])), len(scans_of(other['id']))
-on_desk = c.post(f"/api/accountability/nodes/{other['id']}/tags",
-                 json={'uid': UID_A, 'label': 'Gym door, from the desk'})
+on_desk = assign(other['id'], phys_a)
 check("a tag already on one gate can be added to another", on_desk.status_code == 201,
       (on_desk.status_code, on_desk.get_json()))
 on_desk = on_desk.get_json()
 check('...live at once on a LINK gate, and its keys are already set (they are the UID\'s)',
       on_desk['active'] == 1 and on_desk['keys_set'] is True, on_desk)
-check('...carrying the read counter the tag has already spent',
+check('...and the read counter is the TAG\'s, already spent',
       on_desk['last_counter'] == 8, on_desk['last_counter'])
 t.get(f'/t?e={bulk[0]}&c={bulk[1]}')
 check('a URL from BEFORE it joined the second gate clears neither',
@@ -267,9 +289,9 @@ check('...and replaying it clears neither again',
 
 hard3 = c.post('/api/accountability/nodes',
                json={'label': 'Mindful', 'window_start': '07:45', 'window_end': '08:15'}).get_json()
-c.post(f"/api/accountability/nodes/{hard3['id']}/tags", json={'uid': UID_B})
+assign(hard3['id'], phys_b)
 c.patch(f"/api/accountability/nodes/{hard3['id']}", json={'proof_mode': 'tag'})
-joined = c.post(f"/api/accountability/nodes/{hard3['id']}/tags", json={'uid': UID_A}).get_json()
+joined = assign(hard3['id'], phys_a).get_json()
 check('on a TAG-ONLY gate the shared tag waits its 24h — it is a new way to clear THAT gate',
       joined['active'] == 0 and joined.get('pending_live_at'), joined)
 p10, m10 = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), UID_A, 10)
@@ -296,24 +318,91 @@ desk_row = [t for n in c.get('/api/accountability/nodes').get_json() if n['id'] 
             for t in n['tags'] if t['uid'] == UID_A][0]
 check('a shared tag says which other gates it clears, since its keys are theirs too',
       sorted(desk_row['also_on']) == ['Gym', 'Mindful'], desk_row.get('also_on'))
-check('its keys cannot be cleared from ANY gate\'s row while a tag-only gate it is on '
-      'has nothing else to clear it',
-      c.delete(f"/api/accountability/tags/{on_desk['id']}/keys").status_code == 400)
+check('its keys cannot be cleared while a tag-only gate it is on has nothing else to clear it',
+      c.delete(f"/api/nfc-tags/{phys_a['id']}/keys").status_code == 400)
 
-# Deleting a gate takes ITS tag rows and what was queued on them, never the
-# same tag's rows on other gates, nor the physical tag's keys (2026-11-09).
+# Deleting a gate takes ITS assignments and what was queued on them, never the
+# same tag's assignments on other gates, nor the tag or its keys (2026-11-09).
 storage.qr_pend_tag_live(on_desk['id'])
 before = len(storage.qr_tags_by_uid(UID_A))
 storage.qr_delete_node(other['id'])
 conn = storage.get_conn()
-left = conn.execute('SELECT COUNT(*) FROM qr_tag WHERE node_id = ?', (other['id'],)).fetchone()[0]
+left = conn.execute('SELECT COUNT(*) FROM qr_gate_tag WHERE node_id = ?', (other['id'],)).fetchone()[0]
 queued = conn.execute("SELECT COUNT(*) FROM easing_pending WHERE kind = 'gate_tag' AND row_id = ?",
                       (on_desk['id'],)).fetchone()[0]
 conn.close()
-check('deleting a gate deletes its tag rows', left == 0, left)
+check('deleting a gate deletes its tag assignments', left == 0, left)
 check('...and what was queued on them', queued == 0, queued)
 check('...and leaves the same tag on its other gates', len(storage.qr_tags_by_uid(UID_A)) == before - 1)
-check('...and keeps the tag\'s keys', UID_A in ntag.load_keys())
+check('...and keeps the tag, and its keys', storage.nfc_tag(phys_a['id']) is not None
+      and UID_A in ntag.load_keys())
+
+# ── a tag on no gate (2026-11-12) ──
+phys_loose = register('04010203040580', 'Spare')
+keys_in_config(phys_loose['id'])
+pl, ml = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), '04010203040580', 3)
+loose = t.get(f'/t?e={pl}&c={ml}')
+check('a tap on a tag that is on no gate says so, and clears nothing',
+      loose.status_code == 404 and b'not on a gate' in loose.data, loose.data[-200:])
+check('...but the read is spent all the same: assigning it later does not make the URL new',
+      storage.nfc_tag(phys_loose['id'])['last_counter'] == 3)
+check('renaming a tag renames it on every gate it is on',
+      c.patch(f"/api/nfc-tags/{phys_a['id']}", json={'label': 'Gym door (east)'}).status_code == 200
+      and {r['label'] for r in storage.qr_tags_by_uid(UID_A)} == {'Gym door (east)'})
+check('a tag needs a name', c.patch(f"/api/nfc-tags/{phys_a['id']}", json={'label': ' '}).status_code == 400)
+check('an unused tag can be deleted from the registry',
+      c.delete(f"/api/nfc-tags/{phys_loose['id']}").status_code == 200
+      and storage.nfc_tag(phys_loose['id']) is None)
+link_g = c.post('/api/accountability/nodes',
+                json={'label': 'Library', 'window_start': '10:00', 'window_end': '11:00'}).get_json()
+on_link = assign(link_g['id'], phys_b, '012').get_json()
+storage.qr_pend_tag_days(on_link['id'], '0123')
+check('deleting a tag takes it off every gate, with what was queued on its assignments',
+      c.delete(f"/api/nfc-tags/{phys_back['id']}").status_code == 200
+      and not storage.qr_tags_by_uid('04FFEEDDCCBB80'))
+check('...but not while it is all a tag-only gate has',
+      c.delete(f"/api/nfc-tags/{phys_a['id']}").status_code == 400)
+
+# ── the split (2026-11-12): old per-gate qr_tag rows become tags + assignments ──
+os.chdir(tempfile.mkdtemp())
+import sqlite3                                                     # noqa: E402
+raw = sqlite3.connect('tracker.db')
+raw.executescript('''
+    CREATE TABLE qr_tag (
+        id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL, label TEXT NOT NULL,
+        uid TEXT NOT NULL, last_counter INTEGER NOT NULL DEFAULT -1, last_tap_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        days_of_week TEXT, UNIQUE (node_id, uid));
+    INSERT INTO qr_tag (id, node_id, label, uid, last_counter, last_tap_at, active, days_of_week, created_at)
+      VALUES (1, 3, 'Kanji Hall dorm', '04326c521f1e90', 58, '2026-11-10T03:00:00Z', 1, NULL, '2026-08-25 00:54:55'),
+             (2, 4, 'Addy stairwell', '047668521F1E90', 45, '2026-11-12T12:13:39Z', 1, '0256', '2026-08-25 01:45:38'),
+             (4, 5, 'dorm (mindful)', '04326C521F1E90', 60, '2026-11-12T03:23:27Z', 0, NULL, '2026-10-22 20:28:54');
+''')
+raw.commit()
+raw.close()
+storage.init_db()
+conn = storage.get_conn()
+gone = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'qr_tag'").fetchone()
+phys = [dict(r) for r in conn.execute('SELECT * FROM nfc_tag ORDER BY id')]
+asg = [dict(r) for r in conn.execute('SELECT * FROM qr_gate_tag ORDER BY id')]
+conn.close()
+check('the split leaves no qr_tag table behind', gone is None)
+check('...one tag per physical UID, upper-cased',
+      [p['uid'] for p in phys] == ['04326C521F1E90', '047668521F1E90'], phys)
+check('...named by its first row, with the highest counter and the latest tap',
+      phys[0]['label'] == 'Kanji Hall dorm' and phys[0]['last_counter'] == 60
+      and phys[0]['last_tap_at'] == '2026-11-12T03:23:27Z', phys[0])
+check('...and every old row is an assignment under its OWN id (scans and waits name it)',
+      [(a['id'], a['node_id'], a['tag_id'], a['days_of_week'], a['active']) for a in asg]
+      == [(1, 3, phys[0]['id'], None, 1), (2, 4, phys[1]['id'], '0256', 1),
+          (4, 5, phys[0]['id'], None, 0)], asg)
+storage.init_db()
+conn = storage.get_conn()
+check('...and runs once: a second start changes nothing',
+      conn.execute('SELECT COUNT(*) FROM nfc_tag').fetchone()[0] == 2
+      and conn.execute('SELECT COUNT(*) FROM qr_gate_tag').fetchone()[0] == 3)
+conn.close()
 
 print('\n'.join(ok + bad))
 print('\n%d passed, %d failed' % (len(ok), len(bad)))

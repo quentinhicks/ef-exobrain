@@ -2437,6 +2437,12 @@ def _node_payload(node, today):
                 day_windows=storage.qr_gate_day_windows(node),
                 pending_changes=pending,
                 tags=_tag_payloads(node['id']),
+                # The weekdays a TAG-ONLY gate runs that no live, keyed tag
+                # clears — the judge's answer, so the sheet can say which
+                # schedule row is bare instead of working it out.
+                tags_uncovered=qr_judge.uncovered_days(
+                    node, storage.qr_tags_for_node(node['id']),
+                    {u.upper() for u in ntag.load_keys()}),
                 tap_url=_tap_url())
 
 
@@ -2453,18 +2459,18 @@ def _tap_url():
 
 
 def _tag_payloads(node_id):
-    # Whether a tag's KEYS are set, never what they are — the same contract
-    # /api/config keeps for the Beeminder token. A tag with no keys can never
-    # verify a tap, so saying so is the difference between "it is not working"
-    # and "I never finished setting it up".
+    # A gate's ASSIGNMENTS, each carrying its tag's name and UID. Whether the
+    # tag's KEYS are set, never what they are — the same contract /api/config
+    # keeps for the Beeminder token. A tag with no keys can never verify a tap,
+    # so saying so is the difference between "it is not working" and "I never
+    # finished setting it up".
     keys = ntag.load_keys()
     every = storage.qr_all_tags()
     out = []
     for t in storage.qr_tags_for_node(node_id):
-        # The other gates the same physical tag clears: its keys are shared
-        # with them, so replacing them here re-keys those too.
+        # The other gates the same tag clears: one tap clears them all.
         also = [r['node_label'] for r in every
-                if r['uid'].upper() == t['uid'].upper() and r['node_id'] != node_id]
+                if r['tag_id'] == t['tag_id'] and r['node_id'] != node_id]
         days_pending = storage.qr_tag_days_pending(t['id'])
         out.append(dict(t, keys_set=t['uid'].upper() in keys, also_on=also,
                         pending_live_at=storage.qr_tag_pending(t['id']),
@@ -3792,44 +3798,109 @@ def delete_location(id):
     return jsonify({'ok': True})
 
 
-# ── The tags a gate accepts ────────────────────────────────
+# ── Tags: the registry, and each gate's assignments ────────
 #
-# A gate may have several tags (Quentin, 2026-08-19), and one tag may be on
-# several gates (2026-10-22) — a row per gate, so each obeys its own gate's
-# rules. Everything here obeys the same 24h rule the gate's own fields do, in
-# the same store: a tag going LIVE is a new way to clear the gate, so on a
-# tag-only gate it waits; pausing or deleting one is tightening and lands at once.
+# A TAG IS ITS OWN CONFIGURATION (2026-11-12, Quentin's instruction): it is set
+# up once in the registry — name, UID, keys — and ASSIGNED to the days of a
+# gate's schedule. A gate may have several (2026-08-19) and one tag may be on
+# several gates (2026-10-22); each assignment obeys its own gate's rules, in
+# the same store the gate's own fields use: a tag going LIVE on a tag-only gate
+# is a new way to clear it, so it waits 24h; pausing or removing one is
+# tightening and lands at once, unless a running day would be left bare.
+def _tag_uid(raw):
+    return re.sub(r'[^0-9A-Fa-f]', '', str(raw or '')).upper()
+
+
+def _nfc_payload(t, keys=None, every=None):
+    keys = ntag.load_keys() if keys is None else keys
+    every = storage.qr_all_tags() if every is None else every
+    return dict(t, keys_set=t['uid'].upper() in keys,
+                gates=[{'id': r['id'], 'node_id': r['node_id'], 'node_label': r['node_label'],
+                        'days_of_week': r['days_of_week'], 'active': r['active']}
+                       for r in every if r['tag_id'] == t['id']])
+
+
+@app.route('/api/nfc-tags', methods=['GET', 'POST'])
+def nfc_tags_route():
+    if request.method == 'GET':
+        keys, every = ntag.load_keys(), storage.qr_all_tags()
+        return jsonify([_nfc_payload(t, keys, every) for t in storage.nfc_tags()])
+    d = request.get_json() or {}
+    uid = _tag_uid(d.get('uid'))
+    if len(uid) != 14:
+        return jsonify({'error': 'the UID is 7 bytes — 14 hex characters'}), 400
+    label = (d.get('label') or '').strip() or ('Tag ' + uid[-4:])
+    tag = storage.nfc_add_tag(label, uid)
+    if not tag:
+        return jsonify({'error': 'a tag with that UID is already set up'}), 409
+    return jsonify(_nfc_payload(tag)), 201
+
+
+@app.route('/api/nfc-tags/<int:tag_id>', methods=['PATCH', 'DELETE'])
+def nfc_tag_route(tag_id):
+    tag = storage.nfc_tag(tag_id)
+    if not tag:
+        return jsonify({'error': 'unknown tag'}), 404
+    if request.method == 'DELETE':
+        # Every gate it is on must stay clearable without it — a tag-only gate
+        # left with a day nothing clears would charge for it.
+        for row in storage.qr_all_tags():
+            if row['tag_id'] != tag_id:
+                continue
+            bare = _uncovered_if(row['node_id'], row['id'], None)
+            if bare:
+                return jsonify({'error': 'without this tag nothing could clear ' + row['node_label']
+                                         + ' on ' + _day_names(bare) + ' — give another tag those '
+                                         'days, move the gate to link proof, or pause it first'}), 400
+        # Its keys stay in config.json: they are the physical tag's, and
+        # adding it again by UID finds them.
+        storage.nfc_delete_tag(tag_id)
+        return jsonify({'ok': True})
+    d = request.get_json(silent=True) or {}
+    if 'label' in d:
+        label = (d.get('label') or '').strip()
+        if not label:
+            return jsonify({'error': 'a tag needs a name'}), 400
+        tag = storage.nfc_rename_tag(tag_id, label)
+    return jsonify(_nfc_payload(tag))
+
+
 @app.route('/api/accountability/nodes/<int:id>/tags', methods=['POST'])
 def post_accountability_tag(id):
     node = next((n for n in storage.qr_get_nodes() if n['id'] == id), None)
     if not node:
         return jsonify({'error': 'unknown node'}), 404
     d = request.get_json() or {}
-    uid = re.sub(r'[^0-9A-Fa-f]', '', str(d.get('uid') or '')).upper()
-    if len(uid) != 14:
-        return jsonify({'error': 'the UID is 7 bytes — 14 hex characters'}), 400
-    label = (d.get('label') or '').strip() or ('Tag ' + uid[-4:])
-    # A LIVE tag on a tag-only gate waits its 24h, so it is created paused with
-    # the easing queued. On a link gate there is nothing to ease: the gate is
-    # already clearable by link, and the tag only makes the evidence stronger.
-    hard = (node.get('proof_mode') or 'link') == 'tag'
-    tag = storage.qr_add_tag(id, label, uid, active=0 if hard else 1)
+    try:
+        tag = storage.nfc_tag(int(d.get('tag_id')))
+    except (TypeError, ValueError):
+        tag = None
     if not tag:
-        return jsonify({'error': 'that tag is already on this gate'}), 409
+        return jsonify({'error': 'pick a tag from the registry — set it up under Tags first'}), 400
+    days = qr_judge.norm_days(d.get('days_of_week'))
+    if days == '':
+        return jsonify({'error': 'a tag needs at least one day'}), 400
+    # A LIVE tag on a tag-only gate waits its 24h, so it is assigned paused
+    # with the easing queued. On a link gate there is nothing to ease: the gate
+    # is already clearable by link, and the tag only makes the evidence stronger.
+    hard = (node.get('proof_mode') or 'link') == 'tag'
+    row = storage.qr_assign_tag(id, tag['id'], days, active=0 if hard else 1)
+    if not row:
+        return jsonify({'error': 'that tag is already on this gate — give it more days instead'}), 409
     if hard:
-        tag['pending_live_at'] = storage.qr_pend_tag_live(tag['id'])
-    tag['keys_set'] = uid in ntag.load_keys()
-    return jsonify(tag), 201
+        row['pending_live_at'] = storage.qr_pend_tag_live(row['id'])
+    row['keys_set'] = tag['uid'].upper() in ntag.load_keys()
+    return jsonify(row), 201
 
 
-def _uncovered_if(node_id, tag_id, change, keyed=None):
+def _uncovered_if(node_id, assign_id, change, keyed=None):
     # The days a tag-only gate would be left with nothing to clear it, were
-    # this tag changed as described (`change` None = gone). The rule is the
-    # judge's (uncovered_days); this only builds the tag list it is asked of.
+    # this assignment changed as described (`change` None = gone). The rule is
+    # the judge's (uncovered_days); this only builds the list it is asked of.
     node = next((n for n in storage.qr_get_nodes() if n['id'] == node_id), None)
     if not node:
         return []
-    tags = [t if t['id'] != tag_id else (dict(t, **change) if change is not None else None)
+    tags = [t if t['id'] != assign_id else (dict(t, **change) if change is not None else None)
             for t in storage.qr_tags_for_node(node_id)]
     keyed = ntag.load_keys().keys() if keyed is None else keyed
     return qr_judge.uncovered_days(node, [t for t in tags if t],
@@ -3845,6 +3916,7 @@ def _day_names(digits):
 
 @app.route('/api/accountability/tags/<int:tag_id>', methods=['PATCH', 'DELETE'])
 def patch_accountability_tag(tag_id):
+    # tag_id is the ASSIGNMENT's: one tag on one gate.
     tag = next((t for t in storage.qr_all_tags() if t['id'] == tag_id), None)
     if not tag:
         return jsonify({'error': 'unknown tag'}), 404
@@ -3864,11 +3936,6 @@ def patch_accountability_tag(tag_id):
 
     d = request.get_json(silent=True) or {}
     fields = {}
-    if 'label' in d:
-        label = (d.get('label') or '').strip()
-        if not label:
-            return jsonify({'error': 'a tag needs a name'}), 400
-        fields['label'] = label
     if 'active' in d:
         want = 0 if storage.falsy(d.get('active')) else 1
         if want and not tag['active']:
@@ -3885,12 +3952,13 @@ def patch_accountability_tag(tag_id):
             storage.qr_unpend_tag(tag_id)      # a queued wake-up is off
             fields['active'] = 0
     if 'days_of_week' in d:
-        # WHICH DAYS IT CLEARS (2026-11-05). More days is another way to clear
-        # the gate, so on a tag-only gate it waits 24h like a new tag; fewer
-        # lands at once, unless it would leave a running day uncovered.
+        # WHICH DAYS IT CLEARS (2026-11-05) — on the sheet, which of the
+        # gate's schedule rows it is on. More days is another way to clear the
+        # gate, so on a tag-only gate it waits 24h like a new tag; fewer lands
+        # at once, unless it would leave a running day uncovered.
         want = qr_judge.norm_days(d.get('days_of_week'))
         if want == '':
-            return jsonify({'error': 'a tag needs at least one day — pause it instead'}), 400
+            return jsonify({'error': 'a tag needs at least one day — take it off the gate instead'}), 400
         if want == tag.get('days_of_week'):
             storage.qr_unpend_tag_days(tag_id)  # back to what it is: the easing is off
         else:
@@ -3909,8 +3977,8 @@ def patch_accountability_tag(tag_id):
     return jsonify(storage.qr_update_tag(tag_id, fields))
 
 
-@app.route('/api/accountability/tags/<int:tag_id>/keys', methods=['PUT'])
-def put_accountability_tag_keys(tag_id):
+@app.route('/api/nfc-tags/<int:tag_id>/keys', methods=['PUT'])
+def put_nfc_tag_keys(tag_id):
     """The tag's two AES keys — WRITE ONLY, and not into the database.
 
     They go to config.json beside the Beeminder token, for the same reason: the
@@ -3920,7 +3988,7 @@ def put_accountability_tag_keys(tag_id):
     instead of an entry in CONFIG_KEYS (a write-only blob nothing can read back
     cannot be edited one tag at a time).
     """
-    tag = next((t for t in storage.qr_all_tags() if t['id'] == tag_id), None)
+    tag = storage.nfc_tag(tag_id)
     if not tag:
         return jsonify({'error': 'unknown tag'}), 404
     d = request.get_json() or {}
@@ -3937,25 +4005,25 @@ def put_accountability_tag_keys(tag_id):
     return jsonify({'ok': True, 'keys_set': True})
 
 
-@app.route('/api/accountability/tags/<int:tag_id>/keys', methods=['DELETE'])
-def delete_accountability_tag_keys(tag_id):
-    tag = next((t for t in storage.qr_all_tags() if t['id'] == tag_id), None)
+@app.route('/api/nfc-tags/<int:tag_id>/keys', methods=['DELETE'])
+def delete_nfc_tag_keys(tag_id):
+    tag = storage.nfc_tag(tag_id)
     if not tag:
         return jsonify({'error': 'unknown tag'}), 404
-    # The keys are the PHYSICAL tag's, so clearing them disarms its row on
-    # every gate it is on — and each of those gates must stay clearable.
+    # Clearing the keys disarms the tag on every gate it is on — and each of
+    # those gates must stay clearable.
     uid = tag['uid'].upper()
+    keyed = {u.upper() for u in ntag.load_keys()} - {uid}
     for row in storage.qr_all_tags():
-        if row['uid'].upper() != uid or (row.get('proof_mode') or 'link') != 'tag':
+        if row['tag_id'] != tag_id or (row.get('proof_mode') or 'link') != 'tag':
             continue
-        keyed = {u.upper() for u in ntag.load_keys()} - {uid}
         bare = _uncovered_if(row['node_id'], None, None, keyed)
         if bare:
             return jsonify({'error': 'clearing these keys would leave '
                                      + row['node_label'] + ' with no way to be '
                                      'cleared on ' + _day_names(bare)}), 400
     keys = dict(_config_file().get('ntag_keys') or {})
-    keys.pop(tag['uid'].upper(), None)
+    keys.pop(uid, None)
     _update_config({'ntag_keys': keys})
     return jsonify({'ok': True, 'keys_set': False})
 

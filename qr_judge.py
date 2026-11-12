@@ -590,7 +590,7 @@ def scan_satisfies(node, scan, ymd):
 
 # ── Which days a tag clears ───────────────────────────────────────────────
 #
-# qr_tag.days_of_week: the gate's weekday digits ('0' = Monday), NULL = every
+# qr_gate_tag.days_of_week: the gate's weekday digits ('0' = Monday), NULL = every
 # day. Stored SORTED and never as all seven — every day is NULL — so one set
 # has one spelling and "did it change" is a string comparison.
 ALL_DAYS = '0123456'

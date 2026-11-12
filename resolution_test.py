@@ -68,7 +68,7 @@ RESOLUTIONS = {
         'it). date override > source > weekly > defaults — qr_override is an '
         'INPUT to that ladder, already day-keyed, so it projects nothing '
         'itself and is deliberately absent below.'),
-    'qr_tag': (
+    'qr_gate_tag': (
         'qr_judge.tag_clears_on',
         'asked ONLY by qr_judge.scan_satisfies, with the gate\'s day (not the '
         'tap\'s wall date), so the judge, outcomes and the read-out\'s '

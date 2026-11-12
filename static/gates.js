@@ -42,7 +42,9 @@ const G = {
   locations: [],
   settings: {},
   sel: null,           // node id selected on the day view
-  edit: null,          // the open editor: { id, v, tag, confirmDelete }
+  edit: null,          // the open editor: { id, v, confirmDelete }
+  tags: [],            // /api/nfc-tags — the registry, each with the gates it is on
+  tagForm: null,       // the Tags section's open form: { mode: 'add'|'keys'|'rename', id, … }
   taps: {},            // node id -> tap rows
   tokenCheck: null,    // the last explicit token verification
   armConfirmUntil: 0,
@@ -236,7 +238,7 @@ const current = (c, k) => loadSeq[k] === c[k];
 async function loadAll() {
   const date = G.date;
   const c = claim(['day', 'nodes', 'billing', 'ledger', 'segments', 'context']);
-  const [day, nodes, billing, ledger, events, segments, locations, settings] = await Promise.all([
+  const [day, nodes, billing, ledger, events, segments, locations, settings, tags] = await Promise.all([
     apiGet(`/api/gates/day?date=${date}`, G.day),
     apiGet('/api/accountability/nodes', G.nodes),
     apiGet('/api/gates/billing', G.billing),
@@ -245,12 +247,16 @@ async function loadAll() {
     apiGet(`/api/blocks/day?date=${date}&all=1`, G.segments),
     apiGet('/api/locations', G.locations),
     apiGet('/api/settings', G.settings),
+    apiGet('/api/nfc-tags', G.tags),
   ]);
   if (G.date !== date) return;            // navigated away while reading
   if (current(c, 'day')) G.day = day;
   if (current(c, 'billing')) G.billing = billing;
   if (current(c, 'ledger')) G.ledger = ledger;
-  if (current(c, 'nodes')) G.nodes = Array.isArray(nodes) ? nodes : G.nodes;
+  if (current(c, 'nodes')) {
+    G.nodes = Array.isArray(nodes) ? nodes : G.nodes;
+    G.tags = Array.isArray(tags) ? tags : G.tags;
+  }
   if (current(c, 'segments')) G.segments = Array.isArray(segments) ? segments : G.segments;
   if (current(c, 'context')) {
     G.settings = settings || G.settings;
@@ -303,13 +309,17 @@ async function reloadDay(afterWrite = true) {
 async function reloadConfig() {
   const date = G.date;
   const c = claim(['day', 'nodes', 'billing', 'ledger']);
-  const [nodes, day, billing, ledger] = await Promise.all([
+  const [nodes, day, billing, ledger, tags] = await Promise.all([
     apiGet('/api/accountability/nodes', G.nodes),
     apiGet(`/api/gates/day?date=${date}`, G.day),
     apiGet('/api/gates/billing', G.billing),
     apiGet('/api/gates/ledger', G.ledger),
+    apiGet('/api/nfc-tags', G.tags),
   ]);
-  if (current(c, 'nodes')) G.nodes = Array.isArray(nodes) ? nodes : G.nodes;
+  if (current(c, 'nodes')) {
+    G.nodes = Array.isArray(nodes) ? nodes : G.nodes;
+    G.tags = Array.isArray(tags) ? tags : G.tags;
+  }
   if (current(c, 'day') && G.date === date) G.day = day;
   if (current(c, 'billing')) G.billing = billing;
   if (current(c, 'ledger')) G.ledger = ledger;
@@ -321,6 +331,7 @@ function renderAll() {
   renderMoney();
   renderDay();
   renderGates();
+  renderTags();
   renderLedger();
   renderRules();
   if (G.edit) renderSheet();
@@ -944,7 +955,7 @@ function openEditor(id) {
     effective: '',
   } : { label: '', sched: true, rows: [newSchedRow(['mo', 'tu', 'we', 'th', 'fr'], '09:00', '10:00')],
         location: '', radius: '' };
-  G.edit = { id: n ? n.id : null, v, tag: null, tagDays: null, confirmDelete: false, error: '' };
+  G.edit = { id: n ? n.id : null, v, confirmDelete: false, error: '' };
   if (n) loadTaps(n.id);
   $('#gd-sheet').classList.remove('hidden');
   $('#gd-sheet-back').classList.remove('hidden');
@@ -999,7 +1010,8 @@ function schedFields(v) {
     </div>`).join('')
     + `<button type="button" class="gd-btn gd-small" id="gd-rowadd">+ Other days, other times</button>
     <div class="gd-hint">A "To" earlier than "From" closes the next morning. A day belongs to one row: picking
-      it in one row takes it out of the others. To clear each row with its own tag, set the tags' days below.</div>`;
+      it in one row takes it out of the others. A tag stays on the DAYS it was given, so after moving a day
+      between rows, check the tags under each row below.</div>`;
 }
 
 // A tag's days as words: the gate's digits, '0' = Monday (WEEKDAYS.i).
@@ -1090,14 +1102,14 @@ function renderSheet() {
         <button type="button" class="gd-btn gd-small" data-copy="${escHtml(scanUrl)}" data-what="Scan link">Copy</button>
         <div class="gd-hint">The QR code to print. ${v.proof === 'tag' ? 'On a tag-only gate a link scan is logged and does NOT clear it.'
           : 'Anyone with this link can clear the gate — keep it out of photos and chats.'}</div></div>
-        ${tagsHtml(n)}
+        ${gateTagsHtml(n)}
         <div class="gd-field"><div class="gd-flabel">Last taps <button type="button" class="gd-btn gd-small" id="gd-taps">Refresh</button></div>
           ${taps == null ? emptyHtml('reading…') : taps.length ? `<ul class="gd-list gd-mono">${taps.map(t =>
             `<li class="${t.ok ? 'gd-good-text' : 'gd-bad-text'}">${t.ok ? '✓' : '✗'} ${escHtml(t.at || '??')} · ${escHtml(t.orphan ? 'unidentified tag' : (t.tag_label || 'tag'))} · ${
               t.ok ? 'read ' + escHtml(t.counter) : escHtml(t.reason || 'refused')}</li>`).join('')}</ul>`
             : emptyHtml('None yet. Every tap of /t is written down, refused ones with the reason.')}
         </div>
-        <details class="gd-field"><summary>How to program a tag</summary>${TAG_STEPS}</details>` : ''}
+` : ''}
 
       <label class="gd-field">State
         <select data-k="active"><option value="1"${v.active ? ' selected' : ''}>Active</option><option value="0"${!v.active ? ' selected' : ''}>Paused</option></select></label>
@@ -1127,63 +1139,197 @@ function renderSheet() {
   wireSheet(n);
 }
 
-function tagsHtml(n) {
-  const E = G.edit;
-  const tags = n.tags || [];
-  const tf = E.tag;
-  const tagState = t => !t.keys_set ? 'no keys yet'
-    : t.pending_live_at ? `starts counting ${stamp(t.pending_live_at)}`
-    : !t.active ? 'paused' : !t.last_tap_at ? 'live, never tapped' : `last tap ${stamp(t.last_tap_at)}`;
-  return `<div class="gd-field"><div class="gd-flabel">Tags</div>
-    ${n.tap_url ? `<div class="gd-mono gd-wrap">${escHtml(n.tap_url)}</div>
-      <button type="button" class="gd-btn gd-small" data-copy="${escHtml(n.tap_url)}" data-what="Tap URL">Copy tap URL</button>
-      <div class="gd-hint">Write this to the tag as its NDEF URL, zeros included — the tag overwrites them on every tap.</div>`
-      : '<div class="gd-hint">Set a Scan URL in the app\'s Settings → Connections first — a tag needs somewhere to point.</div>'}
-    ${tags.map(t => `<div class="gd-tag">
-        <div class="gd-row-line"><span class="gd-row-name">${escHtml(t.label)}</span><span class="gd-mono">${escHtml(t.uid)}</span></div>
-        <div class="gd-hint">${escHtml(tagState(t))}${t.keys_set ? ' · keys set (write-only)' : ''}${(t.also_on || []).length
-          ? ` · also clears ${escHtml(t.also_on.join(', '))} (one tag, one pair of keys)` : ''}</div>
-        <div class="gd-hint">Clears it on ${escHtml(tagDaysPhrase(t.days_of_week))}${t.pending_days_at
-          ? ` · ${escHtml(tagDaysPhrase(t.pending_days))} from ${escHtml(stamp(t.pending_days_at))}` : ''}</div>
-        ${E.tagDays && E.tagDays.id === t.id ? `<div class="gd-tagform">
-            ${weekdayToggles(E.tagDays.days, { attr: 'tagday' })}
-            <div class="gd-actions">
-              <button type="button" class="gd-btn gd-small gd-primary" id="gd-tagdays-save">Save days</button>
-              <button type="button" class="gd-btn gd-small" id="gd-tagdays-cancel">Cancel</button>
-            </div>
-            <div class="gd-hint">A tap counts only on these days — on the gate's day, so a 00:30 tap on a
-              23:00 window counts for the night it belongs to. More days waits 24h on a tag-only gate; fewer
-              lands at once, unless some day the gate runs would be left with no tag to clear it.</div>
-          </div>` : ''}
-        <div class="gd-actions">
-          <button type="button" class="gd-btn gd-small" data-tagdays="${t.id}">Days</button>
-          <button type="button" class="gd-btn gd-small" data-tagkeys="${t.id}">${t.keys_set ? 'Replace keys' : 'Set keys'}</button>
-          <button type="button" class="gd-btn gd-small" data-tagactive="${t.id}" data-to="${t.active ? 0 : 1}">${t.active ? 'Pause' : 'Resume'}</button>
-          <button type="button" class="gd-btn gd-small gd-danger" data-tagdel="${t.id}">Delete</button>
-        </div></div>`).join('')}
-    ${tf ? `<div class="gd-tagform">
-        ${tf.id ? `<div class="gd-flabel">Keys for "${escHtml((tags.find(t => t.id === tf.id) || {}).label)}"</div>`
-          : `<label>Name <input type="text" data-tk="label" value="${escHtml(tf.label)}" placeholder="e.g. Gym door"></label>
-             <label>UID <input type="text" data-tk="uid" value="${escHtml(tf.uid)}" placeholder="7 bytes, 14 hex chars" class="gd-mono"></label>`}
-        ${tf.reveal ? `<div class="gd-keyrow"><span>Meta key</span><span class="gd-mono gd-wrap">${escHtml(tf.meta)}</span>
-            <button type="button" class="gd-btn gd-small" data-copy="${escHtml(tf.meta)}" data-what="Meta key">Copy</button></div>
-          <div class="gd-keyrow"><span>File key</span><span class="gd-mono gd-wrap">${escHtml(tf.mac)}</span>
-            <button type="button" class="gd-btn gd-small" data-copy="${escHtml(tf.mac)}" data-what="File key">Copy</button></div>
-          <div class="gd-hint">Copy BOTH into your tag writer before saving — once stored they are never shown again.
-            The way back is a new pair and a rewritten tag, not a lookup.</div>`
-          : `<label>Meta key <input type="password" data-tk="meta" autocomplete="off" placeholder="32 hex chars" class="gd-mono"></label>
-             <label>File key <input type="password" data-tk="mac" autocomplete="off" placeholder="32 hex chars" class="gd-mono"></label>`}
-        <div class="gd-actions">
-          <button type="button" class="gd-btn gd-small" id="gd-genkeys">${tf.reveal ? 'Regenerate' : 'Generate both keys'}</button>
-          <button type="button" class="gd-btn gd-small gd-primary" id="gd-tagsave">${tf.id ? 'Save keys' : 'Add tag'}</button>
-          <button type="button" class="gd-btn gd-small" id="gd-tagcancel">Cancel</button>
-        </div>
-        <div class="gd-hint">Generated keys come from this device's cryptographic random source and are stored in
-          config.json on the server — never the database, which is backed up. On a tag-only gate a NEW tag starts
-          counting in 24h: it is another way to clear the gate. A tag already on another gate keeps its keys —
-          add it by UID and leave the keys blank, and one tap clears both.</div>
-      </div>` : '<button type="button" class="gd-btn gd-small" id="gd-tagadd">+ Tag</button>'}
+// ── A gate's tags, under the schedule rows they clear ─────────
+// TAGS ARE THEIR OWN CONFIGURATION (2026-11-12, Quentin's instruction): a tag
+// is set up once in the Tags section, and a gate ASSIGNS it to the days of its
+// schedule. A day belongs to one schedule row, so the days are the row: a tag
+// is under a row when its days cover that row's. Its days are the gate's
+// weekday digits, '0' = Monday; null is every day.
+const ALL_DIGITS = '0123456';
+const tagDigits = a => (a.days_of_week == null ? ALL_DIGITS : String(a.days_of_week));
+const ndayDigit = d => String(WEEKDAYS.find(w => w.nday === d).i);
+
+function schedGroups(n) {
+  if (!n.schedule_rows) return [{ label: 'Every day it runs', time: '', digits: ALL_DIGITS }];
+  return n.schedule_rows.map(r => ({
+    label: WEEKDAYS.filter(w => r.days.includes(w.nday)).map(w => w.name).join(', '),
+    time: `${r.from}–${r.to}`,
+    digits: WEEKDAYS.filter(w => r.days.includes(w.nday)).map(w => String(w.i)).join(''),
+  }));
+}
+
+function tagStateWords(a) {
+  return !a.keys_set ? 'no keys yet'
+    : a.pending_live_at ? `starts counting ${stamp(a.pending_live_at)}`
+    : !a.active ? 'paused' : !a.last_tap_at ? 'live, never tapped' : `last tap ${stamp(a.last_tap_at)}`;
+}
+
+function gateTagsHtml(n) {
+  const assigned = n.tags || [];
+  const groups = schedGroups(n);
+  const bare = String((n.tags_uncovered || []).join(''));
+  const onSomeRow = new Set();
+  const rowsHtml = groups.map((g, gi) => {
+    const here = assigned.filter(a => [...g.digits].some(d => tagDigits(a).includes(d)));
+    here.forEach(a => onSomeRow.add(a.id));
+    const full = here.filter(a => [...g.digits].every(d => tagDigits(a).includes(d))).map(a => a.tag_id);
+    const offer = G.tags.filter(t => !full.includes(t.id));
+    const missing = [...g.digits].filter(d => bare.includes(d));
+    return `<div class="gd-sched-row">
+      <div class="gd-row-line"><span class="gd-row-name">${escHtml(g.label)}</span><span class="gd-mono">${escHtml(g.time)}</span></div>
+      ${here.map(a => {
+        const part = [...g.digits].filter(d => tagDigits(a).includes(d));
+        return `<div class="gd-tag">
+          <div class="gd-row-line"><span class="gd-row-name">${escHtml(a.label)}</span>${part.length < g.digits.length
+            ? `<span class="gd-hint">only ${escHtml(tagDaysPhrase(part.join('')))}</span>` : ''}</div>
+          <div class="gd-hint">${escHtml(tagStateWords(a))}${(a.also_on || []).length
+            ? ` · also clears ${escHtml(a.also_on.join(', '))}` : ''}${a.pending_days_at
+            ? ` · ${escHtml(tagDaysPhrase(a.pending_days))} from ${escHtml(stamp(a.pending_days_at))}` : ''}</div>
+          <div class="gd-actions">
+            <button type="button" class="gd-btn gd-small" data-tagactive="${a.id}" data-to="${a.active ? 0 : 1}">${a.active ? 'Pause' : 'Resume'}</button>
+            <button type="button" class="gd-btn gd-small gd-danger" data-tagoff="${a.id}" data-group="${gi}">Take off these days</button>
+          </div></div>`;
+      }).join('')}
+      ${missing.length ? `<div class="gd-hint gd-bad-text">No live tag with keys clears it on ${escHtml(tagDaysPhrase(missing.join('')))}.</div>` : ''}
+      ${offer.length ? `<select data-tagassign="${gi}"><option value="">+ Tag for these days…</option>${
+        offer.map(t => `<option value="${t.id}">${escHtml(t.label)}${t.keys_set ? '' : ' (no keys yet)'}</option>`).join('')}</select>`
+        : (G.tags.length ? '' : '<div class="gd-hint">No tags yet — set one up under Tags on this page.</div>')}
+    </div>`;
+  }).join('');
+  const stray = assigned.filter(a => !onSomeRow.has(a.id));
+  return `<div class="gd-field"><div class="gd-flabel">Tags, by schedule</div>
+    ${rowsHtml}
+    ${stray.map(a => `<div class="gd-tag">
+        <div class="gd-row-line"><span class="gd-row-name">${escHtml(a.label)}</span>
+          <span class="gd-hint">${escHtml(tagDaysPhrase(a.days_of_week))}, which the gate does not run on</span></div>
+        <div class="gd-actions"><button type="button" class="gd-btn gd-small gd-danger" data-tagdel="${a.id}">Take off this gate</button></div>
+      </div>`).join('')}
+    <div class="gd-hint">A tap counts only on the days its tag is under — on the gate's day, so a 00:30 tap on a 23:00
+      window counts for the night it belongs to. On a tag-only gate a tag added to a row starts counting in 24h
+      (it is another way to clear the gate); taking one off lands at once, unless a day would be left with no
+      tag. Tags themselves — names, UIDs, keys — are set up under Tags.</div>
   </div>`;
+}
+
+// ══ 4. THE TAGS — the registry, each tag its own configuration ═══
+function renderTags() {
+  const el = $('#gd-tags');
+  if (!el) return;
+  const F = G.tagForm;
+  const tapUrl = (G.nodes[0] || {}).tap_url || '';
+  const formHtml = !F ? '' : `<div class="gd-tagform">
+      ${F.mode === 'add' ? `<label>Name <input type="text" data-tf="label" value="${escHtml(F.label)}" placeholder="e.g. Gym door"></label>
+          <label>UID <input type="text" data-tf="uid" value="${escHtml(F.uid)}" placeholder="7 bytes, 14 hex chars" class="gd-mono"></label>`
+        : F.mode === 'rename' ? `<label>Name <input type="text" data-tf="label" value="${escHtml(F.label)}"></label>`
+        : `<div class="gd-flabel">Keys for "${escHtml((G.tags.find(t => t.id === F.id) || {}).label)}"</div>`}
+      ${F.mode === 'rename' ? '' : F.reveal ? `<div class="gd-keyrow"><span>Meta key</span><span class="gd-mono gd-wrap">${escHtml(F.meta)}</span>
+          <button type="button" class="gd-btn gd-small" data-copy="${escHtml(F.meta)}" data-what="Meta key">Copy</button></div>
+        <div class="gd-keyrow"><span>File key</span><span class="gd-mono gd-wrap">${escHtml(F.mac)}</span>
+          <button type="button" class="gd-btn gd-small" data-copy="${escHtml(F.mac)}" data-what="File key">Copy</button></div>
+        <div class="gd-hint">Copy BOTH into your tag writer before saving — once stored they are never shown again.
+          The way back is a new pair and a rewritten tag, not a lookup.</div>`
+        : `<label>Meta key <input type="password" data-tf="meta" autocomplete="off" placeholder="32 hex chars" class="gd-mono"></label>
+           <label>File key <input type="password" data-tf="mac" autocomplete="off" placeholder="32 hex chars" class="gd-mono"></label>`}
+      <div class="gd-actions">
+        ${F.mode === 'rename' ? '' : `<button type="button" class="gd-btn gd-small" id="gd-genkeys">${F.reveal ? 'Regenerate' : 'Generate both keys'}</button>`}
+        <button type="button" class="gd-btn gd-small gd-primary" id="gd-tfsave">${F.mode === 'add' ? 'Add tag' : F.mode === 'rename' ? 'Rename' : 'Save keys'}</button>
+        <button type="button" class="gd-btn gd-small" id="gd-tfcancel">Cancel</button>
+      </div>
+      ${F.mode === 'rename' ? '' : `<div class="gd-hint">Generated keys come from this device's cryptographic random source and
+        are stored in config.json on the server — never the database, which is backed up. The keys are the tag's, so
+        one pair serves every gate it is on.</div>`}
+    </div>`;
+  const rows = G.tags.map(t => `<div class="gd-tag">
+      <div class="gd-row-line"><span class="gd-row-name">${escHtml(t.label)}</span><span class="gd-mono">${escHtml(t.uid)}</span></div>
+      <div class="gd-hint">${t.keys_set ? 'keys set (write-only)' : 'no keys yet'} · ${t.last_tap_at
+        ? `last tap ${escHtml(stamp(t.last_tap_at))}, read ${escHtml(t.last_counter)}` : 'never tapped'}</div>
+      <div class="gd-hint">${t.gates.length ? 'On ' + t.gates.map(a => escHtml(`${a.node_label} (${tagDaysPhrase(a.days_of_week)})`)
+        + (a.active ? '' : ' · paused')).join('; ') : 'On no gate yet — add it to a gate\'s schedule in its sheet.'}</div>
+      <div class="gd-actions">
+        <button type="button" class="gd-btn gd-small" data-tfrename="${t.id}">Rename</button>
+        <button type="button" class="gd-btn gd-small" data-tfkeys="${t.id}">${t.keys_set ? 'Replace keys' : 'Set keys'}</button>
+        <button type="button" class="gd-btn gd-small gd-danger" data-tfdel="${t.id}">Delete</button>
+      </div></div>`).join('');
+  el.innerHTML = sectionHead('Tags', F && F.mode === 'add' ? '' : '<button class="gd-btn gd-small" id="gd-tagadd">+ Tag</button>')
+    + `<div class="gd-hint">Each NFC tag is set up once here and then put on the days of a gate's schedule, in the
+      gate's sheet. One tap clears every gate it is on that day.</div>`
+    + (F && F.mode === 'add' ? formHtml : '')
+    + (rows || (F ? '' : emptyHtml('No tags. A tag is the one proof that cannot be faked: it signs every tap.')))
+    + (F && F.mode !== 'add' ? formHtml : '')
+    + (tapUrl ? `<div class="gd-field"><div class="gd-flabel">Tap URL</div><div class="gd-mono gd-wrap">${escHtml(tapUrl)}</div>
+        <button type="button" class="gd-btn gd-small" data-copy="${escHtml(tapUrl)}" data-what="Tap URL">Copy tap URL</button>
+        <div class="gd-hint">Write this to every tag as its NDEF URL, zeros included — the tag overwrites them on every tap.</div></div>`
+      : '<div class="gd-hint">Set a Scan URL in the app\'s Settings → Connections first — a tag needs somewhere to point.</div>')
+    + `<details class="gd-field"><summary>How to program a tag</summary>${TAG_STEPS}</details>`;
+  wireTags(el);
+}
+
+function wireTags(el) {
+  const F = G.tagForm;
+  const redraw = () => renderTags();
+  const add = el.querySelector('#gd-tagadd');
+  if (add) add.addEventListener('click', () => {
+    G.tagForm = { mode: 'add', label: '', uid: '', meta: '', mac: '', reveal: false };
+    redraw();
+  });
+  el.querySelectorAll('[data-tf]').forEach(inp => inp.addEventListener('input', () => { G.tagForm[inp.dataset.tf] = inp.value; }));
+  el.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => copyAndSay(b.dataset.copy, b.dataset.what)));
+  el.querySelectorAll('[data-tfkeys]').forEach(b => b.addEventListener('click', () => {
+    G.tagForm = { mode: 'keys', id: +b.dataset.tfkeys, meta: '', mac: '', reveal: false };
+    redraw();
+  }));
+  el.querySelectorAll('[data-tfrename]').forEach(b => b.addEventListener('click', () => {
+    const t = G.tags.find(x => x.id === +b.dataset.tfrename);
+    G.tagForm = { mode: 'rename', id: t.id, label: t.label };
+    redraw();
+  }));
+  el.querySelectorAll('[data-tfdel]').forEach(b => b.addEventListener('click', async () => {
+    if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Tap again — off every gate'; return; }
+    const res = await apiSendData(`/api/nfc-tags/${b.dataset.tfdel}`, 'DELETE');
+    if (!res.ok) { toast(refusal(res, 'Delete refused')); return; }
+    await reloadConfig();
+  }));
+  const cancel = el.querySelector('#gd-tfcancel');
+  if (cancel) cancel.addEventListener('click', () => { G.tagForm = null; redraw(); });
+  const gen = el.querySelector('#gd-genkeys');
+  if (gen) gen.addEventListener('click', () => {
+    if (!(window.crypto && crypto.getRandomValues)) {
+      toast('This browser has no cryptographic random source — paste keys from your tag writer instead.');
+      return;
+    }
+    F.meta = randomKey();
+    F.mac = randomKey();
+    F.reveal = true;
+    redraw();
+  });
+  const save = el.querySelector('#gd-tfsave');
+  if (save) save.addEventListener('click', saveTagForm);
+}
+
+async function saveTagForm() {
+  const F = G.tagForm;
+  const putKeys = async id => {
+    if (!F.meta && !F.mac) return null;
+    const r = await apiSendData(`/api/nfc-tags/${id}/keys`, 'PUT', { meta: F.meta, mac: F.mac });
+    return r.ok ? null : refusal(r, 'Those keys were refused');
+  };
+  let err = null;
+  if (F.mode === 'add') {
+    if (!(F.label || '').trim()) { toast('A tag needs a name'); return; }
+    const res = await apiSendData('/api/nfc-tags', 'POST', { label: F.label.trim(), uid: F.uid });
+    if (!res.ok) { toast(refusal(res, 'Could not add it')); return; }
+    err = await putKeys(res.data.id);
+  } else if (F.mode === 'rename') {
+    if (!(F.label || '').trim()) { toast('A tag needs a name'); return; }
+    const res = await apiSendData(`/api/nfc-tags/${F.id}`, 'PATCH', { label: F.label.trim() });
+    if (!res.ok) err = refusal(res, 'Not renamed');
+  } else {
+    if (!F.meta || !F.mac) { toast('Both keys, or neither'); return; }
+    err = await putKeys(F.id);
+  }
+  if (err) { toast(err); return; }
+  G.tagForm = null;
+  await reloadConfig();
 }
 
 // TWO AES-128 KEYS, FROM THE CSPRNG AND NOWHERE ELSE. Refuses rather than
@@ -1207,7 +1353,6 @@ function wireSheet(n) {
       if (inp.dataset.rerender) { E.forceRender = true; renderSheet(); }
     });
   });
-  el.querySelectorAll('[data-tk]').forEach(inp => inp.addEventListener('input', () => { E.tag[inp.dataset.tk] = inp.value; }));
   el.querySelectorAll('[data-row] [data-day]').forEach(b => b.addEventListener('click', () => {
     const d = b.dataset.day;
     const i = +b.closest('[data-row]').dataset.row;
@@ -1261,65 +1406,50 @@ function wireSheet(n) {
     await reloadConfig();
   }));
 
-  // Tags
-  const add = el.querySelector('#gd-tagadd');
-  if (add) add.addEventListener('click', () => {
-    E.tag = { id: null, label: '', uid: '', meta: '', mac: '', reveal: false };
-    E.forceRender = true; renderSheet();
-  });
-  el.querySelectorAll('[data-tagkeys]').forEach(b => b.addEventListener('click', () => {
-    E.tag = { id: +b.dataset.tagkeys, meta: '', mac: '', reveal: false };
-    E.forceRender = true; renderSheet();
-  }));
-  el.querySelectorAll('[data-tagdays]').forEach(b => b.addEventListener('click', () => {
-    const t = (n.tags || []).find(x => x.id === +b.dataset.tagdays);
-    const cur = t.pending_days_at ? t.pending_days : t.days_of_week;
-    E.tagDays = { id: t.id, days: WEEKDAYS.map(w => w.i).filter(i => cur == null || String(cur).includes(String(i))) };
-    E.forceRender = true; renderSheet();
-  }));
-  el.querySelectorAll('[data-tagday]').forEach(b => b.addEventListener('click', () => {
-    const d = +b.dataset.tagday;
-    E.tagDays.days = E.tagDays.days.includes(d) ? E.tagDays.days.filter(x => x !== d) : E.tagDays.days.concat(d);
-    E.forceRender = true; renderSheet();
-  }));
-  const tdCancel = el.querySelector('#gd-tagdays-cancel');
-  if (tdCancel) tdCancel.addEventListener('click', () => { E.tagDays = null; E.forceRender = true; renderSheet(); });
-  const tdSave = el.querySelector('#gd-tagdays-save');
-  if (tdSave) tdSave.addEventListener('click', async () => {
-    if (!E.tagDays.days.length) { toast('A tag needs at least one day — pause it instead'); return; }
-    const res = await apiSendData(`/api/accountability/tags/${E.tagDays.id}`, 'PATCH',
-      { days_of_week: E.tagDays.days.slice().sort().join('') });
-    if (!res.ok) { toast(refusal(res, 'Those days were refused')); return; }
-    toast(res.data && res.data.pending ? `The new days start ${stamp(res.data.apply_at)}` : 'Days saved');
-    E.tagDays = null;
+  // Tags: assigned to a schedule row's days, taken off them, paused.
+  const groups = n ? schedGroups(n) : [];
+  const answered = async (res, what) => {
+    if (!res.ok) { toast(refusal(res, what)); return false; }
+    const at = res.data && (res.data.pending_live_at || (res.data.pending && res.data.apply_at));
+    if (at) toast(`It starts counting ${stamp(at)}`);
+    return true;
+  };
+  el.querySelectorAll('[data-tagassign]').forEach(sel => sel.addEventListener('change', async () => {
+    const tagId = +sel.value;
+    if (!tagId) return;
+    const g = groups[+sel.dataset.tagassign];
+    const a = (n.tags || []).find(x => x.tag_id === tagId);
+    const days = a ? [...new Set(tagDigits(a) + g.digits)].sort().join('') : g.digits;
+    const res = a
+      ? await apiSendData(`/api/accountability/tags/${a.id}`, 'PATCH', { days_of_week: days })
+      : await apiSendData(`/api/accountability/nodes/${n.id}/tags`, 'POST', { tag_id: tagId, days_of_week: days });
+    await answered(res, 'That tag was refused');
     E.forceRender = true;
     await reloadConfig();
-  });
-  const cancel = el.querySelector('#gd-tagcancel');
-  if (cancel) cancel.addEventListener('click', () => { E.tag = null; E.forceRender = true; renderSheet(); });
-  const gen = el.querySelector('#gd-genkeys');
-  if (gen) gen.addEventListener('click', () => {
-    if (!(window.crypto && crypto.getRandomValues)) {
-      toast('This browser has no cryptographic random source — paste keys from your tag writer instead.');
-      return;
-    }
-    E.tag.meta = randomKey();
-    E.tag.mac = randomKey();
-    E.tag.reveal = true;
-    E.forceRender = true; renderSheet();
-  });
-  const tsave = el.querySelector('#gd-tagsave');
-  if (tsave) tsave.addEventListener('click', () => saveTag(n));
-  el.querySelectorAll('[data-tagactive]').forEach(b => b.addEventListener('click', async () => {
-    const res = await apiSendData(`/api/accountability/tags/${b.dataset.tagactive}`, 'PATCH', { active: +b.dataset.to });
-    if (!res.ok) { toast(refusal(res, 'That change was refused')); return; }
-    if (res.data && res.data.pending) toast(`It starts counting ${stamp(res.data.apply_at)}`);
+  }));
+  el.querySelectorAll('[data-tagoff]').forEach(b => b.addEventListener('click', async () => {
+    if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Tap again'; return; }
+    const a = (n.tags || []).find(x => x.id === +b.dataset.tagoff);
+    const g = groups[+b.dataset.group];
+    const left = [...tagDigits(a)].filter(d => !g.digits.includes(d)).join('');
+    const res = left
+      ? await apiSendData(`/api/accountability/tags/${a.id}`, 'PATCH', { days_of_week: left })
+      : await apiSendData(`/api/accountability/tags/${a.id}`, 'DELETE');
+    await answered(res, 'That was refused');
+    E.forceRender = true;
     await reloadConfig();
   }));
   el.querySelectorAll('[data-tagdel]').forEach(b => b.addEventListener('click', async () => {
     if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Tap again'; return; }
     const res = await apiSendData(`/api/accountability/tags/${b.dataset.tagdel}`, 'DELETE');
-    if (!res.ok) { toast(refusal(res, 'Delete refused')); return; }
+    await answered(res, 'That was refused');
+    E.forceRender = true;
+    await reloadConfig();
+  }));
+  el.querySelectorAll('[data-tagactive]').forEach(b => b.addEventListener('click', async () => {
+    const res = await apiSendData(`/api/accountability/tags/${b.dataset.tagactive}`, 'PATCH', { active: +b.dataset.to });
+    await answered(res, 'That change was refused');
+    E.forceRender = true;
     await reloadConfig();
   }));
 
@@ -1334,31 +1464,6 @@ function wireSheet(n) {
     await reloadConfig();
   });
   el.querySelector('#gd-save').addEventListener('click', () => (n ? saveGate(n) : createGate()));
-}
-
-async function saveTag(n) {
-  const E = G.edit;
-  const t = E.tag;
-  const putKeys = async id => {
-    if (!t.meta && !t.mac) return null;
-    const r = await apiSendData(`/api/accountability/tags/${id}/keys`, 'PUT', { meta: t.meta, mac: t.mac });
-    return r.ok ? null : refusal(r, 'Those keys were refused');
-  };
-  let err;
-  if (!t.id) {
-    if (!(t.label || '').trim()) { toast('A tag needs a name'); return; }
-    const res = await apiSendData(`/api/accountability/nodes/${n.id}/tags`, 'POST', { label: t.label.trim(), uid: t.uid });
-    if (!res.ok) { toast(refusal(res, 'Could not add it')); return; }
-    err = await putKeys(res.data.id);
-    if (!err && res.data.pending_live_at) toast(`Added — it starts counting ${stamp(res.data.pending_live_at)}`);
-  } else {
-    if (!t.meta || !t.mac) { toast('Both keys, or neither'); return; }
-    err = await putKeys(t.id);
-  }
-  if (err) { toast(err); return; }
-  E.tag = null;
-  E.forceRender = true;
-  await reloadConfig();
 }
 
 // A gate's schedule as the sheet writes it: one weekly rule per row, anchored
@@ -1471,7 +1576,7 @@ async function saveGate(n) {
   openEditor(n.id);
 }
 
-// ══ 4. THE LEDGER — every judged day, and what it cost ═════════
+// ══ 5. THE LEDGER — every judged day, and what it cost ═════════
 function renderLedger() {
   const el = $('#gd-ledger');
   const L = G.ledger;
@@ -1497,7 +1602,7 @@ function renderLedger() {
   if (sel) sel.addEventListener('change', () => { G.ledgerGate = sel.value; renderLedger(); });
 }
 
-// ══ 5. THE RULES — how a day becomes a charge, in words ════════
+// ══ 6. THE RULES — how a day becomes a charge, in words ════════
 function renderRules() {
   const b = G.billing || {};
   $('#gd-rules').innerHTML = sectionHead('How it works') + `<ol class="gd-rules">
@@ -1534,8 +1639,8 @@ const TAG_STEPS = `<ol class="gd-rules">
   <li>Read the tag's UID — 7 bytes, 14 hex characters, starting 04 for a genuine NXP tag. It is NOT the
     picc_data or cmac in a programmed tag's URL: picc_data is the UID encrypted with the read counter, and cmac
     is a signature, so both change on every tap.</li>
-  <li>Add the tag here NOW (+ Tag → name, UID, then Generate both keys), so a half-failed write never leaves
-    you holding a configured tag whose keys are nowhere. Copy both keys while the form is open.</li>
+  <li>Add the tag here NOW (Tags → + Tag → name, UID, then Generate both keys), so a half-failed write never
+    leaves you holding a configured tag whose keys are nowhere. Copy both keys while the form is open.</li>
   <li>Copy the tap URL. The zeros are placeholders; the tag overwrites them on every tap.</li>
   <li>In NFC.cool Tools, write the full tap URL as the NDEF URL, zeros included.</li>
   <li>Turn on SUN / SDM on the NDEF file (file 02): encrypted PICC data mirror at the e= zeros with UID and
@@ -1546,9 +1651,9 @@ const TAG_STEPS = `<ol class="gd-rules">
     key</b> from this form — all 32 hex characters, never a short value like 1 (NFC.cool reads "1" as
     000…001, a key anyone can guess, which makes the tap no proof at all). Do this LAST. If you also change key 0,
     write it down somewhere durable. Leave it in AES mode, not LRP.</li>
-  <li>Back here: set Proof to "NFC tag only". It refuses until the tag and its keys are in place — that refusal
-    is the check working.</li>
-  <li>Tap it. You should see "Logged — &lt;tag&gt;, read N". If not, Last taps above says which stage failed.
+  <li>Back here: open the gate, put the tag on the schedule rows it should clear, and set Proof to "NFC tag
+    only". It refuses until every day it runs has a tag with its keys — that refusal is the check working.</li>
+  <li>Tap it. You should see "Logged — &lt;tag&gt;, read N". If not, the gate's Last taps says which stage failed.
     Nothing there at all means the tap never reached the server.</li>
 </ol>`;
 
@@ -1562,7 +1667,7 @@ document.addEventListener('keydown', e => {
   const typing = e.target.matches && e.target.matches('input, textarea, select');
   if (e.key === 'Escape') {
     if (liveDrag) return;
-    if (G.edit && G.edit.tag) { G.edit.tag = null; G.edit.forceRender = true; renderSheet(); return; }
+    if (G.tagForm && !G.edit) { G.tagForm = null; renderTags(); return; }
     if (G.edit) { closeEditor(); return; }
     if (G.sel != null) { G.sel = null; renderDay(); writeRoute(); }
     return;
