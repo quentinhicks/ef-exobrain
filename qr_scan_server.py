@@ -22,6 +22,9 @@ import json
 import math
 import os
 import re
+import sys
+import threading
+import time
 from datetime import datetime
 
 from flask import Flask, Response, request
@@ -281,9 +284,88 @@ def tap():
     return _tap_page(tags[0]['label'], refused[0], False, 409)
 
 
+@app.errorhandler(Exception)
+def crashed(e):
+    # A CRASH IS AN EXIT TOO. "Every exit writes one attempt row" held only for
+    # the exits written down in tap(): an exception escaped as a bare 500 and
+    # left nothing, so a scan server on stale code (2026-11-12: the old
+    # process asking for the dropped qr_tag table) read on every gate as
+    # "nobody tapped". /scan's failures go to the journal; nothing else here
+    # has a table to write them to.
+    if getattr(e, 'code', None):            # an HTTPException: 404, 405, ...
+        return e
+    print('%s %s failed: %r' % (request.method, request.path, e))
+    if request.path == '/t':
+        _log_tap(_utc_now_iso(), False, 'the scan server failed: %r' % e)
+        return _tap_page('Tag', 'The scan server failed — this tap was not logged.',
+                         False, 500)
+    return 'Server error', 500
+
+
 @app.route('/health')
 def health():
     return 'ok', 200
+
+
+# THIS PROCESS RUNS THE CODE ON DISK, or it stops (2026-11-14). qpa-scan is a
+# second long-lived process beside the app, and it got new code only when the
+# deploy script's restart reached it — which twice it did not (2026-08-25, and
+# again after the tag split dropped qr_tag, when every verified tap died on a
+# table the new schema no longer had). A restart that depends on a sudo line
+# outside the repo is a promise nothing checks. So the process checks: every
+# module it loaded from the repo is watched, and when one changes it exits
+# between requests and systemd (Restart=always) starts it on the new code.
+_REPO = os.path.dirname(os.path.abspath(__file__))
+_busy = [0]
+_busy_lock = threading.Lock()
+
+
+@app.before_request
+def _enter():
+    with _busy_lock:
+        _busy[0] += 1
+
+
+@app.teardown_request
+def _leave(exc=None):
+    with _busy_lock:
+        _busy[0] -= 1
+
+
+def _code_files():
+    out = []
+    for m in list(sys.modules.values()):
+        f = getattr(m, '__file__', None) or ''
+        if f.endswith('.py') and os.path.dirname(os.path.abspath(f)) == _REPO:
+            out.append(os.path.abspath(f))
+    return sorted(set(out))
+
+
+def _stamp(files):
+    st = []
+    for f in files:
+        try:
+            st.append(os.stat(f).st_mtime_ns)
+        except OSError:
+            st.append(None)
+    return st
+
+
+def _watch_code(every=5):
+    files = _code_files()
+    first = _stamp(files)
+    while True:
+        time.sleep(every)
+        if _stamp(files) == first:
+            continue
+        time.sleep(every)               # let the pull finish writing
+        while True:
+            with _busy_lock:
+                if not _busy[0]:
+                    print('qpa-scan: code changed on disk, exiting for systemd to restart')
+                    sys.stdout.flush()
+                    os._exit(3)
+            time.sleep(0.2)
 
 
 if __name__ == '__main__':
@@ -293,5 +375,6 @@ if __name__ == '__main__':
     # A scan is stamped with a time the judge compares against local windows —
     # this process dates things too, so it takes the same lever.
     storage.apply_timezone()
+    threading.Thread(target=_watch_code, daemon=True).start()
     app.run(host='127.0.0.1', port=int(os.environ.get('QR_PORT', '5001')),
             use_reloader=False)

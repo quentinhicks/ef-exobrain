@@ -46,8 +46,14 @@ if git diff --name-only "$OLD" "$NEW" -- '*.py' static templates deploy | grep -
   # storage.init_db(), so a schema the new scan-server code expects exists
   # before that code starts serving. qpa-scan never migrates anything — it is
   # internet-facing, and running migrations there is surface nobody needs.
-  sudo -n systemctl restart productivity
-  sudo -n systemctl restart qpa-scan
+  # A restart that fails SAYS so (2026-11-14): these lines used to carry on
+  # silently, so a missing sudoers right left a process on old code with
+  # nothing in the journal. qpa-scan also restarts ITSELF when its code
+  # changes on disk (qr_scan_server._watch_code), so this one is the fast path,
+  # not the only one.
+  for svc in productivity qpa-scan; do
+    sudo -n systemctl restart "$svc"       || echo "qpa-update: RESTART OF $svc FAILED — it is still running ${OLD:0:7}" >&2
+  done
 else
   # Docs/spec-only commits reach the VM too; no reason to bounce Flask.
   echo "qpa-update: no code change ${OLD:0:7}..${NEW:0:7} — no restart"
