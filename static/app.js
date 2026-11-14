@@ -2666,14 +2666,34 @@ function wkRole(nodeId) {
 // sleep gate's latest, the two gates the day view is clipped by — every drawn
 // one, a called-off day included (wkDayGatesFrom). Either one unset, or
 // hidden all week, leaves that edge at the day's own.
+// A DAY'S PLAN STRETCHES THEM (2026-11-14, Quentin's instruction): a plan
+// block or photo gate before the wake gate or after the sleep gate is
+// something he wrote down to do, and the gates' clip cut it off the edge. The
+// hours the plan names are read the way the column draws them
+// (drawnSegments → segmentRow), so the range and the drawing cannot disagree.
 function calWeekRange(dates) {
   const ends = role => dates.flatMap(d => wkDayGates(d)
     .filter(g => wkRole(g.node_id) === role).map(g => g.window.end_min));
   const wakes = ends('wake'), sleeps = ends('sleep');
-  const start = wakes.length ? Math.floor(Math.min(...wakes) / 60) * 60 : 0;
-  let end = sleeps.length ? Math.ceil(Math.max(...sleeps) / 60) * 60 : DAY_MIN;
+  let start = wakes.length ? Math.min(...wakes) : 0;
+  let end = sleeps.length ? Math.max(...sleeps) : DAY_MIN;
   if (end <= start) end += DAY_MIN;
-  return { start, end };
+  dates.forEach(d => {
+    const day = calWeek.days[d] || {};
+    // Not yesterday's overnight tail: its own day already carries its end
+    // past midnight, and counting the tail would pull every column to 00:00.
+    drawnSegments(day.segments || []).map(segmentRow).filter(s => s.planDate && !s.cont)
+      .forEach(s => {
+        start = Math.min(start, s.startMin);
+        end = Math.max(end, s.endMin);
+      });
+    (day.plan_gates || []).forEach(g => {
+      if (g.end_min == null) return;
+      start = Math.min(start, g.end_min);
+      end = Math.max(end, g.end_min);
+    });
+  });
+  return { start: Math.floor(start / 60) * 60, end: Math.ceil(end / 60) * 60 };
 }
 
 function wkClock(min) {
