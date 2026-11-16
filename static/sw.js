@@ -26,7 +26,10 @@ const VERSION = 'v1';
 const SHELL = 'pt-shell-' + VERSION;
 const API = 'pt-api-' + VERSION;
 const FONTS = 'pt-fonts-' + VERSION;
-const KEEP = [SHELL, API, FONTS];
+// Ionic's files (templates/index.html). The version is IN the URL, so a
+// cached copy can never be a stale one: cache-first, like the fonts.
+const LIBS = 'pt-libs-' + VERSION;
+const KEEP = [SHELL, API, FONTS, LIBS];
 
 // The two documents plus everything they need to paint. Fonts are cross-origin
 // with generated names, so they are picked up at runtime instead.
@@ -71,6 +74,10 @@ self.addEventListener('fetch', event => {
 
   if (url.host === 'fonts.googleapis.com' || url.host === 'fonts.gstatic.com') {
     event.respondWith(cacheFirst(req, FONTS));
+    return;
+  }
+  if (url.host === 'cdn.jsdelivr.net' && url.pathname.startsWith('/npm/@ionic/core@')) {
+    event.respondWith(cacheFirst(req, LIBS));
     return;
   }
   if (url.origin !== self.location.origin) return;

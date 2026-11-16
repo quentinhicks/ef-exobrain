@@ -7186,7 +7186,49 @@ function initTopNav() {
   nav.querySelectorAll('.tn-search input').forEach(wireEdgeFade);
   window.addEventListener('resize', () =>
     document.querySelectorAll('.edge-fade').forEach(paintEdgeFade));
+  initTabDock();
   paintTopNav();
+}
+
+// THE PHONE'S TAB BAR (2026-11-16, Quentin's instruction: a UI made for the
+// phone). Below 900px the strip's tabs stand at the bottom as an Ionic tab
+// bar, under the capture field, where a thumb reaches them. It is BUILT FROM
+// THE STRIP and mirrors it — lit, hidden and the gold dot are still set on
+// the strip's buttons by whoever sets them today, and an observer copies
+// them across — so there is one list of tabs and one place each is painted.
+// A tab here is the same door: navigateTo.
+const TAB_ICONS = {
+  coach: 'chatbubble-ellipses-outline', '': 'time-outline', calendar: 'calendar-outline',
+  map: 'telescope-outline', lists: 'list-outline', social: 'people-outline',
+};
+
+function initTabDock() {
+  const dock = document.getElementById('tab-dock');
+  if (!dock) return;
+  const tabs = [...document.querySelectorAll('#top-nav .tn-tab')];
+  dock.innerHTML = tabs.map(t => {
+    const nav = t.dataset.nav;
+    return `<ion-tab-button tab="${escHtml(nav || 'now')}" data-nav="${escHtml(nav)}">
+      <ion-icon name="${TAB_ICONS[nav] || 'ellipse-outline'}" aria-hidden="true"></ion-icon>
+      <ion-label>${escHtml(t.textContent.trim())}</ion-label></ion-tab-button>`;
+  }).join('');
+  dock.querySelectorAll('[data-nav]').forEach(b =>
+    b.addEventListener('click', () => navigateTo(b.dataset.nav)));
+  const mirror = () => {
+    tabs.forEach(t => {
+      const twin = dock.querySelector(`[data-nav="${t.dataset.nav}"]`);
+      ['hidden', 'has-due', 'on'].forEach(c => twin.classList.toggle(c, t.classList.contains(c)));
+    });
+    const lit = tabs.find(t => t.classList.contains('on'));
+    // The attribute, not the property: it holds whether or not Ionic has
+    // upgraded the element yet. An unlit bar (Settings is up) selects nothing
+    // rather than the last tab.
+    if (lit) dock.setAttribute('selected-tab', lit.dataset.nav || 'now');
+    else dock.removeAttribute('selected-tab');
+  };
+  new MutationObserver(mirror).observe(document.querySelector('#top-nav .tn-tabs'),
+    { subtree: true, attributes: true, attributeFilter: ['class'] });
+  mirror();
 }
 
 // ── THE STRIP'S MENUS: ONE COMPONENT (2026-10-05) ─────────────
@@ -7306,6 +7348,10 @@ function paintTopNav() {
   document.querySelectorAll('#top-nav [data-nav]').forEach(btn => {
     btn.classList.toggle('on', btn.dataset.nav === lit);
   });
+  // A phone's strip names the page its tabs left for the bottom bar.
+  const tab = document.querySelector(`#top-nav .tn-tab[data-nav="${lit}"]`);
+  document.querySelector('#top-nav .tn-title').textContent =
+    tab ? tab.textContent.trim() : lit ? lit[0].toUpperCase() + lit.slice(1) : '';
   calFilter.render();
   // Each page's selector and search, shown only while it is that page.
   document.querySelectorAll('#top-nav .tn-tools').forEach(g =>
@@ -9628,6 +9674,12 @@ function initVisibleHeight() {
     const zoomed = vv && Math.abs(vv.scale - 1) > 0.01;
     root.setProperty('--vvh', Math.round(vv ? vv.height : window.innerHeight) + 'px');
     root.setProperty('--vvt', (vv && !zoomed ? Math.max(0, Math.round(vv.offsetTop)) : 0) + 'px');
+    // THE KEYBOARD IS UP: a field has focus and what you can see is well short
+    // of the layout viewport. The phone's tab bar stands down while it is, as
+    // a native one does, so the capture field sits on the keyboard.
+    const kb = !!vv && !zoomed && typingIn(document.activeElement)
+      && document.documentElement.clientHeight - vv.height > 120;
+    document.documentElement.classList.toggle('kb-open', kb);
     if (!zoomed && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
   };
   set();
@@ -9638,6 +9690,9 @@ function initVisibleHeight() {
   }
   window.addEventListener('resize', set);
   window.addEventListener('scroll', set, { passive: true });
+  // Focus moves before the keyboard does; the resize that follows settles it.
+  document.addEventListener('focusin', set);
+  document.addEventListener('focusout', () => setTimeout(set, 0));
   // The rotation fires before the new size is settled, hence the beat.
   window.addEventListener('orientationchange', () => setTimeout(set, 80));
 }

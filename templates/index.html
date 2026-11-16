@@ -9,6 +9,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+  <!-- IONIC (2026-11-16, Quentin's instruction: a UI made for the phone, still
+       good on a laptop). Web components from the one CDN, no build step, the
+       version pinned; core.css BEFORE style.css so the app's own ground and
+       type win. The service worker keeps a copy (sw.js, LIBS), so the shell
+       still paints offline. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@ionic/core@8.8.19/css/core.css">
+  <script type="module" src="https://cdn.jsdelivr.net/npm/@ionic/core@8.8.19/dist/ionic/ionic.esm.js"></script>
   <link rel="stylesheet" href="/static/style.css">
   <!-- Installable + offline (see static/sw.js). The manifest is served from the
        root because its scope defaults to its own directory, and start_url "/"
@@ -27,6 +34,9 @@
        sideways on a phone; the two icons do not. Which tab is lit is DERIVED
        from currentRoute() (paintTopNav), never kept beside it. -->
   <nav id="top-nav">
+    <!-- A phone's strip names the page (paintTopNav); its tabs are the
+         bottom bar's (#tab-dock). -->
+    <span class="tn-title"></span>
     <div class="tn-tabs">
       <button class="tn-tab" data-nav="coach">Coach</button>
       <button class="tn-tab" data-nav="">Now</button>
@@ -362,6 +372,9 @@
        project/area target when a + affordance selects one (the ◉ chip names
        it; tap the chip to revert). -->
   <div id="global-bar"></div>
+  <!-- THE PHONE'S TAB BAR (Ionic): built from the strip's tabs by
+       initTabDock, never a second list. Hidden from 900px. -->
+  <ion-tab-bar id="tab-dock"></ion-tab-bar>
 
 
 

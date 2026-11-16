@@ -7025,3 +7025,88 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     border: none;
   }
 }
+
+/* ── THE PHONE'S SHELL (Ionic, 2026-11-16, Quentin's instruction: a UI made
+   for the phone, still good on a laptop) ─────────────────────────────────
+   Below 900px the strip's tabs stand at the bottom as an Ionic tab bar
+   (#tab-dock, initTabDock), under the capture field; the strip keeps the
+   page's name, its tools, undo, the eye and the gear. Layout only, so it is
+   the narrow screen's: from 900px nothing here applies and the strip is what
+   it was. --gbar-h stays THE bottom of the contract — it now spans the field
+   and the tab bar, so every layer that stood above the bar stands above both.
+   With the keyboard up (kb-open, initVisibleHeight) the tab bar stands down
+   and the field sits on the keyboard. */
+:root { --tabbar-h: 0px; }
+.tn-title, #tab-dock { display: none; }
+@media (max-width: 899px) {
+  :root {
+    --tabbar-h: calc(50px + env(safe-area-inset-bottom));
+    --gbar-h: calc(41px + var(--tabbar-h));
+  }
+  :root.kb-open { --tabbar-h: 0px; }
+  .tn-tabs { display: none; }
+  .tn-title {
+    display: block;
+    flex: none;
+    margin-right: 4px;
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  #global-bar {
+    height: 41px;
+    padding-bottom: 0;
+    bottom: calc(var(--tabbar-h) + 100% - var(--vvh, 100%) - var(--vvt, 0px));
+  }
+  #tab-dock {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(100% - var(--vvh, 100%) - var(--vvt, 0px));
+    height: var(--tabbar-h);
+    box-sizing: border-box;
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 170;
+    font-family: var(--font-ui);
+    /* Ionic's own variables, read off the app's tokens: one palette, and the
+       light appendix swaps them with everything else. */
+    --background: var(--surface-low);
+    --border: 1px solid var(--border-soft);
+    --color: var(--text-secondary);
+    --color-selected: var(--text-primary);
+  }
+  #tab-dock ion-tab-button {
+    position: relative;
+    --background: transparent;
+    --color: var(--text-secondary);
+    --color-selected: var(--text-primary);
+    --ripple-color: transparent;
+    font-family: var(--font-ui);
+  }
+  :root.kb-open #tab-dock { display: none; }
+  /* Coach or Lists is owed something: the strip's gold dot, on the icon. */
+  #tab-dock ion-tab-button.has-due::after {
+    content: '';
+    position: absolute;
+    top: 7px;
+    left: calc(50% + 9px);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--gold);
+  }
+  /* Before Ionic has upgraded the bar, or with no network for it at all, it
+     is still a row of named doors. */
+  #tab-dock:not(.hydrated) ion-tab-button {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  #tab-dock:not(.hydrated) ion-tab-button.on { color: var(--text-primary); font-weight: 600; }
+  #tab-dock:not(.hydrated) ion-icon { display: none; }
+}
+:root.clarify-strip #tab-dock { display: none; }
