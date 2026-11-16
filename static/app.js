@@ -477,9 +477,6 @@ const state = {
   // area's domain, and the domain is what section 2 lists.
   activeAreaId: null,
   activeDomainId: null,
-  activeDomainItems: [],
-  section2OverrideDomainId: null,
-  section2OverrideItems: null,
   inboxMode: 'capture',
   lastFetched: null,
   planningState: 'unstarted',
@@ -530,7 +527,7 @@ const state = {
 // that is already on screen; on first load the initialiser makes that [].
 async function loadAll() {
   const dateStr = viewDay();
-  const [blocks, projects, domains, gcal, overrides, inbox, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments, viewGates] = await Promise.all([
+  const [blocks, projects, domains, gcal, overrides, inbox, accountabilityNodes, calendars, settings, qrOutcomes, dismissals, locations, tagLocations, tagDevices, tagTimes, tagDaily, viewSegments, viewGates, projectRows] = await Promise.all([
     apiGet('/api/blocks', state.blocks),
     apiGet('/api/areas', state.areas),
     apiGet('/api/domains', state.domains),
@@ -557,6 +554,7 @@ async function loadAll() {
     // at. Fetched here as well as on every nav so the first paint has it.
     apiGet(`/api/blocks/day?date=${dateStr}&all=1`, viewSegmentsFor(dateStr)),
     apiGet(`/api/gates/day?date=${dateStr}`, null),
+    apiGet('/api/projects', state.projects),
   ]);
   setViewGates(dateStr, viewGates);
 
@@ -596,16 +594,9 @@ async function loadAll() {
 
   const activeBlock = detectCurrentStandardBlock();
   state.activeBlock = activeBlock;
-  state.section2OverrideDomainId = null;
-  state.section2OverrideItems = null;
   state.activeAreaId = activeBlock ? activeBlock.area_id || null : null;
   state.activeDomainId = filingDomainId(activeBlock);
-  state.projects = await apiGet('/api/projects', state.projects);
-  if (state.activeDomainId) {
-    state.activeDomainItems = await apiGet(`/api/inbox/active?domain_id=${state.activeDomainId}`, state.activeDomainItems);
-  } else {
-    state.activeDomainItems = [];
-  }
+  state.projects = projectRows;
 
   const SIX_HOURS = 6 * 60 * 60 * 1000;
   const lastRefresh = parseInt(localStorage.getItem('lastExternalRefresh') || '0');
@@ -625,21 +616,8 @@ function renderAll() {
 // ── Timeline ─────────────────────────────────────────────────
 
 let fetchFailed = false;
-let currentTimeTick = null;
 
 function renderTimeline() {
-  state.view = computeViewWindow();
-  renderGrid();
-  renderDateLabel();
-  renderAlldayStrip();
-  const bodyH = document.getElementById('tl-body').clientHeight || 600;
-  renderBlocksLayer(bodyH);
-  renderGcalLayer(bodyH);
-  renderQrLayer();
-  updateCurrentTimeLine();
-  updateFetchStatus();
-  startCurrentTimeTick();
-  settleTimelineLabels();
   // The week reads the same stores (events, dismissals, settings), so any
   // repaint of the day repaints the week while it is the one on screen.
   if (calWeek.on) renderCalWeek();
@@ -654,20 +632,6 @@ function renderTimeline() {
 // tiers: every box is still tappable, and its menu or read-out names it in full.
 // `lines` is how many lines the full tier would print.
 const TL_LINE_PX = 17;
-
-// The title keeps its whole line down to ~70% of a line's height: the text may
-// run a few pixels past a short box, which reads fine, and cutting a meeting to
-// its first word at half an hour was worse than that.
-function tlTier(px, lines) {
-  if (px >= lines * TL_LINE_PX + 2) return 'full';
-  if (px >= 12) return 'title';
-  if (px >= 7) return 'short';
-  return 'none';
-}
-
-function tlShort(text) {
-  return String(text || '').trim().split(/\s+/)[0] || '';
-}
 
 // ── TWO LABELS NEVER SHARE SPACE (2026-09-15, Quentin's instruction) ──
 //
@@ -1242,31 +1206,6 @@ function minutesToViewPercent(mins) {
   return ((mins - state.view.start) / (state.view.end - state.view.start)) * 100;
 }
 
-function renderGrid() {
-  const grid = document.getElementById('tl-grid');
-  if (!grid) return;
-  const { start, end } = state.view;
-  const win = `${start}-${end}`;
-  if (grid.dataset.win === win) return;
-  grid.dataset.win = win;
-  let html = '';
-  for (let h = Math.ceil(start / 60); h * 60 <= end; h++) {
-    const pct = minutesToViewPercent(h * 60);
-    if (pct < 1) continue;
-    // 24h, zero-padded — the design's gutter. Every hour is then the same
-    // width, which is the point of setting them in mono: the column reads as a
-    // ruler instead of a ragged list. (Event times stay 12h: they are read as
-    // words inside a sentence, not scanned down an edge.)
-    const hh = h % 24;
-    const label = `${String(hh).padStart(2, '0')}:00`;
-    html += `<div class="tl-hour" style="top:${pct}%">
-      <span class="tl-hour-label">${label}</span>
-      <div class="tl-hour-line"></div>
-    </div>`;
-  }
-  grid.innerHTML = html;
-}
-
 // The day header's ‹ day › is the shared stepper (dateNavHtml, 2026-10-05),
 // so the whole row is drawn here — the bounds and the Today button are a
 // fact about the day being drawn. initTimeline listens on the row, not the
@@ -1288,80 +1227,6 @@ function renderDateLabel() {
   });
 }
 
-
-function renderBlocksLayer(bodyH = 600) {
-  const layer = document.getElementById('tl-blocks-layer');
-  if (!layer) return;
-  const projectsById = Object.fromEntries(state.areas.map(p => [p.id, p]));
-  const dateStr = viewDay();
-
-  // SERVED, not re-derived: which blocks this date runs, their times with any
-  // override applied, and yesterday's overnight tail arriving at a negative
-  // start. A block scheduled to move or pause on a future date is already
-  // resolved into this, which is what makes the change visible before it
-  // lands rather than the moment it does.
-  const segments = drawnSegments(viewSegmentsFor(dateStr)).map(segmentRow);
-
-  if (!segments.length && !state.blocks.some(b => b.active)) {
-    layer.innerHTML = '<div class="tl-placeholder">No blocks yet — open Block Editor to add your schedule</div>';
-    return;
-  }
-
-  // Hard-clip to the view window
-  const visible = segments.map(s => {
-    const top = Math.max(0, minutesToViewPercent(s.startMin));
-    const bottom = Math.min(100, minutesToViewPercent(s.endMin));
-    return { ...s, top, height: bottom - top };
-  }).filter(s => s.height > 0 && !state.tlHidden.block[`${s.b.id}:${dateStr}`]);
-
-  const blocksHtml = visible.map(seg => {
-    const { b, top, height, cancelled, label, cont, startMin, endMin } = seg;
-    const purpose = blockPurpose(seg);
-    const proj = b.area_id ? projectsById[b.area_id] : null;
-    const px = height * bodyH / 100;
-    const tight = px < 18;
-    const tier = tlTier(px, 1 + (proj ? 1 : 0) + (b.location_name ? 1 : 0));
-    const labelSpan = `<span class="tl-block-label${cancelled ? ' tl-cancelled-text' : ''}">${
-      escHtml(tier === 'short' ? tlShort(label) : label)}</span>`;
-    const locLabel = b.location_name
-      ? `<span class="tl-block-sublabel"${b.location_id ? ` data-obj="location:${b.location_id}"` : ''
-        }>📍︎ ${escHtml(b.location_name)}</span>` : '';
-    const subs = tier !== 'full' ? '' : `${proj
-      ? `<span class="tl-block-sublabel" data-obj="area:${proj.id}">${escHtml(proj.name)}</span>` : ''}${locLabel}`;
-    const inner = `<div class="tl-block-bar"></div>${tier === 'none' ? ''
-      : `<div class="tl-text" data-tl-rank="0">${labelSpan}${subs}</div>`}`;
-    return `<div class="tl-block${cancelled ? ' tl-block-cancelled' : ''}${cont ? ' tl-block-cont' : ''}${tight ? ' tl-event-tight' : ''}${seg.dayBlockId ? ' tl-block-day' : ''}"
-                 ${blockObjAttrs(seg)} data-purpose="${escHtml(purpose)}"
-                 ${blockCatAttrs(seg)}
-                 data-start-min="${startMin}" data-end-min="${endMin}"
-                 style="top:${top}%;height:${height}%;cursor:${cont ? 'default' : 'pointer'};
-                        --block-color:${b.color}">${inner}</div>`;
-  }).join('');
-
-  // Overlaps are allowed — a striped zone marks each intersection
-  const act = visible.filter(s => !s.cancelled);
-  let zonesHtml = '';
-  for (let i = 0; i < act.length; i++) {
-    for (let j = i + 1; j < act.length; j++) {
-      const lo = Math.max(act[i].startMin, act[j].startMin);
-      const hi = Math.min(act[i].endMin, act[j].endMin);
-      if (hi <= lo) continue;
-      const top = Math.max(0, minutesToViewPercent(lo));
-      const bottom = Math.min(100, minutesToViewPercent(hi));
-      if (bottom - top <= 0) continue;
-      zonesHtml += `<div class="tl-conflict-zone" style="top:${top}%;height:${bottom - top}%"></div>`;
-    }
-  }
-
-  layer.innerHTML = blocksHtml + zonesHtml;
-
-  // A BARE CLICK NO LONGER CANCELS YOUR DAY, and since 2026-09-30 it does not
-  // open the menu either: it lights up the block's CATEGORY (initCalBlockPin),
-  // and the menu is on that bar's ⋯. The right-click and the long press still
-  // cancel it for the day (openObjectMenuOrRemove), wired once on the
-  // document by initObjectDoors.
-  initBlockBarDrag(layer, dateStr);
-}
 
 // CANCEL A BLOCK FOR ONE DAY, or put it back — for the day the SURFACE is
 // showing, passed in (Engage browses its own day, a week column is its own
@@ -1751,92 +1616,6 @@ function initBlockBarDrag(layer, dateStr, geo) {
   });
 }
 
-function renderAlldayStrip() {
-  const strip = document.getElementById('tl-allday-strip');
-  if (!strip) return;
-  const dayEvents = state.gcalEvents.filter(e => e.allday && sameDay(state.currentDate, e.start)
-    && calShowsEvent(e));
-  strip.innerHTML = dayEvents.map(e => {
-    const col = e.color || '#888888';
-    // The calendar's hue is handed to CSS as a variable; what is DONE with it
-    // — the fill, the rule, and how far the text is pulled toward legibility —
-    // belongs to the theme. It used to be mixed 50% with a hardcoded #fff
-    // here, which reads on the dark surface and is invisible on the light one.
-    return `<div class="tl-allday-event" style="--ev-color:${col}">${escHtml(e.summary || '')}</div>`;
-  }).join('');
-}
-
-
-function renderGcalLayer(bodyH = 600) {
-  const layer = document.getElementById('tl-gcal-layer');
-  if (!layer) return;
-  layer.style.pointerEvents = 'none';
-  const nextDate = new Date(state.currentDate.getTime() + 86400000);
-  // Next-day events count when the view runs past midnight (sleep +1d)
-  const dayEvents = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e) &&
-    (sameDay(state.currentDate, e.start) || (state.view.end > DAY_MIN && sameDay(nextDate, e.start))));
-  const boxes = [];
-  for (const e of dayEvents) {
-    const base = sameDay(nextDate, e.start) ? DAY_MIN : 0;
-    const startMin = base + isoMin(e.start);
-    let endMin = base + isoMin(e.end);
-    if (endMin <= startMin) endMin += DAY_MIN;
-    const top = Math.max(0, minutesToViewPercent(startMin));
-    const bottom = Math.min(100, minutesToViewPercent(endMin));
-    if (bottom - top <= 0) continue;
-    boxes.push({ e, startMin, endMin, top, bottom });
-  }
-  // TWO TITLES MAY NOT SHARE A LINE — and since 2026-09-29 the answer is the
-  // week column's: events that overlap share the width in LANES, rather than
-  // one being pushed down under the other, so every box still starts and ends
-  // at its own time and no two titles can print over each other.
-  wkLanes(boxes.map(box => ({ box, s: box.startMin, e: box.endMin })))
-    .forEach(l => { l.box.lane = l.lane; l.box.lanes = l.lanes; });
-
-  layer.innerHTML = boxes.map(({ e, top, bottom, startMin, endMin, lane, lanes: n }) => {
-    const height = Math.max(bottom - top, 2);
-    const px = height * bodyH / 100;
-    const tight = px < 18;
-    // The name, and under it the time where there is room for a second line.
-    const tier = tlTier(px, 2);
-    const w = 100 / (n || 1);
-    const timeStr = `${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`;
-    // The bar is the manipulation surface, exactly as it is on a block: a long
-    // press on the BOX still hides the event, so the two touch gestures cannot
-    // both arm on the same 550ms hold.
-    const inner = `<div class="tl-ev-bar"></div>${tier === 'none' ? ''
-      : `<div class="tl-event-row"><span class="tl-event-summary">${
-        escHtml(tier === 'short' ? tlShort(e.summary) : (e.summary || ''))}</span>${tier === 'full'
-        ? `<span class="tl-event-time">${escHtml(timeStr)}</span>` : ''}</div>`}`;
-    const col = e.color || '#888888';
-    const key = eventKey(e);
-    const moved = e.moved
-      ? ` title="Moved here — the calendar still says ${escHtml(isoToAmPm(e.orig_start))}. Right-click it to put it back."`
-      : tier === 'full' ? '' : ` title="${escHtml(`${e.summary || 'Event'} · ${timeStr}`)}"`;
-    return `<div class="tl-gcal-event${tight ? ' tl-event-tight' : ''}${e.moved ? ' tl-event-moved' : ''}"
-                 data-ev-key="${escHtml(key)}" data-ev-label="${escHtml(e.summary || 'Event')}"
-                 data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
-                 data-start-min="${startMin}" data-end-min="${endMin}"${moved}
-                 style="pointer-events:auto;top:${top}%;height:${height}%;--ev-color:${col};
-                        left:calc(10px + (100% - 28px) * ${lane / (n || 1)});
-                        width:calc((100% - 28px) * ${w / 100} - 2px)">${inner}</div>`;
-  }).join('');
-
-  // Read-only iCal events can't be deleted at source — right-click hides them
-  // from view for the session (persists across refreshes, restored by Ctrl+Z).
-  layer.querySelectorAll('.tl-gcal-event').forEach(el => {
-    const hide = () => {
-      hideTimelineItem('event', el.dataset.evKey, el.dataset.evLabel);
-      renderTimeline();
-    };
-    el.addEventListener('contextmenu', e => { e.preventDefault(); hide(); });
-    // Same plain-tap meaning as the event row on Engage: open its read-out —
-    // where it is and what the invite said. The occasion is in its foot.
-    el.addEventListener('click', () => openEventPop(el.dataset.evKey, el));
-  });
-
-  initEventDrag(layer);
-}
 
 // MOVING A FETCHED EVENT (2026-08-24, Quentin asked for it). The gesture is a
 // block's, on the event's own bar: drag the middle to move the whole thing,
@@ -1992,49 +1771,6 @@ async function refreshGcalEvents() {
     .catch(() => state.gcalEvents);
   renderTimeline();
   renderEngage();
-}
-
-function updateCurrentTimeLine() {
-  const el = document.getElementById('tl-current-time');
-  if (!el) return;
-  if (!isToday(state.currentDate)) {
-    el.style.display = 'none';
-    return;
-  }
-  const now = new Date();
-  const pct = minutesToViewPercent(now.getHours() * 60 + now.getMinutes());
-  if (pct < 0 || pct > 100) {
-    el.style.display = 'none';
-    return;
-  }
-  el.style.display = '';
-  el.style.top = `${pct}%`;
-}
-
-function updateFetchStatus() {
-  const el = document.getElementById('fetch-status');
-  if (!el) return;
-  if (fetchFailed) {
-    el.textContent = 'Last fetch failed — check your calendar URLs in Blocks → Calendars';
-    el.classList.add('fetch-failed');
-    return;
-  }
-  // NOTHING WHEN IT IS WORKING (2026-08-22, asked for). "Last fetched: 3 min
-  // ago" was a permanent column in a header that has to fit on a phone, and it
-  // answered a question nobody asks while the answer is fine. The FAILURE
-  // stays: that one is the difference between a quiet day and a calendar that
-  // has silently stopped updating, and it is the only thing here that a
-  // missing row could otherwise be mistaken for.
-  el.classList.remove('fetch-failed');
-  el.textContent = '';
-}
-
-function startCurrentTimeTick() {
-  if (currentTimeTick) clearInterval(currentTimeTick);
-  currentTimeTick = setInterval(() => {
-    updateCurrentTimeLine();
-    if (calWeek.on) moveWeekNowLine();
-  }, 60000);
 }
 
 async function refreshExternal() {
@@ -3574,8 +3310,6 @@ function detectCurrentStandardBlock() {
   return null;
 }
 
-let section2RevertTimer = null;
-
 
 // ── Calendar navigation bounds ───────────────────────────────
 //
@@ -4581,11 +4315,6 @@ function wireMdDoc(scope, { label, saved, save, restore }) {
   });
 }
 
-function nowTimeStr() {
-  const now = new Date();
-  return now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-}
-
 
 function isoToAmPm(isoStr) {
   const d = new Date(isoStr);
@@ -4629,10 +4358,6 @@ function isToday(date) {
   return sameDay(date, new Date().toISOString());
 }
 
-function formatDateLabel(date) {
-  return `${weekdayOf(date).name} ${_MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
-}
-
 
 // ── WHICH DAY (2026-08-17) ───────────────────────────────────
 //
@@ -4661,21 +4386,6 @@ function viewDay() {
 
 function formatTodoDate(date) {
   return `${weekdayOf(date).long}, ${_MONTHS_LONG[date.getMonth()]} ${date.getDate()}`;
-}
-
-function formatTime12(date) {
-  const h = date.getHours();
-  const m = date.getMinutes();
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const h12 = h % 12 || 12;
-  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
-}
-
-function rgbaColor(hex, alpha) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 // ── Settings — index → section → sheet (11a) ─────────────────
@@ -5517,11 +5227,6 @@ function seFilingOptions(current) {
   const areas = (state.areas || []).filter(a => a.active || `a:${a.id}` === String(current))
     .map(a => ({ value: `a:${a.id}`, name: a.name + (a.active ? '' : ' (paused)') }));
   return [{ value: '', name: '— nothing —' }].concat(dom, areas);
-}
-
-function seDomainOptions(current) {
-  return (state.domains || []).filter(d => d.active !== 0 || String(d.id) === String(current))
-    .map(d => ({ value: d.id, name: d.name + (d.active === 0 ? ' (paused)' : '') }));
 }
 
 // ── The common interface (2026-08-15) ────────────────────────
@@ -6427,8 +6132,6 @@ async function refreshDayAfterSettings() {
   // may now be a different one. This goes before renderTimeline so a timeline
   // failure (a dead gate fetch, say) can't take section 2 down with it.
   state.activeDomainId = filingDomainId(state.activeBlock);
-  state.section2OverrideDomainId = null;
-  state.section2OverrideItems = null;
   await fetchOverridesForDate(state.currentDate);
   await refreshActiveItems();
   renderTimeline();
@@ -6623,11 +6326,6 @@ function blockCategories() {
     .map((c, i) => ({ ...c, id: `c${i}`, groups: c.groups.sort((x, y) => byDay(x) - byDay(y)) }));
 }
 
-function blockCategoryOf(label) {
-  const key = blockCatKey(label);
-  return blockCategories().find(c => c.key === key) || null;
-}
-
 // One time of a category, the way the list and the sheet both say it.
 function blockTimeLabel(g) {
   return [formatDays(g.days), `${g.start_time}–${g.end_time}`, g.description || null,
@@ -6746,16 +6444,6 @@ async function checkActiveBlock() {
   state.activeAreaId = newProjectId;
   const domainChanged = newDomainId !== state.activeDomainId;
   state.activeDomainId = newDomainId;
-  state.section2OverrideDomainId = null;
-  state.section2OverrideItems = null;
-  if (section2RevertTimer) { clearTimeout(section2RevertTimer); section2RevertTimer = null; }
-  // A block change inside the same domain leaves the item set alone — only the
-  // highlighted area moves.
-  if (!newDomainId) {
-    state.activeDomainItems = [];
-  } else if (domainChanged) {
-    state.activeDomainItems = await fetch(`/api/inbox/active?domain_id=${newDomainId}`).then(r => r.json());
-  }
   // Engage no longer narrows by domain (2026-09-30), but its chip names the
   // block in force, so a block change still repaints it.
   if (domainChanged) await refreshEngage();
@@ -7434,8 +7122,7 @@ function initTopNav() {
   document.getElementById('co-rules-pill').addEventListener('click', toggleCoachRules);
   wireEdgeFade(nav);
   nav.querySelectorAll('.tn-search input').forEach(wireEdgeFade);
-  window.addEventListener('resize', () =>
-    document.querySelectorAll('.edge-fade').forEach(paintEdgeFade));
+  window.addEventListener('resize', paintEdgeFadesSoon);
   initTabDock();
   paintTopNav();
 }
@@ -7581,6 +7268,18 @@ function paintEdgeFade(el) {
   el.classList.toggle('fade-l', el.scrollLeft > 1);
   el.classList.toggle('fade-r', el.scrollLeft < max - 1);
 }
+// Every fade at once, in the next frame. Reading a width forces the layout
+// the page is in the middle of changing; asked synchronously on every page
+// switch (and at launch, before the data was in) it laid the page out an
+// extra time each call. A fade is decoration, so a frame later is in time.
+let edgeFadeFrame = 0;
+function paintEdgeFadesSoon() {
+  if (edgeFadeFrame) return;
+  edgeFadeFrame = requestAnimationFrame(() => {
+    edgeFadeFrame = 0;
+    document.querySelectorAll('.edge-fade').forEach(paintEdgeFade);
+  });
+}
 function wireEdgeFade(el) {
   el.classList.add('edge-fade');
   // A frame later: a field scrolls to its caret AFTER the key or the blur.
@@ -7602,13 +7301,15 @@ function paintTopNav() {
   const tab = document.querySelector(`#top-nav .tn-tab[data-nav="${lit}"]`);
   document.querySelector('#top-nav .tn-title').textContent =
     tab ? tab.textContent.trim() : lit ? lit[0].toUpperCase() + lit.slice(1) : '';
-  calFilter.render();
-  // Each page's selector and search, shown only while it is that page.
+  // Each page's selector and search, shown only while it is that page — and
+  // the calendar's pill drawn only then: drawing it off the calendar formatted
+  // a date nobody could see on every page switch (the first date format a
+  // launch does costs ~100ms on a phone, loading the locale).
   document.querySelectorAll('#top-nav .tn-tools').forEach(g =>
     g.classList.toggle('hidden', g.dataset.page !== lit));
   if (lit === 'calendar') calFilter.render();
   // The page's tools just took (or gave back) the tabs' width.
-  document.querySelectorAll('#top-nav .edge-fade').forEach(paintEdgeFade);
+  paintEdgeFadesSoon();
 }
 
 // Put down every surface over the day — the top-level rungs of the Esc
@@ -9986,8 +9687,15 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('pagehide', () => {
     flushOpenNotes();
   });
-  loadAll().then(() => { openEngage(); initTimezone(); refreshSocialDot(); initRoutes(); coachLoad(); });
-  setInterval(() => { checkDayRollover(); checkActiveBlock(); paintNowRows(); coachTick(); pgTick(); }, 60000);
+  // The to-do list's reads go out WITH the shell's, not after them: on a phone
+  // a second round trip is most of the wait for the first paint. Shared reads
+  // (the day's overrides and blocks) are one request (apiGet).
+  const firstEngage = engageReads(egDateStr());
+  loadAll().then(() => { openEngage(firstEngage); initTimezone(); refreshSocialDot(); initRoutes(); coachLoad(); });
+  setInterval(() => {
+    checkDayRollover(); checkActiveBlock(); paintNowRows(); coachTick(); pgTick();
+    if (calWeek.on) moveWeekNowLine();
+  }, 60000);
 });
 
 // ── THE COACH (2026-10-22, Quentin's instruction) ────────────
@@ -10292,15 +10000,6 @@ function toggleCoachRules() {
 // the colour says how it went, and a shape that changed too would be two
 // codings of one fact.
 const QR_GLYPH = '▣';
-
-// What the square is worth SAYING, for the things that can ask in words: the
-// tooltip, and assistive technology. The read-out says all of it on a tap.
-function qrPillTitle(node, endHHMM, offsetDays, locked, outcome) {
-  const state = { success: 'met', partial: 'half met', failed: 'missed' }[outcome]
-    || 'still to do';
-  return `${node.label} — ${endHHMM}${offsetDays ? ' +1d' : ''} · ${state}`
-    + (locked ? ' · locked, within 24h' : '');
-}
 
 // ── THE GATE READ-OUT (2026-08-21, Quentin's instruction) ─────────────────
 //
@@ -10662,92 +10361,11 @@ function gatePopHtml(d) {
     ${rows.join('')}${out}${scans}${verdict}${hist}${foot}`;
 }
 
-// ── ONE TAP SHOWS THE WINDOW, THE SECOND EXPLAINS IT (2026-08-24, Quentin's
-// instruction) ───────────────────────────────────────────────────────────────
-//
-// The square used to open the whole read-out on the first tap: a card of
-// scans, distances, halves and money over the day you were reading, when the
-// question is nearly always the small one — when does this open, when does it
-// close, and when is its routine due. So the first tap SELECTS: four dotted
-// lines against the same hour gutter everything else is read against. The
-// second tap opens the card, which is still the only place the detail lives.
-//
-// The lines come from the SERVER's resolution of that gate's day — the same
-// payload the card renders — so the two can never disagree about a window.
-async function selectGate(nodeId, date, anchor) {
-  // Tapping the gate that is already selected is the second tap: the card.
-  if (state.gateSel && state.gateSel.nodeId === nodeId && state.gateSel.date === date) {
-    openGatePop(nodeId, date, anchor);
-    return;
-  }
-  state.gateSel = { nodeId, date, day: null };
-  renderQrLayer();
-  let d = null;
-  try {
-    const r = await fetch(`/api/accountability/nodes/${nodeId}/day?date=${date}`);
-    d = r.ok ? await r.json() : null;
-  } catch (e) { d = null; }
-  // A second tap on another gate while this was in flight wins.
-  if (!state.gateSel || state.gateSel.nodeId !== nodeId || state.gateSel.date !== date) return;
-  if (!d) {
-    state.gateSel = null;
-    toast('Could not read this gate — nothing has changed');
-    renderQrLayer();
-    return;
-  }
-  state.gateSel.day = d;
-  // renderTimeline, not renderQrLayer: the window may have to STRETCH to hold
-  // a line outside it, and that repaints the grid and every other layer.
-  renderTimeline();
-}
-
 function clearGateSel() {
   if (!state.gateSel) return false;
   state.gateSel = null;
   renderTimeline();
   return true;
-}
-
-// The dotted lines themselves. Drawn into the gate layer so they share its
-// coordinate space, under the squares — a line is the explanation, the square
-// is still the thing you press.
-function renderGateSelLines(layer) {
-  const lines = gateSelLines();
-  if (!lines.length) return;
-  // TWO TAGS MAY NOT SHARE A LINE, the same rule the event boxes follow — and
-  // here the collision is the COMMON case, not the unlucky one: a routine with
-  // no offset is due exactly when the gate closes, so its tag would print
-  // straight over "scan closes" and neither would be readable. The lines
-  // themselves may coincide (that is the truth about the day); only the words
-  // move, and only downward, so a tag always sits below the line it names.
-  const bodyH = document.getElementById('tl-body').clientHeight || 600;
-  const rowPct = (14 / Math.max(bodyH, 1)) * 100;
-  const stack = [];
-  lines.forEach(l => {
-    const pct = minutesToViewPercent(l.min);
-    if (pct < -0.01 || pct > 100.01) return;   // gateSelBounds should prevent this
-    const el = document.createElement('div');
-    el.className = `tl-gate-line tl-gate-line-${l.kind}`;
-    el.style.top = `${pct}%`;
-    el.dataset.lineKind = l.kind;
-    el.dataset.lineMin = l.min;
-    const tag = document.createElement('span');
-    tag.className = 'tl-gate-line-tag';
-    const say = min => `${l.label} ${clockHHMM(min)}${min >= DAY_MIN ? ' +1d' : ''}`;
-    tag.textContent = say(l.min);
-    // A tag ON the top or bottom edge would print half off the body.
-    if (pct >= 97) tag.style.top = '-15px';
-    else {
-      const clash = stack.filter(p0 => Math.abs(p0 - pct) < rowPct).length;
-      stack.push(pct);
-      if (clash) tag.style.top = `${-8 + clash * 13}px`;
-    }
-    el.appendChild(tag);
-    // A line stops its own click: tapping one is aiming AT it, not tapping the
-    // day off the selection.
-    el.addEventListener('click', e => e.stopPropagation());
-    layer.appendChild(el);
-  });
 }
 
 // Re-read the selected gate's day: the lines are the SERVER's answer, so after
@@ -10760,61 +10378,6 @@ async function refreshGateSel() {
     if (r.ok && state.gateSel === sel) sel.day = await r.json();
   } catch (e) { /* keep what we had — the day on screen is still the last truth */ }
   renderTimeline();
-}
-
-function renderQrLayer() {
-  const layer = document.getElementById('tl-qr-layer');
-  if (!layer) return;
-  layer.innerHTML = '';
-  renderGateSelLines(layer);
-  const pageDate = viewDay();
-  // THE SERVED DAY (viewGatesFor), and drawn the way a week column draws it:
-  // one dot at the deadline in the right rail, a sun or moon for the wake and
-  // sleep gates, the state in its colour (2026-09-29, Quentin's instruction:
-  // the day should look exactly like a day of the week). A paused gate draws
-  // too, muted and saying so, rather than vanishing — it is not judged, and
-  // the day should still show that it exists.
-  wkDayGatesFrom(viewGatesFor(pageDate)).forEach(g => {
-    const node = (state.accountabilityNodes || []).find(n => n.id === g.node_id)
-      || { id: g.node_id, label: g.label };
-    const pct = minutesToViewPercent(g.window.end_min);
-    if (pct < -0.01 || pct > 100.01) return;
-    const outcome = state.qrOutcomes[`${node.id}:${pageDate}`];
-    const st = wkGateState(g);
-    const selected = !!state.gateSel && state.gateSel.nodeId === node.id
-      && state.gateSel.date === pageDate;
-
-    const line = document.createElement('div');
-    line.className = `tl-qr-line wk-gate-${st}` + (selected ? ' tl-qr-selected' : '');
-    line.style.top = `${pct}%`;
-
-    const label = document.createElement('span');
-    label.className = 'tl-qr-label' + (wkRole(node.id) !== 'none' ? ' wk-gate-role' : '');
-    // ON THE LABEL, not on the line: the line is a zero-height rule and the
-    // mark is what a finger can hit.
-    label.dataset.obj = `gate:${node.id}`;
-    label.innerHTML = wkGateMark(node.id);
-    label.title = qrPillTitle(node, g.window.end, g.window.offset_days, false, outcome)
-      + (st === 'paused' ? ' · paused, not judged' : st === 'off' ? ' · called off' : '');
-    line.appendChild(label);
-    layer.appendChild(line);
-
-    // Marks centre on their time; near the top/bottom edge that would clip.
-    if (pct >= 98.5) label.style.top = '-14px';
-    else if (pct <= 1.5) label.style.top = '0px';
-
-    line.addEventListener('contextmenu', e => e.preventDefault());
-    // TAP TO READ IT: the first tap draws the window's lines, the second opens
-    // the read-out. A gate's day is changed on /gates, the one editor.
-    label.addEventListener('click', e => {
-      e.stopPropagation();
-      if (label.dataset.lpDragged === '1' || justPointerDragged()) { delete label.dataset.lpDragged; return; }
-      selectGate(node.id, pageDate, label);
-    });
-    initGateDrag(label, g, pageDate, dayDragGeo(), min => {
-      line.style.top = `${Math.min(100, Math.max(0, minutesToViewPercent(min)))}%`;
-    });
-  });
 }
 
 // ── A GATE'S DAY, FROM THE CALENDAR (2026-09-30, Quentin's instruction: "allow
@@ -11072,16 +10635,6 @@ function nodeWindowForDow(node, dow) {
 function gateAppliesOnDow(node, dow) {
   if (node.day_windows) return !!nodeSourceWindowForDow(node, dow);
   return node.days_of_week == null || String(node.days_of_week).includes(String(dow));
-}
-
-// EXACT DATE. day_windows is keyed by date because the judge resolves a DATE —
-// a monthly rule, a schedule source or an end date can give two Tuesdays two
-// different windows. Scanning for the first date matching a weekday flattened
-// that back into a rule and answered for the wrong day.
-function nodeSourceWindowForDate(node, dateStr) {
-  const days = node.day_windows;
-  if (!days || !dateStr) return null;
-  return days[dateStr] || null;
 }
 
 // Only for a date OUTSIDE the served range (the map covers the ±3 nav clamp
@@ -14087,146 +13640,12 @@ async function deleteFromPicker() {
 // stores the binding and, for time, answers the DAY half with recurrence.py.
 const ctxSheet = { tag: null };
 
-function openCtxSheet(tag) {
-  ctxSheet.tag = tag;
-  renderCtxSheet();
-}
-
 function closeCtxSheet() {
   ctxSheet.tag = null;
   hideSheet('ctx-sheet');
 }
 
 defineSheet('ctx-sheet', { rank: 50, isOpen: () => !!ctxSheet.tag, close: closeCtxSheet });
-
-async function ctxSheetRefresh() {
-  const [devs, times, sources, daily] = await Promise.all([
-    apiGet('/api/tag-devices', state.tagDevices),
-    apiGet('/api/tag-times', state.tagTimes),
-    apiGet(`/api/schedules?date=${egDateStr()}&unnamed=1`, state.schedules),
-    apiGet('/api/tag-daily', state.tagDaily),
-  ]);
-  state.tagDevices = devs;
-  state.tagTimes = times;
-  state.schedules = sources;
-  if (daily && Array.isArray(daily.tags)) state.tagDaily = daily;
-  renderCtxSheet();
-  renderEngage();
-}
-
-function renderCtxSheet() {
-  const sheet = document.getElementById('ctx-sheet');
-  if (!sheet) return;
-  const tag = ctxSheet.tag;
-  if (!tag) { closeCtxSheet(); return; }
-  showSheet('ctx-sheet');
-
-  const boundDev = (state.tagDevices || []).find(b => b.tag === tag);
-  const dev = boundDev ? boundDev.device : (DEVICE_TAGS.includes(tag) ? tag : null);
-  const implicit = !boundDev && DEVICE_TAGS.includes(tag);
-  const boundLoc = (state.tagLocations || []).find(b => b.tag === tag);
-  const boundTime = (state.tagTimes || []).find(b => b.tag === tag);
-  const dailyOn = ((state.tagDaily || {}).tags || []).includes(tag);
-  const todayAns = ((state.tagDaily || {}).answers || {})[tag];
-
-  sheet.innerHTML = `
-    <div class="cl-head">
-      <span class="cl-eyebrow">context</span>
-      <span class="ctx-sheet-tag">${escHtml(tag)}</span>
-      <span class="cl-spacer"></span>
-      <button class="modal-close-btn" id="ctx-sheet-close">✕</button>
-    </div>
-    <div class="cl-item">
-      <div class="cl-captured">Items carrying this tag are only available when every
-        binding below is satisfied. Unbound axes never hide anything.</div>
-    </div>
-
-    <div class="cl-sec"><span class="cl-label">▭ Device</span>
-      ${implicit ? '<span class="cl-hint">implied by the tag name</span>' : ''}</div>
-    <div class="cl-chips">
-      ${['pc', 'phone'].map(d => `<button class="chip chip-sm${dev === d ? ' on' : ''}"
-        data-dev="${d}">${d}</button>`).join('')}
-      ${boundDev ? '<button class="chip chip-sm" data-dev="none">✕ any device</button>' : ''}
-    </div>
-
-    <div class="cl-sec"><span class="cl-label">⌖ Location</span>
-      <span class="cl-hint">${state.geo.ok ? 'located' : 'no fix — nothing is hidden'}</span></div>
-    <div class="cl-chips">
-      ${(state.locations || []).filter(l => l.active !== 0
-        || (boundLoc && boundLoc.location_id === l.id)).map(l => `<button class="chip chip-sm${
-        boundLoc && boundLoc.location_id === l.id ? ' on' : ''}"
-        data-loc="${l.id}">${escHtml(l.name)}</button>`).join('')
-        || '<span class="cl-hint">no presets — add one in Settings → Locations</span>'}
-      ${boundLoc ? '<button class="chip chip-sm" data-loc="none">✕ anywhere</button>' : ''}
-    </div>
-
-    <div class="cl-sec"><span class="cl-label">◷ Time</span></div>
-    <div class="cl-chips">
-      ${(state.schedules || [])
-        .filter(p => p.title || (boundTime && boundTime.source_uid === p.uid))
-        .map(p => `<button class="chip chip-sm${
-        boundTime && boundTime.source_uid === p.uid ? ' on' : ''}"
-        data-time="${p.uid}" title="${escHtml(p.label || '')}">${
-        escHtml(p.title || 'its own hours')}</button>`).join('')
-        || '<span class="cl-hint">no schedules — add one in Settings → Times</span>'}
-      ${boundTime ? '<button class="chip chip-sm" data-time="none">✕ any time</button>' : ''}
-    </div>
-    ${boundTime ? (() => {
-      const p = (state.schedules || []).find(x => x.uid === boundTime.source_uid);
-      if (!p) return '';
-      return `<div class="cl-row"><span class="cl-hint ${p.due ? 'ctx-live' : 'ctx-dead'}">${
-        escHtml(p.label || '')} — ${p.due ? 'runs today' : 'not today'}</span></div>`;
-    })() : ''}
-
-    ${/* The fourth axis, and the only one answered by HAND each day: whether a
-          context applies at all today. It is here because binding a tag belongs
-          on one surface, not four. */''}
-    <div class="cl-sec"><span class="cl-label">👤 Ask each day</span>
-      <span class="cl-hint">${dailyOn ? (todayAns === false ? 'not today'
-        : todayAns === true ? 'applies today' : 'unanswered — nothing hidden') : 'never asked'}</span></div>
-    <div class="cl-chips">
-      <button class="chip chip-sm${dailyOn ? ' on' : ''}" data-daily="on"
-        title="The morning routine's contexts step will ask about this tag">ask</button>
-      ${dailyOn ? '<button class="chip chip-sm" data-daily="off">✕ stop asking</button>' : ''}
-    </div>
-
-    <div class="cl-row">
-      <button class="cl-pill cl-pill-on" id="ctx-sheet-done">Done</button>
-    </div>`;
-
-  sheet.querySelectorAll('[data-daily]').forEach(b => b.addEventListener('click', async () => {
-    await apiSend('/api/tag-daily', 'POST', { tag, on: b.dataset.daily === 'on' });
-    await ctxSheetRefresh();
-  }));
-  sheet.querySelector('#ctx-sheet-close').addEventListener('click', closeCtxSheet);
-  sheet.querySelector('#ctx-sheet-done').addEventListener('click', closeCtxSheet);
-
-  sheet.querySelectorAll('[data-dev]').forEach(b => b.addEventListener('click', async () => {
-    if (b.dataset.dev === 'none') {
-      await apiSend(`/api/tag-devices/${encodeURIComponent(tag)}`, 'DELETE');
-    } else {
-      await apiSend('/api/tag-devices', 'POST', { tag, device: b.dataset.dev });
-    }
-    await ctxSheetRefresh();
-  }));
-  sheet.querySelectorAll('[data-loc]').forEach(b => b.addEventListener('click', async () => {
-    if (b.dataset.loc === 'none') {
-      await apiSend(`/api/tag-locations/${encodeURIComponent(tag)}`, 'DELETE');
-      state.tagLocations = state.tagLocations.filter(x => x.tag !== tag);
-    } else {
-      state.tagLocations = await apiSend('/api/tag-locations', 'POST', { tag, location_id: parseInt(b.dataset.loc) }).then(r => r.json());
-    }
-    await ctxSheetRefresh();
-  }));
-  sheet.querySelectorAll('[data-time]').forEach(b => b.addEventListener('click', async () => {
-    if (b.dataset.time === 'none') {
-      await apiSend(`/api/tag-times/${encodeURIComponent(tag)}`, 'DELETE');
-    } else {
-      await apiSend('/api/tag-times', 'POST', { tag, source_uid: b.dataset.time });
-    }
-    await ctxSheetRefresh();
-  }));
-}
 
 
 // ── Engage — the day panel (GTD Panel Layouts 6c) ─────────────
@@ -14362,8 +13781,8 @@ function initEngage() {
   });
 }
 
-async function openEngage() {
-  await refreshEngage();
+async function openEngage(reads) {
+  await refreshEngage(reads);
   // No header clock (2026-08-08) and so no tick to drive it. The day is
   // already positioned against now by .eg-past dimming; the device shows the
   // time everywhere else.
@@ -14376,15 +13795,36 @@ function egViewDate() { return new Date(egDateStr() + 'T12:00:00'); }
 // Engage writes still in flight; the day re-reads once the last one lands.
 let egWrites = 0;
 
-async function refreshEngage() {
+// `reads` is engageReads() started earlier — at launch, alongside loadAll, so
+// the to-do list's reads are not a second round trip after the shell's.
+async function refreshEngage(reads) {
   const dateStr = egDateStr();
+  const [placements, futurePlaced, pool, all, overrides, daySegments, routineItems,
+         schedules, deferred, planGates] = await (reads || engageReads(dateStr));
+  // A write that started while these reads were out is not in them: drawing
+  // them would put a just-completed row back, or drop a just-added one. That
+  // write re-reads when it lands (egWrites), so this answer is only stale.
+  if (egWrites) return;
+  engageView.placements = placements;
+  engageView.futurePlaced = futurePlaced;
+  engageView.pool = pool;
+  engageView.allItems = all;
+  engageView.overrides = overrides;
+  state.viewSegments = { date: dateStr, segments: Array.isArray(daySegments) ? daySegments : [] };
+  engageView.routineItems = routineItems;
+  state.schedules = Array.isArray(schedules) ? schedules : [];
+  engageView.deferred = Array.isArray(deferred) ? deferred : [];
+  engageView.planGates = planGates;
+  renderEngage();
+}
+
+function engageReads(dateStr) {
   // /api/map resolves placed items from ANY domain; the pool fetch is only the
   // chip's domain (and runs the recurring-task seeding, same as NOW).
   // Catches fall back to the current values, not [] — this is the home screen,
   // and a network drop must not blank the day that is already rendered. See the
   // note on loadAll.
-  const [placements, futurePlaced, pool, all, overrides, daySegments, routineItems,
-         schedules, deferred, planGates] = await Promise.all([
+  return Promise.all([
     apiGet(`/api/engage/placements?date=${dateStr}`, engageView.placements),
     // Scheduled on/after the viewed day → out of "Not scheduled" (the pool
     // shows what still NEEDS a day, and these have one).
@@ -14404,21 +13844,6 @@ async function refreshEngage() {
     apiGet('/api/inbox/deferred', engageView.deferred),
     apiGet(`/api/plan-gates?date=${dateStr}`, engageView.planGates),
   ]);
-  // A write that started while these reads were out is not in them: drawing
-  // them would put a just-completed row back, or drop a just-added one. That
-  // write re-reads when it lands (egWrites), so this answer is only stale.
-  if (egWrites) return;
-  engageView.placements = placements;
-  engageView.futurePlaced = futurePlaced;
-  engageView.pool = pool;
-  engageView.allItems = all;
-  engageView.overrides = overrides;
-  state.viewSegments = { date: dateStr, segments: Array.isArray(daySegments) ? daySegments : [] };
-  engageView.routineItems = routineItems;
-  state.schedules = Array.isArray(schedules) ? schedules : [];
-  engageView.deferred = Array.isArray(deferred) ? deferred : [];
-  engageView.planGates = planGates;
-  renderEngage();
 }
 
 // WHAT THE TO-DO LIST HOLDS: an available row (the server's /api/inbox/active,

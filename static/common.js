@@ -247,6 +247,10 @@ let lastStallToast = 0;
 (function limitRequests() {
   const send = window.fetch.bind(window);
   window.fetch = (input, init) => {
+    // A write makes every read already out stale: none of them is shared
+    // with a read asked for after it (apiGet's getsInFlight).
+    const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD') getsInFlight.clear();
     if (init && init.signal) return send(input, init);
     const url = typeof input === 'string' ? input : (input && input.url) || '';
     const ctl = new AbortController();
@@ -264,10 +268,27 @@ let lastStallToast = 0;
   };
 })();
 
+// ONE READ OF AN ADDRESS AT A TIME (2026-11-16, Quentin's instruction:
+// dramatically improve performance). The day's reads are asked for by several
+// surfaces at once — the shell's loadAll and the to-do list both want the
+// day's overrides and blocks — and each asked the server separately. A GET of
+// an address already in flight now shares that request: the BODY is shared
+// and parsed per caller, so no two surfaces hold the same object. Only while
+// it is in flight (nothing is cached), and any write clears it (limitRequests
+// above), so a read asked for after a write always goes to the server.
+const getsInFlight = new Map();
+
 function apiGet(path, fallback) {
   // Written out, not via a helper: this IS the helper. (A mechanical sweep
   // once rewrote this body into a call to itself — twice.)
-  return fetch(path).then(r => (r.ok ? r.json() : fallback)).catch(() => fallback);
+  let body = getsInFlight.get(path);
+  if (!body) {
+    body = fetch(path).then(r => (r.ok ? r.text() : Promise.reject(r.status)));
+    getsInFlight.set(path, body);
+    const done = () => { if (getsInFlight.get(path) === body) getsInFlight.delete(path); };
+    body.then(done, done);
+  }
+  return body.then(text => JSON.parse(text)).catch(() => fallback);
 }
 
 function apiSend(path, method, body) {
