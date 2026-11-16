@@ -90,10 +90,31 @@ self.addEventListener('fetch', event => {
     event.respondWith(networkFirst(req, SHELL, false));
     return;
   }
+  // A batch of reads (batchGets, common.js) is filed under each read's OWN
+  // address, so the offline copy of every one stays current although none of
+  // them was asked alone. Offline, the batch fails and the page asks each
+  // read alone — and networkFirst answers those from these copies.
+  if (url.pathname === '/api/batch') {
+    event.respondWith(fileBatch(req));
+    return;
+  }
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(networkFirst(req, API, false));
   }
 });
+
+async function fileBatch(req) {
+  const res = await fetch(req);
+  if (res.ok) {
+    const parts = await res.clone().json().catch(() => ({}));
+    const cache = await caches.open(API);
+    await Promise.all(Object.entries(parts)
+      .filter(([, part]) => part && part.status === 200)
+      .map(([path, part]) => cache.put(new Request(new URL(path, self.location.origin)),
+        new Response(part.body, { headers: { 'Content-Type': 'application/json' } }))));
+  }
+  return res;
+}
 
 async function networkFirst(req, cacheName, isNav) {
   try {

@@ -14,7 +14,12 @@
        version pinned; core.css BEFORE style.css so the app's own ground and
        type win. The service worker keeps a copy (sw.js, LIBS), so the shell
        still paints offline. -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@ionic/core@8.8.19/css/core.css">
+  <!-- Not render-blocking: core.css only dresses the tab bar, which reads as a
+       row of named doors without it (style.css, :not(.hydrated)), and a cold
+       phone would otherwise wait on a second host before painting anything.
+       Its place in the cascade is still here, before style.css. -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@ionic/core@8.8.19/css/core.css" media="print" onload="this.media='all'">
   <script type="module" src="https://cdn.jsdelivr.net/npm/@ionic/core@8.8.19/dist/ionic/ionic.esm.js"></script>
   <link rel="stylesheet" href="/static/style.css">
   <!-- Installable + offline (see static/sw.js). The manifest is served from the

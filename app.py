@@ -400,6 +400,34 @@ def _assistant_log(resp):
     return resp
 
 
+# ONE ROUND TRIP FOR A SURFACE'S READS (2026-11-16, Quentin's instruction:
+# dramatically improve performance). Launch asks ~28 reads at once; a browser
+# runs six to a server at a time, so on a phone each extra wave is another
+# trip over the tailnet. batchGets (common.js) sends them as ONE GET of this
+# route, and each is answered by the app itself — the same route, the same
+# hooks, the same connection scope (nested, so every part shares this
+# request's connections) — so nothing here knows what any of them means.
+# Reads only: GET, and only /api/. A part that fails says its own status;
+# the client falls back to asking it alone.
+BATCH_MAX = 60
+
+
+@app.route('/api/batch')
+def get_batch():
+    out = {}
+    for path in request.args.getlist('p')[:BATCH_MAX]:
+        if not path.startswith('/api/') or path.startswith('/api/batch'):
+            out[path] = {'status': 400, 'body': ''}
+            continue
+        try:
+            with app.test_request_context(path, method='GET'):
+                resp = app.full_dispatch_request()
+                out[path] = {'status': resp.status_code, 'body': resp.get_data(as_text=True)}
+        except Exception:
+            out[path] = {'status': 500, 'body': ''}
+    return jsonify(out)
+
+
 @app.route('/api/assistant/changes')
 def assistant_changes():
     return jsonify(storage.get_assistant_changes())

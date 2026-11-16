@@ -9690,8 +9690,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // The to-do list's reads go out WITH the shell's, not after them: on a phone
   // a second round trip is most of the wait for the first paint. Shared reads
   // (the day's overrides and blocks) are one request (apiGet).
-  const firstEngage = engageReads(egDateStr());
-  loadAll().then(() => { openEngage(firstEngage); initTimezone(); refreshSocialDot(); initRoutes(); coachLoad(); });
+  // And ALL of them in one trip (batchGets): the reads both ask before their
+  // first await go as a single request.
+  let firstEngage, shell;
+  batchGets(() => { firstEngage = engageReads(egDateStr()); shell = loadAll(); });
+  shell.then(() => { openEngage(firstEngage); initTimezone(); refreshSocialDot(); initRoutes(); coachLoad(); });
   setInterval(() => {
     checkDayRollover(); checkActiveBlock(); paintNowRows(); coachTick(); pgTick();
     if (calWeek.on) moveWeekNowLine();

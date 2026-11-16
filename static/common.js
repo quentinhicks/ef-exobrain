@@ -283,12 +283,51 @@ function apiGet(path, fallback) {
   // once rewrote this body into a call to itself — twice.)
   let body = getsInFlight.get(path);
   if (!body) {
-    body = fetch(path).then(r => (r.ok ? r.text() : Promise.reject(r.status)));
+    body = getBatch
+      ? new Promise((resolve, reject) => getBatch.push({ path, resolve, reject }))
+      : getText(path);
     getsInFlight.set(path, body);
     const done = () => { if (getsInFlight.get(path) === body) getsInFlight.delete(path); };
     body.then(done, done);
   }
   return body.then(text => JSON.parse(text)).catch(() => fallback);
+}
+
+function getText(path) {
+  return fetch(path).then(r => (r.ok ? r.text() : Promise.reject(r.status)));
+}
+
+// MANY READS, ONE TRIP (2026-11-16). Every apiGet made while `run` runs (its
+// synchronous part — the reads a Promise.all asks for before its first await)
+// is gathered and sent as ONE GET of /api/batch, which answers each from the
+// app itself. The callers are unchanged: each still gets its own answer, or
+// its own fallback. A batch that fails as a whole (no network, a server that
+// predates the route) sends each read alone, which the service worker can
+// answer from its copy.
+let getBatch = null;
+
+function batchGets(run) {
+  if (getBatch) return run();
+  getBatch = [];
+  try {
+    return run();
+  } finally {
+    const asked = getBatch;
+    getBatch = null;
+    sendBatch(asked);
+  }
+}
+
+function sendBatch(asked) {
+  if (!asked.length) return;
+  if (asked.length === 1) { getText(asked[0].path).then(asked[0].resolve, asked[0].reject); return; }
+  fetch('/api/batch?' + asked.map(a => 'p=' + encodeURIComponent(a.path)).join('&'))
+    .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+    .then(parts => asked.forEach(a => {
+      const part = parts[a.path];
+      if (part && part.status === 200) a.resolve(part.body);
+      else a.reject(part ? part.status : 'missing');
+    }), () => asked.forEach(a => getText(a.path).then(a.resolve, a.reject)));
 }
 
 function apiSend(path, method, body) {
