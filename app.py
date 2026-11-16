@@ -21,7 +21,7 @@ try:
     import webview
 except ImportError:
     webview = None  # headless server (PT_HEADLESS): Flask only, no windows
-from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory
+from flask import Flask, Response, g, jsonify, redirect, render_template, request, send_from_directory
 
 import storage
 import schedule
@@ -175,6 +175,21 @@ def _app_url():
 
 def _app_url_source():
     return _app_url_ranked()[1]
+
+
+# Every request lends its connections again instead of reopening them
+# (storage.conn_scope); the teardown, which runs whatever happened, closes them.
+@app.before_request
+def _open_conn_scope():
+    g.conn_scope = storage.conn_scope()
+    g.conn_scope.__enter__()
+
+
+@app.teardown_request
+def _close_conn_scope(exc):
+    scope = g.pop('conn_scope', None)
+    if scope is not None:
+        scope.__exit__(None, None, None)
 
 
 @app.before_request

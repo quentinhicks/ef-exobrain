@@ -16,9 +16,57 @@ DB_PATH = 'tracker.db'
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    pool = getattr(_scope, 'pool', None)
+    if pool is None:
+        conn = sqlite3.connect(DB_PATH)
+    else:
+        conn = pool.pop() if pool else sqlite3.connect(DB_PATH, factory=_LentConn)
+        conn.lent = True
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# A CONNECTION SCOPE (2026-11-16, Quentin's instruction: dramatically improve
+# performance). Every storage function opens its own connection, and a new
+# connection pays for opening the file and parsing the whole schema (131
+# objects) on its first statement — ~2-3ms on the laptop, before the query.
+# The week's calendar read opened 21 of them for 101 trivial statements. Inside
+# `with conn_scope():` (every request, app.py) a closed connection is not
+# closed but LENT AGAIN to the next get_conn on this thread, and the scope's
+# end really closes them all. Each borrower still has a connection of its own
+# (a nested get_conn while one is out opens a second), and giving one back
+# rolls back anything it did not commit — exactly what close() did — so no
+# answer is kept and nothing reads stale: unlike read_scope, it is safe around
+# writes. Never across requests: a connection held open past the request would
+# hold the db file open (a test, or a restore, replaces it).
+class _LentConn(sqlite3.Connection):
+    lent = False
+
+    def close(self):
+        if not self.lent:
+            return
+        self.lent = False
+        if self.in_transaction:
+            self.rollback()
+        pool = getattr(_scope, 'pool', None)
+        if pool is None:
+            super().close()
+        else:
+            pool.append(self)
+
+
+@contextmanager
+def conn_scope():
+    outer = getattr(_scope, 'pool', None)
+    if outer is None:
+        _scope.pool = []
+    try:
+        yield
+    finally:
+        if outer is None:
+            pool, _scope.pool = _scope.pool, None
+            for conn in pool:
+                sqlite3.Connection.close(conn)
 
 
 # A READ SCOPE (2026-10-11, Quentin: gates were slow to load). Resolving one
