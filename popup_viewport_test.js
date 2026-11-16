@@ -121,7 +121,9 @@ const anchorAt = (page, x, y) => page.evaluate(([cx, cy]) => {
 }, [x, y]);
 
 async function run(browser, size) {
-  const page = await browser.newPage({ viewport: { width: size.width, height: size.height } });
+  // Reduced motion: a phone's sheet rises over 280ms (style.css, THE PHONE'S
+  // SHEETS), and a box measured mid-rise hangs past the bottom edge.
+  const page = await browser.newPage({ viewport: { width: size.width, height: size.height }, reducedMotion: 'reduce' });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   const open = async path => {

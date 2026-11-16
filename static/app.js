@@ -190,6 +190,107 @@ function defineSheet(id, spec) {
     spec.close();
     return true;
   });
+  wireSheetSwipe(id, spec);
+}
+
+// A SHEET AT THE BOTTOM IS SWIPED DOWN TO PUT IT DOWN (2026-11-16, Quentin's
+// instruction: the Ionic migration's second step, sheets made for the
+// phone). Below 900px a sheet rises from the bottom (style.css, THE PHONE'S
+// SHEETS), and a drag down from its top follows the finger; let go far or
+// fast enough and it is put down by the sheet's OWN close — the same verb Esc
+// and tap-off call, so a swipe flushes, peels and refuses exactly as they do.
+// Not ion-modal (a second sheet system beside this one, holding the page a
+// clarify pick has to reach) and not Ionic's createGesture, which decides at
+// touch-down whether it takes the touch: a sheet scrolls, so whether a drag
+// is the sheet's or the scroll's is known only from the first ~10px of it.
+// Down from the top is the sheet's; up, or while the sheet or anything inside
+// it is scrolled, is a scroll. Touch events for a finger (the first touchmove
+// is the last one that can still stop a pan), pointer events for a mouse in a
+// window narrow enough for the phone's layout.
+const SHEET_AT_BOTTOM = window.matchMedia('(max-width: 899px)');
+
+function scrolledInside(target, sheet) {
+  for (let el = target; el; el = el.parentElement) {
+    if (el.scrollTop > 0) return true;
+    if (el === sheet) return false;
+  }
+  return false;
+}
+
+function wireSheetSwipe(id, spec) {
+  const sheet = document.getElementById(id);
+  let g = null;   // { y, on, dy, v, lastY, lastT } while a press might be the sheet's
+  const settle = (to, then) => {
+    sheet.style.transition = 'transform 220ms cubic-bezier(0.32, 0.72, 0, 1)';
+    sheet.style.transform = to ? `translateY(${to}px)` : '';
+    setTimeout(() => {
+      if (then) then();
+      sheet.style.transition = '';
+      sheet.style.transform = '';
+    }, 220);
+  };
+  const start = (y, target) => {
+    g = SHEET_AT_BOTTOM.matches && spec.isOpen() && !pointerDrag.live
+      && !document.documentElement.classList.contains('clarify-strip')
+      && !scrolledInside(target, sheet)
+      && !(typingIn(target) && target === document.activeElement)
+      ? { y, on: false, dy: 0, v: 0, lastY: y, lastT: Date.now() } : null;
+  };
+  const move = (y, e) => {
+    if (!g) return;
+    if (pointerDrag.live || longPress.fired) { g = null; return; }
+    if (!g.on) {
+      if (Math.abs(y - g.y) < 10) return;
+      if (y < g.y) { g = null; return; }      // upward: a scroll
+      g.on = true;
+      g.y = y;
+      sheet.style.transition = 'none';
+    }
+    if (e.cancelable) e.preventDefault();
+    // The speed of the LAST movement (px/ms, smoothed), not of the whole
+    // drag: a flick is a fast finish, whatever came before it.
+    const now = Date.now();
+    if (now > g.lastT) g.v = 0.6 * ((y - g.lastY) / (now - g.lastT)) + 0.4 * g.v;
+    g.lastY = y;
+    g.lastT = now;
+    g.dy = Math.max(0, y - g.y);
+    sheet.style.transform = g.dy ? `translateY(${g.dy}px)` : '';
+  };
+  const end = () => {
+    const was = g;
+    g = null;
+    if (!was || !was.on) return false;
+    const h = sheet.offsetHeight;
+    // A finger that stopped before it lifted was not flicking.
+    const fast = was.dy > 30 && was.v > 0.5 && Date.now() - was.lastT < 120;
+    if (was.dy > Math.min(140, h * 0.3) || fast) settle(h, () => spec.close());
+    else settle(0);
+    return true;
+  };
+  sheet.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) start(e.touches[0].clientY, e.target);
+    else g = null;
+  }, { passive: true });
+  sheet.addEventListener('touchmove', e => move(e.touches[0].clientY, e), { passive: false });
+  sheet.addEventListener('touchend', end);
+  sheet.addEventListener('touchcancel', end);
+  sheet.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    start(e.clientY, e.target);
+    const mv = ev => move(ev.clientY, ev);
+    const up = () => {
+      document.removeEventListener('pointermove', mv);
+      document.removeEventListener('pointerup', up);
+      if (!end()) return;
+      // The click this release sends belongs to the drag, not to whatever
+      // the pointer came up over.
+      const eat = ev => { ev.stopPropagation(); ev.preventDefault(); };
+      window.addEventListener('click', eat, true);
+      setTimeout(() => window.removeEventListener('click', eat, true), 0);
+    };
+    document.addEventListener('pointermove', mv);
+    document.addEventListener('pointerup', up);
+  });
 }
 
 function showSheet(id) {

@@ -7110,3 +7110,39 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   #tab-dock:not(.hydrated) ion-icon { display: none; }
 }
 :root.clarify-strip #tab-dock { display: none; }
+
+/* ── THE PHONE'S SHEETS (Ionic migration step 2, 2026-11-16, Quentin's
+   instruction: sheets made for the phone) ─────────────────────────────────
+   Below 900px a sheet stands at the bottom, so it is a BOTTOM SHEET: it rises
+   when it opens, wears a grab handle and a rounded top, and a drag down from
+   its top puts it down (wireSheetSwipe). This is where it
+   stands and what that lets a finger do — what is inside is the docked
+   panel's look, unchanged, and from 900px nothing here applies. */
+@keyframes sheet-rise { from { transform: translateY(100%); } }
+@media (max-width: 899px) {
+  .sheet {
+    /* It stands on the capture field and the tab bar now (--gbar-h), so 88%
+       of the screen would run off the top: the room above them, less a
+       sliver so the sheet reads as a sheet. */
+    max-height: calc(var(--vvh, 100dvh) - var(--gbar-h) - env(safe-area-inset-top) - 12px);
+    border-radius: 14px 14px 0 0;
+    overscroll-behavior-y: none;
+    animation: sheet-rise 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .sheet::before {
+    content: '';
+    flex: none;
+    align-self: center;
+    width: 36px;
+    height: 5px;
+    margin: -3px 0 7px;
+    border-radius: 3px;
+    background: var(--text-secondary);
+    opacity: 0.45;
+  }
+}
+/* The clarify WINDOW as its strip is a desktop column standing full height,
+   not a sheet at the bottom of a phone. */
+:root.clarify-strip .sheet { border-radius: 0; animation: none; }
+:root.clarify-strip .sheet::before { display: none; }
+@media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
