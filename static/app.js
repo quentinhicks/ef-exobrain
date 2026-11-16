@@ -293,6 +293,129 @@ function wireSheetSwipe(id, spec) {
   });
 }
 
+// A ROW SWIPED LEFT SHOWS ITS VERBS (2026-11-16, Quentin's choice, reversing
+// 2026-10-10's no-row-swipe for the phone: the Ionic migration's third
+// step). Where sheets stand at the bottom (below 900px), a level flick left
+// on a to-do, Projects or Lists row slides it over and shows a few of the
+// verbs its menu already has — never new ones — with More… where the row
+// has a menu: the hold, by name. A surface REGISTERS which (`swipeRows(sel,
+// verbs(row))`), so nothing is wired per render and a repaint cannot strand a
+// listener; the verbs are asked for when the swipe starts, against the row as
+// it is then. On those rows the sideways flick is the row's, not the arrow
+// keys' (the swipe translation stands down there). Touch only: a mouse
+// press on a Projects row is already its drag.
+const ROW_SWIPES = [];
+const ROW_ACT_W = 84;
+const rowSwipe = { cand: null, open: null };
+
+function swipeRows(sel, verbs) { ROW_SWIPES.push({ sel, verbs }); }
+
+function swipeRowAt(target) {
+  if (!SHEET_AT_BOTTOM.matches || !target.closest) return null;
+  for (const s of ROW_SWIPES) {
+    const row = target.closest(s.sel);
+    if (row) return { row, spec: s };
+  }
+  return null;
+}
+
+// The row's menu, exactly as the hold opens it.
+function rowMoreVerb(row) {
+  return { label: 'More…', run: () => {
+    const r = row.getBoundingClientRect();
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true,
+      clientX: r.left + Math.min(60, r.width / 2), clientY: r.top + r.height / 2, view: window }));
+  } };
+}
+
+function rowSwipeSet(c, x, animate) {
+  c.row.classList.toggle('row-swipe-anim', !!animate);
+  c.row.style.setProperty('--swipe-x', `${x}px`);
+  c.acts.style.width = `${-x}px`;
+}
+
+function rowSwipeShut(c, animate = true) {
+  if (!c) return;
+  if (rowSwipe.open === c) rowSwipe.open = null;
+  rowSwipeSet(c, 0, animate);
+  setTimeout(() => {
+    if (rowSwipe.open === c) return;
+    c.acts.remove();
+    c.row.classList.remove('row-swiping', 'row-swipe-anim');
+    c.row.style.removeProperty('--swipe-x');
+  }, animate ? 200 : 0);
+}
+
+document.addEventListener('touchstart', e => {
+  rowSwipe.cand = null;
+  if (e.touches.length !== 1) return;
+  const open = rowSwipe.open;
+  if (open) {
+    if (e.target.closest('.row-acts')) return;       // a verb: its own click
+    rowSwipeShut(open);
+    // A touch on the open row itself is spent closing it, not opening it.
+    if (open.row.contains(e.target)) {
+      const eat = ev => { ev.stopPropagation(); ev.preventDefault(); };
+      window.addEventListener('click', eat, true);
+      setTimeout(() => window.removeEventListener('click', eat, true), 600);
+    }
+    return;
+  }
+  const hit = swipeRowAt(e.target);
+  if (!hit || typingIn(e.target)) return;
+  const t = e.touches[0];
+  rowSwipe.cand = { ...hit, x: t.clientX, y: t.clientY, on: false, dx: 0 };
+}, { passive: true, capture: true });
+
+document.addEventListener('touchmove', e => {
+  const c = rowSwipe.cand;
+  if (!c) return;
+  if (pointerDrag.live || longPress.fired) { rowSwipe.cand = null; return; }
+  const t = e.touches[0];
+  const dx = t.clientX - c.x, dy = t.clientY - c.y;
+  if (!c.on) {
+    if (Math.hypot(dx, dy) < 10) return;
+    // Left and mostly level, or it is a scroll (or nothing of ours).
+    if (dx > -8 || Math.abs(dx) < Math.abs(dy) * 1.5) { rowSwipe.cand = null; return; }
+    const verbs = c.spec.verbs(c.row).filter(Boolean);
+    if (!verbs.length) { rowSwipe.cand = null; return; }
+    c.on = true;
+    c.w = verbs.length * ROW_ACT_W;
+    c.acts = document.createElement('div');
+    c.acts.className = 'row-acts';
+    c.acts.innerHTML = verbs.map((v, i) =>
+      `<button class="row-act${v.danger ? ' row-act-danger' : ''}" data-i="${i}">${escHtml(v.label)}</button>`).join('');
+    c.acts.querySelectorAll('.row-act').forEach(b => b.addEventListener('click', ev => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      rowSwipeShut(c, false);
+      verbs[parseInt(b.dataset.i)].run();
+    }));
+    c.row.classList.add('row-swiping');
+    c.row.appendChild(c.acts);
+    c.x0 = dx;
+  }
+  if (e.cancelable) e.preventDefault();
+  // Past the buttons it drags at a third of the speed, then stops.
+  const raw = Math.min(0, dx - c.x0);
+  c.dx = raw < -c.w ? Math.max(-c.w - 48, -c.w + (raw + c.w) / 3) : raw;
+  rowSwipeSet(c, c.dx, false);
+}, { passive: false, capture: true });
+
+const rowSwipeEnd = () => {
+  const c = rowSwipe.cand;
+  rowSwipe.cand = null;
+  if (!c || !c.on) return;
+  if (c.dx < -c.w / 2) {
+    rowSwipeSet(c, -c.w, true);
+    rowSwipe.open = c;
+  } else {
+    rowSwipeShut(c);
+  }
+};
+document.addEventListener('touchend', rowSwipeEnd, true);
+document.addEventListener('touchcancel', rowSwipeEnd, true);
+
 function showSheet(id) {
   document.getElementById(id).classList.remove('hidden');
   document.getElementById(id + '-backdrop').classList.remove('hidden');
@@ -847,7 +970,7 @@ function scrollsSideways(el) {
 
 document.addEventListener('touchstart', e => {
   const t = e.touches.length === 1 && e.touches[0];
-  swipe.at = t && !typingIn(e.target) && !scrollsSideways(e.target)
+  swipe.at = t && !typingIn(e.target) && !scrollsSideways(e.target) && !swipeRowAt(e.target)
     ? { x: t.clientX, y: t.clientY, t: Date.now() } : null;
 }, { passive: true });
 
@@ -6848,6 +6971,8 @@ function objectMenuItems(kind, extra) {
 function closeObjectMenu() {
   const el = document.getElementById('obj-menu');
   if (el) el.remove();
+  const scrim = document.getElementById('obj-menu-scrim');
+  if (scrim) scrim.remove();
   objMenu.open = false;
 }
 
@@ -6862,6 +6987,12 @@ function openObjectMenu(x, y, kind, id, extra, opts) {
   objTapCancel();   // a menu arriving by any road voids a held tap
   const items = objectMenuItems(kind, extra);
   if (!items.length) return false;
+  // ON A PHONE THE MENU IS AN ACTION SHEET (2026-11-16, Quentin's
+  // instruction: the Ionic migration's third step). Where sheets stand at the
+  // bottom (SHEET_AT_BOTTOM) the same items rise from the bottom edge, under
+  // the thumb, full width with finger-height rows and a Cancel, over a scrim
+  // that only dismisses. Same items, same handlers: only where it stands.
+  const asSheet = SHEET_AT_BOTTOM.matches;
   const el = document.createElement('div');
   el.id = 'obj-menu';
   el.innerHTML = (opts && opts.filter
@@ -6869,10 +7000,28 @@ function openObjectMenu(x, y, kind, id, extra, opts) {
     + items.map((it, i) => it.info
     ? `<div class="om-info">${escHtml(it.label)}</div>`
     : `<button class="om-item${it.danger ? ' om-danger' : ''}" data-i="${i}">${escHtml(it.label)}${
-      it.hint ? `<span class="om-key">${escHtml(it.hint)}</span>` : ''}</button>`).join('');
+      it.hint ? `<span class="om-key">${escHtml(it.hint)}</span>` : ''}</button>`).join('')
+    + (asSheet ? '<button class="om-cancel">Cancel</button>' : '');
+  if (asSheet) {
+    el.classList.add('om-sheet');
+    const scrim = document.createElement('div');
+    scrim.id = 'obj-menu-scrim';
+    // On its CLICK, not its press: put down on the press, the click that
+    // follows would land on whatever was under it.
+    scrim.addEventListener('click', closeObjectMenu);
+    document.body.appendChild(scrim);
+    el.querySelector('.om-cancel').addEventListener('click', ev => {
+      ev.stopPropagation();
+      closeObjectMenu();
+    });
+  }
   document.body.appendChild(el);
 
-  fitInViewport(el, x, y);
+  // The action sheet is held in view by its CSS (the visible bottom, 70% of
+  // the visible height). Not fitted: measured on its first frame it is still
+  // a whole height below the edge, mid-rise, and would be "moved back" off the
+  // top.
+  if (!asSheet) fitInViewport(el, x, y);
   objMenu.open = true;
 
   // A SECOND CLICK IS NOT A CHOICE. The menu opens AT the pointer, so its
@@ -6925,7 +7074,7 @@ function openObjectMenu(x, y, kind, id, extra, opts) {
   // Any tap elsewhere dismisses, like every menu. Deferred by a frame or the
   // very click that opened it would close it again.
   setTimeout(() => document.addEventListener('pointerdown', function once(ev) {
-    if (ev.target.closest && ev.target.closest('#obj-menu')) {
+    if (ev.target.closest && ev.target.closest('#obj-menu, #obj-menu-scrim')) {
       document.addEventListener('pointerdown', once, { once: true });
       return;
     }
@@ -7816,6 +7965,18 @@ function refMenu(x, y, dirPid, row) {
   }
   openObjectMenu(x, y, 'ref', into || 0, items);
 }
+
+// A Lists entry swiped left: More… (the menu above) and its Delete; a list's
+// bullet swiped left: the delete its row already carries.
+swipeRows('#tab-lists .ref-row[data-id]', row => {
+  const l = refView.lists.find(v => String(v.id) === row.dataset.id);
+  return l ? [rowMoreVerb(row),
+    { label: `Delete ${REF_KIND_WORD[l.kind]}`, danger: true, run: () => refDelete(l.id) }] : [];
+});
+swipeRows('#tab-lists .ref-row[data-item]', row => {
+  const del = row.querySelector('.ref-del');
+  return del ? [{ label: 'Delete', danger: true, run: () => del.click() }] : [];
+});
 
 // NESTING IS A MOVE (2026-10-08, Quentin's instruction: "like a file system"):
 // any directory, list or document goes into any directory — never into
@@ -9980,6 +10141,11 @@ function coachHear(evt) {
   }
   renderCoach();
 }
+
+// The to-do list's rows carry their swipe verbs (renderEngage sets
+// row.swipeVerbs beside the hold that shares them).
+swipeRows('#engage-body .eg-pool-item[data-id], #engage-body .eg-action[data-id]',
+  row => (row.swipeVerbs ? row.swipeVerbs() : []));
 
 function paintCoachDot(on) {
   const tab = document.querySelector('#top-nav [data-nav="coach"]');
@@ -12984,6 +13150,23 @@ document.addEventListener('contextmenu', e => {
       label: v.label, hint: v.hint || v.key.toUpperCase(), danger: v.danger, run: v.pick || v.run }))]);
 });
 
+// A Projects row swiped left: More… (the menu above), then two of its verbs
+// out of the same table — someday and delete — on the row it was swiped on.
+swipeRows('#map-body .map-row[data-id]', row => {
+  const item = (state.mapItems || []).find(i => i.id === parseInt(row.dataset.id));
+  if (!item) return [];
+  const verbs = mapRowVerbs(item);
+  const on = key => {
+    const v = verbs.find(x => x.key === key);
+    return v && { label: v.label, danger: v.danger, run: () => {
+      mapView.sel = item.id;
+      mapSelSync();
+      (v.pick || v.run)();
+    } };
+  };
+  return [rowMoreVerb(row), on('p'), on('Backspace')];
+});
+
 // ── Export — the list as Markdown ────────────────────────────
 //
 // What MAP is showing under its lens and filters (search is a ranked view,
@@ -15147,6 +15330,14 @@ function renderEngage() {
       e.preventDefault();
       if (row.matches('.eg-pool-item.eg-inprog')) reenter(id); else startedToggle(id);
     });
+    // Swiped left (swipeRows, below): the hold's verb by name, and Done —
+    // the box's second tap without the first.
+    row.swipeVerbs = () => [
+      row.matches('.eg-pool-item.eg-inprog')
+        ? { label: 'To the end', run: () => reenter(id) }
+        : { label: 'Dot', run: () => startedToggle(id) },
+      { label: 'Done', run: () => complete(id) },
+    ];
   });
 
   // TWO TAPS TO DONE (Now Page Minimal v2): the first tap DOTS it — the same
@@ -15156,6 +15347,17 @@ function renderEngage() {
   // X?" asked down the list, no action taken — and the last dot is the one
   // worked on. started_at is only the column's old name. Both undoable. The row's long press / right-click still
   // toggles the dot, which is how one is cleared without completing.
+  // Done: off the list at once, the write and its undo after. The box's
+  // second tap and a swipe's Done are this one act.
+  const complete = async id => {
+    const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
+    engageView.pool = engageView.pool.filter(i => i.id !== id);
+    engageView.allItems = engageView.allItems.filter(i => i.id !== id);
+    renderEngage();
+    egWrites++;
+    try { await undoableDelete(id, `completed "${(item && item.content) || 'action'}"`); }
+    finally { if (--egWrites === 0) await after(); }
+  };
   body.querySelectorAll('.eg-check[data-id]').forEach(el => {
     const id = parseInt(el.dataset.id);
     el.addEventListener('click', async () => {
@@ -15164,12 +15366,7 @@ function renderEngage() {
       if (justLongPressed()) return;
       const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
       if (item && !item.started_at) { await startedToggle(id); return; }
-      engageView.pool = engageView.pool.filter(i => i.id !== id);
-      engageView.allItems = engageView.allItems.filter(i => i.id !== id);
-      renderEngage();
-      egWrites++;
-      try { await undoableDelete(id, `completed "${(item && item.content) || 'action'}"`); }
-      finally { if (--egWrites === 0) await after(); }
+      await complete(id);
     });
   });
 

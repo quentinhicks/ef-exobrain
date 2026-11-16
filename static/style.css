@@ -7146,3 +7146,81 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 :root.clarify-strip .sheet { border-radius: 0; animation: none; }
 :root.clarify-strip .sheet::before { display: none; }
 @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
+
+/* ── THE PHONE'S ROWS AND MENUS (Ionic migration step 3, 2026-11-16) ──────
+   A row swiped left (swipeRows in app.js) slides its contents over and shows
+   a few of its menu's verbs at its right edge, revealed as far as the finger
+   has gone. Only while a swipe is on the row: nothing about a resting row
+   changes. Relative, so the buttons stand inside it; the contents move by
+   their own transform, so the row's box, and everything measured off it,
+   stays put. */
+.row-swiping { position: relative; overflow: hidden; }
+.row-swiping > :not(.row-acts) { transform: translateX(var(--swipe-x, 0px)); }
+.row-swipe-anim > :not(.row-acts) { transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1); }
+.row-swipe-anim > .row-acts { transition: width 200ms cubic-bezier(0.32, 0.72, 0, 1); }
+.row-acts {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  display: flex;
+  justify-content: flex-end;
+  overflow: hidden;
+  z-index: 1;
+}
+.row-act {
+  flex: none;
+  width: 84px;
+  padding: 0 8px;
+  border: 0;
+  border-left: 1px solid var(--surface-mid);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: 600 12px/1.25 var(--font-ui);
+  white-space: normal;
+}
+.row-act-danger { background: var(--danger); color: var(--on-accent); }
+
+/* The object menu where sheets stand at the bottom (openObjectMenu's
+   asSheet): an action sheet — full width at the bottom edge, finger-height
+   rows, a Cancel under them, over a scrim that only dismisses. */
+#obj-menu.om-sheet {
+  left: 8px;
+  right: 8px;
+  top: auto;
+  bottom: calc(8px + env(safe-area-inset-bottom) + 100% - var(--vvh, 100%) - var(--vvt, 0px));
+  min-width: 0;
+  max-width: none;
+  max-height: calc(var(--vvh, 100dvh) * 0.7);
+  padding: 6px;
+  border-radius: 14px;
+  animation: sheet-rise 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+#obj-menu.om-sheet .om-item { min-height: 48px; padding: 12px 14px; font-size: 16px; }
+/* A phone has no keys to name, and a long menu scrolls with Cancel held at
+   its foot, always in reach. */
+#obj-menu.om-sheet .om-key { display: none; }
+#obj-menu.om-sheet .om-cancel { position: sticky; bottom: -6px; background: var(--surface); }
+#obj-menu.om-sheet .om-filter { padding: 11px 12px; font-size: 16px; }
+.om-cancel {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 6px;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  background: none;
+  color: var(--accent);
+  font: 600 16px var(--font-ui);
+}
+#obj-menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-popup) - 1);
+  background: rgba(0, 0, 0, 0.35);
+}
+@media (prefers-reduced-motion: reduce) {
+  #obj-menu.om-sheet { animation: none; }
+  .row-swipe-anim > :not(.row-acts), .row-swipe-anim > .row-acts { transition: none; }
+}
