@@ -137,8 +137,18 @@ html, body {
    own hold sheet — link preview, save image — stands down everywhere. */
 body { overflow-wrap: break-word; -webkit-touch-callout: none; }
 /* A sideways flick is the app's arrow keys (the swipe in app.js), so the
-   browser's own swipe-to-go-back stands down. */
-html, body { overscroll-behavior-x: none; }
+   browser's own swipe-to-go-back stands down. AND THE DOCUMENT NEVER BOUNCES
+   (2026-11-16, Quentin's report: on the phone the strip and the capture bar
+   lock): nothing scrolls the window — every page is a layer with its own
+   scroller — so a drag on the strip or the bar, or past the end of a list,
+   could only rubber-band the whole document, and iOS gives the next touches
+   to that bounce while the page under the finger stands still. */
+html, body { overscroll-behavior: none; }
+/* A second tap within a beat is the app's (the to-do box is two taps to
+   done), never the browser's double-tap zoom. Pinch zoom stays. Every
+   element, because the browser only honours it up to the nearest scroller;
+   a drag sets its own `none` inline, which wins. */
+* { touch-action: manipulation; }
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -4196,7 +4206,7 @@ body.np-body {
      the difference is the strip hidden under the browser chrome or the
      keyboard; it is 0 on a desktop and 0 wherever --vvh is not set. Without
      this the capture bar sits behind the keyboard it just opened. */
-  bottom: calc(100% - var(--vvh, 100%));
+  bottom: calc(100% - var(--vvh, 100%) - var(--vvt, 0px));
   width: 100%;
   height: var(--gbar-h);
   z-index: 170;              /* above overlays (140–160), below the clarify
@@ -4218,10 +4228,20 @@ body.np-body {
    strip is visible and tappable from anywhere. z 170, the bar's layer — above
    the overlays (140–165), below every sheet (200), which is modal. */
 :root { --tnav-h: calc(44px + env(safe-area-inset-top)); }
-#app { padding-top: var(--tnav-h); box-sizing: border-box; }
+/* --vvt: where the visible part of the screen starts (initVisibleHeight). The
+   day is in the flow, so #app reaches down to the visible bottom and pads its
+   top by the pan, rather than leaving the day under a strip that followed
+   it. Never by positioning #app: relative would make it the containing block
+   (and, with its overflow, the clip) of everything absolute inside it, and a
+   transform would re-anchor every fixed layer. */
+#app {
+  height: calc(var(--vvh, 100dvh) + var(--vvt, 0px));
+  padding-top: calc(var(--tnav-h) + var(--vvt, 0px));
+  box-sizing: border-box;
+}
 #top-nav {
   position: fixed;
-  top: 0; left: 0; right: 0;
+  top: var(--vvt, 0px); left: 0; right: 0;
   height: var(--tnav-h);
   padding: env(safe-area-inset-top) 14px 0;
   box-sizing: border-box;
@@ -4331,6 +4351,25 @@ body.np-body {
   flex: none;
 }
 #eg-clarify:hover { text-decoration: underline; }
+/* A FINGER'S TARGET IS THE BAR, NOT THE WORDS (2026-11-16, Quentin's report:
+   the capture bar locks on the phone). The field was as tall as its text,
+   ~22px of a 41px bar, and Clarify as tall as its label, so a tap a little
+   high or low landed on the bar and nothing opened. Both now stand the bar's
+   full height; neither looks any different. */
+#eg-capture, #eg-clarify { align-self: stretch; }
+
+/* The strip's targets reach to its edges the same way: an invisible ::before
+   fills the strip's height and half the gap to each neighbour, so a tab or an
+   icon is as wide as the space it owns and nothing is drawn differently. The
+   strip clips it (overflow), so it never reaches over a page. */
+.tn-tab, .tn-icon, .tn-pill { position: relative; }
+.tn-tab::before, .tn-icon::before, .tn-pill::before {
+  content: '';
+  position: absolute;
+  top: -10px; bottom: -10px;
+  left: -3px; right: -3px;
+}
+.tn-tab::before { left: -11px; right: -11px; }
 
 /* Undo in the top strip (10c): greyed while there is nothing to undo. */
 #eg-undo:disabled { opacity: 0.35; cursor: default; background: none; }
@@ -4597,7 +4636,7 @@ body.np-body {
 #app-toast {
   position: fixed;
   left: 50%;
-  bottom: calc(76px + 100% - var(--vvh, 100%));
+  bottom: calc(76px + 100% - var(--vvh, 100%) - var(--vvt, 0px));
   transform: translateX(-50%) translateY(8px);
   background: var(--surface-2);
   color: var(--text-primary);
@@ -5431,7 +5470,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #cal-overlay.cal-swapping .wk-block.wk-swap-cand { cursor: pointer;
   box-shadow: inset 0 0 0 2px var(--accent); --wk-hatch: var(--wk-hatch-on); }
 #cal-overlay.cal-swapping .wk-block.wk-swap-src { box-shadow: inset 0 0 0 2px var(--text-secondary); }
-#cal-swap-bar { position: fixed; z-index: 160; top: calc(var(--tnav-h) + 8px); left: 50%;
+#cal-swap-bar { position: fixed; z-index: 160; top: calc(var(--tnav-h) + var(--vvt, 0px) + 8px); left: 50%;
   transform: translateX(-50%); max-width: calc(100vw - 32px); box-sizing: border-box;
   display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-radius: 8px;
   background: var(--surface-2); border: 1px solid var(--border-soft); color: var(--text-primary);
@@ -6188,7 +6227,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
      difference is the hidden strip — 0 on a desktop and 0 wherever --vvh is
      unset. Every layer's bottom is decided here, which is why the correction
      only has to be written once. */
-  bottom: calc(var(--gbar-h) + 100% - var(--vvh, 100%));
+  bottom: calc(var(--gbar-h) + 100% - var(--vvh, 100%) - var(--vvt, 0px));
 }
 
 /* The ending sheet's own two lines: WHAT is being ended and since when. The
@@ -6433,7 +6472,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    Every full-screen layer starts UNDER the strip rather than covering it.
    Sheets are not listed: they are modal at z 200 and cover it on purpose. */
 .m-overlay, #map-overlay, #modal-overlay{
-  top: var(--tnav-h);
+  top: calc(var(--tnav-h) + var(--vvt, 0px));
 }
 
 /* ── PAGES, NOT POPUPS (2026-10-01, Quentin's instruction) ───────────────
@@ -6715,7 +6754,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 }
 .tn-menu {
   position: fixed;
-  top: calc(var(--tnav-h) + 6px);
+  top: calc(var(--tnav-h) + var(--vvt, 0px) + 6px);
   right: 16px;
   z-index: var(--z-popup);
   width: 320px;

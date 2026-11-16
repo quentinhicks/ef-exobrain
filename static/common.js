@@ -346,7 +346,10 @@ function fitInViewport(el, x, y, pad = 8) {
   // The far edge first, then the near one: a box too big for the window keeps
   // its start in view.
   const back = (lo, hi, size) => Math.max(pad - lo, Math.min(0, size - pad - hi));
-  const dx = back(r.left, r.right, vw), dy = back(r.top, r.bottom, vh);
+  // A phone's keyboard can pan what you see down inside the layout viewport
+  // (--vvt, initVisibleHeight in app.js): the window to fit into starts there.
+  const vt = vv && Math.abs(vv.scale - 1) <= 0.01 ? Math.max(0, vv.offsetTop) : 0;
+  const dx = back(r.left, r.right, vw), dy = back(r.top - vt, r.bottom - vt, vh);
   if (dx) { el.style.left = `${el.offsetLeft + dx}px`; el.style.right = 'auto'; }
   if (dy) { el.style.top = `${el.offsetTop + dy}px`; el.style.bottom = 'auto'; }
 }
@@ -439,6 +442,10 @@ function makeUndoStack(onChange) {
 function applyTheme(theme) {
   const light = theme === 'light';
   document.documentElement.classList.toggle('theme-light', light);
+  // The phone's status bar is the strip's ground in either theme, not the
+  // dark one the page was served with.
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--surface-mid').trim() || meta.content;
   const label = document.getElementById('theme-label');
   if (!label) return;  // another document, or the app before its shell parses
   label.textContent = light ? 'Light' : 'Dark';

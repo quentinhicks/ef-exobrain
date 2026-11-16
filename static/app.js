@@ -3563,7 +3563,7 @@ function renderBar() {
   // the field and Clarify. Undo moved to the top strip with the other page
   // tools, and the ≡ hub went — every page is a tab now.
   bar.innerHTML = `
-    <input type="text" id="eg-capture" placeholder="Capture anything..." autocomplete="off">
+    <input type="text" id="eg-capture" placeholder="Capture anything..." autocomplete="off" enterkeyhint="send">
     <button id="eg-clarify" title="Process the inbox">${clarifyBarLabel()}</button>
   `;
 
@@ -9611,12 +9611,23 @@ function renderSocial() {
 // closed. Nothing in this document scrolls the WINDOW — every surface is a
 // fixed layer with its own scroller — so any window scroll is that pan, and
 // it is put back. Not while pinch-zoomed: that pan is the reader's own.
+//
+// AND WHERE THE VISIBLE PART STANDS (2026-11-16, Quentin's report: on the
+// phone the strip and the capture bar lock). Putting the window back is not
+// the whole of it: iOS also pans the VISUAL viewport inside the layout one
+// when the keyboard opens (`visualViewport.offsetTop`), a pan no scrollTo
+// reaches, and it sometimes keeps it after the keyboard closes. A fixed layer
+// is placed against the layout viewport, so the strip stood above the screen
+// and the bar a pan's height over the keyboard, until something else moved.
+// `--vvt` is that offset, and every layer the contract places adds it: the
+// visible rectangle is --vvt down, --vvh tall, in the layers' own coordinates.
 function initVisibleHeight() {
   const vv = window.visualViewport;
+  const root = document.documentElement.style;
   const set = () => {
-    document.documentElement.style.setProperty(
-      '--vvh', Math.round(vv ? vv.height : window.innerHeight) + 'px');
     const zoomed = vv && Math.abs(vv.scale - 1) > 0.01;
+    root.setProperty('--vvh', Math.round(vv ? vv.height : window.innerHeight) + 'px');
+    root.setProperty('--vvt', (vv && !zoomed ? Math.max(0, Math.round(vv.offsetTop)) : 0) + 'px');
     if (!zoomed && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
   };
   set();
