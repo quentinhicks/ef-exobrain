@@ -121,6 +121,11 @@ A._CLIENT_SERVER = ''
 placed = []
 A._clarify_place = lambda wide: placed.append(wide)
 strip, main = FakeApp(), FakeApp()
+# The strip's reservation of the screen (the appbar): taken once it is SHOWN
+# (Windows pulls a window shown outside the work area back in), given back
+# once it is hidden.
+A._clarify_reserve = lambda: strip.log.append('reserve')
+A._clarify_undock = lambda: strip.log.append('undock')
 strip.visible = False
 capi = A.ClarifyApi()
 
@@ -133,8 +138,8 @@ check('clarify hidden: a fit places nothing', placed == [] and not strip.visible
 
 r = c.post('/api/panel/clarify').get_json()
 check('clarify: the key shows it', r == {'shown': True} and strip.visible, r)
-check('clarify: placed as the strip, then shown, then opened',
-      placed == [False] and strip.log == ['show', 'js:openClarify()'], (placed, strip.log))
+check('clarify: placed as the strip, shown, its strip reserved, then opened',
+      placed == [False] and strip.log == ['show', 'reserve', 'js:openClarify()'], (placed, strip.log))
 
 capi.clarify_fit(True)
 capi.clarify_fit(False)
@@ -144,8 +149,8 @@ check('clarify shown: a pick grows it and the next item shrinks it',
 strip.log.clear()
 r = c.post('/api/panel/clarify').get_json()
 check('clarify: the key puts it away', r == {'shown': False} and not strip.visible, r)
-check('clarify: closed through closeClarify, then hidden',
-      strip.log == ['js:clarifyView.open && closeClarify()', 'hide'], strip.log)
+check('clarify: closed through closeClarify, hidden, then its strip given back',
+      strip.log == ['js:clarifyView.open && closeClarify()', 'hide', 'undock'], strip.log)
 check('clarify: the main window re-reads', main.log == ['js:refreshTodoNow().then(refreshVisible)'], main.log)
 
 # Esc in the sheet hides it too, and a second hide is nothing.
@@ -153,7 +158,7 @@ c.post('/api/panel/clarify')
 strip.log.clear()
 capi.clarify_hide()
 capi.clarify_hide()
-check('clarify: Esc hides once', strip.log == ['hide'] and not A._clarify_shown, strip.log)
+check('clarify: Esc hides once', strip.log == ['hide', 'undock'] and not A._clarify_shown, strip.log)
 A._clarify_window = A._main_window = None
 
 print('\n'.join(ok + bad))

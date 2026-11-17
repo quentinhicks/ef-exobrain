@@ -561,26 +561,120 @@ _clarify_shown = False
 CLARIFY_W = 430
 
 
+# THE STRIP IS STICKY (2026-11-17, Quentin's instruction, reversing "it
+# floats"): shown, it is a Windows APPBAR on the right edge, so the shell
+# takes its strip out of the work area and a maximized or snapped window fits
+# beside it, the way they fit beside the taskbar. Registered when the key
+# shows it and removed when it goes down; a crash cannot strand it, since
+# the shell drops an appbar whose window is gone (measured: within 0.2s of a
+# killed process). A P / C / L pick grows the WINDOW over the screen and
+# keeps the reservation, so nothing else re-lays out for a pick.
+_clarify_bar = None  # the APPBARDATA while the strip holds its reservation
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long),
+                ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [('cbSize', ctypes.c_ulong), ('rcMonitor', _RECT),
+                ('rcWork', _RECT), ('dwFlags', ctypes.c_ulong)]
+
+
+class _APPBARDATA(ctypes.Structure):
+    _fields_ = [('cbSize', ctypes.c_ulong), ('hWnd', ctypes.c_void_p),
+                ('uCallbackMessage', ctypes.c_uint), ('uEdge', ctypes.c_uint),
+                ('rc', _RECT), ('lParam', ctypes.c_ssize_t)]
+
+
 # Placed with SetWindowPos directly, in the physical pixels the work area is
 # read in: pywebview's resize()/move() take logical ones and are also a SHOW
 # (SWP_SHOWWINDOW, see _panel_show), and this must never show a hidden strip.
 def _clarify_place(wide):
-    left, top, right, bottom = _work_area()
     if sys.platform != 'win32':
+        left, top, right, bottom = _work_area()
         w = right - left if wide else CLARIFY_W
         _clarify_window.resize(w, bottom - top)
         _clarify_window.move(right - w, top)
         return
     user32 = ctypes.windll.user32
-    hwnd = user32.FindWindowW(None, 'Clarify')
+    hwnd = _own_window('Clarify')
     if not hwnd:
         return
-    w = right - left
-    if not wide:
-        w = min(w, CLARIFY_W * user32.GetDpiForWindow(ctypes.c_void_p(hwnd)) // 96)
+    hwnd = ctypes.c_void_p(hwnd)
+    # Docked, it stays on its monitor; shown again, it goes where the cursor is.
+    docked = _clarify_bar is not None
+    hmon = user32.MonitorFromWindow(hwnd, 2) if docked else _cursor_monitor()
+    work = _monitor_rects(hmon)[1]
+    if wide:
+        right = _clarify_bar.rc.right if docked else work.right
+        left, top, bottom = work.left, work.top, work.bottom
+    elif docked:
+        rc = _clarify_dock(hwnd, hmon)
+        left, top, right, bottom = rc.left, rc.top, rc.right, rc.bottom
+    else:
+        # Not docked yet: the right edge of the whole work area, where it docks.
+        right, top, bottom = work.right, work.top, work.bottom
+        left = right - _clarify_strip_w(hmon)
     # NOZORDER | NOACTIVATE
-    user32.SetWindowPos(ctypes.c_void_p(hwnd), None, right - w, top, w, bottom - top,
-                        0x0004 | 0x0010)
+    user32.SetWindowPos(hwnd, None, left, top, right - left, bottom - top, 0x0004 | 0x0010)
+
+
+# Only once it is SHOWN: Windows pulls a window that is shown wholly outside
+# the work area back inside it, and the strip's own reservation is outside it
+# (measured: docked first, the strip came up just left of its reserved space).
+def _clarify_reserve():
+    if sys.platform != 'win32' or _clarify_bar is not None:
+        return
+    hwnd = _own_window('Clarify')
+    if hwnd:
+        hwnd = ctypes.c_void_p(hwnd)
+        _clarify_dock(hwnd, ctypes.windll.user32.MonitorFromWindow(hwnd, 2))
+        _clarify_place(False)
+
+
+def _clarify_strip_w(hmon):
+    dpi_x, dpi_y = ctypes.c_uint(), ctypes.c_uint()
+    ctypes.windll.shcore.GetDpiForMonitor(ctypes.c_void_p(hmon), 0,
+                                          ctypes.byref(dpi_x), ctypes.byref(dpi_y))
+    mon = _monitor_rects(hmon)[0]
+    return min(mon.right - mon.left, CLARIFY_W * dpi_x.value // 96)
+
+
+# ABM_NEW once, then ABM_QUERYPOS (the shell trims the asked-for rectangle off
+# the taskbar and any other appbar) and ABM_SETPOS, which is what moves every
+# maximized window out of the way. Returns the rectangle the strip now owns.
+def _clarify_dock(hwnd, hmon):
+    global _clarify_bar
+    shell32, user32 = ctypes.windll.shell32, ctypes.windll.user32
+    if _clarify_bar is None:
+        bar = _APPBARDATA()
+        bar.cbSize = ctypes.sizeof(_APPBARDATA)
+        bar.hWnd = hwnd.value
+        bar.uCallbackMessage = user32.RegisterWindowMessageW('QPA clarify appbar')
+        shell32.SHAppBarMessage(0, ctypes.byref(bar))  # ABM_NEW
+        _clarify_bar = bar
+    bar = _clarify_bar
+    w = _clarify_strip_w(hmon)
+    mon = _monitor_rects(hmon)[0]
+    bar.uEdge = 2  # ABE_RIGHT
+    bar.rc.left, bar.rc.top, bar.rc.right, bar.rc.bottom = mon.right - w, mon.top, mon.right, mon.bottom
+    shell32.SHAppBarMessage(2, ctypes.byref(bar))  # ABM_QUERYPOS
+    bar.rc.left = bar.rc.right - w
+    shell32.SHAppBarMessage(3, ctypes.byref(bar))  # ABM_SETPOS
+    return bar.rc
+
+
+def _clarify_undock():
+    global _clarify_bar
+    if _clarify_bar is not None:
+        ctypes.windll.shell32.SHAppBarMessage(1, ctypes.byref(_clarify_bar))  # ABM_REMOVE
+    _clarify_bar = None
 
 
 def _clarify_hide():
@@ -589,6 +683,7 @@ def _clarify_hide():
         return
     _clarify_shown = False
     _clarify_window.hide()
+    _clarify_undock()
     _clarify_changed()
 
 
@@ -612,6 +707,7 @@ def _clarify_toggle():
         _clarify_place(False)
         _clarify_shown = True
         _clarify_window.show()
+        _clarify_reserve()
         _clarify_window.evaluate_js('openClarify()')
     return _clarify_shown
 
@@ -4421,26 +4517,38 @@ def _work_area():
         screens = webview.screens
         s = (screens() if callable(screens) else screens)[0]
         return s.x, s.y, s.x + s.width, s.y + s.height
+    w = _monitor_rects(_cursor_monitor())[1]
+    return w.left, w.top, w.right, w.bottom
+
+
+def _cursor_monitor():
     user32 = ctypes.windll.user32
-
-    class POINT(ctypes.Structure):
-        _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
-
-    class RECT(ctypes.Structure):
-        _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long),
-                    ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
-
-    class MONITORINFO(ctypes.Structure):
-        _fields_ = [('cbSize', ctypes.c_ulong), ('rcMonitor', RECT),
-                    ('rcWork', RECT), ('dwFlags', ctypes.c_ulong)]
-
-    pt = POINT()
+    pt = _POINT()
     user32.GetCursorPos(ctypes.byref(pt))
-    hmon = user32.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTONEAREST
-    mi = MONITORINFO()
-    mi.cbSize = ctypes.sizeof(MONITORINFO)
-    user32.GetMonitorInfoW(hmon, ctypes.byref(mi))
-    return mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom
+    return user32.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTONEAREST
+
+
+# (the monitor's rectangle, its work area) — the work area is what is left
+# once the taskbar and every appbar, the clarify strip included, are taken out.
+def _monitor_rects(hmon):
+    mi = _MONITORINFO()
+    mi.cbSize = ctypes.sizeof(_MONITORINFO)
+    ctypes.windll.user32.GetMonitorInfoW(ctypes.c_void_p(hmon), ctypes.byref(mi))
+    return mi.rcMonitor, mi.rcWork
+
+
+# THIS process's top-level window with that exact title. A title alone can
+# name another instance's window — a second app, or a test beside the live one.
+def _own_window(title):
+    user32 = ctypes.windll.user32
+    pid, hwnd = ctypes.c_ulong(), 0
+    while True:
+        hwnd = user32.FindWindowExW(None, ctypes.c_void_p(hwnd), None, title)
+        if not hwnd:
+            return None
+        user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+        if pid.value == os.getpid():
+            return hwnd
 
 
 def _panel_yield_to_app():
@@ -4466,7 +4574,7 @@ def _panel_yield_to_app():
     ours = os.getpid()
     while True:
         time.sleep(0.3)
-        hwnd = user32.FindWindowW(None, 'NOW')
+        hwnd = _own_window('NOW')
         if not hwnd:
             continue
         fg = user32.GetForegroundWindow()
@@ -4476,7 +4584,7 @@ def _panel_yield_to_app():
         # resize, the user raising a window) self-heals on the next tick.
         # The clarify strip counts as another app here: it stands beside the
         # browser, and the panel should stay up over the browser while it does.
-        if pid.value != ours or fg == user32.FindWindowW(None, 'Clarify'):
+        if pid.value != ours or fg == _own_window('Clarify'):
             if not user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST:
                 user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, KEEP_PLACE)
         elif fg != hwnd and user32.GetWindow(fg, GW_HWNDNEXT) != hwnd:

@@ -5,7 +5,10 @@ Both windows open centered on the mouse cursor.
 
 - **Ctrl+Alt+I** — pops a one-line box; type an item, Enter, done.
 - **Ctrl+Alt+O** — clarify the inbox in a strip down the right edge of the
-  screen, over whatever else is up; press it again (or Esc) to put it away.
+  screen; press it again (or Esc) to put it away. On Windows the strip
+  RESERVES its edge while it is up, the way the taskbar does: maximized and
+  snapped windows fit beside it instead of under it, and get the width back
+  when it goes away.
   It is the app's own clarify sheet in a third window (`/clarify`), so it
   needs the app running. Picking Project, Calendar or List fills the screen
   with that page until the next item. **With the app closed** it opens the
