@@ -4782,6 +4782,29 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   color: var(--text-secondary);
 }
 .cl-count { font: 10px var(--font-mono); color: var(--gold); }
+/* THE CLARIFY TIMER (design "Clarify Timer" 4a): a hairline across the
+   sheet's top edge drains over an item's two minutes, the time beside the
+   count. On the edge at every width — above a phone's handle, inside its
+   rounded top. At zero both go grey and stop; never red. */
+.cl-timebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--border-soft);
+}
+#cl-timebar-fill { height: 100%; background: var(--accent); transition: width 1s linear; }
+.cl-clock {
+  font: 600 10px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+/* The count and the time stay whole in a narrow docked panel; the hint
+   beside them is what wraps. */
+.cl-count, .cl-clock { flex: none; white-space: nowrap; }
+.cl-clock.cl-clock-out { color: var(--text-secondary); }
+@media (prefers-reduced-motion: reduce) { #cl-timebar-fill { transition: none; } }
 .cl-spacer { flex: 1; }
 .cl-hint { font: 10px var(--font-mono); color: var(--text-secondary); }
 

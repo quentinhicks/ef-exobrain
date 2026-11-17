@@ -15197,7 +15197,51 @@ const clarifyView = {
   // pool). Without a lock the sheet looks frozen and a second click files the
   // NEXT item by accident — the one thing this surface must never do.
   filing: false,
+  // THE CLARIFY TIMER: which inbox item the clock is running for, and since
+  // when (ms). A new head of the queue restarts it; a snapshot carries it.
+  clockFor: null, clockStart: 0,
 };
+
+// THE CLARIFY TIMER (2026-11-17, Quentin's design "Clarify Timer" 4a): each
+// inbox item gets two minutes, drawn as a hairline draining across the
+// sheet's top edge with the time beside the count. A clock, never a rule: at
+// zero it greys and stops — nothing is filed, nothing sounds, nothing turns
+// red. The inbox sitting only; an item opened from a row is not being raced.
+const CLARIFY_ITEM_SEC = 120;
+let clarifyClockTimer = null;
+
+function clarifyClockLeft() {
+  return Math.max(0, CLARIFY_ITEM_SEC - Math.floor((Date.now() - clarifyView.clockStart) / 1000));
+}
+
+function clarifyClockText(left) {
+  return Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
+}
+
+// Patches the two nodes, never the sheet: a re-render would take a focused
+// field (and a phone's keyboard) with it. False once there is nothing to run.
+function paintClarifyClock() {
+  const fill = document.getElementById('cl-timebar-fill');
+  const clock = document.getElementById('cl-clock');
+  if (!clarifyView.open || !fill || !clock) return false;
+  const left = clarifyClockLeft();
+  const text = clarifyClockText(left);
+  if (clock.textContent !== text) {
+    clock.textContent = text;
+    fill.style.width = (left / CLARIFY_ITEM_SEC * 100) + '%';
+    clock.classList.toggle('cl-clock-out', left === 0);
+  }
+  return left > 0;
+}
+
+function clarifyClockRun() {
+  clearInterval(clarifyClockTimer);
+  clarifyClockTimer = null;
+  if (!paintClarifyClock()) return;
+  clarifyClockTimer = setInterval(() => {
+    if (!paintClarifyClock()) { clearInterval(clarifyClockTimer); clarifyClockTimer = null; }
+  }, 250);
+}
 
 // The sheet's supporting vocab (people chips, tag vocab, project search),
 // shared by every way in — the inbox queue, a single pool item, external.
@@ -15241,6 +15285,7 @@ async function openClarify() {
   // starts) with the stuff on sticky notes, in email, on paper.
   clarifyView.external = !clarifyView.queue.length;
   clarifyView.open = true;
+  clarifyView.clockFor = null;  // a new sitting starts its first item at 2:00
   clarifyResetItem();
   renderClarify();
 }
@@ -16584,7 +16629,16 @@ function renderClarify() {
   const acts = isProj && item
     ? ((state.projects || []).find(p => p.id === item.id) || {}).action_count
     : null;
+  const timed = !!item && !clarifyView.single && !ext && !rec && !tpl;
+  if (timed && clarifyView.clockFor !== item.id) {
+    clarifyView.clockFor = item.id;
+    clarifyView.clockStart = Date.now();
+  }
+  // Drawn at the time it is NOW, so a re-render does not replay the drain.
+  const left = timed ? clarifyClockLeft() : 0;
   sheet.innerHTML = `
+    ${timed ? `<div class="cl-timebar"><div id="cl-timebar-fill"
+      style="width:${left / CLARIFY_ITEM_SEC * 100}%"></div></div>` : ''}
     <div class="cl-head">
       <span class="cl-eyebrow">${rec ? 'Recurring · project'
         : tpl ? 'Occasion' : `Clarify${isProj ? ' · project' : ''}`}</span>
@@ -16592,6 +16646,8 @@ function renderClarify() {
         : tpl ? escHtml(clarifyView.forOccasion.name) : ext
         ? (clarifyView.forProject ? 'new action' : 'outside the app')
         : `${n} of ${clarifyView.total}`}</span>
+      ${timed ? `<span id="cl-clock" class="cl-clock${left ? '' : ' cl-clock-out'}">${
+        clarifyClockText(left)}</span>` : ''}
       <span class="cl-spacer"></span>
       <span class="cl-hint">one at a time · esc / tap off</span>
     </div>
@@ -16655,6 +16711,7 @@ function renderClarify() {
         : tpl ? (item ? 'Save ⏎' : 'Add it ⏎') : flowMode && clarifyView.flow === 'now' ? 'Done ⏎'
         : ext ? 'Add it ⏎' : 'File it ⏎'}</button>
     </div>`;
+  clarifyClockRun();
 
   sheet.querySelectorAll('[data-dovar]').forEach(b => b.addEventListener('click', () => {
     clarifyView.doVariant = b.dataset.dovar;
