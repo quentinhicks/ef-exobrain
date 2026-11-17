@@ -2838,10 +2838,14 @@ def _gate_day_payload(node, ymd, now=None):
         if loc and sc.get('lat') is not None:
             dist = round(qr_judge.haversine_m(sc['lat'], sc['lng'],
                                               node['geofence_lat'], node['geofence_lng']))
+        why_not = qr_judge.refusal_words(node, sc, ymd)
         scans.append(dict(sc, distance_m=dist,
                           local_time=_scan_local_hhmm(sc['scanned_at']),
                           in_window=open_iso <= sc['scanned_at'] <= close_iso,
-                          satisfies=bool(qr_judge.scan_satisfies(node, sc, ymd))))
+                          satisfies=why_not is None,
+                          # WHY it does not count, in the judge's words
+                          # (refusal_words) — never a bare "does not count".
+                          why_not=why_not))
 
     settings = qr_judge.charge_settings()
     # WHERE THE DAY STANDS, priced. The same predicate the judge charges on
@@ -2965,6 +2969,12 @@ def _gate_day_payload(node, ymd, now=None):
                        node, ymd, (start, end, offset))},
         'history': history,
         'location': loc,
+        # A TAG GATE IS CLEARED BY A TAG, not by standing at the pin
+        # (scan_refusal ignores the fence there), so its read-out names the
+        # tags that clear THIS day instead of the geofence — which read as
+        # "be at Kanji Hall" on a Tuesday that wanted the gym tag.
+        'clears_with': (qr_judge.tags_clearing(node, ymd)
+                        if (node.get('proof_mode') or 'link') == 'tag' else None),
         'scans': scans,
         'hours': hours,
         'judged': judged,
@@ -3244,7 +3254,7 @@ def patch_accountability_node(id):
                                        storage.qr_tags_for_node(id),
                                        {u.upper() for u in ntag.load_keys()})
         if bare:
-            return jsonify({'error': 'no live tag clears it on ' + _day_names(bare)
+            return jsonify({'error': 'no live tag clears it on ' + qr_judge.day_names(bare)
                                      + ' — give a tag those days first'}), 400
     immediate, pending = qr_judge.schedule_node_patch(node, data, effective_from)
     if immediate:
@@ -3893,7 +3903,7 @@ def nfc_tag_route(tag_id):
             bare = _uncovered_if(row['node_id'], row['id'], None)
             if bare:
                 return jsonify({'error': 'without this tag nothing could clear ' + row['node_label']
-                                         + ' on ' + _day_names(bare) + ' — give another tag those '
+                                         + ' on ' + qr_judge.day_names(bare) + ' — give another tag those '
                                          'days, move the gate to link proof, or pause it first'}), 400
         # Its keys stay in config.json: they are the physical tag's, and
         # adding it again by UID finds them.
@@ -3950,13 +3960,6 @@ def _uncovered_if(node_id, assign_id, change, keyed=None):
                                    {str(u).upper() for u in keyed})
 
 
-WEEKDAY_NAMES = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
-
-
-def _day_names(digits):
-    return ', '.join(WEEKDAY_NAMES[int(d)] for d in digits)
-
-
 @app.route('/api/accountability/tags/<int:tag_id>', methods=['PATCH', 'DELETE'])
 def patch_accountability_tag(tag_id):
     # tag_id is the ASSIGNMENT's: one tag on one gate.
@@ -3972,7 +3975,7 @@ def patch_accountability_tag(tag_id):
         bare = _uncovered_if(tag['node_id'], tag_id, None)
         if bare:
             return jsonify({'error': 'without this tag nothing could clear ' + tag['node_label']
-                                     + ' on ' + _day_names(bare) + ' — give another tag those '
+                                     + ' on ' + qr_judge.day_names(bare) + ' — give another tag those '
                                      'days, move the gate to link proof, or pause it first'}), 400
         storage.qr_delete_tag(tag_id)
         return jsonify({'ok': True})
@@ -3991,7 +3994,7 @@ def patch_accountability_tag(tag_id):
             bare = _uncovered_if(tag['node_id'], tag_id, {'active': 0})
             if bare:
                 return jsonify({'error': 'pausing it would leave nothing to clear '
-                                         + tag['node_label'] + ' on ' + _day_names(bare)}), 400
+                                         + tag['node_label'] + ' on ' + qr_judge.day_names(bare)}), 400
             storage.qr_unpend_tag(tag_id)      # a queued wake-up is off
             fields['active'] = 0
     if 'days_of_week' in d:
@@ -4011,7 +4014,7 @@ def patch_accountability_tag(tag_id):
             bare = _uncovered_if(tag['node_id'], tag_id, {'days_of_week': want})
             if bare:
                 return jsonify({'error': 'nothing else clears ' + tag['node_label'] + ' on '
-                                         + _day_names(bare) + ' — give another tag those days '
+                                         + qr_judge.day_names(bare) + ' — give another tag those days '
                                          'first'}), 400
             storage.qr_unpend_tag_days(tag_id)  # the newest intent wins
             fields['days_of_week'] = want
@@ -4064,7 +4067,7 @@ def delete_nfc_tag_keys(tag_id):
         if bare:
             return jsonify({'error': 'clearing these keys would leave '
                                      + row['node_label'] + ' with no way to be '
-                                     'cleared on ' + _day_names(bare)}), 400
+                                     'cleared on ' + qr_judge.day_names(bare)}), 400
     keys = dict(_config_file().get('ntag_keys') or {})
     keys.pop(uid, None)
     _update_config({'ntag_keys': keys})

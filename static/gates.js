@@ -869,7 +869,8 @@ function renderDetail() {
       sc.distance_m != null ? ` · ${sc.distance_m} m away` : ''}${
       sc.accuracy_m != null ? ` (±${Math.round(sc.accuracy_m)} m, as the phone reported it)` : ''} · ${
       sc.in_window ? 'inside the window' : 'outside the window'} · ${
-      sc.satisfies ? (sc.in_window ? 'counts' : 'would count, wrong time') : 'does not count'}</li>`).join('');
+      sc.satisfies ? (sc.in_window ? 'counts' : 'would count, wrong time')
+        : 'does not count' + (sc.why_not ? ' — ' + escHtml(sc.why_not) : '')}</li>`).join('');
   const pend = pendingGroups(g.pending_changes || []);
 
   el.innerHTML = `<div class="gd-card">
@@ -881,7 +882,9 @@ function renderDetail() {
         : 'the window — proof after it closes is not proof'}</dd>
       <dt>Proof</dt><dd>${escHtml(p.name)}. ${escHtml(p.threat)}</dd>
       <dt>Stake</dt><dd>${money(g.stake_cents)} · ${commitmentWords(g.commitment, g.live)}</dd>
-      ${g.location ? `<dt>Place</dt><dd>${escHtml(g.location.name || 'a pinned point')} · within ${
+      ${g.clears_with ? `<dt>Tap</dt><dd>${g.clears_with.length ? escHtml(g.clears_with.join(' or '))
+        : 'none — no live tag clears this day'}</dd>`
+      : g.location ? `<dt>Place</dt><dd>${escHtml(g.location.name || 'a pinned point')} · within ${
         escHtml(g.location.radius_m)} m of ${Number(g.location.lat).toFixed(5)}, ${Number(g.location.lng).toFixed(5)}</dd>` : ''}
       ${g.hours ? `<dt>Hours</dt><dd>${g.hours.logged_minutes || 0} of ${g.hours.required_minutes || 0} min${
         g.hours.frozen ? ' (frozen)' : ''}</dd>` : ''}
@@ -1105,8 +1108,11 @@ function renderSheet() {
         ${gateTagsHtml(n)}
         <div class="gd-field"><div class="gd-flabel">Last taps <button type="button" class="gd-btn gd-small" id="gd-taps">Refresh</button></div>
           ${taps == null ? emptyHtml('reading…') : taps.length ? `<ul class="gd-list gd-mono">${taps.map(t =>
-            `<li class="${t.ok ? 'gd-good-text' : 'gd-bad-text'}">${t.ok ? '✓' : '✗'} ${escHtml(t.at || '??')} · ${escHtml(t.orphan ? 'unidentified tag' : (t.tag_label || 'tag'))} · ${
-              t.ok ? 'read ' + escHtml(t.counter) : escHtml(t.reason || 'refused')}</li>`).join('')}</ul>`
+            // A verified tap that cleared nothing (the wrong day's tag, no
+            // window open) carries its reason too: logged is not cleared.
+            `<li class="${t.ok && !t.reason ? 'gd-good-text' : 'gd-bad-text'}">${t.ok && !t.reason ? '✓' : '✗'} ${escHtml(t.at || '??')} · ${escHtml(t.orphan ? 'unidentified tag' : (t.tag_label || 'tag'))} · ${
+              t.ok ? 'read ' + escHtml(t.counter) + (t.reason ? ' · ' + escHtml(t.reason) : '')
+                : escHtml(t.reason || 'refused')}</li>`).join('')}</ul>`
             : emptyHtml('None yet. Every tap of /t is written down, refused ones with the reason.')}
         </div>
 ` : ''}
@@ -1653,7 +1659,7 @@ const TAG_STEPS = `<ol class="gd-rules">
     write it down somewhere durable. Leave it in AES mode, not LRP.</li>
   <li>Back here: open the gate, put the tag on the schedule rows it should clear, and set Proof to "NFC tag
     only". It refuses until every day it runs has a tag with its keys — that refusal is the check working.</li>
-  <li>Tap it. You should see "Logged — &lt;tag&gt;, read N". If not, the gate's Last taps says which stage failed.
+  <li>Tap it. You should see "Verified tap, read N" and, per gate, whether it counts right now and why not. If not, the gate's Last taps says which stage failed.
     Nothing there at all means the tap never reached the server.</li>
 </ol>`;
 

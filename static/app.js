@@ -10234,7 +10234,14 @@ function gatePopHtml(d) {
   // GPS error is a different problem from a wrong pin, and the two look
   // identical from a failed day.
   let out = '';
-  if (d.location) {
+  // A TAG GATE NAMES ITS TAGS, not the pin: the fence judges nothing there,
+  // and "Pinned: Kanji Hall dorm" read as where to be on a day that wanted
+  // the gym's tag. `clears_with` is the server's (tags_clearing).
+  if (d.clears_with) {
+    out += '<div class="gp-sect">What must be tapped</div>';
+    out += gpRow('Tag', d.clears_with.length ? escHtml(d.clears_with.join(' or '))
+      : '<span class="gp-no">none — no live tag clears this day</span>');
+  } else if (d.location) {
     out += '<div class="gp-sect">Where it must be scanned</div>';
     out += gpRow('Pinned', escHtml(d.location.name || 'an unnamed place'));
     out += gpRow('Position', `<span class="gp-mono">${d.location.lat.toFixed(5)}, `
@@ -10268,7 +10275,9 @@ function gatePopHtml(d) {
       const verdict = sc.satisfies && sc.in_window
         ? '<span class="gp-ok">counts</span>'
         : `<span class="gp-no">${sc.satisfies ? 'too late' : 'does not count'}</span>`;
-      return gpRow(t, `${verdict}${bits.length ? ' · ' + escHtml(bits.join(' · ')) : ''}`);
+      // The judge's own reason (refusal_words), never a bare "does not count".
+      return gpRow(t, `${verdict}${bits.length ? ' · ' + escHtml(bits.join(' · ')) : ''}`
+        + (sc.why_not ? `<div class="gp-note">${escHtml(sc.why_not)}</div>` : ''));
     }).join('');
     // The distance is the whole diagnosis, so say what it means rather than
     // leaving two numbers to be compared by eye.

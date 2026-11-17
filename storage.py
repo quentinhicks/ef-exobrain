@@ -8041,8 +8041,19 @@ def nfc_accept_tap(uid, counter, when):
 # A scan carries its TAG'S DAYS (tag_days), read at the moment of judging, and
 # any tag easing that has come due is applied first — the judge must never read
 # a tag as tighter than it has become.
-_SCAN_COLS = '''s.*, t.days_of_week AS tag_days
-           FROM qr_scan s LEFT JOIN qr_gate_tag t ON t.id = s.tag_id'''
+# Its tag's NAME rides along so a refusal can say which tag was tapped.
+_SCAN_COLS = '''s.*, t.days_of_week AS tag_days, nt.label AS tag_label
+           FROM qr_scan s LEFT JOIN qr_gate_tag t ON t.id = s.tag_id
+                          LEFT JOIN nfc_tag nt ON nt.id = t.tag_id'''
+
+
+def qr_get_scan(scan_id):
+    # One scan in the judge's own shape — what the tap page asks the judge about.
+    conn = get_conn()
+    apply_due_tag_pendings(conn)
+    row = conn.execute('SELECT ' + _SCAN_COLS + ' WHERE s.id = ?', (scan_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def qr_scans_in_window(node_id, open_iso, close_iso):

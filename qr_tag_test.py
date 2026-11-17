@@ -147,7 +147,8 @@ t = qr_scan_server.app.test_client()
 
 picc, cm = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), UID_A, 5)
 r = t.get(f'/t?e={picc}&c={cm}')
-check('a genuine tap is logged', r.status_code == 200 and b'Logged' in r.data, r.status_code)
+check('a genuine tap is logged, and the page says it verified',
+      r.status_code == 200 and b'Verified tap' in r.data, r.status_code)
 scans = storage.qr_scans_in_window(gate['id'], '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')
 check('...as a scan of THIS gate, marked as tag-proved',
       len(scans) == 1 and scans[0]['proof'] == 'tag' and scans[0]['tag_id'] == tag['id'], scans)

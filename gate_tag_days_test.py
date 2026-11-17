@@ -168,6 +168,76 @@ hist = {(o['date']): o['outcome'] for o in qr_judge.outcomes(MON, SAT) if o['nod
 check('the history paints the tapped Monday met — it reads the tap\'s proof and tag now',
       hist.get(MON) == 'success', hist)
 
+# ── what a tap is TOLD (2026-11-17, Quentin's report: a verified tap of the
+# Mon/Wed/Sat/Sun tag on a Tuesday, inside the window, said "Logged" and the
+# day was charged — nothing said the day wanted the other tag) ──
+node = next(n for n in storage.qr_get_nodes() if n['id'] == gid)
+
+
+def scan_at(tid, ymd, hhmm):
+    sid = storage.qr_log_scan(gid, qr_judge._utc_iso(ymd, hhmm), None, None, None,
+                              proof='tag', tag_id=tid)
+    return storage.qr_get_scan(sid)
+
+
+def at(ymd, hhmm):
+    return datetime.datetime.fromisoformat(f'{ymd}T{hhmm}:00')
+
+
+desk_sat = scan_at(w['id'], SAT, '07:00')
+check('the judge says WHY a desk tap does not clear a Saturday',
+      qr_judge.scan_refusal(node, desk_sat, SAT) == 'tag_day')
+words = qr_judge.refusal_words(node, desk_sat, SAT)
+check('...in words naming the tag tapped, its days, and the tag the day takes',
+      'Desk' in words and 'Monday' in words and 'on a Saturday it takes Kitchen' in words, words)
+counts, said = qr_judge.tap_standing(node, desk_sat, at(SAT, '07:00'))
+check('a wrong-day tag inside the window is told it does NOT count, and why',
+      not counts and said.startswith('does NOT count') and 'Kitchen' in said, said)
+counts, said = qr_judge.tap_standing(node, scan_at(e['id'], SAT, '07:00'), at(SAT, '07:00'))
+check('the right tag inside the window is told it counts', counts and 'counts' in said, said)
+counts, said = qr_judge.tap_standing(node, scan_at(e['id'], SAT, '11:00'), at(SAT, '11:00'))
+check('...after the window, that it is too late', not counts and 'too late' in said, said)
+counts, said = qr_judge.tap_standing(node, scan_at(e['id'], SAT, '05:00'), at(SAT, '05:00'))
+check('...and before it, too early', not counts and 'too early' in said, said)
+
+day = c.get(f'/api/accountability/nodes/{gid}/day?date={SAT}').get_json()
+check('the read-out names the tag the day takes, not the pin',
+      day.get('clears_with') == ['Kitchen'], day.get('clears_with'))
+desk_rows = [s for s in day['scans'] if s.get('tag_label') == 'Desk']
+check('...and says why each desk tap that day does not count',
+      desk_rows and all(not s['satisfies'] and 'Kitchen' in (s.get('why_not') or '')
+                        for s in desk_rows), desk_rows)
+check('...while a counting scan carries no reason',
+      all(s['why_not'] is None for s in day['scans'] if s['satisfies']))
+
+# The tap page itself, end to end. ALL DAY so "now" is inside the window
+# whatever time the suite runs; which tag counts follows today's weekday.
+import ntag             # noqa: E402
+import qr_scan_server   # noqa: E402
+conn = storage.get_conn()
+conn.execute('UPDATE qr_node SET all_day = 1 WHERE id = ?', (gid,))
+conn.commit()
+conn.close()
+tc = qr_scan_server.app.test_client()
+dow = str(today.weekday())
+for uid, label, tid, tag_days in ((UID_W, 'Desk', w['id'], '01234'),
+                                  (UID_E, 'Kitchen', e['id'], '456')):
+    pe_, pc_ = ntag.make_tap(bytes.fromhex(META), bytes.fromhex(MAC), uid, 5)
+    page = tc.get(f'/t?e={pe_}&c={pc_}').get_data(as_text=True)
+    last = storage.qr_recent_taps(gid, 1)[0]
+    if dow in tag_days:
+        check(f'a {label} tap on a day it clears: the page says it COUNTS for the gate',
+              'it counts for Wake' in page and 'this tap counts' in page, page[-500:])
+        check('...and its Last taps row carries no complaint', last['ok'] and not last['reason'],
+              last)
+    else:
+        check(f'a {label} tap on a day it does not clear: the page says it clears NO gate,'
+              ' and which tag the day takes',
+              'clears NO gate' in page and 'does NOT count' in page and 'it takes' in page,
+              page[-500:])
+        check('...and so does its Last taps row', last['ok'] and 'does NOT count' in
+              (last['reason'] or ''), last)
+
 print('\n'.join(ok + bad))
 print('\n%d passed, %d failed' % (len(ok), len(bad)))
 raise SystemExit(1 if bad else 0)

@@ -62,6 +62,12 @@ READS = {
         '(qr_judge.uncovered_days); a due easing is applied in the read itself.',
     'qr_scans_between':
         'same rows, read for the ✓/✗ history.',
+    'qr_tags_for_node':
+        'qr_gate_tag — the same assignment rows a scan\'s `tag_days` comes off, '
+        'written through the same doors (above). Read by qr_judge ONLY for '
+        'WORDS (tags_clearing → refusal_words: "on a Tuesday it takes Dillon '
+        'gym"); no verdict or charge asks it — '
+        'scan_refusal decides off the scan\'s own tag_days (2026-11-17).',
     'schedule_resolver':
         'schedule_source — a gate\'s source change runs through '
         'schedule.demands_less and pends if looser.',

@@ -564,7 +564,14 @@ def scan_satisfies(node, scan, ymd):
     It was written twice — once in judge() and once in outcomes() — and the two
     copies agreed right up until a third kind of proof existed. They read this
     now, so the history the app draws and the day the judge charges for cannot
-    disagree about what counted.
+    disagree about what counted. It is scan_refusal asked as a yes/no, so the
+    reason a surface prints and the verdict the judge charges on are one rule.
+    """
+    return scan_refusal(node, scan, ymd) is None
+
+
+def scan_refusal(node, scan, ymd):
+    """WHY this scan does not clear that gate on that day — None when it does.
 
     HARD ('tag') means a verified NTAG 424 DNA tap and nothing else: not a link,
     not a geofence, however honest either looks. That is the whole point of the
@@ -574,18 +581,108 @@ def scan_satisfies(node, scan, ymd):
     SOFT ('link') keeps the old rule — the link, geofenced where a fence is set
     — and accepts a tap too, because a tap is strictly stronger evidence than
     the thing being asked for.
+
+    The REASON exists because a bare "does not count" was the whole read-out
+    (2026-11-17, Quentin's report): a verified tap of the Mon/Wed/Sat/Sun tag
+    on a Tuesday, inside the window, charged $3, and nothing said the day
+    wanted the other tag.
     """
     # A TAP COUNTS ONLY ON ITS TAG'S DAYS (2026-11-05, Quentin's instruction:
     # one Wake gate, a weekday tag and a weekend tag). `ymd` is the gate's DAY,
     # not the wall date of the tap, so a 00:30 tap on a 23:00 window is asked
     # about the night it belongs to.
     if scan.get('proof') == 'tag' and not tag_clears_on(scan.get('tag_days'), ymd):
-        return False
+        return 'tag_day'
     if (node.get('proof_mode') or 'link') == 'tag':
-        return scan.get('proof') == 'tag'
+        return None if scan.get('proof') == 'tag' else 'needs_tag'
     if scan.get('proof') == 'tag':
-        return True
-    return node.get('geofence_lat') is None or scan.get('geofence_pass') == 1
+        return None
+    if node.get('geofence_lat') is None or scan.get('geofence_pass') == 1:
+        return None
+    return 'outside_fence'
+
+
+DAY_NAMES = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
+
+
+def day_names(digits):
+    return ', '.join(DAY_NAMES[int(d)] for d in digits)
+
+
+def tags_clearing(node, ymd):
+    # The names of the live tags that clear this gate on that day, asked of
+    # tag_clears_on — what the read-out says must be tapped, and what a refused
+    # tap is told to use instead.
+    return [t['label'] or t['uid'] for t in storage.qr_tags_for_node(node['id'], active_only=True)
+            if tag_clears_on(t.get('days_of_week'), ymd)]
+
+
+def refusal_words(node, scan, ymd):
+    """The sentence for a scan that does not count — None when it does.
+
+    Written ONCE, here, so the tap page and the gate read-out say the same
+    thing; each surface used to say only "does not count", which left the
+    person holding the wrong tag to work out the rule from the settings.
+    """
+    why = scan_refusal(node, scan, ymd)
+    if why == 'tag_day':
+        day = DAY_NAMES[int(_dow_of(ymd))]
+        other = tags_clearing(node, ymd)
+        return '%s clears this gate only on %s — on a %s %s.' % (
+            scan.get('tag_label') or 'This tag', day_names(scan.get('tag_days') or ''), day,
+            ('it takes ' + ' or '.join(other)) if other else 'no live tag clears it')
+    if why == 'needs_tag':
+        return 'This gate takes a verified tag tap, and a link scan is not one.'
+    if why == 'outside_fence':
+        return 'It was outside the geofence, or carried no location.'
+    return None
+
+
+def _window_words(node, ymd, window):
+    if is_all_day(node):
+        return 'all of %s' % DAY_NAMES[int(_dow_of(ymd))]
+    start, end, offset = window
+    return "%s's %s–%s%s window" % (DAY_NAMES[int(_dow_of(ymd))], start, end,
+                                    ' +%dd' % offset if offset else '')
+
+
+def tap_standing(node, scan, now=None):
+    """What a scan just logged did for this gate: (counts, sentence).
+
+    The sentence completes "this tap …" (counts / does NOT count / is too
+    late), so the page and the Last taps row can both put it after a name.
+
+    THE answer the tap page gives (2026-11-17, Quentin's instruction: say,
+    after I scan, whether it verified and cleared an active gate). Asked in
+    the judge's own terms — the day whose window the scan landed in (a +1d
+    window opened yesterday included), that day's sealed terms where it has
+    them, and scan_refusal — so the page cannot promise a day _settle will
+    then charge for.
+    """
+    now = now or datetime.now()
+    today = now.date().isoformat()
+    at = scan['scanned_at']
+    for ymd in (_date_plus(today, -1), today):
+        if not applies_on(node, ymd):
+            continue
+        window = resolve_window(node, ymd)
+        c = storage.qr_get_commitment(node['id'], ymd)
+        term = committed_node(node, c) if c and c.get('sealed_at') else node
+        open_iso, close_iso = day_scan_bounds(term, ymd, window)
+        if not open_iso <= at <= close_iso:
+            continue
+        why = refusal_words(term, scan, ymd)
+        if why:
+            return False, 'does NOT count. ' + why
+        return True, 'counts — %s is met.' % _window_words(term, ymd, window)
+    if not applies_on(node, today):
+        return False, 'does not count — the gate does not run today.'
+    window = resolve_window(node, today)
+    late = now >= settle_after(node, today, window)
+    why = refusal_words(node, scan, today)
+    return False, 'is %s — %s %s.%s' % (
+        'too late' if late else 'too early', _window_words(node, today, window),
+        'has closed' if late else 'has not opened', (' And ' + why) if why else '')
 
 
 # ── Which days a tag clears ───────────────────────────────────────────────

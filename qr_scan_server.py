@@ -30,6 +30,7 @@ from datetime import datetime
 from flask import Flask, Response, request
 
 import ntag
+import qr_judge
 import storage
 
 app = Flask(__name__)
@@ -149,17 +150,37 @@ TAP_PAGE = '''<!doctype html>
  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
       margin:0;padding:32px 20px;background:#0d0d0d;color:#e8e8e8}
  h3{font-size:22px;margin:0 0 12px} p{color:#9a9a9a;line-height:1.5}
- .ok{color:#7fd08a} .no{color:#e2857f}
+ .ok{color:#7fd08a} .no{color:#e2857f} p.gate b{color:#e8e8e8}
 </style></head><body>
 <h3>%(label)s</h3>
-<p class="%(cls)s">%(msg)s</p>
+<p class="%(cls)s">%(msg)s</p>%(gates)s
 </body></html>'''
 
 
-def _tap_page(label, msg, ok, code):
+def _tap_page(label, msg, ok, code, gates=()):
+    # `gates`: one (gate label, sentence, counts) line per gate the tap was
+    # asked about — the answer to "did that actually clear anything".
+    lines = ''.join('\n<p class="gate %s"><b>%s</b>: this tap %s</p>' % (
+                        'ok' if g_ok else 'no', _esc(g), _esc(said))
+                    for g, said, g_ok in gates)
     return Response(TAP_PAGE % {'label': _esc(label), 'msg': _esc(msg),
-                                'cls': 'ok' if ok else 'no'},
+                                'cls': 'ok' if ok else 'no', 'gates': lines},
                     mimetype='text/html', status=code)
+
+
+def _standing(node_id, scan_id):
+    """(counts, sentence) for a scan just logged, from the judge.
+
+    A failure here may never cost the tap or report it lost: the scan row is
+    already written, and the crash handler would say "not logged", which is
+    false. So it says it could not tell, and the gate's read-out still can.
+    """
+    try:
+        node = next(n for n in storage.qr_get_nodes() if n['id'] == node_id)
+        return qr_judge.tap_standing(node, storage.qr_get_scan(scan_id))
+    except Exception as e:
+        print('tap standing failed: %r' % e)
+        return False, 'is logged, but whether it counts could not be worked out (%s).' % e
 
 
 def _log_tap(*a, **kw):
@@ -261,27 +282,41 @@ def tap():
     # ONE TAP, EVERY GATE THE TAG IS ON (2026-10-22): each gate's assignment
     # answers for itself — paused, waiting its 24h, or logged — and writes its
     # own attempt row, so each gate's "Last taps" reads true.
-    logged, refused = [], []
+    #
+    # AND THE PAGE SAYS WHAT IT DID (2026-11-17, Quentin's instruction). It
+    # said "Logged" for a verified tap of the wrong day's tag, inside the
+    # window, and the day was charged: logged is not cleared. Each gate now
+    # gets the judge's own answer (qr_judge.tap_standing) — it counts, or why
+    # not, or that no window is open — and so does its Last taps row. Only a
+    # tap that VERIFIED reaches this, so the tag's holder is the reader.
+    logged, said = [], []
     for tag in tags:
         if not tag['active'] or not tag['node_active']:
             pend = storage.qr_tag_pending(tag['id'])
-            refused.append(('This tag starts counting %s.' % pend[:16].replace('T', ' '))
-                           if pend else 'This tag is paused.')
+            why = (('This tag starts counting %s.' % pend[:16].replace('T', ' '))
+                   if pend else 'This tag is paused.')
+            said.append((tag['node_label'], 'does not count. ' + why, False))
             _log_tap(now_iso, False,
                      ('this tag starts counting %s' % pend[:16].replace('T', ' '))
                      if pend else 'this tag is paused',
                      node_id=tag['node_id'], tag_id=tag['id'], uid=uid, counter=counter)
             continue
-        storage.qr_log_scan(tag['node_id'], now_iso, None, None, None, None,
-                            proof='tag', tag_id=tag['id'])
-        _log_tap(now_iso, True, None, node_id=tag['node_id'], tag_id=tag['id'],
-                 uid=uid, counter=counter)
-        logged.append(tag)
+        scan_id = storage.qr_log_scan(tag['node_id'], now_iso, None, None, None, None,
+                                      proof='tag', tag_id=tag['id'])
+        counts, sentence = _standing(tag['node_id'], scan_id)
+        said.append((tag['node_label'], sentence, counts))
+        _log_tap(now_iso, True, None if counts else 'logged, but this tap ' + sentence,
+                 node_id=tag['node_id'], tag_id=tag['id'], uid=uid, counter=counter)
+        logged.append((tag, counts))
 
     if logged:
-        return _tap_page(' · '.join(t['node_label'] for t in logged),
-                         'Logged — %s, read %d.' % (logged[0]['label'], counter), True, 200)
-    return _tap_page(tags[0]['label'], refused[0], False, 409)
+        cleared = [t['node_label'] for t, counts in logged if counts]
+        head = ('Verified tap, read %d — it counts for %s.' % (counter, ' and '.join(cleared))
+                if cleared else
+                'Verified tap, read %d — logged, but it clears NO gate right now.' % counter)
+        return _tap_page(tags[0]['label'], head, bool(cleared), 200, said)
+    return _tap_page(tags[0]['label'], 'Verified tap, read %d — but it clears no gate.'
+                     % counter, False, 409, said)
 
 
 @app.errorhandler(Exception)
