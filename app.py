@@ -14,6 +14,7 @@ import base64
 import urllib.parse
 import urllib.request
 import urllib.error
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date as date_cls, datetime, timedelta, timezone
 
@@ -715,6 +716,139 @@ def _clarify_toggle():
 @app.route('/api/panel/clarify', methods=['POST'])
 def panel_clarify():
     return jsonify({'shown': _clarify_toggle()})
+
+
+# THE GOOGLE CALENDAR WINDOW (2026-11-17, Quentin's instruction): Google
+# Calendar itself, in a fourth window the app loads at launch and keeps
+# hidden, so Ctrl+Alt+G (inbox.ahk) brings it up already drawn and, in front,
+# puts it away. A window, not a page: Google refuses to be framed
+# (X-Frame-Options: SAMEORIGIN). It is the app's webview, which Plucky's night
+# block does not stop (his choice), so it is held to Calendar and the pages
+# that sign in to it — any other link opens in the default browser, where
+# Plucky applies. It stays signed in because the windows keep their storage
+# (`_webview_storage`). Closing it hides it; it goes down with the app.
+GCAL_URL = 'https://calendar.google.com/calendar/r'
+GCAL_TITLE = 'Google Calendar'
+GCAL_HOSTS = {'calendar.google.com', 'accounts.google.com', 'accounts.youtube.com',
+              'myaccount.google.com', 'gds.google.com',
+              'login.microsoftonline.com', 'login.microsoft.com', 'login.live.com'}
+GCAL_DOMAINS = ('duosecurity.com', 'princeton.edu')  # any host under them
+_gcal_window = None
+_gcal_shown = False
+_quitting = False
+
+
+# Whether the calendar window may go to `url` itself. A Workspace sign-in
+# lands on www.google.com/a/<domain>/ and /accounts/, which is all of
+# www.google.com it may reach.
+def _gcal_keeps(url):
+    p = urllib.parse.urlsplit(url)
+    if p.scheme in ('about', 'data', 'blob'):
+        return True
+    host = (p.hostname or '').lower()
+    if p.scheme != 'https':
+        return False
+    if host in GCAL_HOSTS or any(host == d or host.endswith('.' + d) for d in GCAL_DOMAINS):
+        return True
+    return host == 'www.google.com' and p.path.startswith(('/a/', '/accounts/'))
+
+
+# Signed out — the first launch, or a sign-in that has lapsed — Calendar
+# sends the window to its PRODUCT page (measured: workspace.google.com/…/
+# products/calendar/), not to a sign-in form. The window goes here instead.
+GCAL_SIGNIN = ('https://accounts.google.com/ServiceLogin?service=cl&continue='
+               + urllib.parse.quote(GCAL_URL, safe=''))
+
+
+# WebView2's NavigationStarting, on the UI thread. A link that opens a new
+# window already goes to the default browser (pywebview's
+# OPEN_EXTERNAL_LINKS_IN_BROWSER); this is the same for one that would
+# replace the calendar.
+def _gcal_navigating(sender, args):
+    url = str(args.Uri)
+    if _gcal_keeps(url):
+        return
+    args.Cancel = True
+    p = urllib.parse.urlsplit(url)
+    if p.hostname == 'workspace.google.com' and '/products/calendar' in p.path:
+        # Off the UI thread: load_url waits on it, and it is inside this event.
+        threading.Thread(target=_gcal_window.load_url, args=(GCAL_SIGNIN,), daemon=True).start()
+        return
+    print('Google Calendar window: sent to the browser:', url)
+    webbrowser.open(url)
+
+
+# before_show: the form and its WebView2 control exist, nothing has loaded.
+def _gcal_hook(window):
+    if sys.platform == 'win32':
+        window.native.browser.webview.NavigationStarting += _gcal_navigating
+
+
+def _gcal_in_front():
+    if sys.platform != 'win32':
+        return True  # no foreground to read: the key is a plain toggle there
+    hwnd = _own_window(GCAL_TITLE)
+    return bool(hwnd) and ctypes.windll.user32.GetForegroundWindow() == hwnd
+
+
+# Up wherever it was left. A minimized one is restored — only then, because
+# restoring a maximized window would un-maximize it.
+def _gcal_bring():
+    global _gcal_shown
+    _gcal_shown = True
+    _gcal_window.show()
+    if sys.platform == 'win32':
+        hwnd = _own_window(GCAL_TITLE)
+        if hwnd and ctypes.windll.user32.IsIconic(ctypes.c_void_p(hwnd)):
+            _gcal_window.restore()
+
+
+def _gcal_put_away():
+    global _gcal_shown
+    _gcal_shown = False
+    _gcal_window.hide()
+
+
+# The key. In front, it goes away; hidden, minimized or behind something, it
+# comes up — and inbox.ahk activates it, since only the process that owns the
+# hotkey may take the foreground.
+def _gcal_toggle():
+    if not _gcal_window:
+        return False
+    if _gcal_shown and _gcal_in_front():
+        _gcal_put_away()
+    else:
+        _gcal_bring()
+    return _gcal_shown
+
+
+# The close box (and Alt+F4) put it away instead, so it stays loaded and
+# signed in. pywebview runs this synchronously; False cancels the close.
+def _gcal_closing():
+    if _quitting:
+        return True
+    _gcal_put_away()
+    return False
+
+
+# Made at launch and kept hidden, so the key shows it already drawn.
+def _gcal_create():
+    w = webview.create_window(GCAL_TITLE, GCAL_URL, width=1200, height=860, hidden=True)
+    w.events.before_show += _gcal_hook
+    w.events.closing += _gcal_closing
+    return w
+
+
+@app.route('/api/panel/gcal', methods=['POST'])
+def panel_gcal():
+    return jsonify({'shown': _gcal_toggle()})
+
+
+# Where the windows keep their cookies and storage: on this machine, outside
+# the data dir and the repo, because it holds a Google sign-in.
+def _webview_storage():
+    root = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    return os.path.join(root, 'ef-exobrain', 'webview')
 
 
 @app.route('/api/areas')
@@ -4403,6 +4537,14 @@ class WindowApi:
     def coach_reset(self):
         return _coach.reset()
 
+    # The Calendar page's "Google ↗": Ctrl+Alt+G's way in from the app. From
+    # here the app is in front, so showing it also brings it forward.
+    def gcal_show(self):
+        if not _gcal_window:
+            return False
+        _gcal_bring()
+        return True
+
 
 # The clarify window's page is the app, so it gets the app's api and three
 # calls of its own.
@@ -4490,6 +4632,9 @@ def _client_bridge():
                 self._done()
             elif self.path == '/api/panel/clarify':
                 _clarify_toggle()
+                self._done()
+            elif self.path == '/api/panel/gcal':
+                _gcal_toggle()
                 self._done()
             else:
                 self._proxy()
@@ -4794,12 +4939,20 @@ if __name__ == '__main__':
         js_api=clarify_api,
     )
     clarify_api._window = _clarify_window
+    _gcal_window = _gcal_create()
 
     def _close_panel(*args):
+        global _quitting
+        _quitting = True
         panel_window.destroy()
         _clarify_window.destroy()
+        _gcal_window.destroy()
 
     main_window.events.closed += _close_panel
     if sys.platform == 'win32':
         threading.Thread(target=_panel_yield_to_app, daemon=True).start()
-    webview.start()
+    # The windows KEEP their cookies and storage (2026-11-17; private mode
+    # before), so the Google Calendar window stays signed in. The rest of the
+    # app keeps localStorage across launches now too; sessionStorage (privacy
+    # mode) still starts empty every launch.
+    webview.start(private_mode=False, storage_path=_webview_storage())

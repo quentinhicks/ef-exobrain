@@ -3105,6 +3105,7 @@ const calFilter = stripMenu({
           <button class="chip wk-mono${calWeek.pop === 'range' ? ' on' : ''}" data-wk="range"
             title="Wake and sleep gates">${WK_SVG.sun} ${escHtml(t.rangeLabel)}</button>
           <button class="chip" data-wk="add-event" title="Add an event to Google Calendar">+ Event</button>
+          <button class="chip" data-wk="gcal" title="Google Calendar itself (Ctrl+Alt+G)">Google ↗</button>
           <button class="chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
           ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
         </div>` },
@@ -3224,6 +3225,8 @@ function initCalWeek() {
       await openDayPlan(a.dataset.date);
     } else if (act === 'add-event') {
       openEvSheet();
+    } else if (act === 'gcal') {
+      openGoogleCalendar();
     } else if (act === 'refresh') {
       await refreshCalendar();
     } else if (act === 'event') {
@@ -7446,10 +7449,10 @@ async function openSurface(dest, sub) {
 // remember to update. Openers stay unaware of it — the overlays' class changes
 // and the three renders that change a level inside a surface call syncRoute.
 //
-// The last address is ALSO a setting row, not only localStorage: pywebview
-// runs in private mode, so the desktop window forgets its storage on every
-// launch, and a phone and the laptop reading one server is where "where was
-// I" is actually asked. An address in the URL itself wins over the remembered
+// The last address is ALSO a setting row, not only localStorage: a phone and
+// the laptop reading one server is where "where was I" is actually asked (and
+// until 2026-11-17 the desktop windows ran in private mode, forgetting their
+// storage on every launch). An address in the URL itself wins over the remembered
 // one.
 function currentRoute() {
   const shown = id => {
@@ -8135,6 +8138,15 @@ async function refreshMetricsSettings() {
 // Undo deletes the event from Google AND the local mirror; created-by-us is
 // the one thing the read-only-mirror rule lets the app delete.
 const evSheet = { open: false };
+
+// Google Calendar itself (2026-11-17). On the desktop it is the window the app
+// keeps loaded and signed in (app.py, Ctrl+Alt+G); anywhere else it is
+// Google's page, which a phone hands to its calendar app.
+function openGoogleCalendar() {
+  const api = window.pywebview && window.pywebview.api;
+  if (api && api.gcal_show) api.gcal_show();
+  else window.open('https://calendar.google.com/calendar/r', '_blank', 'noopener');
+}
 
 function openEvSheet() {
   evSheet.open = true;

@@ -11,6 +11,8 @@
 ;   Ctrl+Alt+S  -> open the NOW panel's switch form (focuses the panel to type)
 ;   Ctrl+Alt+X  -> mark interrupted on the NOW panel (no focus steal)
 ;   Ctrl+Alt+P  -> privacy mode: wash BOTH windows out to a quarter contrast
+;   Ctrl+Alt+G  -> Google Calendar, already loaded in the app's own window;
+;                  again, while it is in front, to put it away
 ; Both inbox windows open at the mouse cursor. Hide/show is a pure local window
 ; operation; switch/interrupted go through python.exe like the inbox commands.
 
@@ -50,6 +52,19 @@ resultFile := A_Temp "\inbox_result.txt"
     SetTitleMatchMode(3)              ; only that window is titled exactly "Clarify"
     if WinExist("Clarify")            ; hidden again when the key put it away
         WinActivate("Clarify")
+}
+
+; Google Calendar: the app loads it at launch in a hidden window, so this only
+; shows it. Activated here for the reason Clarify is. With the app closed there
+; is no window, so it opens in the browser instead.
+^!g:: {
+    if !PanelSend("gcal") {
+        Run("https://calendar.google.com/calendar/r")
+        return
+    }
+    SetTitleMatchMode(3)              ; only that window is titled exactly this
+    if WinExist("Google Calendar")    ; hidden again when the key put it away
+        WinActivate("Google Calendar")
 }
 
 ; Hide the always-on-top NOW panel and bring it back after 10 seconds.

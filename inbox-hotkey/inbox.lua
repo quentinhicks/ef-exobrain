@@ -11,6 +11,8 @@
 --   Ctrl+Alt+S -> open the NOW panel's switch form (focuses the panel first)
 --   Ctrl+Alt+X -> mark interrupted on the NOW panel (no focus steal)
 --   Ctrl+Alt+P -> privacy mode: wash BOTH windows out to a quarter contrast
+--   Ctrl+Alt+G -> Google Calendar, already loaded in the app's own window,
+--                 and again to put it away (app closed: the browser)
 -- Loaded by a one-line ~/.hammerspoon/init.lua: dofile("<repo>/inbox-hotkey/
 -- inbox.lua"). Paths derive from this file's own location — nothing personal
 -- is hardcoded here.
@@ -77,6 +79,19 @@ hs.hotkey.bind({'ctrl', 'alt'}, 'o', function()
         local t = hs.task.new(python, nil, {cli, 'view'})
         t:setWorkingDirectory(hotkeyDir)
         t:start()
+    end)
+end)
+
+-- Google Calendar, which the app keeps loaded in a hidden window (inbox.ahk's
+-- Ctrl+Alt+G). Here the key is a plain toggle; with the app closed, the browser.
+hs.hotkey.bind({'ctrl', 'alt'}, 'g', function()
+    hs.http.asyncPost('http://127.0.0.1:5000/api/panel/gcal', '', nil, function(status)
+        if status >= 200 and status < 400 then
+            local w = windowTitled('Google Calendar')
+            if w then w:focus() end
+            return
+        end
+        hs.urlevent.openURL('https://calendar.google.com/calendar/r')
     end)
 end)
 
