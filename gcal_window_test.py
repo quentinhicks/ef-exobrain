@@ -152,6 +152,19 @@ check('the app quitting lets it close', A._gcal_closing() is True and win.log ==
 A._quitting = False
 A._gcal_window = None
 
+# ── It never interrupts ───────────────────────────────────
+# The rest is the real WebView2's (alert pinned before pywebview rewrites it
+# into a message box, the permission refused): driven in a hidden window.
+class FakeNote:
+    Handled = False
+
+
+note = FakeNote()
+A._gcal_notification(None, note)
+check('a notification it sends shows nothing', note.Handled is True)
+check('alert is pinned to nothing, against a later rewrite',
+      "'alert'" in A.GCAL_QUIET_JS and 'set: () => {}' in A.GCAL_QUIET_JS and 'configurable: false' in A.GCAL_QUIET_JS)
+
 # ── Where the sign-in lives ───────────────────────────────
 where = os.path.abspath(A._webview_storage())
 repo = os.path.dirname(os.path.abspath(A.__file__))

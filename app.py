@@ -803,7 +803,41 @@ def _gcal_navigating(sender, args):
 # before_show: the form and its WebView2 control exist, nothing has loaded.
 def _gcal_hook(window):
     if sys.platform == 'win32':
-        window.native.browser.webview.NavigationStarting += _gcal_navigating
+        control = window.native.browser.webview
+        control.NavigationStarting += _gcal_navigating
+        control.CoreWebView2InitializationCompleted += _gcal_ready
+
+
+# IT NEVER INTERRUPTS (2026-11-18, Quentin's instruction: "remove those weird
+# Gcal notifications"). Loaded and hidden all day, Calendar's alert() — its
+# "Alerts" reminders — came out of it as bare, untitled message boxes:
+# pywebview rewrites every page's alert into WinForms.MessageBox.Show. Here
+# alert is nothing, fixed before any script runs so that rewrite is ignored;
+# the page is also refused leave to notify, and a notification it sends
+# anyway shows nothing. Runs after pywebview's ready handler, which has
+# already started the first load: so Calendar loads again, under the script.
+GCAL_QUIET_JS = ("Object.defineProperty(window, 'alert', "
+                 "{ get: () => function () {}, set: () => {}, configurable: false });")
+
+
+def _gcal_ready(sender, args):
+    if not args.IsSuccess:
+        return
+    core = sender.CoreWebView2
+    core.AddScriptToExecuteOnDocumentCreatedAsync(GCAL_QUIET_JS)
+    core.PermissionRequested += _gcal_permission
+    core.NotificationReceived += _gcal_notification
+    core.Navigate(GCAL_URL)
+
+
+def _gcal_permission(sender, args):
+    from Microsoft.Web.WebView2.Core import CoreWebView2PermissionKind, CoreWebView2PermissionState
+    if args.PermissionKind == CoreWebView2PermissionKind.Notifications:
+        args.State = CoreWebView2PermissionState.Deny
+
+
+def _gcal_notification(sender, args):
+    args.Handled = True
 
 
 def _gcal_in_front():
