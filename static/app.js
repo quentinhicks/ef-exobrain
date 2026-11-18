@@ -7373,10 +7373,13 @@ document.addEventListener('keydown', e => {
 // and nothing the switch does on the way (the old page going down, the day
 // showing for a moment) gets to write one of its own.
 async function goRoute(route, push) {
-  // Leaving the Calendar mid-pick gives the pick up: clarify comes back.
-  const pk = clarifyView.picking && CLARIFY_FLOWS.find(f => f.key === clarifyView.picking.flow);
+  // Leaving the Calendar mid-pick gives the pick up: clarify comes back —
+  // the strip's too, when this window was working it (stripPick).
+  const pick = pickHere();
+  const pk = pick && CLARIFY_FLOWS.find(f => f.key === pick.flow);
   const pickLeft = !!pk && String(route).split('/')[0] !== pk.route().split('/')[0];
-  if (pickLeft) { clarifyView.picking = null; clarifyWindowFit(false); }
+  if (pickLeft && pick === stripPick) stripPickGiveUp(false);
+  else if (pickLeft) { clarifyView.picking = null; clarifyStripPage(false); }
   routeView.moving = true;
   routeView.target = String(route || '').split('/')[0];
   paintTopNav();
@@ -13792,7 +13795,12 @@ function initEngage() {
   // — the same peel, innermost first.
   // While a flow is picking its place, the first Esc gives the pick up (back
   // where clarify was opened); the next one puts the sheet down.
-  escRung(0, () => { if (!clarifyView.picking) return false; endClarifyPick(); return true; });
+  escRung(0, () => {
+    if (clarifyView.picking) { endClarifyPick(); return true; }
+    if (clarifyView.open || !stripPick) return false;
+    stripPickGiveUp(true);
+    return true;
+  });
   defineSheet('clarify-sheet', { rank: 1, isOpen: () => clarifyView.open, close: peelClarify });
   // The routine card is the LAST rung: it is drawn on the day itself, under
   // every overlay. (It used to close on its own listener, in the same keypress
@@ -15126,33 +15134,27 @@ async function renderNowFull() {
 // third window is this page at `/clarify` — clarify as a strip down the right
 // edge of the screen, beside whatever else is up, shown and hidden by
 // Ctrl+Alt+O (app.py's _clarify_toggle). Read ONCE: a pick moves the address.
-// The sheet is the one every other door opens; all this adds is the window's
-// size, its hiding, and telling the main window what was filed.
+// The sheet is the one every other door opens; all this adds is its hiding,
+// a pick made on the main window's page, and telling it what was filed.
 const CLARIFY_WINDOW = location.pathname.replace(/\/+$/, '') === '/clarify';
 // AS THE STRIP IT IS THE DOCKED PANEL AND NOTHING ELSE (2026-10-14, Quentin's
 // instruction: it read as the phone — the strip, the Now page, the tabs and
 // the capture bar, the sheet rising from the bottom). `clarify-strip` puts the
-// app away and stands the sheet full height; a pick that fills the screen
-// takes the class off, so its page is there beside the sheet.
+// app away and stands the sheet full height (clarifyStripPage).
 if (CLARIFY_WINDOW) document.documentElement.classList.add('clarify-strip');
 
 function clarifyWindowApi() {
   const api = CLARIFY_WINDOW && window.pywebview && window.pywebview.api;
-  return api && api.clarify_fit ? api : null;
+  return api && api.app_pick ? api : null;
 }
 
-// A PICK NEEDS ITS PAGE BESIDE THE SHEET, so the window fills the screen for
-// one and is the strip again when the next item arrives or the pick is given
-// up. Growing waits for the width to land: startClarifyPick reads it to tell
-// the docked sheet from the phone's, which steps aside.
-async function clarifyWindowFit(wide) {
-  if (CLARIFY_WINDOW) document.documentElement.classList.toggle('clarify-strip', !wide);
-  const api = clarifyWindowApi();
-  if (!api) return;
-  await api.clarify_fit(wide);
-  for (let i = 0; wide && !SETTINGS_WIDE.matches && i < 40; i++) {
-    await new Promise(r => setTimeout(r, 25));
-  }
+// A PICK'S PAGE IS THE APP WINDOW (2026-11-18, Quentin's instruction,
+// replacing the strip filling the screen for one): the strip stays the
+// strip, and the main window comes up maximized beside it on the pick's page
+// (app.py's _app_pick → stripPickStart below). Only this page with no app
+// window to ask — /clarify in a browser — shows the pick's page itself.
+function clarifyStripPage(on) {
+  if (CLARIFY_WINDOW) document.documentElement.classList.toggle('clarify-strip', !on);
 }
 
 const clarifyView = {
@@ -15580,7 +15582,6 @@ function recentBump(key, value) {
 
 function clarifyResetItem() {
   const item = clarifyView.queue[0];
-  clarifyWindowFit(false);
   clarifyView.compose = null;
   clarifyView.project = !!(item && item.kind === 'project');
   clarifyView.verb = 'defer';
@@ -15799,11 +15800,7 @@ function closeClarify() {
     item.notes = clarifyView.notes;
   }
   const after = clarifyView.after;
-  if (clarifyView.picking) {
-    const from = clarifyView.picking.from;
-    clarifyView.picking = null;
-    if (from != null && from !== currentRoute()) goRoute(from, true);
-  }
+  clarifyLeavePick();
   clarifyView.flow = 'todo';
   clarifyView.open = false;
   clarifyView.single = false;
@@ -16209,17 +16206,21 @@ async function setClarifyFlow(key) {
   renderClarify();
 }
 
-// A pick in progress: { flow, from, hidden }. `from` is where clarify was
-// opened, kept across flows, so putting the sheet down puts the page back.
+// A pick in progress: { flow, from, hidden, inApp }. `from` is where clarify
+// was opened, kept across flows, so putting the sheet down puts the page back.
+// In the strip it is `inApp`: the page is the main window's, and the pick
+// comes back through clarifyFromApp.
 async function startClarifyPick(f) {
   const from = clarifyView.picking ? clarifyView.picking.from : currentRoute();
-  await clarifyWindowFit(true);
-  const phone = !SETTINGS_WIDE.matches && !clarifyView.pickCarried;
-  clarifyView.picking = { flow: f.key, from, hidden: phone };
+  const app = clarifyWindowApi();
+  const phone = !app && !SETTINGS_WIDE.matches && !clarifyView.pickCarried;
+  clarifyView.picking = { flow: f.key, from, hidden: phone, inApp: !!app };
   if (phone) hideSheet('clarify-sheet');
   // The sheet says the flow AT THE KEY, not once the page has read its data
   // (the week's reads took ~0.7s to come back; 2026-10-11, Quentin: no lag).
   renderClarify();
+  if (app) { app.app_pick(f.key); return; }
+  clarifyStripPage(true);
   await goRoute(f.route(), true);
   renderClarify();
   if (phone) toast(`Pick ${f.what} for “${clarifyView.action.trim() || 'this'}” · another tab cancels`);
@@ -16227,12 +16228,26 @@ async function startClarifyPick(f) {
 
 // Give the pick up: back where clarify was opened, on the to-do flow.
 async function endClarifyPick() {
-  const from = clarifyView.picking && clarifyView.picking.from;
-  clarifyView.picking = null;
-  clarifyWindowFit(false);
+  const back = clarifyLeavePick();
   if (clarifyView.flow !== 'now' && clarifyView.flow !== 'todo') clarifyView.flow = 'todo';
-  if (from != null && from !== currentRoute()) await goRoute(from, true);
+  if (back) await back;
   if (clarifyView.open) renderClarify();
+}
+
+// The pick is over. The strip's tells the main window, which puts its own
+// page back (stripPickStop); one made here puts this page back, and returns
+// that switch for a caller that waits on it.
+function clarifyLeavePick() {
+  const pk = clarifyView.picking;
+  clarifyView.picking = null;
+  if (!pk) return null;
+  if (pk.inApp) {
+    const app = clarifyWindowApi();
+    if (app) app.app_pick(null);
+    return null;
+  }
+  clarifyStripPage(false);
+  return pk.from != null && pk.from !== currentRoute() ? goRoute(pk.from, true) : null;
 }
 
 function clarifyPicked() {
@@ -16241,29 +16256,103 @@ function clarifyPicked() {
   renderClarify();
 }
 
-// The Project flow's two picks, asked by the click and the menus alike.
-// An area files the action there in no project; General ('') is in no area.
-function clarifyPickProject(id) {
-  const p = (state.projects || []).find(x => x.id === id)
-    || (state.mapItems || []).find(x => x.id === id);
-  clarifyView.projectId = id;
-  clarifyView.projectName = p ? p.content : '';
+// A PICK IS DATA, so it can cross windows: { flow: 'project', projectId,
+// projectName } or { flow: 'project', area } (an id, or 0 / '' for General,
+// in no area), { flow: 'calendar', date, minute, label, anchor }, or
+// { flow: 'list', kind, id, label }. Made by a click or a menu on the page,
+// taken by the sheet making the pick — here, or the strip's (stripTell).
+function clarifyTakePick(p) {
+  if (clarifyView.open) clarifyApplyPick(p);
+  else stripTell({ pick: p });
+}
+
+function clarifyApplyPick(p) {
+  if (p.flow === 'list') clarifyView.refPick = { kind: p.kind, id: p.id, label: p.label };
+  else if (p.flow === 'project' && p.projectId) {
+    clarifyView.projectId = p.projectId;
+    clarifyView.projectName = p.projectName || '';
+  } else if (p.flow === 'project') clarifyPickLoose(p.area ? parseInt(p.area) : null);
+  else {
+    clarifyView.showDate = p.date;
+    clarifyView.showTime = clockHHMM(p.minute);
+    clarifyView.calAnchor = p.anchor || null;
+    clarifyView.showDateFrom = '';
+    const day = new Date(p.date + 'T12:00:00');
+    clarifyView.calPick = `${p.label === 'At' ? '' : p.label + ' · '}${weekdayOf(day).name} ${day.getDate()} ${hhmmToAmPm(clockHHMM(p.minute))}`;
+  }
   clarifyPicked();
 }
 
-function clarifyPickArea(area) {
-  clarifyPickLoose(area ? parseInt(area) : null);
-  clarifyPicked();
+function projectPick(id) {
+  const p = (state.projects || []).find(x => x.id === id)
+    || (state.mapItems || []).find(x => x.id === id);
+  return { flow: 'project', projectId: id, projectName: p ? p.content : '' };
+}
+
+// The pick this page's clicks and menus make: clarify's own, open here — or,
+// with no clarify open here, the strip's, worked on this window's page.
+function pickHere() {
+  if (clarifyView.open) return clarifyView.picking && !clarifyView.picking.inApp ? clarifyView.picking : null;
+  return stripPick;
 }
 
 // `File here` on a project's or an area's menu while the Project flow is
 // picking — beside the click. `area` is an id, or 0 / '' for
 // General; a project row passes `projectId`.
 function clarifyPickVerb({ projectId, area }) {
+  const pk = pickHere();
+  if (!pk || pk.flow !== 'project') return [];
+  return [{ label: 'File here', run: () => clarifyTakePick(projectId
+    ? projectPick(projectId) : { flow: 'project', area }) }];
+}
+
+// THE STRIP'S PICK, WORKED ON THIS WINDOW'S PAGE (the main window's side of
+// _app_pick): `{ flow, from }`, `from` being where this window was, so it goes
+// back there when the strip ends the pick. Its clicks, File here and clarify's
+// keys go to the strip's sheet; Esc or another page gives it up there.
+let stripPick = null;
+
+async function stripPickStart(flow) {
+  const f = CLARIFY_FLOWS.find(x => x.key === flow);
+  if (!f || !f.route) return;
+  stripPick = { flow, from: stripPick ? stripPick.from : currentRoute() };
+  await goRoute(f.route(), true);
+}
+
+// The strip ended it: filed into a flow with no page, gave it up, went down.
+async function stripPickStop() {
+  const pk = stripPick;
+  stripPick = null;
+  if (pk && pk.from !== currentRoute()) await goRoute(pk.from, true);
+}
+
+// Given up HERE: Esc puts this window's page back too; another page is
+// already where this window is going.
+function stripPickGiveUp(back) {
+  const pk = stripPick;
+  stripPick = null;
+  stripTell({ end: true });
+  if (back && pk && pk.from !== currentRoute()) goRoute(pk.from, true);
+}
+
+// To the strip's sheet (app.py's clarify_hear). Unheard — the strip has no
+// such pick, or is down — this window stops making one.
+function stripTell(msg) {
+  const pk = stripPick;
+  const api = window.pywebview && window.pywebview.api;
+  const drop = () => { if (stripPick === pk) stripPick = null; };
+  if (!api || !api.clarify_hear) { drop(); return; }
+  Promise.resolve(api.clarify_hear(msg)).then(heard => { if (!heard) drop(); }, drop);
+}
+
+// The strip's side: what the main window's page said about its pick.
+function clarifyFromApp(msg) {
   const pk = clarifyView.picking;
-  if (!clarifyView.open || !pk || pk.flow !== 'project') return [];
-  return [{ label: 'File here', run: () => (projectId
-    ? clarifyPickProject(projectId) : clarifyPickArea(area)) }];
+  if (!clarifyView.open || !pk || !pk.inApp) return false;
+  if (msg.end) endClarifyPick();
+  else if (msg.key) clarifyPickKey(msg.key);
+  else if (msg.pick && msg.pick.flow === pk.flow) clarifyApplyPick(msg.pick);
+  return true;
 }
 
 // What a click on the Calendar picked: an event by its key (its real start,
@@ -16302,7 +16391,7 @@ const CLARIFY_PICK_TARGETS = {
   list: '#tab-lists .ref-row[data-id]',
 };
 window.addEventListener('click', e => {
-  const pk = clarifyView.picking;
+  const pk = pickHere();
   if (!pk || !CLARIFY_PICK_TARGETS[pk.flow]) return;
   if (e.target.closest('#clarify-sheet')) return;
   const el = e.target.closest(CLARIFY_PICK_TARGETS[pk.flow]);
@@ -16311,8 +16400,7 @@ window.addEventListener('click', e => {
     const l = refView.lists.find(x => String(x.id) === el.dataset.id);
     if (!l || l.kind === 'dir') return;            // a directory still opens
     e.preventDefault(); e.stopPropagation();
-    clarifyView.refPick = { kind: l.kind, id: l.id, label: l.name };
-    clarifyPicked();
+    clarifyTakePick({ flow: 'list', kind: l.kind, id: l.id, label: l.name });
     return;
   }
   // A CLICK PICKS, IT NEVER FILES (2026-11-01, Quentin's instruction,
@@ -16324,19 +16412,12 @@ window.addEventListener('click', e => {
   // with the row's or heading's menu: File here (clarifyPickVerb).
   e.preventDefault(); e.stopPropagation();
   if (pk.flow === 'project') {
-    if (el.classList.contains('map-row-project')) clarifyPickProject(parseInt(el.dataset.id));
-    else clarifyPickArea(el.closest('[data-drop-area]').dataset.dropArea);
+    clarifyTakePick(el.classList.contains('map-row-project') ? projectPick(parseInt(el.dataset.id))
+      : { flow: 'project', area: el.closest('[data-drop-area]').dataset.dropArea });
     return;
   }
   const pick = calPickFrom(el.closest('.tl-block, .tl-gcal-event') || el, e);
-  if (!pick) return;
-  clarifyView.showDate = pick.date;
-  clarifyView.showTime = clockHHMM(pick.minute);
-  clarifyView.calAnchor = pick.anchor || null;
-  clarifyView.showDateFrom = '';
-  const day = new Date(pick.date + 'T12:00:00');
-  clarifyView.calPick = `${pick.label === 'At' ? '' : pick.label + ' · '}${weekdayOf(day).name} ${day.getDate()} ${hhmmToAmPm(clockHHMM(pick.minute))}`;
-  clarifyPicked();
+  if (pick) clarifyTakePick({ flow: 'calendar', ...pick });
 }, true);
 
 // File it, for a flow: the exit the flow means, refused in words (toasted —
@@ -17366,17 +17447,25 @@ function closeCompose() {
 // capture phase and stopped, so a letter that is also a page verb (P / C / L
 // on a Projects row, ⌫ deleting one) means the clarify, never both. Works
 // with the sheet stepped aside on a phone too.
+// The main window working the strip's pick sends the same keys to the strip.
 document.addEventListener('keydown', e => {
-  if (!clarifyView.open || !clarifyView.picking || typingIn(e.target)) return;
+  const here = clarifyView.open && clarifyView.picking;
+  if (!(here || (!clarifyView.open && stripPick)) || typingIn(e.target)) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const f = CLARIFY_FLOWS.find(x => x.k.toLowerCase() === e.key.toLowerCase());
   if (!f && e.key !== 'Enter' && e.key !== 'Backspace') return;
   e.preventDefault();
   e.stopImmediatePropagation();
-  if (f) setClarifyFlow(f.key);
-  else if (e.key === 'Enter') clarifyFile();
-  else if (!clarifyView.external) fileClarify('trash');
+  if (here) clarifyPickKey(e.key);
+  else stripTell({ key: e.key });
 }, true);
+
+function clarifyPickKey(key) {
+  const f = CLARIFY_FLOWS.find(x => x.k.toLowerCase() === key.toLowerCase());
+  if (f) setClarifyFlow(f.key);
+  else if (key === 'Enter') clarifyFile();
+  else if (key === 'Backspace' && !clarifyView.external) fileClarify('trash');
+}
 
 document.addEventListener('keydown', e => {
   if (!clarifyView.open) return;

@@ -115,11 +115,15 @@ check('client ON: resizes', win.log == ['resize(140)'], win.log)
 class FakeApp(FakeWindow):
     def evaluate_js(self, js):
         self.log.append('js:' + js)
+        return True
+
+    def maximize(self):
+        self.log.append('maximize')
 
 
 A._CLIENT_SERVER = ''
 placed = []
-A._clarify_place = lambda wide: placed.append(wide)
+A._clarify_place = lambda: placed.append('strip')
 strip, main = FakeApp(), FakeApp()
 # The strip's reservation of the screen (the appbar): taken once it is SHOWN
 # (Windows pulls a window shown outside the work area back in), given back
@@ -133,20 +137,34 @@ r = c.post('/api/panel/clarify').get_json()
 check('clarify: no window (the VM) is a no-op', r == {'shown': False}, r)
 
 A._clarify_window, A._main_window = strip, main
-capi.clarify_fit(True)
-check('clarify hidden: a fit places nothing', placed == [] and not strip.visible, placed)
+heard = A.WindowApi().clarify_hear({'key': 'Enter'})
+check('clarify hidden: the main window\'s page is heard by nothing',
+      heard is False and strip.log == [], (heard, strip.log))
 
 r = c.post('/api/panel/clarify').get_json()
 check('clarify: the key shows it', r == {'shown': True} and strip.visible, r)
 check('clarify: placed as the strip, shown, its strip reserved, then opened',
-      placed == [False] and strip.log == ['show', 'reserve', 'js:openClarify()'], (placed, strip.log))
+      placed == ['strip'] and strip.log == ['show', 'reserve', 'js:openClarify()'], (placed, strip.log))
 
-capi.clarify_fit(True)
-capi.clarify_fit(False)
-check('clarify shown: a pick grows it and the next item shrinks it',
-      placed == [False, True, False], placed)
+# A P / C / L pick's page is the MAIN window's: up, maximized beside the
+# strip, on the pick's page. The strip is neither placed nor shown again.
+strip.log.clear()
+capi.app_pick('calendar')
+check('clarify: a pick brings the main window up maximized, on its page',
+      main.log == ['maximize', 'show', 'js:stripPickStart("calendar")'], main.log)
+check('clarify: the strip stays the strip through a pick', placed == ['strip'] and strip.log == [],
+      (placed, strip.log))
+heard = A.WindowApi().clarify_hear({'pick': {'flow': 'calendar', 'date': '2026-11-18', 'minute': 600}})
+check('clarify: a pick made on the main window goes to the strip\'s sheet',
+      heard is True and strip.log == ['js:clarifyFromApp({"pick": {"flow": "calendar", '
+                                      '"date": "2026-11-18", "minute": 600}})'], strip.log)
+main.log.clear()
+capi.app_pick(None)
+check('clarify: the pick over, the main window puts its page back', main.log == ['js:stripPickStop()'],
+      main.log)
 
 strip.log.clear()
+main.log.clear()
 r = c.post('/api/panel/clarify').get_json()
 check('clarify: the key puts it away', r == {'shown': False} and not strip.visible, r)
 check('clarify: closed through closeClarify, hidden, then its strip given back',

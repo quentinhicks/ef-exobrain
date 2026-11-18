@@ -555,9 +555,8 @@ def _drive_privacy(on):
 # down the right edge of the screen, over whatever else is up, so the inbox
 # can be worked through beside a browser without the app's window. It is the
 # APP at `/clarify` — the same sheet, not a second one — in a third window
-# that Ctrl+Alt+O shows and hides. A Project / Calendar / List pick needs its
-# page beside the sheet, so the window fills the screen for the pick and goes
-# back to the strip when the next item arrives (clarifyWindowFit in app.js).
+# that Ctrl+Alt+O shows and hides. A Project / Calendar / List pick's page is
+# the MAIN window's (`_app_pick`); the strip never grows.
 _clarify_window = None
 _clarify_shown = False
 CLARIFY_W = 430
@@ -569,8 +568,7 @@ CLARIFY_W = 430
 # beside it, the way they fit beside the taskbar. Registered when the key
 # shows it and removed when it goes down; a crash cannot strand it, since
 # the shell drops an appbar whose window is gone (measured: within 0.2s of a
-# killed process). A P / C / L pick grows the WINDOW over the screen and
-# keeps the reservation, so nothing else re-lays out for a pick.
+# killed process).
 _clarify_bar = None  # the APPBARDATA while the strip holds its reservation
 
 
@@ -597,12 +595,11 @@ class _APPBARDATA(ctypes.Structure):
 # Placed with SetWindowPos directly, in the physical pixels the work area is
 # read in: pywebview's resize()/move() take logical ones and are also a SHOW
 # (SWP_SHOWWINDOW, see _panel_show), and this must never show a hidden strip.
-def _clarify_place(wide):
+def _clarify_place():
     if sys.platform != 'win32':
         left, top, right, bottom = _work_area()
-        w = right - left if wide else CLARIFY_W
-        _clarify_window.resize(w, bottom - top)
-        _clarify_window.move(right - w, top)
+        _clarify_window.resize(CLARIFY_W, bottom - top)
+        _clarify_window.move(right - CLARIFY_W, top)
         return
     user32 = ctypes.windll.user32
     hwnd = _own_window('Clarify')
@@ -613,10 +610,7 @@ def _clarify_place(wide):
     docked = _clarify_bar is not None
     hmon = user32.MonitorFromWindow(hwnd, 2) if docked else _cursor_monitor()
     work = _monitor_rects(hmon)[1]
-    if wide:
-        right = _clarify_bar.rc.right if docked else work.right
-        left, top, bottom = work.left, work.top, work.bottom
-    elif docked:
+    if docked:
         rc = _clarify_dock(hwnd, hmon)
         left, top, right, bottom = rc.left, rc.top, rc.right, rc.bottom
     else:
@@ -637,7 +631,7 @@ def _clarify_reserve():
     if hwnd:
         hwnd = ctypes.c_void_p(hwnd)
         _clarify_dock(hwnd, ctypes.windll.user32.MonitorFromWindow(hwnd, 2))
-        _clarify_place(False)
+        _clarify_place()
 
 
 def _clarify_strip_w(hmon):
@@ -706,7 +700,7 @@ def _clarify_toggle():
         _clarify_window.evaluate_js('clarifyView.open && closeClarify()')
         _clarify_hide()
     else:
-        _clarify_place(False)
+        _clarify_place()
         _clarify_shown = True
         _clarify_window.show()
         _clarify_reserve()
@@ -717,6 +711,33 @@ def _clarify_toggle():
 @app.route('/api/panel/clarify', methods=['POST'])
 def panel_clarify():
     return jsonify({'shown': _clarify_toggle()})
+
+
+# A PICK'S PAGE IS THE APP WINDOW (2026-11-18, Quentin's instruction,
+# replacing the strip filling the screen for one): the strip stays the strip,
+# and a Project / Calendar / List pick brings the main window up MAXIMIZED —
+# into the work area the docked strip leaves — on the pick's page
+# (stripPickStart in app.js). A window, not the strip's own page, so the
+# Google Calendar window can come in front of it: the strip is topmost.
+# No flow: the strip's pick is over, and the main window puts its page back.
+def _app_pick(flow):
+    if not _main_window:
+        return
+    if not flow:
+        _main_window.evaluate_js('stripPickStop()')
+        return
+    _main_window.maximize()
+    _main_window.show()
+    _main_window.evaluate_js('stripPickStart(%s)' % json.dumps(flow))
+
+
+# The other way: what the main window's page says about the strip's pick — a
+# pick, one of clarify's keys, or that it was given up there (clarifyFromApp).
+# False when the strip has no such pick, so the main window stops making one.
+def _clarify_hear(msg):
+    if not (_clarify_window and _clarify_shown):
+        return False
+    return bool(_clarify_window.evaluate_js('clarifyFromApp(%s)' % json.dumps(msg)))
 
 
 # THE GOOGLE CALENDAR WINDOW (2026-11-17, Quentin's instruction): Google
@@ -4582,14 +4603,16 @@ class WindowApi:
         _gcal_bring()
         return True
 
+    # The strip's pick, made on this window's page (stripTell in app.js).
+    def clarify_hear(self, msg):
+        return _clarify_hear(msg)
+
 
 # The clarify window's page is the app, so it gets the app's api and three
 # calls of its own.
 class ClarifyApi(WindowApi):
-    # Never while hidden: the strip is placed again when it is next shown.
-    def clarify_fit(self, wide):
-        if _clarify_shown:
-            _clarify_place(bool(wide))
+    def app_pick(self, flow):
+        _app_pick(flow)
 
     def clarify_hide(self):
         _clarify_hide()
