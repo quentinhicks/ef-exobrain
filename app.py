@@ -439,6 +439,7 @@ def assistant_changes():
 # window through _main_window so its to-do view updates immediately.
 _panel_window = None
 _main_window = None
+MAIN_TITLE = 'Productivity Tracker'
 
 
 @app.route('/api/panel/switch', methods=['POST'])
@@ -791,16 +792,52 @@ def _gcal_in_front():
     return bool(hwnd) and ctypes.windll.user32.GetForegroundWindow() == hwnd
 
 
-# Up wherever it was left. A minimized one is restored — only then, because
-# restoring a maximized window would un-maximize it.
+class _WINDOWPLACEMENT(ctypes.Structure):
+    _fields_ = [('length', ctypes.c_uint), ('flags', ctypes.c_uint),
+                ('showCmd', ctypes.c_uint), ('ptMinPosition', _POINT),
+                ('ptMaxPosition', _POINT), ('rcNormalPosition', _RECT)]
+
+
+SW_SHOWNORMAL, SW_SHOWMINIMIZED, SW_SHOWMAXIMIZED = 1, 2, 3
+WPF_RESTORETOMAXIMIZED = 2
+
+
+# Where the app's own calendar is: the main window's frame, maximized if it
+# is (or, minimized, would come back maximized). Copied as a PLACEMENT, so
+# both rectangles are in one coordinate system on any monitor, and
+# SetWindowPlacement shows it already there — never at its old size first.
+def _gcal_over_app():
+    user32 = ctypes.windll.user32
+    main, mine = _own_window(MAIN_TITLE), _own_window(GCAL_TITLE)
+    if not main or not mine:
+        return False
+    wp = _WINDOWPLACEMENT()
+    wp.length = ctypes.sizeof(wp)
+    if not user32.GetWindowPlacement(ctypes.c_void_p(main), ctypes.byref(wp)):
+        return False
+    zoomed = wp.showCmd == SW_SHOWMAXIMIZED or (
+        wp.showCmd == SW_SHOWMINIMIZED and wp.flags & WPF_RESTORETOMAXIMIZED)
+    wp.showCmd = SW_SHOWMAXIMIZED if zoomed else SW_SHOWNORMAL
+    wp.flags = 0
+    return bool(user32.SetWindowPlacement(ctypes.c_void_p(mine), ctypes.byref(wp)))
+
+
+# Up over the main window, its size and state, every time it comes up. With
+# no main window to copy it comes up where it was left, a minimized one
+# restored — only then, because restoring a maximized one un-maximizes it.
 def _gcal_bring():
     global _gcal_shown
     _gcal_shown = True
+    if sys.platform != 'win32':
+        if _main_window:
+            _gcal_window.resize(_main_window.width, _main_window.height)
+        _gcal_window.show()
+        return
+    placed = _gcal_over_app()
     _gcal_window.show()
-    if sys.platform == 'win32':
-        hwnd = _own_window(GCAL_TITLE)
-        if hwnd and ctypes.windll.user32.IsIconic(ctypes.c_void_p(hwnd)):
-            _gcal_window.restore()
+    hwnd = _own_window(GCAL_TITLE)
+    if not placed and hwnd and ctypes.windll.user32.IsIconic(ctypes.c_void_p(hwnd)):
+        _gcal_window.restore()
 
 
 def _gcal_put_away():
@@ -4900,7 +4937,7 @@ if __name__ == '__main__':
     photo_judge.PhotoJudge(base, _photo_emit).start()
     main_api = WindowApi()
     main_window = webview.create_window(
-        'Productivity Tracker',
+        MAIN_TITLE,
         base,
         width=430,
         height=930,
