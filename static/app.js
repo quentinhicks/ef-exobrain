@@ -4100,6 +4100,8 @@ function mdInline(src, notes) {
   const keep = [];
   const hold = html => `\u0000${keep.push(html) - 1}\u0000`;
   const deco = s => escHtml(s)
+    .replace(/\*\*\*(?=\S)([\s\S]*?\S)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/(^|[^\w])___(?=\S)([\s\S]*?\S)___(?!\w)/g, '$1<strong><em>$2</em></strong>')
     .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^\w])__(?=\S)([\s\S]*?\S)__(?!\w)/g, '$1<strong>$2</strong>')
     .replace(/\*(?=\S)([^*]*?\S)\*/g, '<em>$1</em>')
@@ -4109,16 +4111,17 @@ function mdInline(src, notes) {
     .replace(/~([^~\s]+)~/g, '<sub>$1</sub>')
     .replace(/\^([^^\s]+)\^/g, '<sup>$1</sup>')
     .replace(/:([\w+-]+):/g, (m, k) => MD_EMOJI[k] || m);
-  const link = (text, url) => url.startsWith('#')
-    ? hold(`<a class="md-jump" data-md-jump="${escHtml(mdSlug(url.slice(1)))}">${deco(text)}</a>`)
-    : hold(`<a href="${escHtml(url)}" target="_blank" rel="noopener">${deco(text)}</a>`);
+  const title = t => (t ? ` title="${escHtml(t)}"` : '');
+  const link = (text, url, tip) => url.startsWith('#')
+    ? hold(`<a class="md-jump" data-md-jump="${escHtml(mdSlug(url.slice(1)))}"${title(tip)}>${deco(text)}</a>`)
+    : hold(`<a href="${escHtml(url)}" target="_blank" rel="noopener"${title(tip)}>${deco(text)}</a>`);
   let t = String(src).replace(/\u0000/g, '')
     .replace(/\\([\\`*_{}[\]()#+\-.!|~=^:<>])/g, (m, c) => hold(escHtml(c)))
     .replace(/`([^`]+)`/g, (m, c) => hold(`<code>${escHtml(c)}</code>`))
-    .replace(/!\[([^\]]*)\]\(((?:https?:\/\/|\/)[^)\s]+)\)/g,
-      (m, alt, url) => hold(`<img src="${escHtml(url)}" alt="${escHtml(alt)}">`))
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) =>
-      (mdUrl(url) || url.startsWith('#') ? link(text, url) : m))
+    .replace(/!\[([^\]]*)\]\(((?:https?:\/\/|\/)[^)\s]+)(?:\s+"([^"]*)")?\)/g,
+      (m, alt, url, tip) => hold(`<img src="${escHtml(url)}" alt="${escHtml(alt)}"${title(tip)}>`))
+    .replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (m, text, url, tip) =>
+      (mdUrl(url) || url.startsWith('#') ? link(text, url, tip) : m))
     .replace(/<((?:https?:\/\/|mailto:)[^>\s]+)>/g, (m, url) => link(url, url))
     .replace(/\bhttps?:\/\/[^\s<\u0000]*[^\s<\u0000.,;:!?'")\]]/g, url => link(url, url));
   if (notes) {
@@ -4149,74 +4152,7 @@ function mdHtml(src) {
     if (fn) notes.text[fn[1]] = fn[2]; else lines.push(raw);
   }
   const inline = s => mdInline(s, notes);
-  const cells = row => row.trim().replace(/^\|/, '').replace(/(^|[^\\])\|$/, '$1')
-    .split(/(?<!\\)\|/).map(c => c.trim());
-  const out = [];
-  let list = null;  // 'ul' | 'ol' | null
-  let quote = false;
-  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  const closeQuote = () => { if (quote) { out.push('</blockquote>'); quote = false; } };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd(), next = (lines[i + 1] || '').trim();
-    const fence = line.match(/^(```|~~~)\s*([\w+#.-]*)/);
-    if (fence) {
-      closeList(); closeQuote();
-      const code = [];
-      while (++i < lines.length && !lines[i].startsWith(fence[1])) code.push(lines[i]);
-      const lang = fence[2] ? ` class="language-${escHtml(fence[2])}"` : '';
-      out.push(`<pre><code${lang}>${escHtml(code.join('\n'))}</code></pre>`);
-      continue;
-    }
-    const q = line.match(/^> ?(.*)/);
-    if (q) {
-      closeList();
-      if (!quote) { out.push('<blockquote>'); quote = true; }
-      if (q[1].trim()) out.push(`<p>${inline(q[1])}</p>`);
-      continue;
-    }
-    closeQuote();
-    if (line.includes('|') && next.includes('|') && MD_TABLE_RULE.test(next)) {
-      closeList();
-      const align = cells(next).map(c => (/^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : /^:/.test(c) ? 'left' : ''));
-      const row = (r, tag) => `<tr>${cells(r).map((c, k) =>
-        `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ''}>${inline(c)}</${tag}>`).join('')}</tr>`;
-      const rows = [];
-      for (i += 2; i < lines.length && lines[i].includes('|') && lines[i].trim(); i++) rows.push(row(lines[i], 'td'));
-      i--;
-      out.push(`<div class="md-table"><table><thead>${row(line, 'th')}</thead><tbody>${rows.join('')}</tbody></table></div>`);
-      continue;
-    }
-    if (line.trim() && /^: /.test(next) && !/^([-*] |\d+[.)] |#)/.test(line)) {
-      closeList();
-      out.push('<dl>');
-      for (; i < lines.length && lines[i].trim(); i++) {
-        const dd = lines[i].match(/^: +(.*)/);
-        out.push(dd ? `<dd>${inline(dd[1])}</dd>` : `<dt>${inline(lines[i].trim())}</dt>`);
-      }
-      out.push('</dl>');
-      continue;
-    }
-    const h = line.match(/^(#{1,6}) +(.*?)(?: +\{#([\w-]+)\})?$/);
-    const task = line.match(/^[-*] +\[([ xX])\] +(.*)/);
-    const li = line.match(/^[-*] +(.*)/);
-    const ol = line.match(/^\d+[.)] +(.*)/);
-    if (h) {
-      closeList();
-      const body = inline(h[2]), n = h[1].length;
-      out.push(`<h${n} id="md-${mdSlug(h[3] || body)}">${body}</h${n}>`);
-    }
-    else if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) { closeList(); out.push('<hr>'); }
-    else if (li || ol) {
-      const kind = li ? 'ul' : 'ol';
-      if (list !== kind) { closeList(); out.push(`<${kind}>`); list = kind; }
-      out.push(task
-        ? `<li class="md-task${task[1] === ' ' ? '' : ' md-done'}"><span class="md-box">${task[1] === ' ' ? '' : '✓'}</span>${inline(task[2])}</li>`
-        : `<li>${inline((li || ol)[1])}</li>`);
-    }
-    else if (!line.trim()) closeList();
-    else { closeList(); out.push(`<p>${inline(line)}</p>`); }
-  }
-  closeList(); closeQuote();
+  const out = [mdBlocks(lines, inline)];
   if (notes.order.length) {
     // By index: a footnote's own text may cite another, which joins the end.
     const items = [];
@@ -4229,20 +4165,259 @@ function mdHtml(src) {
   return out.join('');
 }
 
+// A list item: its indent, an ordered one's number, a task's box, its text.
+// `+` is a bullet too, as in every other reader of markdown.
+const MD_ITEM = /^(\s*)(?:[-*+]|(\d+)[.)]) +(?:\[([ xX])\] +)?(.*)$/;
+
+// THE BLOCKS of a run of lines: the whole document, or what a > quote holds —
+// read by this same function, so a list or a heading inside a quote is one.
+// LISTS NEST BY INDENT (2026-11-19): the editor's Tab indents an item, and
+// the reader used to drop such a line out of its list as a paragraph that
+// began "- ". An item deeper than the open one opens a list inside it; a
+// shallower one closes back out to its own level. A blank line keeps the
+// list open only when what follows is still in it (an item, or an indented
+// line, which continues the item above).
+function mdBlocks(lines, inline) {
+  const cells = row => row.trim().replace(/^\|/, '').replace(/(^|[^\\])\|$/, '$1')
+    .split(/(?<!\\)\|/).map(c => c.trim());
+  const out = [];
+  const lists = [];                  // the open lists, outermost first: { indent, kind }
+  let gap = false;                   // a blank line inside the open list
+  const closeLists = () => { while (lists.length) out.push(`</li></${lists.pop().kind}>`); };
+  const indentOf = ws => ws.replace(/\t/g, '    ').length;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd(), next = (lines[i + 1] || '').trim();
+    const fence = line.match(/^(```|~~~)\s*([\w+#.-]*)/);
+    if (fence) {
+      closeLists();
+      const code = [];
+      while (++i < lines.length && !lines[i].startsWith(fence[1])) code.push(lines[i]);
+      const lang = fence[2] ? ` class="language-${escHtml(fence[2])}"` : '';
+      out.push(`<pre><code${lang}>${escHtml(code.join('\n'))}</code></pre>`);
+      continue;
+    }
+    if (/^ {0,3}>/.test(line)) {
+      closeLists();
+      const inner = [];
+      for (; i < lines.length && /^ {0,3}>/.test(lines[i]); i++) inner.push(lines[i].replace(/^ {0,3}> ?/, ''));
+      i--;
+      out.push(`<blockquote>${mdBlocks(inner, inline)}</blockquote>`);
+      continue;
+    }
+    if (line.includes('|') && next.includes('|') && MD_TABLE_RULE.test(next)) {
+      closeLists();
+      const align = cells(next).map(c => (/^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : /^:/.test(c) ? 'left' : ''));
+      const row = (r, tag) => `<tr>${cells(r).map((c, k) =>
+        `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ''}>${inline(c)}</${tag}>`).join('')}</tr>`;
+      const rows = [];
+      for (i += 2; i < lines.length && lines[i].includes('|') && lines[i].trim(); i++) rows.push(row(lines[i], 'td'));
+      i--;
+      out.push(`<div class="md-table"><table><thead>${row(line, 'th')}</thead><tbody>${rows.join('')}</tbody></table></div>`);
+      continue;
+    }
+    if (line.trim() && /^: /.test(next) && !MD_ITEM.test(line) && !/^#/.test(line)) {
+      closeLists();
+      out.push('<dl>');
+      for (; i < lines.length && lines[i].trim(); i++) {
+        const dd = lines[i].match(/^: +(.*)/);
+        out.push(dd ? `<dd>${inline(dd[1])}</dd>` : `<dt>${inline(lines[i].trim())}</dt>`);
+      }
+      out.push('</dl>');
+      continue;
+    }
+    const h = line.match(/^(#{1,6}) +(.*?)(?: +#+)?(?: +\{#([\w-]+)\})?$/);
+    if (h) {
+      closeLists();
+      const body = inline(h[2]), n = h[1].length;
+      out.push(`<h${n} id="md-${mdSlug(h[3] || body)}">${body}</h${n}>`);
+      continue;
+    }
+    if (/^ {0,3}(-{3,}|\*{3,}|_{3,})$/.test(line)) { closeLists(); out.push('<hr>'); continue; }
+    const item = line.match(MD_ITEM);
+    if (item) {
+      const n = indentOf(item[1]), kind = item[2] ? 'ol' : 'ul';
+      while (lists.length && lists[lists.length - 1].indent > n) out.push(`</li></${lists.pop().kind}>`);
+      const top = lists[lists.length - 1];
+      if (top && top.indent === n && top.kind === kind) out.push('</li>');
+      else {
+        if (top && top.indent === n) out.push(`</li></${lists.pop().kind}>`);
+        const from = kind === 'ol' && parseInt(item[2]) !== 1 ? ` start="${parseInt(item[2])}"` : '';
+        out.push(`<${kind}${from}>`);
+        lists.push({ indent: n, kind });
+      }
+      out.push(item[3] === undefined ? `<li>${inline(item[4])}`
+        : `<li class="md-task${item[3] === ' ' ? '' : ' md-done'}"><span class="md-box">${
+          item[3] === ' ' ? '' : '✓'}</span>${inline(item[4])}`);
+      gap = false;
+      continue;
+    }
+    if (!line.trim()) {
+      let k = i + 1;
+      while (k < lines.length && !lines[k].trim()) k++;
+      if (lists.length && k < lines.length && (MD_ITEM.test(lines[k]) || /^\s+\S/.test(lines[k]))) gap = true;
+      else closeLists();
+      continue;
+    }
+    if (lists.length && /^\s/.test(line)) {
+      // An indented line under an item continues it: a new paragraph in the
+      // item after a blank line, else the same paragraph's next line.
+      out.push(gap ? `<p>${inline(line.trim())}</p>` : `<br>${inline(line.trim())}`);
+      gap = false;
+      continue;
+    }
+    closeLists();
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  closeLists();
+  return out.join('');
+}
+
+// ── THE MARKDOWN FIELD ────────────────────────────────────────────────────
+// Every field written in markdown is written the way VS Code shows a .md file
+// (2026-11-19, Quentin's instruction: "fix the markdown on everything that
+// asks for markdown — make it like VS Code markdown formatting"): the raw
+// text stays — every # * ` > and [ ]( ) where it was typed — and each token
+// takes its colour and weight from a highlight layer laid over the textarea,
+// whose own text is transparent (the caret, the selection and the spellcheck
+// are still the textarea's). ef-writing's editor, which this is ported from,
+// is the same thing.
+//
+// ONE component: mdFieldHtml draws it, wireMdField brings it alive (the layer,
+// the shortcut suite), and every markdown field is one — the documents
+// (mdDocHtml: a Lists document, the Coach's rules, the Horizons' Areas and
+// Goals) and clarify's two notes. client_rules_test holds both halves.
+//
+// MONO, as VS Code is, and for the reason ef-writing's editor is: only in a
+// monospace face do bold and italic keep a glyph's advance, so the two layers
+// wrap identically and the caret stays on the letter you see. Coloured, never
+// resized — a bigger heading would move every line under it out from under
+// the text you are typing. Until wireMdField runs the field is a plain
+// textarea (the layer and the transparency both wait for .md-live), so a
+// field nobody wired is never invisible text.
+
+// One line's inline tokens, on text ALREADY escaped. Code first, so a star
+// inside `code` stays a star.
+function mdhInline(esc) {
+  return esc.split(/(`[^`\n]+`)/g).map(seg => {
+    if (/^`[^`\n]+`$/.test(seg)) return `<span class="mdh-code">${seg}</span>`;
+    return seg.replace(
+      /(\\[\\`*_{}[\]()#+\-.!|~=^:])|(\*\*[^*\n]+\*\*|__[^_\n]+__)|(~~[^~\n]+~~)|(==[^=\n]+==)|(\*[^*\n]+\*)|(\b_[^_\n]+_\b)|(!?\[[^\]\n]*\]\([^)\n]*\))|(\[\^[^\]\s]+\])|(https?:\/\/(?:(?!&[lg]t;)\S)*[^\s.,;:!?)&])|(~[^~\s]+~|\^[^^\s]+\^)|(:[a-z_+-][\w+-]*:)/g,
+      (m, escaped, bold, strike, mark, star, under, link, fnref, url, script, emoji) => {
+        if (bold) return `<span class="mdh-bold">${m}</span>`;
+        if (strike) return `<span class="mdh-strike">${m}</span>`;
+        if (mark) return `<span class="mdh-mark">${m}</span>`;
+        if (star || under) return `<span class="mdh-italic">${m}</span>`;
+        if (link || fnref || url) return `<span class="mdh-link">${m}</span>`;
+        return `<span class="mdh-marker">${m}</span>`;
+      });
+  }).join('');
+}
+
+// The source, highlighted line by line — the same grammar mdHtml reads.
+function mdHighlight(text) {
+  if (text.endsWith('\n')) text += ' ';       // a last empty line still has height
+  const out = [];
+  let fence = null;
+  for (const line of text.split('\n')) {
+    const esc = escHtml(line);
+    const f = line.match(/^(```|~~~)/);
+    if (fence || f) {
+      if (f) fence = fence ? (f[1] === fence ? null : fence) : f[1];
+      out.push(`<span class="mdh-codeblock">${esc}</span>`);
+    } else if (/^#{1,6}(\s|$)/.test(line)) {
+      out.push(`<span class="mdh-heading">${mdhInline(esc)}</span>`);
+    } else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      out.push(`<span class="mdh-marker">${esc}</span>`);
+    } else if (/^\s*\|/.test(line) || MD_TABLE_RULE.test(line.trim())) {
+      // A table row: the pipes are its markers, the rule row is all marker.
+      out.push(/^[\s|:-]+$/.test(line) ? `<span class="mdh-marker">${esc}</span>`
+        : esc.split('|').map(mdhInline).join('<span class="mdh-marker">|</span>'));
+    } else if (/^(\[\^[^\]\s]+\]:|: )/.test(line)) {
+      // A footnote's definition, or a definition list's `: ` — marker first.
+      const m = line.match(/^(\[\^[^\]\s]+\]:|: )/)[0];
+      out.push(`<span class="mdh-marker">${escHtml(m)}</span>` + mdhInline(escHtml(line.slice(m.length))));
+    } else if (/^\s*>/.test(line)) {
+      const m = line.match(/^\s*(>\s?)+/)[0];
+      out.push(`<span class="mdh-marker">${escHtml(m)}</span><span class="mdh-quote">${
+        mdhInline(escHtml(line.slice(m.length)))}</span>`);
+    } else {
+      const m = line.match(/^(\s*)([-*+]|\d+[.)])( \[[ xX]\])?(\s)/);
+      out.push(m ? `<span class="mdh-marker">${escHtml(m[0])}</span>` + mdhInline(escHtml(line.slice(m[0].length)))
+        : mdhInline(esc));
+    }
+  }
+  return out.join('\n');
+}
+
+// placeholder: what an empty field says, and what tells you it is markdown.
+function mdFieldHtml(cls, attrs, value, placeholder) {
+  return `<div class="md-field"><textarea class="${cls}" ${attrs || ''} spellcheck="true"
+    placeholder="${escHtml(placeholder || 'Write in markdown…')}">${escHtml(value || '')}</textarea></div>`;
+}
+
+// What decides where a glyph lands. The layer copies it off the textarea on
+// every paint, so a field's own CSS (its size, its margins, its padding, its
+// border) is the one statement of it — never a second copy in the layer's
+// rule. The field is a flow-root, so the textarea's margins stay inside it
+// and the copied ones put the layer exactly on it.
+const MD_FIELD_COPY = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariantLigatures',
+  'lineHeight', 'letterSpacing', 'wordSpacing', 'tabSize', 'textIndent', 'whiteSpace',
+  'overflowWrap', 'wordBreak', 'marginTop', 'marginLeft',
+  'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+  'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth'];
+
+// The two layers must wrap IDENTICALLY or the caret stops matching the text
+// you see, so the layer is pinned to the textarea's own box: its border box
+// less the scrollbar (clientWidth), which CSS alone cannot say.
+function paintMdField(ta) {
+  const hl = ta.__mdHl;
+  if (!hl) return;
+  const cs = getComputedStyle(ta);
+  MD_FIELD_COPY.forEach(p => { hl.style[p] = cs[p]; });
+  hl.style.width = (ta.clientWidth + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)) + 'px';
+  hl.style.height = ta.offsetHeight + 'px';
+  hl.innerHTML = mdHighlight(ta.value);
+  hl.scrollTop = ta.scrollTop;
+}
+
+// ONE observer for every field, installed once (the onPointerDrag lesson: a
+// helper wired per element must not add a listener per element that outlives
+// it). It repaints a field whose box changed — it grew, the window turned, a
+// document swapped from its rendered view — and lets go of one that left.
+const mdFieldSizes = new ResizeObserver(entries => entries.forEach(en => {
+  if (en.target.isConnected) paintMdField(en.target);
+  else mdFieldSizes.unobserve(en.target);
+}));
+
+function wireMdField(ta) {
+  if (!ta || ta.__mdHl || !ta.parentElement || !ta.parentElement.classList.contains('md-field')) return;
+  const hl = document.createElement('div');
+  hl.className = 'md-hl';
+  hl.setAttribute('aria-hidden', 'true');
+  ta.parentElement.append(hl);
+  ta.parentElement.classList.add('md-live');
+  ta.__mdHl = hl;
+  ta.addEventListener('input', () => paintMdField(ta));
+  ta.addEventListener('scroll', () => { hl.scrollTop = ta.scrollTop; });
+  mdFieldSizes.observe(ta);
+  wireMdShortcuts(ta);
+  paintMdField(ta);
+}
+
 // A MARKDOWN DOCUMENT — READ FORMATTED, WRITTEN IN MARKDOWN. One component
 // (2026-10-19), first written for a Lists document (2026-10-08) and shared
 // with the Horizons' Areas and Goals (Quentin's instruction). It is a notes
 // field: the notes debounce, every close flushes it, ONE undo per editing
 // session. A double-click (a double tap on a finger) swaps the rendered view
-// for the markdown; leaving the field — blur, or Esc, which here means
-// "done", never "revert" — swaps back. An empty document opens straight in
-// markdown: there is nothing to read. `attrs` names the textarea for the
-// surface's own repaint guard; `saved()` is what the store holds now.
+// for the markdown — a markdown field, written as VS Code shows it; leaving
+// the field — blur, or Esc, which here means "done", never "revert" — swaps
+// back. An empty document opens straight in markdown: there is nothing to
+// read. `attrs` names the textarea for the surface's own repaint guard;
+// `saved()` is what the store holds now.
 function mdDocHtml(body, attrs, placeholder) {
   const has = !!String(body || '').trim();
   return `<div class="md-doc-view md${has ? '' : ' hidden'}" title="Double-click to write">${mdHtml(body || '')}</div>
-    <textarea class="md-doc${has ? ' hidden' : ''}" ${attrs || ''} data-grow="full"
-      placeholder="${escHtml(placeholder || 'Write in markdown…')}" spellcheck="true">${escHtml(body || '')}</textarea>`;
+    ${mdFieldHtml(`md-doc${has ? ' hidden' : ''}`, `${attrs || ''} data-grow="full"`, body, placeholder)}`;
 }
 
 function wireMdDoc(scope, { label, saved, save, restore }) {
@@ -4250,6 +4425,7 @@ function wireMdDoc(scope, { label, saved, save, restore }) {
   const view = scope.querySelector('.md-doc-view');
   let undoPushed = false;
   const before = saved();
+  wireMdField(ta);
   wireNotesAutosave(ta, async value => {
     if (value === saved()) return;
     if (!undoPushed) {
@@ -4264,6 +4440,8 @@ function wireMdDoc(scope, { label, saved, save, restore }) {
     view.classList.add('hidden');
     ta.classList.remove('hidden');
     autoGrowNotes(ta);
+    // Now, not on the observer's next frame: the layer was sized while hidden.
+    paintMdField(ta);
     ta.focus();
   };
   view.addEventListener('dblclick', write);
@@ -9227,7 +9405,11 @@ function logKeydown(e) {
 // goes through execCommand('insertText'), so the field's NATIVE undo survives
 // and `input` fires — which is what keeps wireNotesAutosave's debounce and
 // #cl-notes' clarifyView mirror working without any extra plumbing.
+// Once per field: wireMdField and wireNotesAutosave both bring it, and two
+// keydown handlers would make Ctrl+B bold and unbold in one press.
 function wireMdShortcuts(ta) {
+  if (ta.__mdKeys) return;
+  ta.__mdKeys = true;
   ta.addEventListener('keydown', logKeydown);
   ta.addEventListener('paste', logPaste);
 }
@@ -16784,9 +16966,9 @@ function renderClarify() {
           title="Clarify the project itself — its outcome, its deadline, the contexts everything in it inherits">›</button>` : ''}
       </div>
       ${clarifyView.projNotesOpen && clarifyView.projectId ? `
-      <textarea id="cl-proj-notes" class="cl-notes" rows="3"
-        placeholder="Support material for ${escHtml(clarifyView.projectName)}… markdown ok">${
-          escHtml(((state.projects || []).find(p => p.id === clarifyView.projectId) || {}).notes || '')}</textarea>` : ''}`;
+      ${mdFieldHtml('cl-notes', 'id="cl-proj-notes" rows="3"',
+        ((state.projects || []).find(p => p.id === clarifyView.projectId) || {}).notes,
+        `Support material for ${clarifyView.projectName}… markdown ok`)}` : ''}`;
   } else if (verb === 'do') {
     middle = doVariantChips()
       + '<div class="cl-donow">Under two minutes — do it now. Filing marks it done.</div>';
@@ -16802,8 +16984,7 @@ function renderClarify() {
   // Support material rides along on every keep-it exit; do/trash discard it.
   const notesHtml = (flowMode ? clarifyView.flow === 'now' : (verb === 'do' && !doProgress) || verb === 'trash') ? '' : `
     <div class="cl-sec"><span class="cl-label">Notes</span><span class="cl-hint">support material — optional</span></div>
-    <textarea id="cl-notes" class="cl-notes" rows="2"
-      placeholder="Links, thinking… markdown ok">${escHtml(clarifyView.notes)}</textarea>`;
+    ${mdFieldHtml('cl-notes', 'id="cl-notes" rows="2"', clarifyView.notes, 'Links, thinking… markdown ok')}`;
   // A recurring project's TEMPLATE is a project with no item behind it, so
   // there is nothing to count actions for. Guarded on `item`, not on isProj: an
   // empty state.projects hid this for exactly as long as the scratch db had no
@@ -17083,9 +17264,9 @@ function renderClarify() {
       clarifyView.notes = e.target.value;
       autoGrowNotes(notesTa);
     });
-    // Not autosave-wired (closeClarify owns the flush), so add the markdown
-    // suite explicitly. insertText fires input, so the mirror above stays hot.
-    wireMdShortcuts(notesTa);
+    // Not autosave-wired (closeClarify owns the flush): a markdown field all
+    // the same. insertText fires input, so the mirror above stays hot.
+    wireMdField(notesTa);
     // ...and for the same reason the growth has to be asked for here: the
     // sizing rides wireNotesAutosave everywhere else, which this field
     // deliberately does not use.
@@ -17101,6 +17282,7 @@ function renderClarify() {
   });
   const pnTa = sheet.querySelector('#cl-proj-notes');
   if (pnTa) {
+    wireMdField(pnTa);
     let pnUndoPushed = false;
     const pnFlush = wireNotesAutosave(pnTa, async value => {
       const target = (state.projects || []).find(p => p.id === clarifyView.projectId);

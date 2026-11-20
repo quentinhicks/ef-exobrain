@@ -383,6 +383,51 @@ def popup_placement_fails(flines):
     return out
 
 
+# EVERY MARKDOWN FIELD IS THE ONE FIELD (2026-11-19, Quentin's instruction:
+# "fix the markdown on everything that asks for markdown — make it like VS
+# Code", and fix it in the abstraction). Written as VS Code shows a .md file,
+# by mdFieldHtml + wireMdField. Clarify's notes were the shape this stops: a
+# plain textarea saying "markdown ok", wired to the shortcut suite by hand
+# beside the component. Two halves, scanned: a textarea whose markup says
+# markdown is drawn by mdFieldHtml, and the suite is wired only through the
+# field (or the notes autosave, which a non-markdown text like the day's plan
+# also rides).
+MD_SUITE_OWNERS = ('function wireMdField(', 'function wireNotesAutosave(', 'function wireMdShortcuts(')
+
+
+def enclosing_function(lines, i):
+    """The top-level function a line sits in ('' outside one). Top-level
+    functions open on a `function` line in column 1 and close on a lone `}`."""
+    for j in range(i, -1, -1):
+        if lines[j] == '}' and j != i:
+            return ''
+        if lines[j].startswith(('function ', 'async function ')):
+            return lines[j].replace('async ', '', 1)
+    return ''
+
+
+def md_field_fails(flines):
+    out = []
+    for n, line in enumerate(flines):
+        stripped = line.strip()
+        if stripped.startswith(('//', '*')):
+            continue
+        owner = enclosing_function(flines, n)
+        if '<textarea' in line:
+            tag = ' '.join(flines[n:n + 4])
+            tag = tag[tag.index('<textarea'):].split('>')[0]
+            if 'markdown' in tag.lower() and 'function mdFieldHtml(' not in owner:
+                out.append((n + 1, stripped[:88], 'mdFieldHtml(cls, attrs, value, placeholder) '
+                                                  '+ wireMdField(ta) — a field that takes markdown '
+                                                  'is written as VS Code shows it'))
+        if 'class="md-field' in line and 'function mdFieldHtml(' not in owner:
+            out.append((n + 1, stripped[:88], 'mdFieldHtml — the one markup of a markdown field'))
+        if 'wireMdShortcuts(' in line and not any(o in owner for o in MD_SUITE_OWNERS):
+            out.append((n + 1, stripped[:88], 'wireMdField(ta) — the suite without the field is '
+                                              'a markdown field drawn as plain text'))
+    return out
+
+
 def main():
     with open(APP_JS, encoding='utf-8') as f:
         body = f.read()
@@ -417,6 +462,7 @@ def main():
                     continue
                 fails.append((fname, n + 1, stripped[:88], instead))
         fails += [(fname,) + f for f in popup_placement_fails(flines)]
+        fails += [(fname,) + f for f in md_field_fails(flines)]
 
         fdated = day_filing_functions(flines)
         dated += fdated
@@ -463,6 +509,7 @@ midnight, a paused row, or a config change.""")
           % n_sheets)
     print('  popups        placed by fitInViewport, no hand-set left beside it')
     print('  layer bands   every popup above every sheet, strip menus at body level')
+    print('  markdown      every field that takes it is the one field, as VS Code shows it')
     return 0
 
 
