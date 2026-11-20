@@ -1140,9 +1140,13 @@ def post_inbox():
     status = data.get('status')
     if status not in VALID_INBOX_STATUSES:
         return jsonify({'error': 'status must be null, active, waiting, or on_hold'}), 400
-    item = storage.create_inbox_item(data['content'], status,
-                                     data.get('area_id'), data.get('project_id'),
-                                     data.get('tags'), domain_id=data.get('domain_id'))
+    try:
+        item = storage.create_inbox_item(data['content'], status,
+                                         data.get('area_id'), data.get('project_id'),
+                                         data.get('tags'), domain_id=data.get('domain_id'),
+                                         list_id=data.get('list_id'))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     _touch_and_sync_inbox()
     # A hotkey capture lands while the main window is open — show it (same
     # pattern as /api/panel/saved). The window's own captures re-render
@@ -1237,9 +1241,14 @@ def patch_inbox(id):
         kwargs['entered_at'] = data['entered_at']
     if 'sent_from' in data:
         kwargs['sent_from'] = data['sent_from']
+    if 'list_id' in data:
+        kwargs['list_id'] = data['list_id']
     if data.get('kind') in ('item', 'project'):
         kwargs['kind'] = data['kind']
-    item = storage.update_inbox_item(id, **kwargs)
+    try:
+        item = storage.update_inbox_item(id, **kwargs)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     if item is None:
         return jsonify({'error': 'that item is gone — deleted, perhaps on another device'}), 404
     _touch_and_sync_inbox()
@@ -1543,31 +1552,13 @@ def post_ref_doc_append(id):
 @app.route('/api/ref/lists/<int:id>', methods=['DELETE'])
 def delete_ref_list_route(id):
     storage.delete_ref_list(id)
+    # A list's to-dos went with it.
+    _touch_and_sync_inbox()
     return '', 204
 
 
-@app.route('/api/ref/items', methods=['POST'])
-def post_ref_item():
-    data = request.get_json()
-    content = (data.get('content') or '').strip()
-    if not content:
-        return jsonify({'error': 'content is required'}), 400
-    try:
-        return jsonify(storage.create_ref_item(data['list_id'], content, data.get('done', 0))), 201
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 400
-
-
-@app.route('/api/ref/items/<int:id>', methods=['PATCH'])
-def patch_ref_item(id):
-    data = request.get_json()
-    return jsonify(storage.update_ref_item(id, content=data.get('content'), done=data.get('done')))
-
-
-@app.route('/api/ref/items/<int:id>', methods=['DELETE'])
-def delete_ref_item_route(id):
-    storage.delete_ref_item(id)
-    return '', 204
+# A list's items are to-dos since 2026-11-19: they are written through
+# /api/inbox (list_id), and /api/ref/items is gone.
 
 
 # --- Social exposure v1 (grid, calibration, spec + dose lines; dryrun) ---

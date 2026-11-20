@@ -4420,9 +4420,6 @@ body.np-body {
 }
 .ref-name { flex: 1; min-width: 0; font-size: 14px; color: var(--text-primary); cursor: pointer; }
 .ref-text { flex: 1; min-width: 0; font-size: 13px; color: var(--text-primary); }
-.ref-done { color: var(--text-secondary); text-decoration: line-through; }
-.ref-bullet { flex: none; width: 5px; height: 5px; margin: 0.6em 4px 0 6px; border-radius: 50%;
-  background: var(--text-secondary); }
 .ref-pane .add-zone-row { padding: 6px 0; }
 .ref-pane .add-zone-input { flex: 1; border: none; outline: none; background: transparent;
   font: inherit; color: var(--text-primary); padding: 0; }
@@ -5988,8 +5985,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #engage-body .eg-pool .eg-text { font-size: 16px; line-height: 1.4; color: var(--text-primary); }
 #engage-body .eg-inprog .eg-text { color: var(--text-primary); }
 /* The current task (FVP: the last dot down the list), faintly lit. */
-#engage-body .eg-pool .eg-current { background: var(--tint); }
-#engage-body .eg-check{
+#engage-body .eg-pool .eg-current, #tab-lists .ref-item.eg-current { background: var(--tint); }
+/* THE TO-DO BOX, on the to-do list and on a list's items (2026-11-19: a
+   list's items are to-dos) — one look, so the two read as the same thing. */
+#engage-body .eg-check, #tab-lists .eg-check {
   width: 18px;
   height: 18px;
   margin-top: 2px;
@@ -6000,10 +5999,10 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   align-items: center;
   justify-content: center;
 }
-#engage-body .eg-check:hover { border-color: var(--accent); }
-#engage-body .eg-check-started { border-color: var(--accent); }
+#engage-body .eg-check:hover, #tab-lists .eg-check:hover { border-color: var(--accent); }
+#engage-body .eg-check-started, #tab-lists .eg-check-started { border-color: var(--accent); }
 .eg-check-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-#engage-body .eg-tag { border: none; padding: 0; font-size: 11px; }
+#engage-body .eg-tag, #tab-lists .ref-item .eg-tag { border: none; padding: 0; font-size: 11px; }
 
 /* ── NOW PAGE WIDE, 4b (2026-09-30, Quentin's design) ─────────────────
    A wide window gets three columns: the day and the chip in a column LEFT of
@@ -6126,7 +6125,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 /* The add row, and the space under a list that opens it (addZoneHtml). */
 #eg-add-zone { padding: 0 8px; }
 .add-zone-row { display: flex; gap: 12px; padding: 8px; align-items: flex-start; }
-#engage-body .eg-check-ghost { cursor: default; }
+#engage-body .eg-check-ghost, #tab-lists .eg-check-ghost { cursor: default; }
 .add-zone-input {
   flex: 1;
   border: none;
@@ -6927,6 +6926,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .md .md-footnotes ol { margin: 0; }
 .md .md-fnref a, .md .md-fnback { text-decoration: none; }
 #tab-lists .ref-item { border-bottom: none; align-items: flex-start; }
+#tab-lists .ref-item .ref-text { font-size: 15.5px; line-height: 1.4; cursor: pointer; }
+#tab-lists .ref-item .eg-tag { margin-top: 4px; }
 /* On a phone the page's own head already names what is open. */
 @media (min-width: 900px) {
   #tab-lists.ref-index #ref-body { background: none; overflow: hidden; }

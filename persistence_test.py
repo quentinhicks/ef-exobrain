@@ -112,9 +112,9 @@ check('and so is its placement, still on the same thing',
 
 # ── 2. Lists and documents ───────────────────────────────────
 lst = send('POST', '/api/ref/lists', {'name': 'persist list', 'kind': 'list'}).get_json()
-send('POST', '/api/ref/items', {'list_id': lst['id'], 'content': 'a bullet'})
-check('a list and its item are in the file',
-      one('SELECT COUNT(*) AS n FROM ref_item WHERE list_id = ?', lst['id'])['n'] == 1)
+send('POST', '/api/inbox', {'content': 'a list to-do', 'status': 'active', 'list_id': lst['id']})
+check('a list and its to-do are in the file',
+      one('SELECT COUNT(*) AS n FROM inbox_item WHERE list_id = ?', lst['id'])['n'] == 1)
 doc = send('POST', '/api/ref/lists', {'name': 'persist doc', 'kind': 'doc', 'body': 'first'}).get_json()
 send('POST', f"/api/ref/lists/{doc['id']}/append", {'text': 'second'})
 body = one('SELECT body FROM ref_list WHERE id = ?', doc['id'])['body']

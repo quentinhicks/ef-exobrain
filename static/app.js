@@ -692,7 +692,7 @@ function settleTimelineLabels() {
 // WHEN the last long press fired, as a clock time rather than a flag on an
 // element. The flag below still suppresses the click that follows the press —
 // but only while the element it was attached to still exists, and a long-press
-// handler that re-renders (startedToggle does) destroys its own guard. The
+// handler that re-renders (the to-do dot does) destroys its own guard. The
 // browser then delivers the touch's synthesized click to the FRESH node, which
 // has no memory of the press.
 //
@@ -7569,9 +7569,14 @@ async function initRoutes() {
 
 
 const refView = { lists: [], open: null, dragId: null };
+// A list's to-do writes still in flight; the page re-reads once the last lands.
+let refWrites = 0;
 
 async function refreshRef() {
-  refView.lists = await apiGet('/api/ref', refView.lists);
+  const lists = await apiGet('/api/ref', refView.lists);
+  // A read that left before a write landed would put a completed row back.
+  if (refWrites) return;
+  refView.lists = lists;
   renderRef();
 }
 
@@ -7616,7 +7621,7 @@ function refPath(lists, id) {
 // the row whose contents stand in the next column.
 function refEntryRow(l, on) {
   const tail = l.kind === 'dir' ? refChildren(refView.lists, l.id).length
-    : l.kind === 'list' ? l.items.filter(i => !i.done).length : '';
+    : l.kind === 'list' ? l.items.length : '';
   return `<div class="ref-row${on ? ' ref-on' : ''}" data-id="${l.id}">
     ${refIcon(l.kind)}
     <span class="ref-name" title="Tap to open · double-click to rename">${escHtml(l.name)}</span>
@@ -7674,16 +7679,13 @@ function refMenu(x, y, dirPid, row) {
 }
 
 // A Lists entry swiped left: More… (the menu above) and its Delete; a list's
-// bullet swiped left: the delete its row already carries.
+// to-do swiped left: the to-do list's verbs (wireRefPane sets them).
 swipeRows('#tab-lists .ref-row[data-id]', row => {
   const l = refView.lists.find(v => String(v.id) === row.dataset.id);
   return l ? [rowMoreVerb(row),
     { label: `Delete ${REF_KIND_WORD[l.kind]}`, danger: true, run: () => refDelete(l.id) }] : [];
 });
-swipeRows('#tab-lists .ref-row[data-item]', row => {
-  const del = row.querySelector('.ref-del');
-  return del ? [{ label: 'Delete', danger: true, run: () => del.click() }] : [];
-});
+swipeRows('#tab-lists .ref-row[data-item]', row => (row.swipeVerbs ? row.swipeVerbs() : []));
 
 // NESTING IS A MOVE (2026-10-08, Quentin's instruction: "like a file system"):
 // any directory, list or document goes into any directory — never into
@@ -7784,19 +7786,21 @@ function wireRefEntries(scope) {
   });
 }
 
-// Delete, with the inverse. New ids are fine — nothing outside Lists holds a
-// ref id (unlike inbox restore). A directory's contents splice up a level on
-// the server, so its undo files them back into the recreated directory.
+// Delete, with the inverse. A new list id is fine — only its own to-dos point
+// at a list, and they come back by their snapshots (ORIGINAL ids, placements
+// and all) filed in the recreated one. A directory's contents splice up a
+// level on the server, so its undo files them back into the recreated one.
 async function refDelete(id) {
   const l = refView.lists.find(x => x.id === id);
   if (!l) return;
   const inside = refView.lists.filter(x => x.parent_id === id).map(x => x.id);
+  const snaps = (await Promise.all(l.items.map(i => snapshotItem(i.id)))).filter(Boolean);
   await apiSend(`/api/ref/lists/${id}`, 'DELETE');
   pushUndo(`deleted ${REF_KIND_WORD[l.kind]} "${l.name}"`, async () => {
     const nl = await apiSend('/api/ref/lists', 'POST', {
       name: l.name, kind: l.kind, body: l.body || '', parent_id: l.parent_id }).then(r => r.json());
-    for (const it of l.items) {
-      await apiSend('/api/ref/items', 'POST', { list_id: nl.id, content: it.content, done: it.done });
+    for (const snap of snaps) {
+      await apiSend('/api/inbox/restore', 'POST', { ...snap, row: { ...snap.row, list_id: nl.id } });
     }
     for (const cid of inside) {
       await apiSend(`/api/ref/lists/${cid}`, 'PATCH', { parent_id: nl.id });
@@ -7815,15 +7819,20 @@ function refPaneHtml(open) {
     return `<div class="ref-pane"><div class="ref-doc-title" title="Double-click to rename">${escHtml(open.name)}</div>
       ${mdDocHtml(open.body, `data-ref-doc="${open.id}"`)}</div>`;
   }
+  // A LIST'S ITEMS ARE TO-DOS (2026-11-19, Quentin's instruction, replacing
+  // 2026-10-08's bullets): the to-do list's row — its box, its order, its
+  // current task, its due chip — in the list's own place.
+  const items = [...open.items].sort(todoOrder);
+  const currentId = todoCurrentId(items);
   return `<div class="ref-pane"><div class="ref-pane-head"><span class="ref-pane-name">${escHtml(open.name)}</span>
-      <span class="count">${open.items.filter(i => !i.done).length}</span></div>
-    <div class="ref-list">${open.items.map(i => `
-      <div class="ref-row ref-item" data-item="${i.id}">
-        <span class="ref-bullet"></span>
-        <span class="ref-text${i.done ? ' ref-done' : ''}" title="Double-click to rewrite">${escHtml(i.content)}</span>
-        <button class="ref-del" data-item="${i.id}" title="Remove">×</button>
+      <span class="count">${items.length}</span></div>
+    <div class="ref-list">${items.map(i => `
+      <div class="ref-row ref-item${i.started_at ? ' eg-inprog' : ''}${i.id === currentId ? ' eg-current' : ''}" data-item="${i.id}">
+        ${egRowControl(i, i.started_at, todoBoxTitle(i, i.id === currentId))}
+        <span class="ref-text">${escHtml(i.content)}</span>
+        ${dueChip(i, 'eg-tag')}
       </div>`).join('')}</div>
-    ${addZoneHtml(`Add to ${open.name}`, '<span class="ref-bullet"></span>')}</div>`;
+    ${addZoneHtml(`Add to ${open.name}`, '<span class="eg-check eg-check-ghost"></span>')}</div>`;
 }
 
 function wireRefPane(scope, open) {
@@ -7851,15 +7860,14 @@ function wireRefPane(scope, open) {
     });
     return;
   }
-  // A LIST IS BULLETS, added in the blank space under it (2026-10-08,
-  // Quentin's instruction): no checkboxes, no + item. An item marked done
-  // before then still reads struck through.
+  // Added in the blank space under it: an active to-do in this list.
   wireAddZone(scope.querySelector('.add-zone'), async (raw, keepOpen) => {
-    const res = await apiSend('/api/ref/items', 'POST', { list_id: open.id, content: raw }).catch(() => null);
+    const res = await apiSend('/api/inbox', 'POST', { content: raw, status: 'active', list_id: open.id })
+      .catch(() => null);
     if (!res || !res.ok) { toast('Could not add that — it is still in the box'); return null; }
     const created = await res.json();
     pushUndo(`added "${raw}" to ${open.name}`, async () => {
-      await apiSend(`/api/ref/items/${created.id}`, 'DELETE');
+      await apiSend(`/api/inbox/${created.id}`, 'DELETE');
       await refreshAfterUndo();
     });
     await refreshRef();
@@ -7868,29 +7876,50 @@ function wireRefPane(scope, open) {
     if (zone) zone.querySelector('.add-zone-fill').click();
     return created;
   });
-  scope.querySelectorAll('.ref-row[data-item] .ref-text').forEach(span => {
-    span.addEventListener('dblclick', () => {
-      const id = parseInt(span.closest('.ref-row').dataset.item);
-      inlineEdit(span, {
-        value: span.textContent,
+  // The to-do list's verbs (todoActs), on this list's rows.
+  const acts = todoActs({
+    find: id => open.items.filter(i => i.id === id),
+    drop: id => { open.items = open.items.filter(i => i.id !== id); },
+    redraw: renderRef,
+    track: async run => {
+      refWrites++;
+      try { return await run(); } finally { if (--refWrites === 0) await refreshRef(); }
+    },
+  });
+  scope.querySelectorAll('.ref-row[data-item]').forEach(row => {
+    const id = parseInt(row.dataset.item);
+    const item = () => open.items.find(i => i.id === id);
+    const canReenter = () => row.classList.contains('eg-inprog');
+    row.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      acts.hold(id, canReenter());
+    });
+    row.swipeVerbs = () => acts.swipe(id, canReenter());
+    // Its text opens the clarify sheet, as any action's does; a double-click
+    // renames (the to-do list's gesture), so the single click waits it out.
+    onTapOrDouble(row, () => {
+      if (item()) openClarifyForItem(item(), refreshRef);
+    }, e => {
+      const it = item();
+      if (!it) return;
+      inlineEdit(e.target.closest('.ref-text'), {
+        value: it.content,
         onCancel: refreshRef,
         onCommit: async content => {
-          await apiSend(`/api/ref/items/${id}`, 'PATCH', { content });
+          undoablePatch(it, ['content'], `renamed "${it.content}"`);
+          await patchInboxItem(id, { content });
           await refreshRef();
         },
       });
+    }, '.ref-text');
+  });
+  scope.querySelectorAll('.ref-row[data-item] .eg-check[data-id]').forEach(el => {
+    el.addEventListener('click', async () => {
+      if (justLongPressed()) return;
+      await acts.tap(parseInt(el.dataset.id));
     });
   });
-  scope.querySelectorAll('.ref-del[data-item]').forEach(b => b.addEventListener('click', async () => {
-    const id = parseInt(b.dataset.item);
-    const it = open.items.find(x => x.id === id);
-    await apiSend(`/api/ref/items/${id}`, 'DELETE');
-    pushUndo(`removed "${it.content}"`, async () => {
-      await apiSend('/api/ref/items', 'POST', { list_id: open.id, content: it.content, done: it.done });
-      await refreshAfterUndo();
-    });
-    await refreshRef();
-  }));
 }
 
 // Flush a document being written before the page moves off it.
@@ -8007,15 +8036,12 @@ async function refFileWrite(target, content, extra) {
     if (!res.ok) throw new Error(created.error || 'could not file it');
     return () => apiSend(`/api/ref/lists/${created.id}`, 'DELETE');
   }
+  // A document (a list's items are to-dos, filed by fileClarify itself).
   const l = (clarifyView.refLists || []).find(x => x.id === target.id);
-  if (target.kind === 'doc') {
-    const prev = l ? l.body || '' : '';
-    await apiSend(`/api/ref/lists/${target.id}/append`, 'POST',
-      { text: extra ? `${content}\n${extra}` : content });
-    return () => apiSend(`/api/ref/lists/${target.id}`, 'PATCH', { body: prev });
-  }
-  const created = await apiSend('/api/ref/items', 'POST', { list_id: target.id, content }).then(r => r.json());
-  return () => apiSend(`/api/ref/items/${created.id}`, 'DELETE');
+  const prev = l ? l.body || '' : '';
+  await apiSend(`/api/ref/lists/${target.id}/append`, 'POST',
+    { text: extra ? `${content}\n${extra}` : content });
+  return () => apiSend(`/api/ref/lists/${target.id}`, 'PATCH', { body: prev });
 }
 
 // The browser the Reference pill opens: the HOME directory first, a
@@ -14267,6 +14293,99 @@ function egRowControl(i, started, title) {
     title="${title}">${started ? '<span class="eg-check-dot"></span>' : ''}</span>`;
 }
 
+// ── A TO-DO, WHEREVER IT IS DRAWN ─────────────────────────────────────────
+// The to-do list and a list on the Lists page hold the same data type
+// (2026-11-19, Quentin's instruction: a list's items are to-dos), so they
+// share ONE order, ONE box and ONE set of verbs — a second copy is how the two
+// would come to offer different gestures for the same row.
+//
+// OLDEST FIRST, AND NOTHING ELSE. A DOT DOES NOT MOVE A ROW (2026-09-30,
+// Quentin's instruction): in Forster's Final Version the order IS the method —
+// you dot down the list and work back up it — so a dotted row floating to the
+// top scrambled the chain it was dotted into. NOR DOES A DUE DATE (2026-10-05,
+// Quentin's instruction, reversing "deadlines sort the pool" of 2026-08-07): a
+// dated row, a recurring one included, jumped above everything already on the
+// list. Every row lands at the bottom when it is added; the due chip still says
+// when it is due. A RE-ENTERED row (FVP: worked on, not finished) sorts by when
+// it re-entered.
+function todoOrder(a, b) {
+  return (a.entered_at || a.captured_at || '').localeCompare(b.entered_at || b.captured_at || '')
+    || a.id - b.id;
+}
+
+// THE CURRENT TASK (2026-10-11, Quentin's instruction): in FVP the LAST dot
+// down the list is the one to work on. A faint highlight says which.
+function todoCurrentId(sorted) {
+  return (sorted.filter(i => i.started_at).pop() || {}).id;
+}
+
+function todoBoxTitle(i, current) {
+  return current ? 'Working on this — tap when done · hold if not finished: back to the end'
+    : i.started_at ? 'Dotted — tap when done · hold to clear the dot'
+    : 'Tap to dot (preselect) · tap again when done';
+}
+
+// The verbs, for a surface `s`: find(id) its local copies of the row, drop(id)
+// takes it off, redraw() repaints from them, and track(run) runs a write — the
+// surface re-reads once the LAST write in flight lands, because a re-read
+// finishing between two quick taps would put the first row back.
+// A TAP REDRAWS FIRST, THEN WRITES (2026-10-05, Quentin's report: lag on
+// mobile): a completion is a snapshot GET then the DELETE, and on a phone a
+// tap that waited on them read as ignored.
+function todoActs(s) {
+  // A DOT IS NOT A START (2026-10-11, Quentin's instruction): it PRESELECTS —
+  // "What do I want to do more than X?" asked down the list, no action taken.
+  // started_at is only the column's old name. Undoable.
+  const dot = async id => {
+    const item = s.find(id)[0];
+    if (!item) return;
+    undoablePatch(item, ['started_at'], item.started_at
+      ? `undotted "${item.content}"`
+      : `dotted "${item.content}"`);
+    const started_at = item.started_at ? null : new Date().toISOString();
+    s.find(id).forEach(i => { i.started_at = started_at; });
+    s.redraw();
+    await s.track(() => patchInboxItem(id, { started_at }));
+  };
+  // NOT FINISHED GOES TO THE END (2026-10-11, Quentin's instruction, FVP's
+  // re-entry): the hold on a dotted row puts it at the bottom, undotted.
+  // (Until 2026-10-14 only the CURRENT task re-entered and an earlier dotted
+  // row merely lost its dot in place — Quentin's report: unselecting did not
+  // send it to the bottom.)
+  const reenter = async id => {
+    const item = s.find(id)[0];
+    if (!item) return;
+    undoablePatch(item, ['entered_at', 'started_at'], `put "${item.content}" back at the end`);
+    // Sorts last until the server's own stamp comes back with the refresh.
+    s.find(id).forEach(i => { i.started_at = null; i.entered_at = '￿'; });
+    s.redraw();
+    await s.track(() => patchInboxItem(id, { entered_at: 'now', started_at: null }));
+  };
+  // Done: off the list at once, the write and its undo after.
+  const done = async id => {
+    const item = s.find(id)[0];
+    s.drop(id);
+    s.redraw();
+    await s.track(() => undoableDelete(id, `completed "${(item && item.content) || 'action'}"`));
+  };
+  // TWO TAPS TO DONE (Now Page Minimal v2): the first tap DOTS it, a tap on a
+  // dotted box completes it. The row's hold re-enters a dotted row (where the
+  // surface has an order to go to the end of) and dots any other, which is
+  // how a dot is cleared without completing; a swipe names both.
+  const hold = (id, canReenter) => (canReenter ? reenter(id) : dot(id));
+  return {
+    tap: id => {
+      const item = s.find(id)[0];
+      return item && !item.started_at ? dot(id) : done(id);
+    },
+    hold,
+    swipe: (id, canReenter) => [
+      canReenter ? { label: 'To the end', run: () => reenter(id) } : { label: 'Dot', run: () => dot(id) },
+      { label: 'Done', run: () => done(id) },
+    ],
+  };
+}
+
 function egAgendaOpen() {
   try { return localStorage.getItem('egAgenda') === '1'; } catch (e) { return false; }
 }
@@ -14393,20 +14512,8 @@ function engageTodoList(nowMin, isToday, placedIds, routineAreaIds) {
   // header are still where you see and change what is gating.
   const pool = poolBase
     .filter(i => locOk(i) && deviceOk(i) && timeOk(i) && dayOk(i))
-    // OLDEST FIRST, AND NOTHING ELSE. A DOT DOES NOT MOVE A ROW (2026-09-30,
-    // Quentin's instruction): in Forster's Final Version the order IS the
-    // method — you dot down the list and work back up it — so a dotted row
-    // floating to the top scrambled the chain it was dotted into. NOR DOES A
-    // DUE DATE (2026-10-05, Quentin's instruction, reversing "deadlines sort
-    // the pool" of 2026-08-07): a dated row, a recurring one included, jumped
-    // above everything already on the list. Every row lands at the bottom when
-    // it is added; the due chip still says when it is due. A RE-ENTERED row
-    // (FVP: worked on, not finished) sorts by when it re-entered.
-    .sort((a, b) => (a.entered_at || a.captured_at || '').localeCompare(b.entered_at || b.captured_at || '')
-      || a.id - b.id);
-  // THE CURRENT TASK (2026-10-11, Quentin's instruction): in FVP the LAST
-  // dot down the list is the one to work on. A faint highlight says which.
-  const currentId = (pool.filter(i => i.started_at).pop() || {}).id;
+    .sort(todoOrder);
+  const currentId = todoCurrentId(pool);
   return { pool, currentId };
 }
 
@@ -14665,10 +14772,7 @@ function renderEngage() {
     <div class="eg-pool">
       ${pool.map(i => `
         <div class="eg-row eg-pool-item${i.started_at ? ' eg-inprog' : ''}${i.id === currentId ? ' eg-current' : ''}" draggable="true" data-id="${i.id}">
-          ${egRowControl(i, i.started_at, i.id === currentId
-            ? 'Working on this — tap when done · hold if not finished: back to the end'
-            : i.started_at ? 'Dotted — tap when done · hold to clear the dot'
-            : 'Tap to dot (preselect) · tap again when done')}
+          ${egRowControl(i, i.started_at, todoBoxTitle(i, i.id === currentId))}
           <span class="eg-text">${escHtml(i.content)}</span>
           <span class="eg-tags">${dueChip(i, 'eg-tag')}</span>
         </div>`).join('')}${engageView.adding.map(content => `
@@ -14742,88 +14846,39 @@ function renderEngage() {
   // the checkbox (2026-08-11). Holding a 14px target for half a second is a
   // gesture you have to aim, and on a phone the press it competes with is
   // "complete this" — the most destructive thing on the surface. The row is the
-  // whole width, and long-press is already this app's touch right-click
-  // (the long press: timeline dismiss, block cancel, event hide).
-  // A TAP REDRAWS FIRST, THEN WRITES (2026-10-05, Quentin's report: lag on
-  // mobile). Each tap used to wait on the write — a completion is a snapshot
-  // GET then the DELETE — and then on ten reads before the row moved, so on a
-  // phone's connection a tap read as ignored. The row changes in local state at
-  // once; the reads run when the LAST write in flight lands, because a refresh
-  // finishing between two quick taps would put the second row back.
-  const localItems = id => [...engageView.pool, ...engageView.allItems].filter(i => i.id === id);
-  const startedToggle = async id => {
-    const item = localItems(id)[0];
-    if (!item) return;
-    undoablePatch(item, ['started_at'], item.started_at
-      ? `undotted "${item.content}"`
-      : `dotted "${item.content}"`);
-    const started_at = item.started_at ? null : new Date().toISOString();
-    localItems(id).forEach(i => { i.started_at = started_at; });
-    renderEngage();
-    egWrites++;
-    try { await patchInboxItem(id, { started_at }); }
-    finally { if (--egWrites === 0) await after(); }
-  };
-  // NOT FINISHED GOES TO THE END (2026-10-11, Quentin's instruction, FVP's
-  // re-entry): the hold on a dotted row puts it at the bottom of the list,
-  // undotted. No new button; undo puts it back. An undotted row's hold dots it.
-  // (Until 2026-10-14 only the CURRENT task re-entered and an earlier dotted
-  // row merely lost its dot in place — Quentin's report: unselecting did not
-  // send it to the bottom.)
-  const reenter = async id => {
-    const item = localItems(id)[0];
-    if (!item) return;
-    undoablePatch(item, ['entered_at', 'started_at'], `put "${item.content}" back at the end`);
-    // Sorts last until the server's own stamp comes back with the refresh.
-    localItems(id).forEach(i => { i.started_at = null; i.entered_at = '￿'; });
-    renderEngage();
-    egWrites++;
-    try { await patchInboxItem(id, { entered_at: 'now', started_at: null }); }
-    finally { if (--egWrites === 0) await after(); }
-  };
+  // whole width, and long-press is already this app's touch right-click.
+  // The verbs are the one to-do table (todoActs), shared with a list's items.
+  const acts = todoActs({
+    find: id => [...engageView.pool, ...engageView.allItems].filter(i => i.id === id),
+    drop: id => {
+      engageView.pool = engageView.pool.filter(i => i.id !== id);
+      engageView.allItems = engageView.allItems.filter(i => i.id !== id);
+    },
+    redraw: renderEngage,
+    track: async run => {
+      egWrites++;
+      try { return await run(); } finally { if (--egWrites === 0) await after(); }
+    },
+  });
   body.querySelectorAll('.eg-pool-item[data-id], .eg-action[data-id]').forEach(row => {
     const id = parseInt(row.dataset.id);
+    // Only the to-do list has an end to go back to; a placed row's hold dots.
+    const canReenter = () => row.matches('.eg-pool-item.eg-inprog');
     row.addEventListener('contextmenu', e => {
       e.preventDefault();
-      if (row.matches('.eg-pool-item.eg-inprog')) reenter(id); else startedToggle(id);
+      acts.hold(id, canReenter());
     });
     // Swiped left (swipeRows, below): the hold's verb by name, and Done —
     // the box's second tap without the first.
-    row.swipeVerbs = () => [
-      row.matches('.eg-pool-item.eg-inprog')
-        ? { label: 'To the end', run: () => reenter(id) }
-        : { label: 'Dot', run: () => startedToggle(id) },
-      { label: 'Done', run: () => complete(id) },
-    ];
+    row.swipeVerbs = () => acts.swipe(id, canReenter());
   });
-
-  // TWO TAPS TO DONE (Now Page Minimal v2): the first tap DOTS it — the same
-  // started_at the long press has always set — and a tap on a dotted box
-  // completes it. A DOT IS NOT A START (2026-10-11, Quentin's instruction): in
-  // Forster's Final Version a dot PRESELECTS — "What do I want to do more than
-  // X?" asked down the list, no action taken — and the last dot is the one
-  // worked on. started_at is only the column's old name. Both undoable. The row's long press / right-click still
-  // toggles the dot, which is how one is cleared without completing.
-  // Done: off the list at once, the write and its undo after. The box's
-  // second tap and a swipe's Done are this one act.
-  const complete = async id => {
-    const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
-    engageView.pool = engageView.pool.filter(i => i.id !== id);
-    engageView.allItems = engageView.allItems.filter(i => i.id !== id);
-    renderEngage();
-    egWrites++;
-    try { await undoableDelete(id, `completed "${(item && item.content) || 'action'}"`); }
-    finally { if (--egWrites === 0) await after(); }
-  };
   body.querySelectorAll('.eg-check[data-id]').forEach(el => {
     const id = parseInt(el.dataset.id);
     el.addEventListener('click', async () => {
       // HOLDING the box is the row's long press, which this sits inside. The
       // click the browser synthesizes after that hold must not also act.
       if (justLongPressed()) return;
-      const item = [...engageView.pool, ...engageView.allItems].find(i => i.id === id);
-      if (item && !item.started_at) { await startedToggle(id); return; }
-      await complete(id);
+      await acts.tap(id);
     });
   });
 
@@ -15358,6 +15413,11 @@ async function openClarifyForItem(item, after, flow) {
   clarifyView.fromProjects = flow === 'project';
   if (clarifyFlowMode() && (item.on_projects || item.kind === 'project' || flow === 'project')) {
     clarifyView.flow = 'project';
+  } else if (clarifyFlowMode() && item.list_id) {
+    // A LIST'S TO-DO OPENS ON THE LIST FLOW, in its list — the place it has.
+    const l = (clarifyView.refLists || []).find(x => x.id === item.list_id);
+    clarifyView.flow = 'list';
+    if (l) clarifyView.refPick = { kind: 'list', id: l.id, label: l.name };
   }
   renderClarify();
 }
@@ -15912,6 +15972,10 @@ async function fileClarify(bucket, refTarget) {
   clarifyView.trashArm = null;
   if (bucket === 'delegate' && !clarifyView.who.trim()) return;
   if (bucket === 'reference' && !refTarget) return;
+  if (bucket === 'reference' && refTarget.kind === 'list' && item.kind === 'project') {
+    toast('A project can’t go in a list — its actions would be left behind');
+    return;
+  }
   // Read before clarifyResetItem clears it — the post-file composer hook
   // below needs to know where this action landed.
   const filedProjectId = (bucket !== 'trash' && bucket !== 'reference')
@@ -15938,18 +16002,27 @@ async function fileClarify(bucket, refTarget) {
     if (bucket === 'trash' || bucket === 'do') {
       // Do now = the two-minute rule: you did it; filing marks it done.
       await apiSend(`/api/inbox/${item.id}`, 'DELETE');
+    } else if (bucket === 'reference' && refTarget.kind === 'list') {
+      // A LIST'S ITEMS ARE TO-DOS (2026-11-19, Quentin's instruction): the
+      // item itself goes into the list — its notes, tags and due with it —
+      // off the to-do list and Projects (the server takes it out of any
+      // project). The undo is the snapshot, like every other filing.
+      const res = await patch({ ...own, status: 'active', list_id: refTarget.id,
+                                defer_until: null, sent_from: null });
+      if (!res.ok) { toast((await res.json().catch(() => ({}))).error || 'Could not file it'); return; }
+      clarifyView.refLists = await apiGet('/api/ref', clarifyView.refLists);
     } else if (bucket === 'reference') {
-      // The other non-actionable keep: the text moves to a reference list and
-      // the item leaves the action inventory entirely.
+      // A document keeps the text: it moves into the document and the item
+      // leaves the action inventory entirely.
       refUndo = await refFileCapture(refTarget, content,
         'notes' in own ? own.notes : ((snap && snap.row && snap.row.notes) || ''));
       await apiSend(`/api/inbox/${item.id}`, 'DELETE');
     } else if (bucket === 'someday') {
       // No due input on this exit, but the prefilled value rides along so
       // parking a deadlined item never silently drops its deadline.
-      await patch({ ...own, status: 'on_hold', ...filing });
+      await patch({ ...own, status: 'on_hold', ...filing, list_id: null });
     } else if (bucket === 'delegate') {
-      await patch({ ...own, status: 'waiting', ...filing,
+      await patch({ ...own, status: 'waiting', ...filing, list_id: null,
                     waiting_on: clarifyView.who.trim(),
                     chase_on: clarifyView.chase || null });
     } else {
@@ -15958,8 +16031,9 @@ async function fileClarify(bucket, refTarget) {
       // or project, still in someday / maybe. Every other flow is a decision
       // to act, and makes it active.
       const keepParked = clarifyView.flow === 'project' && item.status === 'on_hold';
+      // Every flow but List takes a to-do OUT of the list it was in.
       const body = { ...own, status: keepParked ? 'on_hold' : 'active', ...filing,
-                     defer_until: clarifyView.showDate || null };
+                     defer_until: clarifyView.showDate || null, list_id: null };
       // ◐ is a glance state, not a predicate: nothing gates on started_at, it
       // just floats the row to the top of the pool and accents it.
       if (startNow) body.started_at = new Date().toISOString();
@@ -16475,10 +16549,25 @@ async function fileClarifyExternal(bucket, refTarget) {
   clarifyView.filing = true;
   paintClarifyBusy(true);
   try {
-    if (bucket === 'reference') {
-      // Straight to the list — reference never touches the action inventory.
-      const refUndo = await refFileCapture(refTarget, content,
-        "notes" in own ? own.notes : ((snap && snap.row && snap.row.notes) || ""));
+    if (bucket === 'reference' && refTarget.kind === 'list') {
+      // A new to-do in the list (2026-11-19): a list's items are to-dos.
+      const res = await apiSend('/api/inbox', 'POST', {
+        content, status: 'active', list_id: refTarget.id,
+        tags: [...clarifyView.tags].join(' ') });
+      const created = await res.json();
+      if (!res.ok) { toast(created.error || 'Could not file it'); return; }
+      const more = {};
+      if (clarifyView.notes) more.notes = clarifyView.notes;
+      if (clarifyView.due) more.deadline = clarifyView.due;
+      if (Object.keys(more).length) await apiSend(`/api/inbox/${created.id}`, 'PATCH', more);
+      clarifyView.refLists = await apiGet('/api/ref', clarifyView.refLists);
+      pushUndo(`listed "${content}"`, async () => {
+        await apiSend(`/api/inbox/${created.id}`, 'DELETE');
+        await refreshAfterUndo();
+      });
+    } else if (bucket === 'reference') {
+      // Straight into the document — it never touches the action inventory.
+      const refUndo = await refFileCapture(refTarget, content, clarifyView.notes || '');
       pushUndo(`referenced "${content}"`, async () => {
         await refUndo();
         await refreshAfterUndo();

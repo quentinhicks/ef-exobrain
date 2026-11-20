@@ -830,6 +830,14 @@ def init_db():
     except Exception:
         conn.execute('ALTER TABLE inbox_item ADD COLUMN sent_from TEXT')
         conn.commit()
+    # A LIST'S ITEMS ARE TO-DOS (2026-11-19, Quentin's instruction: "the same
+    # data type as the to-do list"): the ref_list (kind 'list') the action is
+    # in. In a list it is off the to-do list and Projects (_IN_A_LIST).
+    try:
+        conn.execute('SELECT list_id FROM inbox_item LIMIT 1')
+    except Exception:
+        conn.execute('ALTER TABLE inbox_item ADD COLUMN list_id INTEGER REFERENCES ref_list(id)')
+        conn.commit()
     # Delegation (Allen: date everything you hand off): who has it and when to
     # chase. chase_on may stay blank — the date is optional by design.
     try:
@@ -1802,6 +1810,8 @@ def init_db():
     _routines_to_lists(conn)
     # And this after THAT: the routines it made nest, so they are directories.
     _lists_to_files(conn)
+    # And last: the items both of those wrote become to-dos.
+    _ref_items_to_todos(conn)
     _horizon_docs_to_markdown(conn)
     # Habits v2 (2026-08-11). An EXPERIMENT is an object with an ending: it
     # runs (one at a time), resolves with a note, and is EVALUATED only at the
@@ -2423,10 +2433,18 @@ def get_inbox_items():
 # saying they must be. They were not: the per-area query had drifted out of the
 # inherited-deadline pass. A constant cannot drift (2026-08-16). Callers must
 # alias inbox_item as `i` — the correlated sub-select names it.
-_AVAILABLE = """i.status = 'active'
+# IN A LIST: a to-do whose place is a list on the Lists page (2026-11-19,
+# Quentin's instruction), so it is on neither the to-do list nor Projects —
+# asked by the availability and deferred fragments below, by get_map_items,
+# and by get_ref_lists for the other side. A list_id naming no list is in
+# none, the dangling-after_id idiom: the row comes back rather than vanishing.
+_IN_A_LIST = 'EXISTS (SELECT 1 FROM ref_list rl WHERE rl.id = i.list_id)'
+
+_AVAILABLE = f"""i.status = 'active'
              AND (i.defer_until IS NULL OR i.defer_until <= ?)
              AND (i.after_id IS NULL
-                  OR NOT EXISTS (SELECT 1 FROM inbox_item p WHERE p.id = i.after_id))"""
+                  OR NOT EXISTS (SELECT 1 FROM inbox_item p WHERE p.id = i.after_id))
+             AND NOT {_IN_A_LIST}"""
 
 
 # DEFERRED is the same kind of shared predicate, and for the same reason: the
@@ -2437,8 +2455,9 @@ _AVAILABLE = """i.status = 'active'
 # the right half: a deferred item is a live thing parked until a date; one that
 # is waiting or on hold is already on another list. Callers alias inbox_item as
 # `i` and bind today where the ? sits.
-_DEFERRED = """i.kind = 'item' AND i.status = 'active'
-             AND i.defer_until IS NOT NULL AND i.defer_until > ?"""
+_DEFERRED = f"""i.kind = 'item' AND i.status = 'active'
+             AND i.defer_until IS NOT NULL AND i.defer_until > ?
+             AND NOT {_IN_A_LIST}"""
 
 
 # A PROJECT'S DEADLINE BINDS EVERYTHING UNDER IT. If the outcome is due today
@@ -2598,7 +2617,7 @@ def get_map_items():
            FROM inbox_item i
            LEFT JOIN area a ON a.id = i.area_id
            LEFT JOIN domain d ON d.id = {FILED_DOMAIN_SQL}
-           WHERE i.status IN ('active', 'waiting', 'on_hold')
+           WHERE i.status IN ('active', 'waiting', 'on_hold') AND NOT {_IN_A_LIST}
            ORDER BY d.name, a.name, i.id'''
     ).fetchall()
     out = _apply_inherited(conn, [dict(r) for r in rows])
@@ -2825,16 +2844,23 @@ def delete_project(id):
 
 
 def create_inbox_item(content, status=None, area_id=None, project_id=None, tags=None,
-                      domain_id=None):
+                      domain_id=None, list_id=None):
     # Bare capture (no status/area) is still the default — that is "in".
     # The next-actions prompt bar passes status='active' plus an area or a
     # domain to write straight onto a list, skipping the inbox. Neither is
     # required: an unfiled action is in every domain's pool.
+    # A to-do added IN A LIST (the Lists page's add row) is an active action.
     f = filing_updates(area_id, domain_id)
     conn = get_conn()
-    cur = conn.execute('INSERT INTO inbox_item (content, status, area_id, domain_id, tags) '
-                       'VALUES (?, ?, ?, ?, ?)',
-                       (content, status, f['area_id'], f['domain_id'], tags or ''))
+    if list_id is not None:
+        err = _list_error(conn, list_id)
+        if err:
+            conn.close()
+            raise ValueError(err)
+        status, project_id = 'active', None
+    cur = conn.execute('INSERT INTO inbox_item (content, status, area_id, domain_id, tags, list_id) '
+                       'VALUES (?, ?, ?, ?, ?, ?)',
+                       (content, status, f['area_id'], f['domain_id'], tags or '', list_id))
     row_id = cur.lastrowid
     conn.commit()
     row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (row_id,)).fetchone()
@@ -3663,19 +3689,37 @@ def delete_routine_item(id):
 def get_ref_lists():
     # Lists with their items nested — the whole reference inventory is small
     # and the overlay always shows one level or the other, so one payload.
+    # A list's items are TO-DOS (inbox_item.list_id, 2026-11-19), served in
+    # the pool's own shape, inherited fields included.
     conn = get_conn()
     lists = [dict(r) for r in conn.execute(
         'SELECT * FROM ref_list ORDER BY position, id').fetchall()]
+    items = _apply_inherited(conn, [dict(r) for r in conn.execute(
+        f'''SELECT i.*, {FILED_DOMAIN_SQL} AS filed_domain_id, a.name AS area_name
+            FROM inbox_item i LEFT JOIN area a ON a.id = i.area_id
+            WHERE {_IN_A_LIST}
+            ORDER BY COALESCE(i.entered_at, i.captured_at), i.id''').fetchall()])
     for l in lists:
-        l['items'] = [dict(r) for r in conn.execute(
-            'SELECT * FROM ref_item WHERE list_id = ? ORDER BY done, position, id',
-            (l['id'],)).fetchall()]
+        l['items'] = [i for i in items if i['list_id'] == l['id']]
     conn.close()
     return lists
 
 
+# What a to-do may be filed IN: a list (kind 'list'), and only an action — a
+# project's actions would be left on Projects under a parent nobody can see.
+def _list_error(conn, list_id, item_id=None):
+    owner = conn.execute('SELECT kind FROM ref_list WHERE id = ?', (list_id,)).fetchone()
+    if not owner or owner['kind'] != 'list':
+        return 'only a list holds items'
+    if item_id is not None:
+        row = conn.execute('SELECT kind FROM inbox_item WHERE id = ?', (item_id,)).fetchone()
+        if row and row['kind'] == 'project':
+            return 'a project cannot go in a list'
+    return None
+
+
 # LISTS ARE A FILE SYSTEM (2026-10-08, Quentin's instruction): a ref_list row
-# is a DIRECTORY, a LIST (checkable ref_items) or a DOCUMENT (a title and a
+# is a DIRECTORY, a LIST (its items are to-dos) or a DOCUMENT (a title and a
 # body). Only a directory holds anything — a list holds items and a document
 # holds text — and the root, parent_id NULL, is the home directory. These are
 # the two refusals that keep it a tree of that shape: a parent that is not a
@@ -3762,43 +3806,12 @@ def delete_ref_list(id):
     row = conn.execute('SELECT parent_id FROM ref_list WHERE id = ?', (id,)).fetchone()
     conn.execute('UPDATE ref_list SET parent_id = ? WHERE parent_id = ?',
                  (row['parent_id'] if row else None, id))
+    # A list's to-dos go with it, as its items always did (the client's undo
+    # puts them back by their snapshots, original ids and all).
+    for r in conn.execute('SELECT id FROM inbox_item WHERE list_id = ?', (id,)).fetchall():
+        delete_inbox_item_conn(conn, r['id'])
     conn.execute('DELETE FROM ref_item WHERE list_id = ?', (id,))
     conn.execute('DELETE FROM ref_list WHERE id = ?', (id,))
-    conn.commit()
-    conn.close()
-
-
-def create_ref_item(list_id, content, done=0):
-    conn = get_conn()
-    owner = conn.execute('SELECT kind FROM ref_list WHERE id = ?', (list_id,)).fetchone()
-    if not owner or owner['kind'] != 'list':
-        conn.close()
-        raise ValueError('only a list holds items')
-    row = conn.execute('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM ref_item WHERE list_id = ?',
-                       (list_id,)).fetchone()
-    cur = conn.execute('INSERT INTO ref_item (list_id, content, done, position) VALUES (?, ?, ?, ?)',
-                       (list_id, content, 1 if done else 0, row['p']))
-    out = conn.execute('SELECT * FROM ref_item WHERE id = ?', (cur.lastrowid,)).fetchone()
-    conn.commit()
-    conn.close()
-    return dict(out)
-
-
-def update_ref_item(id, content=None, done=None):
-    conn = get_conn()
-    if content is not None:
-        conn.execute('UPDATE ref_item SET content = ? WHERE id = ?', (content, id))
-    if done is not None:
-        conn.execute('UPDATE ref_item SET done = ? WHERE id = ?', (1 if done else 0, id))
-    conn.commit()
-    row = conn.execute('SELECT * FROM ref_item WHERE id = ?', (id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def delete_ref_item(id):
-    conn = get_conn()
-    conn.execute('DELETE FROM ref_item WHERE id = ?', (id,))
     conn.commit()
     conn.close()
 
@@ -3807,7 +3820,20 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
                       project_id=_UNSET, tags=_UNSET, waiting_on=_UNSET, chase_on=_UNSET,
                       notes=_UNSET, pushed=_UNSET, started_at=_UNSET, deadline=_UNSET,
                       after_id=_UNSET, domain_id=_UNSET, on_projects=_UNSET, kind=_UNSET,
-                      entered_at=_UNSET, sent_from=_UNSET):
+                      entered_at=_UNSET, sent_from=_UNSET, list_id=_UNSET):
+    # IN A LIST OR NOT: a to-do in a list is in no project and not sent to
+    # Projects, and filing it under a project or onto Projects takes it out of
+    # the list — one place, so no door can leave a row in two. A list_id
+    # naming a directory, a document or nothing, or a project's, is refused.
+    if list_id is not _UNSET and list_id is not None:
+        conn = get_conn()
+        err = _list_error(conn, list_id, id)
+        conn.close()
+        if err:
+            raise ValueError(err)
+        project_id, on_projects = None, 0
+    elif (project_id is not _UNSET and project_id is not None) or (on_projects is not _UNSET and on_projects):
+        list_id = None
     # Projects nest, so filing must not close a loop: an item can't land under
     # itself or under anything in its own subtree. A cycle-making file is a
     # silent no-op (the client refuses it too; this is the backstop).
@@ -3873,6 +3899,8 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
         updates['on_projects'] = 1 if on_projects else 0
     if sent_from is not _UNSET:
         updates['sent_from'] = sent_from if sent_from in ('T', 'C') else None
+    if list_id is not _UNSET:
+        updates['list_id'] = list_id
     # An item can be NAMED a project before it holds anything (2026-10-10).
     # Going back is only for an empty one: an item that holds others is a
     # project, which is the invariant the filing branch below keeps.
@@ -6516,6 +6544,32 @@ def _lists_to_files(conn):
     conn.commit()
     if dirs:
         print('lists: %d list(s) became directories, %d item(s) moved into a list inside' % (dirs, moved))
+
+
+# A LIST'S ITEMS BECAME TO-DOS (2026-11-19) ONCE, recorded in
+# setting.ref_items_to_todos — never clear it, or a to-do finished since would
+# be read back in from ref_item. Each open item is an active inbox_item in its
+# list, in the list's order, dated when it was written. A ticked one has no
+# to-do to become (completing one deletes it), so it STAYS in ref_item,
+# dormant: nothing reads it, and nothing is lost.
+def _ref_items_to_todos(conn):
+    if conn.execute("SELECT value FROM setting WHERE key = 'ref_items_to_todos'").fetchone():
+        return
+    rows = conn.execute(
+        """SELECT it.* FROM ref_item it JOIN ref_list l ON l.id = it.list_id
+           WHERE it.done = 0 AND l.kind = 'list'
+           ORDER BY it.list_id, it.position, it.id""").fetchall()
+    for r in rows:
+        conn.execute(
+            """INSERT INTO inbox_item (content, status, list_id, captured_at)
+               VALUES (?, 'active', ?, ?)""", (r['content'], r['list_id'], r['created_at']))
+        conn.execute('DELETE FROM ref_item WHERE id = ?', (r['id'],))
+    conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('ref_items_to_todos', ?)",
+        (date_cls.today().isoformat(),))
+    conn.commit()
+    if rows:
+        print('lists: %d item(s) are to-dos now' % len(rows))
 
 
 def step_due_on(step, day):

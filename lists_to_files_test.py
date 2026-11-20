@@ -1,7 +1,7 @@
 """Lists are a file system. Run: python lists_to_files_test.py
 
 Three kinds of row in one tree (ref_list.kind): a DIRECTORY holds directories,
-lists and documents; a LIST holds checkable items; a DOCUMENT holds a title and
+lists and documents; a LIST holds to-dos; a DOCUMENT holds a title and
 a body. The root is the home directory. What is under test:
 
   * the one-time migration: a list that held lists becomes a directory, and
@@ -52,9 +52,11 @@ folder = conn.execute("INSERT INTO ref_list (name) VALUES ('Books')").lastrowid
 conn.execute("INSERT INTO ref_list (name, parent_id) VALUES ('to read', ?)", (folder,))
 leaf = conn.execute("INSERT INTO ref_list (name) VALUES ('Groceries')").lastrowid
 conn.execute("INSERT INTO ref_item (list_id, content) VALUES (?, 'milk')", (leaf,))
-conn.execute("DELETE FROM setting WHERE key = 'lists_to_files'")
+conn.execute("DELETE FROM setting WHERE key IN ('lists_to_files', 'ref_items_to_todos')")
 conn.commit()
 storage._lists_to_files(conn)
+# And the migration after it, as init_db runs them: the items become to-dos.
+storage._ref_items_to_todos(conn)
 conn.close()
 
 r = rows()
@@ -78,8 +80,8 @@ doc = storage.create_ref_list('Dune notes', folder, 'doc', 'first thoughts')
 check('a document can live in a directory', doc['kind'] == 'doc' and doc['parent_id'] == folder)
 check('nothing goes inside a list', refused(storage.create_ref_list, 'x', leaf))
 check('nothing goes inside a document', refused(storage.create_ref_list, 'x', doc['id'], 'list'))
-check('a directory takes no items', refused(storage.create_ref_item, folder, 'x'))
-check('a document takes no items', refused(storage.create_ref_item, doc['id'], 'x'))
+check('a directory takes no items', refused(storage.create_inbox_item, 'x', list_id=folder))
+check('a document takes no items', refused(storage.create_inbox_item, 'x', list_id=doc['id']))
 check('an unknown kind is refused', refused(storage.create_ref_list, 'x', None, 'folder'))
 inner = storage.create_ref_list('Sci-fi', folder, 'dir')
 check('a directory cannot move inside itself',
