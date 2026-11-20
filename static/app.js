@@ -1290,8 +1290,9 @@ function wkRestoreMenu(e) {
                  run: () => toggleBlockCancelOn(s.block_id, d, day.overrides || [], refreshCalWeek) }));
   openObjectMenu(e.clientX, e.clientY, 'calday', d, [
     { label: 'Plan this day…', run: () => openDayPlan(d) },
-    ...(calWeek.week ? [{ label: 'Open this day', run: async () => {
+    ...(calWeek.week || d !== calWeek.start ? [{ label: '4 days from here', run: async () => {
       state.currentDate = new Date(d + 'T12:00:00');
+      saveCalView('four');
       await setCalView(false);
     } }] : []),
     ...(items.length ? items : [{ info: true, label: 'Nothing cancelled this day' }])]);
@@ -1299,16 +1300,21 @@ function wkRestoreMenu(e) {
 }
 
 // ── A DAY'S PLAN, WRITTEN AS TEXT (2026-10-28, Quentin's design "Calendar
-// Plan") ────────────────────────────────────────────────────────────────────
-// The day header opens a sheet holding the day's plan: one line per block,
-// the grammar day_plan.py reads (a time range, an optional category before a
-// colon, `@ place`, an indented line nested in the one above, a `*` line a
-// note inside its block). It saves as it is typed. The SERVER turns it into
-// the day's blocks (block_segments_for), so the calendar, Engage and the NOW
-// panel all draw the one answer and nothing here reads times out of the text.
-// A plan takes only the hours it names; the day's other blocks stay around it.
-const DP_EXAMPLE = '9-10 COS333: Problem set\n* start with Q3\n10-11:30 Lunch @ Quad\n  10-10:30 Indent to nest';
-const dayPlanSheet = { open: false, date: null, base: '', logged: false, failed: false };
+// Plan"; 2026-11-20, "Calendar To-dos" 9a) ─────────────────────────────────
+// The day header opens a sheet holding the day's plan, and nothing else (no
+// to-do list beside it): one line per block, the grammar day_plan.py reads (a
+// time range, an optional category before a colon, `@ place`, an indented line
+// nested in the one above, a `*` line a TASK on the line above, `3:45-6. @
+// STOKES.` a frame). It saves as it is typed. The SERVER turns it into the
+// day's blocks (block_segments_for) — a plan replaces the day's blocks and
+// events — and keeps its tasks the real to-do items (storage._plan_sync): it
+// writes each new task's id onto its line, crosses out one finished elsewhere
+// and writes in an action placed on the day, so what a save returns is
+// adopted into the field (dpAdopt). `server` is the text the server last
+// said; every save sends it as `base`, so a line written in meanwhile is
+// never read as one this field removed.
+const DP_EXAMPLE = '12:40-2. COS333: A4\n  * Finish Q3\n7:30-9. CWR201: Library\n  7:30-7:40. Walk to Firestone\n3:45-6. @ STOKES.';
+const dayPlanSheet = { open: false, date: null, base: '', server: '', logged: false, failed: false };
 
 function dayPlanOf(d) {
   const p = (calWeek.days[d] || {}).plan;
@@ -1326,14 +1332,38 @@ function isPlannedDay(d) {
   return !!(p && p.body.trim());
 }
 
-async function openDayPlan(d) {
+// `line` (1-based) puts the caret at the start of that line: the card's
+// "Edit plan…" opens the plan where the block it was opened from is written.
+async function openDayPlan(d, line) {
   if (dayPlanSheet.open) await closeDayPlan();
   const p = await apiGet(`/api/day-plan/${d}`, dayPlanOf(d));
   if (!p) { toast('Could not read that day’s plan'); return; }
   // One undo per sitting with a day's plan, back to the text it opened on.
-  Object.assign(dayPlanSheet, { open: true, date: d, base: p.body, logged: false, failed: false });
+  Object.assign(dayPlanSheet, { open: true, date: d, base: p.body, server: p.body, logged: false, failed: false });
   renderDayPlanSheet(p);
   if (calWeek.on) renderCalWeek();
+  const ta = document.getElementById('dp-text');
+  if (ta && line) {
+    const pos = ta.value.split('\n').slice(0, line - 1).reduce((n, l) => n + l.length + 1, 0);
+    ta.setSelectionRange(pos, pos);
+    ta.scrollTop = Math.max(0, (line - 1) * 17 - 60);
+  }
+}
+
+// The plan's own colouring, in the shared field (mdFieldHtml + wireMdField):
+// an @ frame's line in the frame's ink, a task's bullet and its id faint, a
+// crossed-out task struck through.
+function dpHighlight(text) {
+  if (text.endsWith('\n')) text += ' ';
+  return text.split('\n').map(line => {
+    const fm = line.match(/^(\s*\d{1,2}(?::\d{2})?\s*[-–—]\s*\d{1,2}(?::\d{2})?\.?\s*)(@.*)$/);
+    if (fm) return `${escHtml(fm[1])}<span class="dph-frame">${escHtml(fm[2])}</span>`;
+    const tm = line.match(/^(\s*[*•]\s+)(.*?)(\s*\[[0-9a-fA-F]{1,5}\])?(\s*)$/);
+    if (!tm) return escHtml(line);
+    const done = tm[2].length > 4 && /^~~[\s\S]*~~$/.test(tm[2]);
+    return `<span class="dph-mark">${escHtml(tm[1])}</span><span${done ? ' class="dph-done"' : ''}>${
+      escHtml(tm[2])}</span><span class="dph-id">${escHtml((tm[3] || '') + tm[4])}</span>`;
+  }).join('\n');
 }
 
 function renderDayPlanSheet(p) {
@@ -1347,18 +1377,19 @@ function renderDayPlanSheet(p) {
       <span class="cl-spacer"></span>
       <button class="modal-close-btn" id="dp-close">✕</button>
     </div>
-    <textarea class="dp-text" id="dp-text" spellcheck="false" placeholder="${escHtml(DP_EXAMPLE)}"></textarea>
+    ${mdFieldHtml('dp-text', 'id="dp-text" spellcheck="false"', p.body, DP_EXAMPLE)}
     <div class="dp-hint">One line per block: a time range, an optional category before a colon, then what.
-      Indent a line to nest it; start a line with * to write it inside the block above. The plan takes the
-      hours it names and the day's other blocks stay around it, and a calendar event it overlaps is hidden.
-      Wrap lines in ~~ … ~~ to cross them out: they draw nothing, and the hours stay clear.
-      Start a line with ! to make it a photo gate (!12-12:10 Photo of Q1–4 on paper): send photos in that
-      window from Now, Claude judges them, and the line locks when the window opens.</div>
+      Indent a line to nest it. A line starting with <span class="dp-code">*</span> is a task on the block
+      above it — a real to-do, given a short id in brackets as you type; wrap it in ~~ … ~~ when it is done.
+      A line like <span class="dp-code dph-frame">3:45-6. @ STOKES.</span> anywhere in the plan marks where
+      you have to be. The plan replaces the day's blocks and events; an action placed on the day is written
+      under the line over it. Start a line with ! to make it a photo gate (!12-12:10 Photo of Q1–4 on paper):
+      send photos in that window from Now, Claude judges them, and the line locks when the window opens.</div>
     <div class="dp-skipped" id="dp-skipped"></div>
     <button class="dp-clear" id="dp-clear">Clear plan and restore blocks</button>`;
   const ta = sheet.querySelector('#dp-text');
   const d = dayPlanSheet.date;
-  ta.value = p.body;
+  wireMdField(ta, { highlight: dpHighlight, shortcuts: false });
   wireNotesAutosave(ta, body => saveDayPlan(d, body));
   paintDayPlanSheet(p);
   sheet.querySelector('#dp-close').addEventListener('click', () => closeDayPlan());
@@ -1375,9 +1406,55 @@ function paintDayPlanSheet(p) {
   document.getElementById('dp-clear').classList.toggle('hidden', !p.body.trim());
 }
 
+// The server's text into the field, as the smallest edit between the two —
+// through the field's own undo while it is being typed in, with the caret
+// kept where it was (an id written at the end of the caret's line goes after
+// it, never under it).
+function dpAdopt(ta, body) {
+  const old = ta.value;
+  if (old === body) return;
+  let a = 0;
+  while (a < old.length && a < body.length && old[a] === body[a]) a++;
+  let b = 0;
+  while (b < old.length - a && b < body.length - a && old[old.length - 1 - b] === body[body.length - 1 - b]) b++;
+  const delta = body.length - old.length;
+  const shift = x => x <= a ? x : x >= old.length - b ? x + delta : body.length - b;
+  const s0 = shift(ta.selectionStart), s1 = shift(ta.selectionEnd), top = ta.scrollTop;
+  if (document.activeElement === ta) {
+    ta.setSelectionRange(a, old.length - b);
+    document.execCommand('insertText', false, body.slice(a, body.length - b));
+  } else {
+    ta.value = body;
+    paintMdField(ta);
+  }
+  ta.setSelectionRange(s0, s1);
+  ta.scrollTop = top;
+}
+
+// The open sheet follows a plan changed by something else — a task finished
+// on its card or in Engage, an action placed on the day — unless it is being
+// typed into, when its next save (carrying `base`) brings the change back.
+function dayPlanFollow() {
+  if (!dayPlanSheet.open) return;
+  const p = dayPlanOf(dayPlanSheet.date);
+  const ta = document.getElementById('dp-text');
+  if (!p || !ta || p.body === dayPlanSheet.server || ta.value !== dayPlanSheet.server) return;
+  dayPlanSheet.server = p.body;
+  dpAdopt(ta, p.body);
+}
+
+// Half-typed plan text is data: written before anything else writes the plan.
+async function dayPlanFlush(d) {
+  if (!dayPlanSheet.open || dayPlanSheet.date !== d) return;
+  const ta = document.getElementById('dp-text');
+  if (ta && ta.__flushNotes) await ta.__flushNotes();
+}
+
 async function saveDayPlan(d, body) {
-  const res = await apiSend(`/api/day-plan/${d}`, 'PUT', { body }).catch(() => null);
   const mine = dayPlanSheet.date === d;
+  if (mine && body === dayPlanSheet.server) return;
+  const res = await apiSend(`/api/day-plan/${d}`, 'PUT',
+    mine ? { body, base: dayPlanSheet.server } : { body }).catch(() => null);
   if (!res || !res.ok) {
     if (mine) dayPlanSheet.failed = true;
     // A refusal says why (a photo gate's line locks when its window opens).
@@ -1386,8 +1463,14 @@ async function saveDayPlan(d, body) {
     return;
   }
   const p = await res.json();
+  if (p.unfinished && p.unfinished.length) toast('A crossed-out task could not be finished (its sheet refused) — it is still open');
   if (mine) {
     dayPlanSheet.failed = false;
+    dayPlanSheet.server = p.body;
+    const ta = document.getElementById('dp-text');
+    // What came back is adopted only into the text it answers: typed on
+    // since, the next save sends that with this as its base.
+    if (ta && dayPlanSheet.open && ta.value === body) dpAdopt(ta, p.body);
     if (!dayPlanSheet.logged) {
       dayPlanSheet.logged = true;
       const was = dayPlanSheet.base;
@@ -1407,15 +1490,17 @@ async function refreshAfterPlanWrite(undo) {
 }
 
 async function restoreDayPlan(d, body) {
-  await apiSend(`/api/day-plan/${d}`, 'PUT', { body });
-  if (dayPlanSheet.open && dayPlanSheet.date === d) {
+  await dayPlanFlush(d);
+  const res = await apiSend(`/api/day-plan/${d}`, 'PUT', { body });
+  const p = res && res.ok ? await res.json() : null;
+  if (dayPlanSheet.open && dayPlanSheet.date === d && p) {
     const ta = document.getElementById('dp-text');
-    if (ta) ta.value = body;
+    if (ta) { ta.value = p.body; paintMdField(ta); }
     // Undone back to here: the next edit is a new sitting.
-    Object.assign(dayPlanSheet, { base: body, logged: false });
+    Object.assign(dayPlanSheet, { base: p.body, server: p.body, logged: false });
   }
   await refreshAfterPlanWrite(true);
-  if (dayPlanSheet.open && dayPlanSheet.date === d) paintDayPlanSheet(dayPlanOf(d) || { body, skipped: [] });
+  if (dayPlanSheet.open && dayPlanSheet.date === d) paintDayPlanSheet(dayPlanOf(d) || p || { body, skipped: [] });
 }
 
 // Through the field, so its own Ctrl+Z still has the text; the save is the
@@ -1811,7 +1896,7 @@ async function refreshExternal() {
 
 // One week back or forward: the Week menu's ‹ › and the arrow keys.
 function calStepWeek(dir) {
-  state.currentDate = new Date(localDatePlusDays(viewDay(), dir * (calWeek.week ? 7 : 1)) + 'T12:00:00');
+  state.currentDate = new Date(localDatePlusDays(viewDay(), dir * (calWeek.week ? 7 : CAL_FOUR)) + 'T12:00:00');
   return refreshCalWeek();
 }
 
@@ -1891,7 +1976,7 @@ async function fetchOverridesForDate(date) {
   state.overrides = overrides;
   state.viewSegments = { date: dateStr, segments };
   setViewGates(dateStr, gates);
-  if (calPin.cat) paintCalPin();
+  if (calPin.cat || calPin.key) paintCalPin();
 }
 
 // THE VIEWED DAY'S GATES, as /api/gates/day serves them (2026-09-29) — the
@@ -2008,12 +2093,24 @@ function purposeItem(blockEl) {
 // either view is lit the moment it lands without any renderer knowing a pin
 // exists. The stats are the SERVED segments summed — the same rows the
 // columns draw — never the weekly rule re-expanded.
-const calPin = { cat: null, name: '', color: '', blockId: null, date: null, what: '' };
+const calPin = { cat: null, key: null, name: '', color: '', blockId: null, date: null, what: '' };
 
 function blockCatAttrs(s) {
   const when = `${hhmmToAmPm(clockHHMM(s.startMin))}–${hhmmToAmPm(clockHHMM(s.endMin))}`;
   return `data-cat="${escHtml(s.cat)}" data-name="${escHtml(s.name)}"
     data-what="${escHtml([s.description, when].filter(Boolean).join(' · '))}"`;
+}
+
+// WHAT A CLICK LIGHTS (2026-11-20, Quentin's design "Calendar To-dos" 9a):
+// a block, or a plan block with a category, lights everything of that
+// category; an event, a frame or a plan line with no category lights itself.
+// Whatever is lit keeps its colour and wears its ring; everything else dims.
+// Every lightable thing carries `data-sel` (its own key), and `data-cat`
+// when it has a category, so ONE generated rule does the dimming and no
+// renderer knows a light exists.
+function calPinSelector() {
+  return calPin.cat ? `[data-cat="${CSS.escape(calPin.cat)}"]`
+    : calPin.key ? `[data-sel="${CSS.escape(calPin.key)}"]` : null;
 }
 
 function paintCalPin() {
@@ -2023,30 +2120,54 @@ function paintCalPin() {
     style.id = 'cal-pin-style';
     document.head.appendChild(style);
   }
-  if (!calPin.cat) {
-    style.textContent = '';
-    return;
-  }
-  const k = CSS.escape(calPin.cat);
-  style.textContent = `#cal-overlay .tl-block[data-cat]:not([data-cat="${k}"]) { opacity: 0.3; }
-#cal-overlay .tl-block[data-cat="${k}"] { --wk-hatch: var(--wk-hatch-on);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--block-color) 60%, transparent); }`;
+  const k = calPinSelector();
+  style.textContent = !k ? '' : `#cal-overlay [data-sel]:not(${k}) { opacity: 0.35; }
+#cal-overlay .wk-block:not(.wk-plan)[data-sel]:not(${k}) { opacity: 0.3; }
+#cal-overlay .wk-block${k} { --wk-hatch: var(--wk-hatch-on); }
+#cal-overlay .wk-frame${k} { --frame-w: 2.5px; --frame-tint: var(--frame-tint-on); }`;
+  paintCalRings();
+}
+
+// THE RING IS ITS OWN LAYER (the same design): a 1.5px line in the thing's
+// own colour, drawn over the boxes so a nested block cannot break it, and
+// under a frame's outline. One for what is lit, one that follows the
+// pointer. A frame thickens its own outline instead.
+function calRingHtml(el, cls) {
+  const col = el.closest('.wk-col');
+  if (!col) return null;
+  const c = col.getBoundingClientRect(), r = el.getBoundingClientRect();
+  const ring = document.createElement('div');
+  ring.className = `wk-ring ${cls}${el.classList.contains('wk-ev') ? ' wk-ring-ev' : ''}`;
+  const color = el.style.getPropertyValue('--block-color') || el.style.getPropertyValue('--ev-color');
+  ring.style.cssText = `top:${r.top - c.top}px;left:${r.left - c.left}px;width:${r.width}px;`
+    + `height:${r.height}px;--block-color:${color}`;
+  col.appendChild(ring);
+  return ring;
+}
+
+function paintCalRings() {
+  document.querySelectorAll('#cal-week .wk-ring-lit').forEach(r => r.remove());
+  const k = calPinSelector();
+  if (!k) return;
+  document.querySelectorAll(`#cal-week [data-sel]${k}:not(.wk-frame)`).forEach(el => calRingHtml(el, 'wk-ring-lit'));
 }
 
 function clearCalPin() {
-  if (!calPin.cat) return false;
+  if (!calPin.cat && !calPin.key) return false;
   calPin.cat = null;
+  calPin.key = null;
   paintCalPin();
   hideBlockHover();
   return true;
 }
 
+// The same thing clicked again puts the light out; another stretch of the
+// lit category moves the reading there.
 function toggleCalPin(el) {
-  const same = calPin.cat === el.dataset.cat && calPin.blockId === el.dataset.blockId
-    && calPin.date === (el.dataset.date || null);
-  if (same) { clearCalPin(); return; }
+  const cat = el.dataset.cat || null, key = el.dataset.sel || null;
+  if (calPin.key === key && calPin.cat === cat) { clearCalPin(); return; }
   Object.assign(calPin, {
-    cat: el.dataset.cat, name: el.dataset.name, what: el.dataset.what || '',
+    cat, key, name: el.dataset.name, what: el.dataset.what || '',
     color: el.style.getPropertyValue('--block-color'),
     blockId: el.dataset.blockId, date: el.dataset.date || null,
   });
@@ -2056,8 +2177,13 @@ function toggleCalPin(el) {
 function hideBlockHover() {
   const tip = document.getElementById('blk-hover');
   if (tip) tip.classList.add('hidden');
+  document.querySelectorAll('#cal-week .wk-ring-hover').forEach(r => r.remove());
+  document.querySelectorAll('#cal-week .wk-frame-hot').forEach(f => f.classList.remove('wk-frame-hot'));
 }
 
+// The one-line label, JUST ABOVE the thing (the same design: never on top of
+// it) — a swatch, its name in bold, then what it is for or when. A thing
+// whose top has scrolled out of sight is labelled at the top of what shows.
 function showBlockHover(el) {
   let tip = document.getElementById('blk-hover');
   if (!tip) {
@@ -2066,46 +2192,59 @@ function showBlockHover(el) {
     document.body.appendChild(tip);
   }
   const r = el.getBoundingClientRect();
-  // A tall block (the night) starts above the scrolled view; its label sits
-  // at the top of what is visible of it instead.
   const sc = el.closest('.wk-scroll, #right-panel');
   const floor = sc ? sc.getBoundingClientRect().top : 0;
-  tip.innerHTML = `<span class="cal-pin-sw" style="--block-color:${
-    escHtml(el.style.getPropertyValue('--block-color'))}"></span><b>${escHtml(el.dataset.name || '')}</b><span>${
-    escHtml(el.dataset.what || '')}</span>`;
+  const color = el.style.getPropertyValue('--block-color') || el.style.getPropertyValue('--ev-color');
+  const solid = el.classList.contains('wk-ev') || el.classList.contains('wk-plan') || el.classList.contains('wk-frame');
+  tip.innerHTML = `<span class="cal-pin-sw${solid ? ' cal-pin-solid' : ''}" style="--block-color:${
+    escHtml(color)}"></span><b>${escHtml(el.dataset.name || '')}</b><span>${escHtml(el.dataset.what || '')}</span>`;
   // Wider than a narrow column when it has to be: it floats over the grid.
-  tip.style.maxWidth = `${Math.max(280, r.width - 16)}px`;
+  tip.style.maxWidth = `${Math.max(290, r.width - 16)}px`;
   tip.classList.remove('hidden');
-  fitInViewport(tip, r.left + 12, Math.max(r.top, floor) + 3);
+  const above = r.top - 21;
+  fitInViewport(tip, r.left + 3, above >= floor ? above : Math.max(r.top, floor) + 3);
+}
+
+function calHover(el) {
+  hideBlockHover();
+  if (!el) return;
+  showBlockHover(el);
+  if (el.classList.contains('wk-frame')) el.classList.add('wk-frame-hot');
+  else calRingHtml(el, 'wk-ring-hover');
 }
 
 function initCalBlockPin() {
   const cal = document.getElementById('cal-overlay');
+  let over = null;
+  const off = () => { over = null; hideBlockHover(); };
   cal.addEventListener('pointerover', e => {
     if (e.pointerType !== 'mouse') return;
-    const el = e.target.closest('.tl-block[data-cat]');
-    if (el && !e.target.closest('.tl-gcal-event, .wk-gate')) showBlockHover(el);
-    else hideBlockHover();
+    const el = e.target.closest('#cal-week [data-sel]');
+    const real = el && !e.target.closest('.wk-gate') ? el : null;
+    if (real === over) return;
+    over = real;
+    calHover(real);
   });
-  cal.addEventListener('pointerleave', hideBlockHover);
-  cal.addEventListener('pointerdown', hideBlockHover);
-  document.addEventListener('scroll', hideBlockHover, true);
+  cal.addEventListener('pointerleave', off);
+  cal.addEventListener('pointerdown', off);
+  document.addEventListener('scroll', off, true);
 
   cal.addEventListener('click', e => {
-    const el = e.target.closest('.tl-block[data-cat]');
-    if (!el) return;
+    const el = e.target.closest('#cal-week [data-sel]');
+    if (!el || e.target.closest('.wk-gate, .wk-pop')) return;
     // A modified click is somebody else's gesture; a click trailing a drag or
     // a long press is not a tap (the initObjectDoors rules).
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     if (justPointerDragged() || justLongPressed()) return;
+    if (el.dataset.lpDragged === '1') { delete el.dataset.lpDragged; return; }
     e.stopPropagation();
     toggleCalPin(el);
     // A CLICK HIGHLIGHTS AND NAMES, NOTHING ELSE (2026-10-05, Quentin: keep
     // the highlighted block's name, not the popup with items). The label is
-    // the one the hover shows, kept up for the stretch that was clicked — on a
-    // phone, with no hover, this is how a block is read. A block's tasks are
-    // written inside it; its card is the right-click (wkOpenCard).
-    if (calPin.cat) showBlockHover(el); else hideBlockHover();
+    // the one the hover shows, kept up for what was clicked — on a phone,
+    // with no hover, this is how a thing is read. Its tasks are written in
+    // it; its card is the right-click (wkOpenCard).
+    if (calPin.key) showBlockHover(el); else hideBlockHover();
   });
 
 }
@@ -2158,11 +2297,11 @@ function wkTaskTop(top, bottom, spans, n) {
 // THE TASKS ARE READ IN THE ITEM ITSELF (2026-10-08, Quentin: "just list the
 // tasks in very small font in the block/event as the primary way to view"):
 // each open task one tiny line inside what it is on. The card is the second
-// way in — the right-click, which is also where one is added.
-// A plan's `*` lines (`notes`) are written the same way, above the tasks.
-function wkTaskList(date, minute, cont, top, evKey, notes) {
+// way in — the right-click, which is also where one is added. (A plan's
+// tasks are its text's, drawn by wkPlanHtml.)
+function wkTaskList(date, minute, cont, top, evKey) {
   if (cont) return '';
-  const lines = [...(notes || []), ...wkTasksAt(date, minute, evKey).map(t => t.content)];
+  const lines = wkTasksAt(date, minute, evKey).map(t => t.content);
   return lines.length ? `<div class="wk-tasks"${top != null ? ` style="top:${top}px"` : ''}>${lines.map(t =>
     `<div class="wk-task">${escHtml(t)}</div>`).join('')}</div>` : '';
 }
@@ -2179,6 +2318,16 @@ async function refreshCalTasks(start) {
 // The occurrence a week element stands for: its date, its own start (not the
 // clipped top it is drawn from), a name, its span, and a key to toggle by.
 function wkOccOf(el) {
+  // A PLAN LINE — a block at any depth, or an @ frame — is named by its line;
+  // its tasks are the plan's (wkPlanOwner), never a placement lookup.
+  if (el.classList.contains('wk-plan') || el.classList.contains('wk-frame')) {
+    const line = parseInt(el.dataset.planLine);
+    if (!wkPlanOwner(el.dataset.date, line)) return null;
+    return { key: el.dataset.sel, sel: el.dataset.sel, obj: el.dataset.obj, isPlan: true, isBlock: false,
+             date: el.dataset.date, line, minute: parseInt(el.dataset.occMin),
+             name: el.dataset.name || 'Plan',
+             span: wkSpan(parseInt(el.dataset.startMin), parseInt(el.dataset.endMin)) };
+  }
   if (el.classList.contains('wk-ev')) {
     const ev = state.gcalEvents.find(x => eventKey(x) === el.dataset.evKey);
     if (!ev) return null;
@@ -2202,7 +2351,11 @@ function wkTaskPopHtml() {
   const a = document.activeElement;
   t.focus = !!(a && a.matches && a.matches('.wk-task-add'));
   const day = new Date(t.date + 'T12:00:00');
-  const tasks = wkTasksAt(t.date, t.minute, t.evKey);
+  // A plan line's open tasks, as its text has them; one still being typed
+  // (no id yet) is not on the card until the plan has saved it.
+  const tasks = t.isPlan
+    ? ((wkPlanOwner(t.date, t.line) || {}).tasks || []).filter(x => !x.struck && x.id).map(x => ({ id: x.id, content: x.text }))
+    : wkTasksAt(t.date, t.minute, t.evKey);
   t.verbs = wkCardVerbs(t);
   const verbs = `<div class="wk-card-verbs">${t.verbs.map((v, i) => `<button class="om-item${v.danger ? ' om-danger' : ''}" data-task-verb="${i}">${escHtml(v.label)}</button>`).join('')}</div>`;
   return `<div class="wk-pop wk-task-pop" data-x="${t.x}" data-y="${t.y}" style="width:${t.w || 260}px">
@@ -2224,7 +2377,7 @@ function wkTaskPopHtml() {
 async function wkTaskClick(e) {
   if (!calWeek.on || !e.target.closest('.wk-task-pop')) return false;
   const done = e.target.closest('[data-task-done]');
-  if (done) await wkTaskDone(parseInt(done.dataset.taskDone));
+  if (done) await (calWeek.taskPop && calWeek.taskPop.isPlan ? wkPlanTaskDone : wkTaskDone)(parseInt(done.dataset.taskDone));
   else if (e.target.closest('[data-task-close]')) { calWeek.pop = null; calWeek.taskPop = null; renderCalWeek(); }
   else if (e.target.closest('[data-task-verb]')) {
     const t = calWeek.taskPop;
@@ -2238,7 +2391,9 @@ async function wkTaskClick(e) {
       return true;
     }
     renderCalWeek();
-    if (v.edit) openObjectSheet(...t.obj.split(':'));
+    // A plan's editor opens at the line the card was opened from.
+    if (v.edit && t.isPlan) await openDayPlan(t.obj.split(':')[1], t.line);
+    else if (v.edit) openObjectSheet(...t.obj.split(':'));
     else if (v.run) await v.run();
   }
   else if (e.target.closest('[data-task-add]')) {
@@ -2270,9 +2425,10 @@ function wkOpenCard(el, px, py) {
   const colEl = el.closest('.wk-col');
   const col = colEl.getBoundingClientRect();
   let x;
-  if (calWeek.week && col.width < W) {
+  const n = weekDates().length;
+  if (n > 1 && col.width < W) {
     const i = weekDates().indexOf(colEl.dataset.date);
-    x = i >= 4 || col.right + 6 + W > window.innerWidth ? col.left - W - 6 : col.right + 6;
+    x = i >= Math.ceil(n * 0.6) || col.right + 6 + W > window.innerWidth ? col.left - W - 6 : col.right + 6;
   } else x = px;
   // Where it would like to stand; renderCalWeek fits it to the window once
   // it has a size (fitInViewport), so no height is guessed here.
@@ -2288,6 +2444,10 @@ function wkOpenCard(el, px, py) {
 // here without a second list.
 function wkCardVerbs(t) {
   const host = document.getElementById('cal-week');
+  if (t.isPlan) {
+    const el = host && host.querySelector(`[data-sel="${CSS.escape(t.sel)}"]`);
+    return el ? objectMenuItems('plan', verbsFor('plan', t.obj.split(':')[1], el).filter(v => !v.info)) : [];
+  }
   if (t.isBlock) {
     const el = host && host.querySelector(`.wk-block[data-obj="${CSS.escape(t.obj)}"][data-date="${t.date}"][data-occ-min="${t.minute}"]`);
     if (!el) return [];
@@ -2364,7 +2524,8 @@ function swapDur(el) { return parseInt(el.dataset.endMin) - parseInt(el.dataset.
 
 function swapCandidate(el) {
   const src = calSwap.src;
-  if (!src || el.classList.contains('tl-block-cancelled') || el.classList.contains('tl-block-cont')) return false;
+  if (!src || el.classList.contains('tl-block-cancelled') || el.classList.contains('tl-block-cont')
+      || el.classList.contains('wk-plan')) return false;
   if (el.dataset.cat === src.cat) return false;
   if (Math.abs(swapDur(el) - src.dur) > swapTol(src.dur)) return false;
   const today = wallDay();
@@ -2437,12 +2598,66 @@ async function wkTaskDone(id) {
   await refreshCalTasks();
 }
 
+// A PLAN TASK FINISHED ON ITS CARD: the item's one completion (the delete,
+// with its undo), and the server crosses its line out (storage's hook) — so
+// the text says done whichever surface finished it.
+async function wkPlanTaskDone(id) {
+  const t = calWeek.taskPop;
+  const own = t && wkPlanOwner(t.date, t.line);
+  const task = own && (own.tasks || []).find(x => x.id === id);
+  if (t) await dayPlanFlush(t.date);
+  if (!(await undoableDelete(id, `completed "${(task && task.text) || 'task'}"`))) return;
+  await refreshAfterPlanWrite();
+}
+
+// A TASK ADDED ON A PLAN LINE'S CARD is a `*` line written under that line's
+// tasks; the save mints it an id (storage._plan_sync). The undo takes the
+// line out and the item with it.
+async function wkPlanTaskAdd(t, content) {
+  const d = t.date;
+  await dayPlanFlush(d);
+  const p = await apiGet(`/api/day-plan/${d}`, null);
+  const lines = p ? p.body.split('\n') : [];
+  const head = lines[t.line - 1];
+  if (!p || head == null || !/^\s*!?\s*\d{1,2}(:\d{2})?\s*[-–—]/.test(head)) {
+    toast('The plan changed under this card — open it again');
+    return;
+  }
+  let after = t.line - 1;
+  for (let j = t.line; j < lines.length; j++) {
+    if (/^\s*[*•]\s/.test(lines[j])) after = j;
+    else if (lines[j].trim()) break;
+  }
+  lines.splice(after + 1, 0, `${' '.repeat(head.match(/^\s*/)[0].length + 2)}* ${content}`);
+  const res = await apiSend(`/api/day-plan/${d}`, 'PUT', { body: lines.join('\n'), base: p.body }).catch(() => null);
+  if (!res || !res.ok) { toast('Could not add that to the plan'); return; }
+  const saved = await res.json();
+  const m = (saved.body.split('\n')[after + 1] || '').match(/\[([0-9a-f]{1,5})\]\s*$/i);
+  const id = m ? parseInt(m[1], 16) : null;
+  if (id) {
+    pushUndo(`added "${content}" to ${t.name}`, async () => {
+      const now = await apiGet(`/api/day-plan/${d}`, null);
+      if (now) {
+        const tag = `[${id.toString(16)}]`;
+        const keep = now.body.split('\n').filter(l => !l.trimEnd().toLowerCase().endsWith(tag));
+        await apiSend(`/api/day-plan/${d}`, 'PUT', { body: keep.join('\n'), base: now.body });
+      }
+      await apiSend(`/api/inbox/${id}`, 'DELETE');
+      await refreshAfterPlanWrite(true);
+    });
+  }
+  t.draft = '';
+  if (calWeek.days[d]) calWeek.days[d].plan = saved;
+  await refreshAfterPlanWrite();
+}
+
 // A task added here is an ordinary action, placed where the card is — the
 // same three writes clarify's Calendar flow makes, and one undo for them.
 async function wkTaskAdd(text) {
   const t = calWeek.taskPop;
   const content = text.trim();
   if (!t || !content) return;
+  if (t.isPlan) { await wkPlanTaskAdd(t, content); return; }
   const created = await apiSend('/api/inbox', 'POST', { content }).then(r => r.json());
   await apiSend(`/api/inbox/${created.id}`, 'PATCH', { status: 'active', defer_until: t.date });
   await apiSend('/api/engage/placements', 'POST', { item_id: created.id, date: t.date, minute: t.minute,
@@ -2498,14 +2713,29 @@ const WK_HOUR_PX = 46;
 // which it always is once the Calendar has opened: planned hours, the last
 // thing that needed the old timeline, were removed the same day. `start` is
 // the first date drawn: the Monday of the viewed week, or the viewed day.
+// WEEK OR 4 DAYS (2026-11-20, Quentin's design "Calendar To-dos" 9a,
+// replacing Day | Week): the week is Monday to Sunday, 4 days is the viewed
+// day and the three after it — today and the next three, opened on today.
+// The grid is the same code either way; `week` says which.
 const calWeek = { on: false, week: false, start: null, days: {}, pop: null, focus: null,
-                  focusDate: null, objDate: null, scrollKey: null, pref: null };
+                  focusDate: null, objDate: null, scrollKey: null, pref: calViewSaved() };
+const CAL_FOUR = 4;
 
-// What the Calendar shows: what was picked on THIS device this session, else
-// what the window fits — the week from 800px, the day below it. The width is
-// only the DEFAULT (2026-10-10, Quentin's instruction: a phone differs only
-// where a narrow screen forces it): the week used to be refused outright on a
-// phone, and seven narrow columns are a choice a phone may make.
+// THE PICK IS REMEMBERED (the same design: "the calendar remembers whichever
+// you picked last") — this device's, in localStorage, the remembered-view
+// kind. With none yet, the window decides: the week from 800px, 4 days below.
+function calViewSaved() {
+  try {
+    const v = localStorage.getItem('calView');
+    return v === 'week' || v === 'four' ? v : null;
+  } catch (e) { return null; }
+}
+
+function saveCalView(v) {
+  calWeek.pref = v;
+  try { localStorage.setItem('calView', v); } catch (e) { /* this session still has it */ }
+}
+
 function calWantsWeek() { return calWeek.pref ? calWeek.pref === 'week' : WEEK_MQ.matches; }
 
 function weekStartOf(ymd) {
@@ -2514,8 +2744,7 @@ function weekStartOf(ymd) {
 
 // The dates the grid draws, and the first of them for a given day.
 function weekDates() {
-  return calWeek.week ? [0, 1, 2, 3, 4, 5, 6].map(i => localDatePlusDays(calWeek.start, i))
-                      : [calWeek.start];
+  return [...Array(calWeek.week ? 7 : CAL_FOUR).keys()].map(i => localDatePlusDays(calWeek.start, i));
 }
 
 function calGridStart(ymd) {
@@ -2564,6 +2793,7 @@ async function refreshCalWeek() {
       fill('segments', r => (r && Array.isArray(r.segments) ? r.segments : null))(rows);
       fill('overrides', r => (r && Array.isArray(r.overrides) ? r.overrides : null))(rows);
       fill('plan', r => (r && r.plan && typeof r.plan.body === 'string' ? r.plan : null))(rows);
+      dayPlanFollow();
     }),
     apiGet(`/api/gates/days?${range}`, null).then(byDate).then(rows => {
       fill('gates', (r, d) => (r && r.date === d && Array.isArray(r.gates) ? r.gates : null))(rows);
@@ -2572,7 +2802,7 @@ async function refreshCalWeek() {
     refreshCalTasks(start),
   ]);
   // A lit-up category's count is of these segments, so it is re-counted.
-  if (calPin.cat) paintCalPin();
+  if (calPin.cat || calPin.key) paintCalPin();
 }
 
 // The gates drawn on a day — and the ONLY gates that clip the calendar's
@@ -2692,6 +2922,152 @@ const WK_SVG = {
   close: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
 };
 
+// ── A PLANNED DAY, DRAWN (2026-11-20, Quentin's design "Calendar To-dos",
+// option 9a) ─────────────────────────────────────────────────────────────
+// A day with a plan draws only the plan: its blocks run edge to edge across
+// the column, square, in a solid pastel of their category (opaque, so nested
+// levels never darken), a hairline of the ground between one block and the
+// next; a nested block is the same tint set 7px further in per level behind a
+// hairline gap, so its parent shows as a strip. A nested block that starts
+// with its parent carries the parents' names in bold (" / " between levels)
+// and the parent's own label is hidden. Every block is at least one line tall
+// and the ones after it move down to make room. Tasks are listed under the
+// title, open ones first, "+N more" when they do not fit. An @ frame is a
+// square outline over the blocks with a folder tab at its top right; no
+// title or task sits on a frame's line — it moves under it.
+const WK_ROW = 11.5, WK_TITLE = 13, WK_MIN_BLOCK = 11, WK_SMALL = 15, WK_NEST = 7;
+const WK_BACK_SVG = '<svg width="4" height="4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="m8 4 8 8-8 8"/></svg>';
+
+// Which task lines fit a box `H` px tall whose title is `lh` px, keeping
+// every line off the `edges` (frame lines, in px from the box's top). Open
+// tasks first, so the crossed-out ones are the first behind "+N more"; a box
+// with no room even for that says "· N" after its title instead.
+function wkFitRows(H, lh, tasks, edges) {
+  const hit = (a, b) => edges.find(o => o.a < b + 1 && o.b > a - 2);
+  const clear = t => { let e, n = 0; while ((e = hit(t, t + WK_ROW)) && n++ < 6) t = e.b + 2; return t; };
+  const all = [...tasks.filter(t => !t.struck), ...tasks.filter(t => t.struck)];
+  const hmt = Math.round(clear(0));
+  let cur = hmt + lh;
+  const rows = [], curs = [];
+  for (const t of all) {
+    const at = clear(cur);
+    if (at + WK_ROW > H) break;
+    curs.push(cur);
+    rows.push({ t, mt: Math.round(at - cur) });
+    cur = at + WK_ROW;
+  }
+  let more = all.length - rows.length, moreMt = 0, inline = '';
+  while (more) {
+    const at = clear(cur);
+    if (at + WK_ROW <= H) { moreMt = Math.round(at - cur); break; }
+    if (!rows.length) {
+      const open = all.filter(t => !t.struck).length;
+      inline = open ? `· ${open}` : '';
+      more = 0;
+      break;
+    }
+    rows.pop();
+    cur = curs.pop();
+    more++;
+  }
+  return { hmt, rows, more, moreMt, inline };
+}
+
+// The words in a box: its title line, then its tasks. A task left open on a
+// day that has passed is back on the to-do list, and wears an arrow.
+function wkRowsHtml(titleHtml, H, small, tasks, edges, past) {
+  const lh = small ? Math.max(7, H - 1) : WK_TITLE;
+  const f = wkFitRows(H, lh, tasks, edges);
+  return `<div class="wk-ttl${small ? ' wk-ttl-small' : ''}" style="margin-top:${f.hmt}px;height:${lh}px;line-height:${lh}px">
+      <span class="wk-ttl-text">${titleHtml}</span>${f.inline ? `<span class="wk-tmore">${f.inline}</span>` : ''}</div>${
+    f.rows.map(({ t, mt }) => {
+      const back = past && !t.struck;
+      return `<div class="wk-trow${t.struck ? ' wk-trow-done' : ''}${back ? ' wk-trow-back' : ''}" style="margin-top:${mt}px">
+        <span class="wk-tmark">${back ? WK_BACK_SVG : '<i></i>'}</span><span class="wk-ttext">${escHtml(t.text)}</span></div>`;
+    }).join('')}${f.more ? `<div class="wk-tmore wk-tmore-row" style="margin-top:${f.moreMt}px">+${f.more} more</div>` : ''}`;
+}
+
+function wkSpan(s, e) {
+  return `${hhmmToAmPm(clockHHMM(s))}–${hhmmToAmPm(clockHHMM(e))}`;
+}
+
+// A planned day's blocks and frames, as one column's HTML. `segs` are the
+// served plan segments (nested ones in `kids`), `frames` the plan's @ lines.
+function wkPlanHtml(d, segs, frames, y, clip) {
+  const flat = [];
+  const walk = (b, depth, parent) => {
+    const it = { b, depth, parent, kids: [], atStart: !!parent && b.start === parent.b.start };
+    if (parent) parent.kids.push(it);
+    flat.push(it);
+    (b.kids || []).forEach(k => walk(k, depth + 1, it));
+  };
+  segs.forEach(s => walk(s, 0, null));
+  // Every block at least a line tall; the blocks after a stretched one, at
+  // its own depth, move down; a parent covers whatever its children became.
+  const lay = new Map(), lastBot = new Map();
+  flat.forEach(it => {
+    const [a, b] = clip(Math.max(0, it.b.start), it.b.end);
+    if (b <= a) return;
+    const pl = it.parent && lay.get(it.parent);
+    const T = Math.max(y(a), lastBot.get(it.parent || 'root') || 0, pl && it.atStart ? pl.T : 0);
+    const B = Math.max(T + WK_MIN_BLOCK, y(b));
+    lay.set(it, { T, B });
+    lastBot.set(it.parent || 'root', B);
+    for (let p = it.parent; p; p = p.parent) { const q = lay.get(p); if (q && q.B < B) q.B = B; }
+  });
+  const lines = frames.flatMap(f => [y(f.start), y(f.end)]);
+  const past = d < wallDay();
+  const blocks = flat.filter(it => lay.has(it)).map(it => {
+    const { T, B } = lay.get(it);
+    const H = Math.max(3, B - T), small = H < WK_SMALL;
+    const b = it.b, cat = b.category || '';
+    const pre = [];
+    for (let c = it; c.parent && c.atStart; c = c.parent) {
+      const p = c.parent;
+      pre.unshift(p.depth ? p.b.label : (p.b.category ? `${p.b.category}: ` : '') + (p.b.title || ''));
+    }
+    const covered = it.kids.some(k => k.atStart);
+    const title = covered ? ''
+      : it.depth ? (pre.length ? `<b>${escHtml(pre.join(' / ').replace(/:\s*$/, ':'))}</b> ${escHtml(b.label)}` : escHtml(b.label))
+      : planLabelHtml(cat, b.label);
+    const edges = lines.map(v => ({ a: v - T, b: v - T })).filter(o => o.b > 0 && o.a < H);
+    const line = b.line;
+    return `<div class="tl-block wk-block tl-block-plan wk-plan${small ? ' wk-plan-small' : ''}${it.depth ? ' wk-plan-nested' : ''}" data-obj="plan:${b.plan_date || d}"
+      data-sel="p:${d}:${line}" ${cat ? `data-cat="${escHtml(blockCatKey(cat))}"` : ''} data-plan-line="${line}"
+      data-date="${d}" data-start-min="${b.start}" data-end-min="${b.end}" data-occ-min="${b.start}"
+      data-name="${escHtml(cat || b.label)}" data-what="${escHtml([cat ? b.label : '', wkSpan(b.start, b.end)].filter(Boolean).join(' · '))}"
+      data-purpose="${escHtml([cat, b.label, wkSpan(b.start, b.end)].filter(Boolean).join(' · '))}"
+      style="top:${T}px;height:${H}px;left:${it.depth * WK_NEST}px;z-index:${Math.min(4, 2 + it.depth)};--block-color:${b.color}">${
+      wkRowsHtml(title, H, small, covered ? [] : (b.tasks || []).filter(t => t.text), edges, past)}</div>`;
+  }).join('');
+  const frameHtml = frames.map(f => {
+    const [a, b] = clip(f.start, f.end);
+    if (b <= a) return '';
+    const name = `@ ${f.label.toUpperCase()}`;
+    return `<div class="wk-frame" data-obj="plan:${d}" data-sel="f:${d}:${f.line}" data-plan-line="${f.line}"
+      data-date="${d}" data-start-min="${f.start}" data-end-min="${f.end}" data-occ-min="${f.start}"
+      data-name="${escHtml(name)}" data-what="${escHtml(wkSpan(f.start, f.end))}"
+      style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${f.color}"><span class="wk-frame-tab">${escHtml(name)}</span></div>`;
+  }).join('');
+  return blocks + frameHtml;
+}
+
+// The plan line a calendar element stands for — a block at any depth or a
+// frame — read off the day's served plan by its line number.
+function wkPlanOwner(d, line) {
+  const day = calWeek.days[d] || {};
+  const find = list => {
+    for (const b of list || []) {
+      if (b.line === line) return b;
+      const k = find(b.kids);
+      if (k) return k;
+    }
+    return null;
+  };
+  return find((day.segments || []).filter(s => s.plan_date === d))
+    || ((dayPlanOf(d) || {}).frames || []).find(f => f.line === line) || null;
+}
+
 function renderCalWeek() {
   const host = document.getElementById('cal-week');
   if (!host || !calWeek.on || !calWeek.start) return;
@@ -2764,50 +3140,40 @@ function renderCalWeek() {
     const evSpans = boxes.map(x => { const g = evGeo(x); return [g.top, g.top + g.h]; });
 
     // The DAY VIEW'S OWN block element (tl-block + its bar), so the day's drag,
-    // menu and styles are this column's too — one element, two surfaces.
-    const blocks = drawnSegments(day.segments).map(segmentRow)
+    // menu and styles are this column's too — one element, two surfaces. A
+    // planned day's own blocks are the plan's (wkPlanHtml); only last night's
+    // tail of an unplanned yesterday stands beside them.
+    const segs = drawnSegments(day.segments);
+    const blocks = segs.filter(s => !s.plan_date).map(segmentRow)
       .filter(s => !state.tlHidden.block[`${s.b.id}:${d}`])
       .map(s => {
         const [a, b] = clip(s.startMin, s.endMin);
         if (b <= a) return '';
         if (!s.cancelled) legendBlocks.set(s.label.replace(/ \(cont\.\)$/, ''), s.b.color);
-        // A plan's nested blocks stand inside it, each at its own hours.
-        // The parent's own name is carried by its first child, which covers
-        // the top of it.
-        const kids = s.kids.map((k, i) => {
-          const [ka, kb] = clip(k.start, k.end);
-          if (kb <= ka) return '';
-          return `<div class="wk-plan-kid${y(kb) - y(ka) < 16 ? ' wk-plan-tight' : ''}" style="top:${y(ka) - y(a)}px;height:${y(kb) - y(ka)}px;--block-color:${k.color}"
-            title="${escHtml(`${k.label} · ${hhmmToAmPm(clockHHMM(k.start))}–${hhmmToAmPm(clockHHMM(k.end))}`)}">
-            <span class="tl-block-label">${i === 0 ? planLabelHtml(s.category || s.label, k.label) : escHtml(k.label)}</span>${
-              wkTaskList(d, k.start, false, null, null, k.notes)}</div>`;
-        }).join('');
-        return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}${s.dayBlockId ? ' tl-block-day' : ''}${
-          s.planDate ? ` tl-block-plan${kids ? ' tl-plan-nest' : ''}${y(b) - y(a) < 16 ? ' wk-plan-tight' : ''}` : ''}"
-          ${blockObjAttrs(s)}
+        return `<div class="tl-block wk-block${s.cancelled ? ' tl-block-cancelled' : ''}${s.cont ? ' tl-block-cont' : ''}${s.dayBlockId ? ' tl-block-day' : ''}"
+          ${blockObjAttrs(s)} data-sel="b:${d}:${escHtml(s.b.id || s.dayBlockId)}:${s.startMin}"
           data-date="${d}" data-start-min="${a}" data-end-min="${b}" data-occ-min="${s.startMin}"
           data-purpose="${escHtml(blockPurpose(s))}" ${blockCatAttrs(s)}
           style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}">
           <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
-            s.planDate ? planLabelHtml(s.category, s.label) : escHtml(s.label)}</span></div>${kids || wkTaskList(d, s.startMin, s.cont,
-            // A plan block's label is drawn and nothing covers it, so its lines
-            // start under the label rather than under the hover's.
-            s.planDate ? 15 : wkTaskTop(y(a), y(b), evSpans, wkTasksAt(d, s.startMin).length + s.notes.length),
-            null, s.notes)}</div>`;
-      }).join('');
+            escHtml(s.label)}</span></div>${wkTaskList(d, s.startMin, s.cont,
+            wkTaskTop(y(a), y(b), evSpans, wkTasksAt(d, s.startMin).length), null)}</div>`;
+      }).join('') + wkPlanHtml(d, segs.filter(s => s.plan_date), (dayPlanOf(d) || {}).frames || [], y, clip);
 
     const evs = wkLanes(boxes).map(x => {
       const e = x.ev;
       const { top, h } = evGeo(x);
       const w = 100 / x.lanes;
       const time = isoToAmPm(e.start);
-      // The day view's own event element too, for the same reason.
-      return `<div class="tl-gcal-event wk-ev${h < 30 ? ' tl-event-tight' : ''}${e.moved ? ' tl-event-moved' : ''}" data-wk="event"
+      // The day view's own event element too, for the same reason. A click
+      // lights it alone (initCalBlockPin); its read-out is on its card.
+      return `<div class="tl-gcal-event wk-ev${h < 30 ? ' tl-event-tight' : ''}${e.moved ? ' tl-event-moved' : ''}"
+        data-sel="e:${escHtml(eventKey(e))}" data-name="${escHtml(e.summary || 'Event')}"
+        data-what="${escHtml(`${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"
         data-ev-key="${escHtml(eventKey(e))}" data-ev-label="${escHtml(e.summary || 'Event')}"
         data-ev-uid="${escHtml(e.uid)}" data-ev-start="${escHtml(e.orig_start || e.start)}"
         data-start-min="${x.s}" data-end-min="${x.e}"
-        ${e.moved ? `title="${escHtml(`Moved here — the calendar still says ${isoToAmPm(e.orig_start)}. Right-click it to put it back.`)}"`
-          : h < 30 ? `title="${escHtml(`${e.summary || 'Event'} · ${isoToAmPm(e.start)}–${isoToAmPm(e.end)}`)}"` : ''}
+        ${e.moved ? `title="${escHtml(`Moved here — the calendar still says ${isoToAmPm(e.orig_start)}. Right-click it to put it back.`)}"` : ''}
         style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${e.color || '#888888'}">
         <div class="tl-ev-bar"></div><div class="tl-event-row"><span class="tl-event-summary">${
           escHtml(e.summary || '')}</span>${h >= 30 ? `<span class="tl-event-time">${escHtml(time)}</span>` : ''}</div>${
@@ -2978,6 +3344,7 @@ function renderCalWeek() {
     sc.scrollTop = keepTop;
   }
   paintCalSwap();
+  paintCalRings();
 }
 
 // ↻, on either view. The feed refresh alone left the blocks and gates as they
@@ -3097,8 +3464,8 @@ const calFilter = stripMenu({
     const t = calWeek.on && calWeek.tools;
     const cals = (state.calendars || []).filter(c => c.active !== 0);
     return [
-      t && { title: calWeek.week ? 'Week' : 'Day', html: `
-        ${dateNavHtml({ cls: 'cf-week', unit: calWeek.week ? 'week' : 'day', prev: 'data-wk="prev"', next: 'data-wk="next"',
+      t && { title: calWeek.week ? 'Week' : '4 days', html: `
+        ${dateNavHtml({ cls: 'cf-week', unit: calWeek.week ? 'week' : '4 days', prev: 'data-wk="prev"', next: 'data-wk="next"',
           today: t.thisWeek ? null : 'data-wk="today"',
           label: `<span class="wk-title">${escHtml(t.title)}</span>` })}
         <div class="tn-menu-chips cf-tools">
@@ -3109,8 +3476,8 @@ const calFilter = stripMenu({
           <button class="chip" data-wk="refresh" title="Refresh the calendar feed">${WK_SVG.refresh} Refresh</button>
           ${t.fetchFailed ? '<span class="fetch-failed wk-fetch">Last fetch failed</span>' : ''}
         </div>` },
-      { title: 'View', chips: pickChipsHtml([{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }],
-                                            calWeek.week ? 'week' : 'day', 'data-cal-view') },
+      { title: 'View', chips: pickChipsHtml([{ value: 'week', label: 'Week' }, { value: 'four', label: '4 days' }],
+                                            calWeek.week ? 'week' : 'four', 'data-cal-view') },
       { title: 'Draw', chips: ['blocks', 'gates', 'events'].map(k =>
           toggleChipHtml(calShow[k] !== false, `data-calshow="${k}"`, k[0].toUpperCase() + k.slice(1))).join('') },
       cals.length && { title: 'Calendars', chips: cals.map(c =>
@@ -3145,14 +3512,15 @@ function initCalWeek() {
   const strip = document.getElementById('cal-filter-menu');
   if (!host || !overlay) return;
 
-  // The Day | Week switch. ONE copy, in the calendar's selector (2026-10-05):
-  // the day header drew a second (#tl-view-seg) on a wide window, where the
-  // selector already offers it — and the selector is the one place a phone
-  // reaches. Delegated, since the menu is rebuilt on every pick.
+  // The Week | 4 days switch. ONE copy, in the calendar's selector
+  // (2026-10-05): the selector is the one place a phone reaches. Delegated,
+  // since the menu is rebuilt on every pick. The pick is remembered.
   const viewSwitch = e => {
     const v = e.target.closest('[data-cal-view]');
     if (!v) return;
-    calWeek.pref = v.dataset.calView === 'week' ? 'week' : 'day';
+    saveCalView(v.dataset.calView === 'week' ? 'week' : 'four');
+    // 4 days opens on today when this week is the one up.
+    if (calWeek.pref === 'four' && calWeek.week && calWeek.start === calGridStart(wallDay())) state.currentDate = new Date();
     setCalView(calWeek.pref === 'week');
   };
   strip.addEventListener('click', viewSwitch);
@@ -3240,11 +3608,10 @@ function initCalWeek() {
   host.addEventListener('click', weekClick);
   strip.addEventListener('click', weekClick);
 
-  // The window was resized across the week's width: follow it, both ways —
-  // a pick made at the other width was a pick for that width.
+  // The window was resized across the week's width: follow it, unless a
+  // pick was made — that one is remembered at every width.
   WEEK_MQ.addEventListener('change', () => {
-    calWeek.pref = null;
-    if (overlay.classList.contains('hidden')) return;
+    if (calWeek.pref || overlay.classList.contains('hidden')) return;
     setCalView(calWantsWeek());
   });
 }
@@ -4351,7 +4718,7 @@ function mdHighlight(text) {
 
 // placeholder: what an empty field says, and what tells you it is markdown.
 function mdFieldHtml(cls, attrs, value, placeholder) {
-  return `<div class="md-field"><textarea class="${cls}" ${attrs || ''} spellcheck="true"
+  return `<div class="md-field"><textarea class="${cls}" ${attrs || ''}${/\bspellcheck=/.test(attrs || '') ? '' : ' spellcheck="true"'}
     placeholder="${escHtml(placeholder || 'Write in markdown…')}">${escHtml(value || '')}</textarea></div>`;
 }
 
@@ -4376,7 +4743,7 @@ function paintMdField(ta) {
   MD_FIELD_COPY.forEach(p => { hl.style[p] = cs[p]; });
   hl.style.width = (ta.clientWidth + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)) + 'px';
   hl.style.height = ta.offsetHeight + 'px';
-  hl.innerHTML = mdHighlight(ta.value);
+  hl.innerHTML = (ta.__mdHlFn || mdHighlight)(ta.value);
   hl.scrollTop = ta.scrollTop;
 }
 
@@ -4389,8 +4756,11 @@ const mdFieldSizes = new ResizeObserver(entries => entries.forEach(en => {
   else mdFieldSizes.unobserve(en.target);
 }));
 
-function wireMdField(ta) {
+// `opts.highlight` colours a field that has its own grammar (a day's plan) in
+// the same two layers; `opts.shortcuts: false` leaves markdown's keys off it.
+function wireMdField(ta, opts) {
   if (!ta || ta.__mdHl || !ta.parentElement || !ta.parentElement.classList.contains('md-field')) return;
+  ta.__mdHlFn = (opts && opts.highlight) || null;
   const hl = document.createElement('div');
   hl.className = 'md-hl';
   hl.setAttribute('aria-hidden', 'true');
@@ -4400,7 +4770,7 @@ function wireMdField(ta) {
   ta.addEventListener('input', () => paintMdField(ta));
   ta.addEventListener('scroll', () => { hl.scrollTop = ta.scrollTop; });
   mdFieldSizes.observe(ta);
-  wireMdShortcuts(ta);
+  if (!opts || opts.shortcuts !== false) wireMdShortcuts(ta);
   paintMdField(ta);
 }
 
@@ -7016,7 +7386,7 @@ function openObjectMenuOrRemove(x, y, kind, id, el) {
   // A block on the Calendar opens its CARD — tasks, then this same menu's
   // verbs (2026-10-11, Quentin's instruction, reversing right-click-removes):
   // the removal is a named item now, never the gesture itself.
-  if (el.matches('#cal-week .wk-block[data-cat]') && wkOpenCard(el, x, y)) return;
+  if (el.matches('#cal-week .wk-block[data-cat], #cal-week .wk-plan, #cal-week .wk-frame') && wkOpenCard(el, x, y)) return;
   openObjectMenu(x, y, kind, id, verbsFor(kind, id, el));
 }
 

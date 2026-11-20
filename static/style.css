@@ -5611,77 +5611,133 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     transparent 1.5px 7px);
 }
 
-/* A DAY'S PLAN (2026-10-28, the "Calendar Plan" design). A written block is
-   a BOX with its words in it, not a hatch: it is what the day is, and a
-   planned day draws no events over it. No drag band — its line is its
-   editor. A nested block stands inside its parent, inset from its left. */
-#cal-overlay .tl-block-plan {
-  left: 3px;
-  right: 3px;
-  border-radius: 4px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--block-color) 14%, var(--surface-mid));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--block-color) 45%, transparent);
-}
-#cal-overlay .tl-block-plan .tl-block-bar { display: none; }
-#cal-overlay .tl-block-plan > .tl-text {
-  display: block;
-  position: absolute;
-  top: 2px;
-  left: 5px;
-  right: 4px;
-  max-width: none;
-}
-#cal-overlay .tl-block-plan .tl-block-label {
-  font-size: 10.5px;
-  font-weight: 400;
-  line-height: 1.25;
-  color: var(--text-primary);
-}
-#cal-overlay .tl-block-plan .tl-block-label b { font-weight: 600; }
-#cal-overlay .tl-plan-nest > .tl-text { display: none; }
-/* Under ~20 minutes there is one short line of room: the label sits on the
-   box's middle instead of running out of the bottom of it. */
-#cal-overlay .wk-plan-tight > .tl-text { top: 50%; transform: translateY(-50%); }
-#cal-overlay .wk-plan-tight .tl-block-label, .wk-plan-tight.wk-plan-kid .tl-block-label {
-  font-size: 9.5px;
-  line-height: 1;
-}
-.wk-plan-tight.wk-plan-kid { padding-top: 0; padding-bottom: 0; display: flex; align-items: center; }
-.wk-plan-kid {
-  position: absolute;
-  left: 8px;
+/* A PLANNED DAY (2026-11-20, Quentin's design "Calendar To-dos", option 9a;
+   wkPlanHtml). A written block runs edge to edge, square, in a solid tint of
+   its category over the ground (opaque, so a nested level never darkens), a
+   hairline of the ground along its top between one block and the next. A
+   nested block is the same tint set in 7px per level (inline left) behind a
+   hairline gap, so its parent shows as a strip; no outlines. Black words:
+   the category bold, then the title. No drag band — its line is its editor. */
+#cal-overlay .wk-plan {
   right: 0;
   box-sizing: border-box;
   padding: 2px 5px;
-  border-radius: 4px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--block-color) 20%, var(--surface-mid));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--block-color) 55%, transparent);
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--block-color) 15%, var(--surface-mid));
+  box-shadow: inset 0 1px 0 var(--surface-mid);
+  cursor: pointer;
 }
-.wk-plan-kid > .wk-tasks { margin-top: 1px; }
+#cal-overlay .wk-plan-nested {
+  box-shadow: inset 0 1px 0 var(--surface-mid), inset 1.5px 0 0 var(--surface-mid);
+}
+#cal-overlay .wk-plan-small { padding: 0 5px; }
+/* A box's words: its title line, then its tasks — one tiny line each. */
+.wk-ttl { display: flex; align-items: center; gap: 4px; min-width: 0; flex: none;
+  font-size: 10.5px; color: var(--text-primary); }
+.wk-ttl-small { font-size: 9px; }
+.wk-ttl-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wk-ttl-text b { font-weight: 600; }
+.wk-trow { display: flex; align-items: center; gap: 4px; height: 11.5px; flex: none;
+  font-size: 9.5px; color: var(--text-primary); white-space: nowrap; overflow: hidden; }
+.wk-tmark { width: 6px; flex: none; display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary); }
+.wk-tmark i { width: 2.5px; height: 2.5px; border-radius: 50%; background: var(--text-secondary); }
+.wk-ttext { overflow: hidden; text-overflow: ellipsis; }
+/* Crossed out is a real line through it, not only grey words. Secondary ink
+   on a TINT, so pulled a quarter toward primary: plain --text-secondary
+   measured 4.33:1 on a dark plan block. */
+.wk-plan { --wk-faint: color-mix(in srgb, var(--text-secondary) 75%, var(--text-primary)); }
+.wk-trow-done, .wk-trow-back { color: var(--wk-faint, var(--text-secondary)); }
+.wk-trow-done .wk-ttext { text-decoration: line-through; text-decoration-thickness: 1px;
+  text-decoration-color: var(--text-secondary); }
+.wk-tmore { flex: none; font-size: 9.5px; color: var(--wk-faint, var(--text-secondary)); }
+.wk-tmore-row { height: 11.5px; }
+
+/* An @ FRAME: a square outline the column's width over the blocks — they do
+   not move inside it — with its handle a folder tab outside its top-right
+   corner, sharing its line. Only the tab takes the pointer. Hovered or lit,
+   the line thickens and the tab deepens. */
+#cal-overlay .wk-frame {
+  --frame-line: color-mix(in srgb, var(--block-color) 82%, var(--text-primary));
+  /* 58% of a gold measured 4.24:1 on its light tab; 40% clears 4.5 in both. */
+  --frame-ink: color-mix(in srgb, var(--block-color) 40%, var(--text-primary));
+  --frame-tint: color-mix(in srgb, var(--block-color) 16%, var(--surface-mid));
+  --frame-tint-on: color-mix(in srgb, var(--block-color) 45%, var(--surface-mid));
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  box-sizing: border-box;
+  border: var(--frame-w, 1.5px) solid var(--frame-line);
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+#cal-overlay .wk-frame.wk-frame-hot { --frame-w: 2.5px; }
+.wk-frame-tab {
+  position: absolute;
+  bottom: 100%;
+  right: calc(-1 * var(--frame-w, 1.5px));
+  height: 14px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  border: 1.5px solid var(--frame-line);
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  background: var(--frame-tint);
+  font: 600 8.5px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--frame-ink);
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* THE RING (calRingHtml): the hovered or lit thing's own colour, its own
+   layer over the boxes (so a nested block cannot break it) and under a
+   frame's outline. */
+.wk-ring {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, var(--block-color) 55%, var(--surface));
+  pointer-events: none;
+}
+.wk-ring-ev { border-radius: 6px; }
 .wk-day-planning { background: var(--tint); }
 .wk-day-planned .wk-num { box-shadow: 0 0 0 1px var(--text-secondary); }
 
 .dp-day { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+/* THE PLAN AS WRITTEN: monospace, wrapped, no scrollbar (the same design). */
 .dp-text {
   display: block;
   box-sizing: border-box;
   width: calc(100% - 28px);
   min-height: 360px;
   margin: 12px 14px 8px;
-  padding: 10px 12px;
-  font: 12.5px/1.6 var(--font-mono);
+  padding: 8px 10px;
+  font: 11px/17px var(--font-mono);
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  overflow-x: hidden;
   background: var(--surface-low);
   color: var(--text-primary);
   border: 1px solid var(--border);
   border-radius: 6px;
-  resize: vertical;
+  resize: none;
   outline: none;
+  scrollbar-width: none;
 }
+.dp-text::-webkit-scrollbar { display: none; }
 .dp-text:focus { border-color: var(--accent); }
+.dph-mark, .dph-id { color: var(--text-secondary); }
+.dph-id { opacity: 0.7; }
+.dph-done { color: var(--text-secondary); text-decoration: line-through; }
+.dph-frame { color: color-mix(in srgb, #c8aa64 70%, var(--text-primary)); }
+.dp-code { font-family: var(--font-mono); color: var(--text-primary); }
 .dp-hint { padding: 0 14px 8px; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
 .dp-skipped { padding: 0 14px; font: 12px var(--font-mono); color: var(--text-secondary); }
 .dp-clear {
@@ -5702,10 +5758,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
    data-cat, so these are only the parts that do not name a category. */
 #cal-overlay .tl-block { transition: opacity 0.15s; }
 @media (hover: hover) {
-  #cal-overlay .tl-block[data-cat]:hover {
-    --wk-hatch: var(--wk-hatch-on);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--block-color) 60%, transparent);
-  }
+  #cal-overlay .tl-block[data-cat]:not(.wk-plan):hover { --wk-hatch: var(--wk-hatch-on); }
 }
 .cal-pin-sw {
   width: 14px;
@@ -5718,6 +5771,7 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     transparent 1.5px 5px);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--block-color) 60%, transparent);
 }
+.cal-pin-sw.cal-pin-solid { background: color-mix(in srgb, var(--block-color) 30%, var(--surface)); }
 /* The one-line label at a hovered block's top. Fixed to the viewport rather
    than inside the block, so the events drawn over a block cannot cover it. */
 #blk-hover {
@@ -5751,15 +5805,18 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 #blk-hover b { font-weight: 600; color: var(--text-primary); }
 #blk-hover span:last-child { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
 
+/* An event is a CARD lifted off the day (2026-11-20, "Calendar To-dos" 9a):
+   rounded, a light shadow, black words on its calendar's tint. */
 #cal-overlay .tl-gcal-event {
   right: auto;
   padding: 3px 6px;
-  border-radius: 5px;
+  border-radius: 6px;
   min-height: 0;
   overflow: hidden;
   background: color-mix(in srgb, var(--ev-color, var(--accent)) 18%, var(--surface-mid));
-  box-shadow: 0 0 0 1.5px var(--surface-mid);
+  box-shadow: 0 1px 2px rgba(20, 30, 40, 0.10), 0 2px 8px rgba(20, 30, 40, 0.08);
   color: var(--text-primary);
+  transition: opacity 0.15s;
 }
 #cal-overlay .tl-event-tight { display: flex; align-items: center; }
 #cal-overlay .tl-event-row { display: block; }

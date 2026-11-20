@@ -1161,28 +1161,37 @@ def post_inbox():
 
 @app.route('/api/inbox/<int:id>', methods=['DELETE'])
 def delete_inbox(id):
-    # A row the SHEET owns is ticked there first, and only deleted here if that
-    # succeeded. The order is the whole design: delete-then-write would lose
-    # the item on a failed write with nothing left pointing at the sheet row,
-    # and the app would quietly disagree with the source of truth forever.
-    # A failed write is therefore a VISIBLE refusal — the app's own rule that a
-    # write with no network fails loudly rather than pretending.
+    err = _finish_item(id)
+    if err:
+        return jsonify({'error': err[0]}), err[1]
+    _touch_and_sync_inbox()
+    return '', 204
+
+
+# THE ONE DOOR AN ITEM IS FINISHED THROUGH — its delete, and a plan line
+# crossed out (day_plan_route). A row the SHEET owns is ticked there first,
+# and only deleted here if that succeeded. The order is the whole design:
+# delete-then-write would lose the item on a failed write with nothing left
+# pointing at the sheet row, and the app would quietly disagree with the
+# source of truth forever. A failed write is therefore a VISIBLE refusal —
+# the app's own rule that a write with no network fails loudly rather than
+# pretending. Returns (error, status) or None.
+def _finish_item(id):
     seed = storage.sheets_seed_for_item(id)
     if seed and seed.get('row_number') and seed.get('done_col') is not None:
         sheet_id, tab, creds, _area = _sheets_feed_conf()
         missing = _sheets_missing(sheet_id, tab, creds)
         if missing:
-            return jsonify({'error': missing}), 400
+            return missing, 400
         try:
             sheets_set_done(creds, sheet_id, seed['tab'] or tab,
                             seed['row_number'], seed['done_col'],
                             seed['title_col'], seed['title'], True)
         except Exception as exc:
-            return jsonify({'error': f'could not tick the sheet: {exc}'}), 502
+            return f'could not tick the sheet: {exc}', 502
         storage.mark_sheets_written_back(id, True)
     storage.delete_inbox_item(id)
-    _touch_and_sync_inbox()
-    return '', 204
+    return None
 
 
 @app.route('/api/inbox/<int:id>', methods=['PATCH'])
@@ -2009,7 +2018,17 @@ def day_plan_route(ymd):
     refusal = qr_judge.plan_lock_refusal(ymd, data['body'])
     if refusal:
         return jsonify({'error': refusal}), 409
-    plan = storage.set_day_plan(ymd, data['body'])
+    # `base`: the text the writer's field started from, so the tasks it never
+    # saw (written in by the server meanwhile) are not read as removed.
+    base = data.get('base') if isinstance(data.get('base'), str) else None
+    plan = storage.set_day_plan(ymd, data['body'], base)
+    # A crossed-out task is finished through the one door; one that could
+    # not be (a sheet that refused its tick) stays, and the next save asks
+    # again.
+    failed = [i for i in plan.pop('complete') if _finish_item(i)]
+    if failed:
+        plan['unfinished'] = failed
+    _touch_and_sync_inbox()
     qr_judge.plan_commit(ymd)
     return jsonify(plan)
 

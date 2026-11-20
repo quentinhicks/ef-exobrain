@@ -172,8 +172,9 @@ check('a `!` line draws its block, nested or not',
       any(s['label'] == 'Inbox zero' and (s['start'], s['end']) == (840, 850) for s in segs)
       and any(k['label'] == 'Photo of Q1-4 written out' for s in segs for k in s.get('kids', [])),
       [s['label'] for s in segs])
-check('...and takes its hours from the week, like any plan block',
-      [(s['start'], s['end']) for s in segs if s['label'] == 'deep work'] == [(780, 840), (850, 900), (910, 960)],
+# A plan replaces the day's blocks (2026-11-20, "Calendar To-dos" 9a).
+check('...and the week is not in force on its day, like any planned day',
+      not any(s['label'] == 'deep work' for s in segs),
       [(s['label'], s['start'], s['end']) for s in segs])
 storage.set_day_plan('2031-03-04', '')
 storage.set_day_plan(SOON, '!1:50-2:10 Gate over the call')

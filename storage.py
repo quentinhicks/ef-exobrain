@@ -2887,6 +2887,7 @@ def delete_inbox_item(id):
                     WHERE after_id = ?''', (id, id))
     conn.execute('DELETE FROM inbox_item WHERE id = ?', (id,))
     conn.execute('DELETE FROM engage_placement WHERE item_id = ?', (id,))
+    _plan_edit_lines(conn, id, day_plan.strike_line)
     conn.commit()
     conn.close()
 
@@ -2933,6 +2934,7 @@ def restore_inbox_item(snap):
                      (p['date'], row['id'], p['minute'], p.get('anchor')))
     for cid in snap.get('chain') or []:
         conn.execute('UPDATE inbox_item SET after_id = ? WHERE id = ?', (row['id'], cid))
+    _plan_edit_lines(conn, row['id'], day_plan.unstrike_line)
     conn.commit()
     out = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (row['id'],)).fetchone()
     conn.close()
@@ -2991,6 +2993,7 @@ def set_engage_placement(date, item_id, minute, anchor=None):
     conn = get_conn()
     conn.execute('INSERT OR REPLACE INTO engage_placement (date, item_id, minute, anchor) VALUES (?, ?, ?, ?)',
                  (date, item_id, minute, anchor or None))
+    _plan_placed(conn, date, item_id)
     conn.commit()
     conn.close()
 
@@ -2998,6 +3001,7 @@ def set_engage_placement(date, item_id, minute, anchor=None):
 def delete_engage_placement(date, item_id):
     conn = get_conn()
     conn.execute('DELETE FROM engage_placement WHERE date = ? AND item_id = ?', (date, item_id))
+    _plan_unplaced(conn, date, item_id)
     conn.commit()
     conn.close()
 
@@ -3308,12 +3312,20 @@ def block_segments_for(date_str, with_cancelled=False):
                         'description': r['description'] or '', 'priority': None,
                         'scheduled_change': False})
 
+    yday = (day - timedelta(days=1)).isoformat()
     add(day.weekday(), date_str, 0)
-    add((day.weekday() - 1) % 7, (day - timedelta(days=1)).isoformat(), -1440)
+    add((day.weekday() - 1) % 7, yday, -1440)
     add_day_blocks(date_str, 0)
-    add_day_blocks((day - timedelta(days=1)).isoformat(), -1440)
+    add_day_blocks(yday, -1440)
+    # A DAY'S PLAN REPLACES THAT DAY'S BLOCKS (2026-11-20, Quentin's design
+    # "Calendar To-dos" 9a, reversing 2026-10-28's "a plan takes only the
+    # hours it names"): on a date with a plan, the week's blocks and the
+    # one-offs that START on it are not in force at all, and last night's
+    # tail of a planned yesterday is that plan's, not the week's.
+    planned = _planned_dates(conn, (date_str, yday))
+    out = [s for s in out if s['date'] not in planned]
     out += _plan_segments(conn, date_str, 0)
-    out += _plan_segments(conn, (day - timedelta(days=1)).isoformat(), -1440)
+    out += _plan_segments(conn, yday, -1440)
     conn.close()
     out = [s for s in _under_day_blocks(out) if not s.get('crossed')]
     out.sort(key=lambda r: r['start'])
@@ -3363,9 +3375,54 @@ def _under_day_blocks(segs):
 
 # ── A day's plan (the day_plan table): read as text, drawn as blocks ──
 
-# A category nothing else has coloured still gets the same colour every day.
-PLAN_PALETTE = ('#78a569', '#d2a069', '#827dc8', '#6e9bc8', '#c8828c')
+def _planned_dates(conn, dates):
+    marks = ', '.join('?' * len(dates))
+    return {r['date'] for r in conn.execute(
+        f'SELECT date FROM day_plan WHERE date IN ({marks})', tuple(dates))}
+
+
+# THE COLOUR OF A NAME (2026-11-20, Quentin's design "Calendar To-dos": a plan
+# category and an @ frame's name). Ignore @ # :, split into words, skip the
+# filler ones; a name whose word is in a block category or an area's name
+# wears that colour, else one in a calendar's name, else a pastel of its own
+# from a hash of it, so the same name is the same colour every day. No
+# category at all is neutral grey. An exact name wins over a shared word.
 PLAN_NO_CATEGORY = '#8c9298'
+NAME_STOP_WORDS = {'the', 'of', 'and', 'a', 'an', 'to', 'at', 'on', 'for', 'in', 'schedule', 'events'}
+
+
+def _name_words(s):
+    return {w for w in re.split(r'[^a-z0-9]+', re.sub(r'[@#:]', ' ', (s or '').lower()))
+            if len(w) > 1 and w not in NAME_STOP_WORDS}
+
+
+# djb2 over the lowercased name, the hue its remainder, at hsl(h, 45%, 62%).
+def _hash_color(key):
+    x = 5381
+    for ch in key.lower():
+        x = ((x * 33) ^ ord(ch)) & 0xffffffff
+    h, s, light = x % 360, 0.45, 0.62
+    a = s * min(light, 1 - light)
+
+    def f(n):
+        k = (n + h / 30) % 12
+        return round((light - a * max(-1, min(k - 3, 9 - k, 1))) * 255)
+    return '#%02x%02x%02x' % (f(0), f(8), f(4))
+
+
+def _name_color(groups, name):
+    key = re.sub(r'[@#:]', '', name or '').strip()
+    if not key:
+        return PLAN_NO_CATEGORY
+    words = _name_words(key)
+    for group in groups:
+        for n, c in group:
+            if n.strip().lower() == key.lower() and c:
+                return c
+        for n, c in group:
+            if c and words & _name_words(n):
+                return c
+    return _hash_color(key)
 
 
 def _plan_names(conn):
@@ -3373,34 +3430,37 @@ def _plan_names(conn):
         'SELECT id, name, domain_id FROM area WHERE active = 1 ORDER BY id DESC')}
     places = {r['name'].strip().lower(): r['id'] for r in conn.execute(
         'SELECT id, name FROM location ORDER BY id DESC')}
-    # A BLOCK CATEGORY IS ITS LABEL: a plan line named like one wears its
-    # colour, so "COS333:" is the colour COS333 already is on the calendar.
-    colors = {}
-    for r in conn.execute('SELECT label, color FROM recurring_block UNION ALL '
-                          'SELECT label, color FROM day_block'):
-        colors.setdefault(r['label'].strip().lower(), r['color'])
-    return areas, places, colors
+    # A BLOCK CATEGORY IS ITS LABEL, and an area's colour is its blocks': the
+    # first group. The calendars are the second.
+    first = [(r['label'], r['color']) for r in conn.execute(
+        'SELECT label, color FROM recurring_block UNION ALL SELECT label, color FROM day_block')]
+    first += [(r['name'], r['color']) for r in conn.execute(
+        'SELECT a.name, b.color FROM area a JOIN recurring_block b ON b.area_id = a.id '
+        'WHERE a.active = 1 ORDER BY b.id')]
+    cals = [(r['name'], r['color']) for r in conn.execute(
+        'SELECT name, color FROM calendar_source WHERE active = 1 ORDER BY id')]
+    return areas, places, (first, cals)
 
 
-def _plan_color(colors, it):
-    for key in (it['cat'], it['title']):
-        if key and key.strip().lower() in colors:
-            return colors[key.strip().lower()]
-    if not it['cat']:
-        return PLAN_NO_CATEGORY
-    return PLAN_PALETTE[sum(map(ord, it['cat'].lower())) % len(PLAN_PALETTE)]
+def _plan_tasks(it):
+    return [{'id': t['id'], 'text': t['text'], 'struck': t['struck'], 'line': t['line']} for t in it['tasks']]
 
 
+# One plan line as a block, its nested lines inside it (`kids`, to any
+# depth, the crossed-out ones left out) and its tasks with it.
 def _plan_block(names, it, offset):
-    areas, places, colors = names
+    areas, places, groups = names
     area_id, domain_id = areas.get(it['cat'].lower(), (None, None)) if it['cat'] else (None, None)
     loc_id = places.get(it['loc'].lower()) if it['loc'] else None
     label = day_plan.label_of(it)
     if it['loc'] and not loc_id:
         label += f" @ {it['loc']}"       # a place with no location row stays words
-    return {'label': label, 'start': it['start'] + offset, 'end': it['end'] + offset,
-            'color': _plan_color(colors, it), 'area_id': area_id, 'domain_id': domain_id,
-            'location_id': loc_id, 'notes': it['notes'], 'category': it['cat']}
+    return {'label': label, 'title': it['title'], 'start': it['start'] + offset,
+            'end': it['end'] + offset, 'color': _name_color(groups, it['cat']),
+            'area_id': area_id, 'domain_id': domain_id, 'location_id': loc_id,
+            'notes': it['notes'], 'tasks': _plan_tasks(it), 'category': it['cat'],
+            'line': it['line'], 'gate': it['gate'],
+            'kids': [_plan_block(names, k, offset) for k in it['kids'] if not k['struck']]}
 
 
 # The plan's blocks, shaped like every other segment so each surface that
@@ -3425,37 +3485,232 @@ def _plan_segments(conn, on_date, offset):
         seg.update({'block_id': None, 'day_block_id': None, 'plan_date': on_date,
                     'plan_index': i, 'date': on_date, 'overridden': False,
                     'cancelled': False, 'description': '', 'priority': None,
-                    'scheduled_change': False, 'crossed': it['struck'],
-                    'kids': [_plan_block(names, k, offset) for k in it['kids']
-                             if not k['struck']]})
+                    'scheduled_change': False, 'crossed': it['struck']})
         out.append(seg)
         if not it['struck']:
-            for k in it['kids']:
-                if k['struck'] and k['end'] + offset > 0:
-                    out.append(dict(seg, **_plan_block(names, k, offset), kids=[], crossed=True))
+            for k, parent in day_plan.walk(it['kids'], it):
+                if k['struck'] and not parent['struck'] and k['end'] + offset > 0:
+                    out.append(dict(seg, **dict(_plan_block(names, k, offset), kids=[]), crossed=True))
     return out
 
 
+# The plan as its sheet and the calendar read it: the text, what could not be
+# read, and its @ frames — each with its colour (the name rule) and tasks.
 def get_day_plan(ymd):
     conn = get_conn()
     row = conn.execute('SELECT body FROM day_plan WHERE date = ?', (ymd,)).fetchone()
-    conn.close()
     body = row['body'] if row else ''
-    return {'date': ymd, 'body': body, 'skipped': day_plan.parse(body)['skipped']}
+    P = day_plan.parse(body)
+    groups = _plan_names(conn)[2] if P['frames'] else None
+    conn.close()
+    return {'date': ymd, 'body': body, 'skipped': P['skipped'],
+            'frames': [{'start': f['start'], 'end': f['end'], 'label': f['label'],
+                        'line': f['line'], 'color': _name_color(groups, f['label']),
+                        'tasks': _plan_tasks(f)} for f in P['frames']]}
 
 
-# Blank text is no plan: the row goes, and the day's blocks come back.
-def set_day_plan(ymd, body):
+# Blank text is no plan: the row goes, and the day's blocks come back. Every
+# save keeps the plan's tasks and the to-do items agreeing (_plan_sync), so
+# what comes back may differ from what was sent — ids written in, a task done
+# elsewhere crossed out, a task placed on the day written under its line —
+# and `complete` names the items a crossed-out line still has: the route
+# finishes those through the one completion door (a sheet's tick first).
+# `base` is the text the writer started from; None means the stored text.
+def set_day_plan(ymd, body, base=None):
     conn = get_conn()
-    if (body or '').strip():
+    row = conn.execute('SELECT body FROM day_plan WHERE date = ?', (ymd,)).fetchone()
+    stored = row['body'] if row else ''
+    body, complete = _plan_sync(conn, ymd, body or '', stored if base is None else base, stored)
+    _plan_store(conn, ymd, body)
+    conn.commit()
+    conn.close()
+    out = get_day_plan(ymd)
+    out['complete'] = complete
+    return out
+
+
+def _plan_store(conn, ymd, body):
+    if body.strip():
         conn.execute("INSERT INTO day_plan (date, body) VALUES (?, ?) ON CONFLICT(date) DO "
                      "UPDATE SET body = excluded.body, updated_at = datetime('now','localtime')",
                      (ymd, body))
     else:
         conn.execute('DELETE FROM day_plan WHERE date = ?', (ymd,))
-    conn.commit()
-    conn.close()
-    return get_day_plan(ymd)
+
+
+# ── A PLAN'S TASKS ARE THE TO-DO ITEMS (2026-11-20, Quentin's design
+# "Calendar To-dos") ──────────────────────────────────────────────────────
+# A `*` line carrying `[hex]` IS inbox_item that id, PLACED on the day at its
+# line's start (engage_placement, anchor 'plan') — so the to-do list, Engage
+# and the undo all see an ordinary placed action, and a task left undone on a
+# past day is back on the to-do list by the placement rule that already held.
+# The text says which tasks the day holds; this keeps the rows agreeing:
+#   - a task line with no id is a new item (active, filed under the area its
+#     line's category names), its id written onto the line;
+#   - a line's words are its item's words;
+#   - a crossed-out line whose item still exists is a completion (`complete`);
+#   - a live line whose item is gone was finished elsewhere: crossed out here,
+#     unless the writer UNcrossed it (crossed in `base`), which brings the
+#     item back under its id;
+#   - a line the writer removed takes its placement off the day (the item
+#     stays — it goes back to the to-do list);
+#   - an action placed on the day some other way (clarify, a card, a block
+#     the plan replaced) is written under the plan line over it.
+# `base` is what the writer's text started from, `stored` what the server
+# holds: an id in stored that the writer never saw was written by the server
+# meanwhile, never removed by the writer — the round trip a field being typed
+# into is always behind by.
+def _plan_sync(conn, ymd, text, base, stored):
+    if not text.strip():
+        conn.execute("DELETE FROM engage_placement WHERE date = ? AND anchor = 'plan'", (ymd,))
+        return text, []
+    lines = text.split('\n')
+    tasks, P = day_plan.tasks_of(text)
+    base_tasks = {t['id']: t for t in day_plan.tasks_of(base)[0] if t['id']}
+    stored_tasks = {t['id']: t for t in day_plan.tasks_of(stored)[0] if t['id']}
+    present = {t['id'] for t in tasks if t['id']}
+    known = present | set(base_tasks) | set(stored_tasks)
+    rows = {r['id']: dict(r) for r in conn.execute(
+        f"SELECT id, content, status FROM inbox_item WHERE id IN ({', '.join('?' * len(known))})",
+        tuple(known))} if known else {}
+    # Minted while the writer was still typing: matched back by its words.
+    spare = {t['text']: i for i, t in stored_tasks.items()
+             if i not in present and i not in base_tasks and i in rows}
+    areas = _plan_names(conn)[0]
+    complete = []
+    for t in tasks:
+        owner = t['owner']
+        if not t['id']:
+            if t['struck'] or len(t['text']) < 2:
+                continue
+            t['id'] = spare.pop(t['text'], None)
+            if t['id'] is None:
+                area_id = areas.get((owner.get('cat') or '').lower(), (None, None))[0]
+                f = filing_updates(area_id, None)
+                t['id'] = conn.execute(
+                    "INSERT INTO inbox_item (content, status, area_id, domain_id, defer_until) "
+                    "VALUES (?, 'active', ?, ?, ?)",
+                    (t['text'], f['area_id'], f['domain_id'],
+                     ymd if ymd > date_cls.today().isoformat() else None)).lastrowid
+            rows[t['id']] = {'id': t['id'], 'content': t['text'], 'status': 'active'}
+            present.add(t['id'])
+            lines[t['idx']] = day_plan.with_id(lines[t['idx']], t['id'])
+        elif t['id'] not in rows:
+            if t['struck']:
+                continue
+            was = base_tasks.get(t['id'])
+            if not (was and was['struck']):
+                lines[t['idx']] = day_plan.strike_line(lines[t['idx']])
+                continue
+            conn.execute("INSERT INTO inbox_item (id, content, status) VALUES (?, ?, 'active')",
+                         (t['id'], t['text']))
+            rows[t['id']] = {'id': t['id'], 'content': t['text'], 'status': 'active'}
+        elif t['struck']:
+            complete.append(t['id'])
+            continue
+        elif t['text'] and rows[t['id']]['content'] != t['text']:
+            conn.execute('UPDATE inbox_item SET content = ? WHERE id = ?', (t['text'], t['id']))
+        conn.execute("INSERT OR REPLACE INTO engage_placement (date, item_id, minute, anchor) "
+                     "VALUES (?, ?, ?, 'plan')", (ymd, t['id'], owner['start']))
+    for gone in set(base_tasks) - present:
+        conn.execute('DELETE FROM engage_placement WHERE date = ? AND item_id = ?', (ymd, gone))
+    seen = present | set(base_tasks)
+    for p in conn.execute(
+            """SELECT p.item_id, p.minute, i.content FROM engage_placement p
+                 JOIN inbox_item i ON i.id = p.item_id
+                WHERE p.date = ? AND i.status = 'active' ORDER BY p.minute, p.item_id""",
+            (ymd,)).fetchall():
+        if p['item_id'] not in seen:
+            lines = _plan_take(conn, ymd, lines, P, p)
+            seen.add(p['item_id'])
+    return '\n'.join(lines), complete
+
+
+# Write an action placed on the day under the plan line over what it was
+# placed on: the block starting at its minute (one-off first, then the week's,
+# overrides applied) and the line of that block's category over it, else the
+# line overlapping it most; with no block there, the line holding the minute.
+# No line at all leaves the placement as it was — it is still on the to-do
+# list. Inserting moves the lines below it, so the text is parsed afresh.
+def _plan_take(conn, ymd, lines, P, p):
+    m = p['minute']
+    span, label = _block_at(conn, ymd, m) or ((m, m + 1), '')
+    cands = [it for it, _ in _plan_live(P['items']) if it['start'] < span[1] and it['end'] > span[0]]
+    if not cands:
+        return lines
+    over = lambda it: min(span[1], it['end']) - max(span[0], it['start'])
+    same = [it for it in cands if label and (it['cat'] or '').lower() == label.lower()]
+    target = max(same or cands, key=lambda it: (over(it), -it['start']))
+    after, indent = day_plan.task_insert_at(lines, target)
+    lines = lines[:after + 1] + [day_plan.task_line(indent, p['content'], p['item_id'])] + lines[after + 1:]
+    conn.execute("UPDATE engage_placement SET minute = ?, anchor = 'plan' WHERE date = ? AND item_id = ?",
+                 (target['start'], ymd, p['item_id']))
+    P.update(day_plan.parse('\n'.join(lines)))
+    return lines
+
+
+def _plan_live(items):
+    gated = set()
+    for it, parent in day_plan.walk(items):
+        if it['gate'] or (parent is not None and id(parent) in gated):
+            gated.add(id(it))
+        elif not it['struck']:
+            yield it, parent
+
+
+def _block_at(conn, ymd, minute):
+    for r in conn.execute('SELECT start_min, end_min, label FROM day_block WHERE date = ?', (ymd,)):
+        if r['start_min'] == minute:
+            return (r['start_min'], r['end_min']), r['label']
+    dow = date_cls.fromisoformat(ymd).weekday()
+    for r in conn.execute('SELECT * FROM recurring_block WHERE active = 1 AND day_of_week = ?', (dow,)):
+        ov = conn.execute('SELECT * FROM block_override WHERE block_id = ? AND date = ?',
+                          (r['id'], ymd)).fetchone()
+        st = ov['start_time'] if ov and ov['start_time'] else r['start_time']
+        en = ov['end_time'] if ov and ov['end_time'] else r['end_time']
+        if _hhmm_to_min(st) == minute:
+            return (minute, _hhmm_to_min(en) + (1440 if en < st else 0)), r['label']
+    return None
+
+
+# THE OTHER DOORS KEEP THE TEXT TOO: an item finished, put back, renamed,
+# placed on or taken off a planned day changes the plan's line for it, on the
+# caller's connection, so no surface can leave the text saying otherwise.
+def _plan_edit_lines(conn, item_id, edit):
+    tag = f'%[{day_plan.hex_id(item_id)}]%'
+    for r in conn.execute('SELECT date, body FROM day_plan WHERE body LIKE ?', (tag,)).fetchall():
+        lines = r['body'].split('\n')
+        for t in day_plan.tasks_of(r['body'])[0]:
+            if t['id'] == item_id:
+                lines[t['idx']] = edit(lines[t['idx']])
+        body = '\n'.join(l for l in lines if l is not None)
+        if body != r['body']:
+            _plan_store(conn, r['date'], body)
+
+
+def _plan_placed(conn, ymd, item_id):
+    row = conn.execute('SELECT body FROM day_plan WHERE date = ?', (ymd,)).fetchone()
+    if not row:
+        return
+    if any(t['id'] == item_id for t in day_plan.tasks_of(row['body'])[0]):
+        return
+    p = conn.execute("""SELECT p.item_id, p.minute, i.content FROM engage_placement p
+                          JOIN inbox_item i ON i.id = p.item_id
+                         WHERE p.date = ? AND p.item_id = ? AND i.status = 'active'""",
+                     (ymd, item_id)).fetchone()
+    if p:
+        P = day_plan.parse(row['body'])
+        _plan_store(conn, ymd, '\n'.join(_plan_take(conn, ymd, row['body'].split('\n'), P, p)))
+
+
+def _plan_unplaced(conn, ymd, item_id):
+    row = conn.execute('SELECT body FROM day_plan WHERE date = ?', (ymd,)).fetchone()
+    if not row:
+        return
+    drop = {t['idx'] for t in day_plan.tasks_of(row['body'])[0] if t['id'] == item_id}
+    if drop:
+        _plan_store(conn, ymd, '\n'.join(l for i, l in enumerate(row['body'].split('\n'))
+                                         if i not in drop))
 
 
 # ── Photo gates (plan_gate / plan_gate_proof): the store only ──
@@ -4001,6 +4256,8 @@ def update_inbox_item(id, content=_UNSET, status=_UNSET, area_id=_UNSET, defer_u
                             domain_id = (SELECT domain_id FROM inbox_item WHERE id = ?)
                         WHERE id IN (SELECT sid FROM sub)''',
                      (id, id, id))
+    if 'content' in updates and (content or '').strip():
+        _plan_edit_lines(conn, id, lambda line: day_plan.rename_line(line, content.strip()))
     conn.commit()
     row = conn.execute('SELECT * FROM inbox_item WHERE id = ?', (id,)).fetchone()
     conn.close()
@@ -4322,28 +4579,33 @@ def _local_span(start_iso, end_iso):
             t.hour * 60 + t.minute + 1440 * (t.date() - s.date()).days)
 
 
-# AN EVENT A DAY'S PLAN COVERS IS NOT DRAWN (2026-10-28, Quentin's
-# instruction). Decided HERE, once, and served as `plan_covered` on every
-# event: the calendar and Engage render the flag, and the NOW panel's rows
-# skip it (get_engage_day). Covered = any of its day's plan blocks overlaps it
-# at all, last night's tail included; an all-day event never is.
+# AN EVENT ON A PLANNED DAY IS NOT DRAWN (2026-10-28, Quentin's instruction;
+# since 2026-11-20, "Calendar To-dos" 9a: a plan replaces the day's events
+# as it replaces its blocks — an @ line is how one is kept). Decided HERE,
+# once, and served as `plan_covered` on every event: the calendar and Engage
+# render the flag, and the NOW panel's rows skip it (get_engage_day). Covered
+# = a timed event starting on a planned date, or one that last night's plan
+# tail overlaps; an all-day event never is.
 def _mark_plan_covered(conn, events):
     planned = {r['date'] for r in conn.execute('SELECT date FROM day_plan')}
-    days = planned | {(date_cls.fromisoformat(d) + timedelta(days=1)).isoformat() for d in planned}
-    spans = {}
+    tails = {}
     for e in events:
         e['plan_covered'] = False
-        if e.get('allday') or not days:
+        if e.get('allday') or not planned:
             continue
         span = _local_span(e['start'], e['end'])
-        if not span or span[0] not in days:
+        if not span:
             continue
         d = span[0]
-        if d not in spans:
-            prev = (date_cls.fromisoformat(d) - timedelta(days=1)).isoformat()
-            spans[d] = [(p['start'], p['end']) for p in
-                        _plan_segments(conn, d, 0) + _plan_segments(conn, prev, -1440)]
-        e['plan_covered'] = any(span[1] < pe and ps < span[2] for ps, pe in spans[d])
+        if d in planned:
+            e['plan_covered'] = True
+            continue
+        prev = (date_cls.fromisoformat(d) - timedelta(days=1)).isoformat()
+        if prev not in planned:
+            continue
+        if prev not in tails:
+            tails[prev] = [(p['start'], p['end']) for p in _plan_segments(conn, prev, -1440)]
+        e['plan_covered'] = any(span[1] < pe and ps < span[2] for ps, pe in tails[prev])
 
 
 # The optimistic half of a calendar WRITE: the event just created on Google,
@@ -5144,6 +5406,7 @@ def delete_inbox_item_conn(conn, id):
                     WHERE after_id = ?""", (id, id))
     conn.execute('DELETE FROM inbox_item WHERE id = ?', (id,))
     conn.execute('DELETE FROM engage_placement WHERE item_id = ?', (id,))
+    _plan_edit_lines(conn, id, day_plan.strike_line)
 
 
 def seed_sheets_items(feed, area_name=''):
