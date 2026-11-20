@@ -2793,6 +2793,9 @@ async function refreshCalWeek() {
       fill('segments', r => (r && Array.isArray(r.segments) ? r.segments : null))(rows);
       fill('overrides', r => (r && Array.isArray(r.overrides) ? r.overrides : null))(rows);
       fill('plan', r => (r && r.plan && typeof r.plan.body === 'string' ? r.plan : null))(rows);
+      // The day a plan replaced, read beside it while it is written; an
+      // unplanned day has none, so it is set either way.
+      rows.forEach((r, i) => { if (r && calWeek.days[dates[i]]) calWeek.days[dates[i]].beneath = r.beneath || []; });
       dayPlanFollow();
     }),
     apiGet(`/api/gates/days?${range}`, null).then(byDate).then(rows => {
@@ -3049,7 +3052,27 @@ function wkPlanHtml(d, segs, frames, y, clip) {
       data-name="${escHtml(name)}" data-what="${escHtml(wkSpan(f.start, f.end))}"
       style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${f.color}"><span class="wk-frame-tab">${escHtml(name)}</span></div>`;
   }).join('');
-  return blocks + frameHtml;
+  return { blocks, frames: frameHtml };
+}
+
+// THE DAY A PLAN REPLACES, read beside it while it is written: the blocks as
+// their hatch with their names, the events as cards — shown, never acted on
+// (none of it is in force while the plan stands), so no door and no menu; the
+// tooltip says what a narrow lane cuts off.
+function wkBeneathHtml(segs, evs, y, clip) {
+  const blocks = segs.map(segmentRow).map(s => {
+    const [a, b] = clip(s.startMin, s.endMin);
+    if (b <= a) return '';
+    return `<div class="wk-ghost-block${s.dayBlockId ? ' wk-ghost-day' : ''}" title="${escHtml(blockPurpose(s))}"
+      style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${s.b.color}"><span>${escHtml(s.label)}</span></div>`;
+  }).join('');
+  const cards = wkLanes(evs).map(x => {
+    const w = 100 / x.lanes, top = y(x.s) + 1, h = Math.max(14, y(x.e) - y(x.s) - 2);
+    return `<div class="wk-ghost-ev" title="${escHtml(`${x.ev.summary || 'Event'} · ${isoToAmPm(x.ev.start)}–${isoToAmPm(x.ev.end)}`)}"
+      style="top:${top}px;height:${h}px;left:calc(${x.lane * w}% + 1px);width:calc(${w}% - 2px);--ev-color:${
+      x.ev.color || '#888888'}"><b>${escHtml(x.ev.summary || '')}</b> ${escHtml(isoToAmPm(x.ev.start))}</div>`;
+  }).join('');
+  return blocks + cards;
 }
 
 // The plan line a calendar element stands for — a block at any depth or a
@@ -3124,7 +3147,13 @@ function renderCalWeek() {
     // An event a day's plan covers is not drawn: the SERVER decides it
     // (`plan_covered`, storage._mark_plan_covered); the calendar, Engage and
     // the NOW panel only read the answer.
-    const boxes = state.gcalEvents.filter(e => !e.allday && calShowsEvent(e) && !e.plan_covered
+    // WHILE ITS PLAN IS BEING WRITTEN (2026-11-20, Quentin: "make sure that I
+    // can see the day as I'm writing the plan") the column widens and stands
+    // the day the plan replaces beside it (wkBeneathHtml): the server's
+    // `beneath` — the day's blocks with no plan — and every event of the day.
+    const planning = dayPlanSheet.open && dayPlanSheet.date === d;
+    const timed = withCovered => state.gcalEvents.filter(e => !e.allday && calShowsEvent(e)
+        && (withCovered || !e.plan_covered)
         && (sameDay(dt, e.start) || (end > DAY_MIN && sameDay(next, e.start))))
       .map(e => {
         const base = sameDay(next, e.start) ? DAY_MIN : 0;
@@ -3134,6 +3163,7 @@ function renderCalWeek() {
         const [a, b] = clip(s, en);
         return { ev: e, s: a, e: b };
       }).filter(x => x.e > x.s);
+    const boxes = planning ? [] : timed(false);
     // Where an event box is drawn — asked by the box and by the block tasks
     // that must stay out from under it.
     const evGeo = x => ({ top: y(x.s) + 1, h: Math.max(14, y(x.e) - y(x.s) - 2) });
@@ -3144,7 +3174,12 @@ function renderCalWeek() {
     // planned day's own blocks are the plan's (wkPlanHtml); only last night's
     // tail of an unplanned yesterday stands beside them.
     const segs = drawnSegments(day.segments);
-    const blocks = segs.filter(s => !s.plan_date).map(segmentRow)
+    const plan = wkPlanHtml(d, segs.filter(s => s.plan_date), (dayPlanOf(d) || {}).frames || [], y, clip);
+    const blocks = planning
+      ? `<div class="wk-lane wk-lane-day">${wkBeneathHtml(
+          isPlannedDay(d) ? drawnSegments(day.beneath || []) : segs.filter(s => !s.plan_date), timed(true), y, clip)}</div>
+         <div class="wk-lane wk-lane-plan">${plan.blocks}</div>${plan.frames}`
+      : segs.filter(s => !s.plan_date).map(segmentRow)
       .filter(s => !state.tlHidden.block[`${s.b.id}:${d}`])
       .map(s => {
         const [a, b] = clip(s.startMin, s.endMin);
@@ -3158,7 +3193,7 @@ function renderCalWeek() {
           <div class="tl-block-bar"></div><div class="tl-text"><span class="tl-block-label">${
             escHtml(s.label)}</span></div>${wkTaskList(d, s.startMin, s.cont,
             wkTaskTop(y(a), y(b), evSpans, wkTasksAt(d, s.startMin).length), null)}</div>`;
-      }).join('') + wkPlanHtml(d, segs.filter(s => s.plan_date), (dayPlanOf(d) || {}).frames || [], y, clip);
+      }).join('') + plan.blocks + plan.frames;
 
     const evs = wkLanes(boxes).map(x => {
       const e = x.ev;
@@ -3287,6 +3322,11 @@ function renderCalWeek() {
   calFilter.render();
 
   host.style.setProperty('--wk-n', dates.length);
+  // The day whose plan is open takes more of the width: it holds two lanes.
+  if (dayPlanSheet.open && dates.includes(dayPlanSheet.date)) {
+    host.style.setProperty('--wk-cols', dates.map(d =>
+      `minmax(0, ${d === dayPlanSheet.date ? 2.4 : 1}fr)`).join(' '));
+  } else host.style.removeProperty('--wk-cols');
   host.innerHTML = `
     ${rangePop}
     <div class="wk-grid wk-days">

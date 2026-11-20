@@ -3250,7 +3250,7 @@ def _hhmm_to_min(t):
 # with_cancelled is for the surface that has to STRIKE THROUGH what you called
 # off (the timeline) rather than merely not run it. Same resolution, same
 # rules, one extra row kind — a second function would be a second answer.
-def block_segments_for(date_str, with_cancelled=False):
+def block_segments_for(date_str, with_cancelled=False, plan=True):
     day = date_cls.fromisoformat(date_str)
     conn = get_conn()
     apply_due_block_pendings(conn)
@@ -3322,10 +3322,14 @@ def block_segments_for(date_str, with_cancelled=False):
     # hours it names"): on a date with a plan, the week's blocks and the
     # one-offs that START on it are not in force at all, and last night's
     # tail of a planned yesterday is that plan's, not the week's.
-    planned = _planned_dates(conn, (date_str, yday))
-    out = [s for s in out if s['date'] not in planned]
-    out += _plan_segments(conn, date_str, 0)
-    out += _plan_segments(conn, yday, -1440)
+    # `plan=False` is the day as it would be with no plan — what the calendar
+    # shows beside a plan while it is being written (`beneath`), and nothing
+    # else: it is never the day in force.
+    if plan:
+        planned = _planned_dates(conn, (date_str, yday))
+        out = [s for s in out if s['date'] not in planned]
+        out += _plan_segments(conn, date_str, 0)
+        out += _plan_segments(conn, yday, -1440)
     conn.close()
     out = [s for s in _under_day_blocks(out) if not s.get('crossed')]
     out.sort(key=lambda r: r['start'])
@@ -3516,11 +3520,19 @@ def get_day_plan(ymd):
 # and `complete` names the items a crossed-out line still has: the route
 # finishes those through the one completion door (a sheet's tick first).
 # `base` is the text the writer started from; None means the stored text.
-def set_day_plan(ymd, body, base=None):
+# `guard(stored, merged)` is asked of the text the save would store (the
+# photo gates' lock, qr_judge.plan_lock_refusal): a refusal writes nothing —
+# no item minted, no placement moved — and comes back as `refused`.
+def set_day_plan(ymd, body, base=None, guard=None):
     conn = get_conn()
     row = conn.execute('SELECT body FROM day_plan WHERE date = ?', (ymd,)).fetchone()
     stored = row['body'] if row else ''
     body, complete = _plan_sync(conn, ymd, body or '', stored if base is None else base, stored)
+    refusal = guard and guard(stored, body)
+    if refusal:
+        conn.rollback()
+        conn.close()
+        return {'refused': refusal}
     _plan_store(conn, ymd, body)
     conn.commit()
     conn.close()
@@ -3609,7 +3621,13 @@ def _plan_sync(conn, ymd, text, base, stored):
             complete.append(t['id'])
             continue
         elif t['text'] and rows[t['id']]['content'] != t['text']:
-            conn.execute('UPDATE inbox_item SET content = ? WHERE id = ?', (t['text'], t['id']))
+            # The writer left the line as it found it, so the item was
+            # reworded elsewhere: its words win. Otherwise the line's do.
+            was = base_tasks.get(t['id'])
+            if was and was['text'] == t['text'] and rows[t['id']]['content'].strip():
+                lines[t['idx']] = day_plan.rename_line(lines[t['idx']], rows[t['id']]['content'].strip())
+            else:
+                conn.execute('UPDATE inbox_item SET content = ? WHERE id = ?', (t['text'], t['id']))
         conn.execute("INSERT OR REPLACE INTO engage_placement (date, item_id, minute, anchor) "
                      "VALUES (?, ?, ?, 'plan')", (ymd, t['id'], owner['start']))
     for gone in set(base_tasks) - present:
@@ -3632,6 +3650,9 @@ def _plan_sync(conn, ymd, text, base, stored):
 # line overlapping it most; with no block there, the line holding the minute.
 # No line at all leaves the placement as it was — it is still on the to-do
 # list. Inserting moves the lines below it, so the text is parsed afresh.
+# Never under a `!` gate's line (_plan_live): an action placed somewhere else
+# does not get to become what a photo gate is judged on; the tasks written
+# under a gate are the ones written there.
 def _plan_take(conn, ymd, lines, P, p):
     m = p['minute']
     span, label = _block_at(conn, ymd, m) or ((m, m + 1), '')

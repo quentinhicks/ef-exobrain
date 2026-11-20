@@ -1410,9 +1410,17 @@ def get_calendar_days_route():
     dates = _date_range(request.args.get('from'), request.args.get('to'))
     if dates is None:
         return jsonify({'error': 'from and to are YYYY-MM-DD, in order'}), 400
-    return jsonify({d: {'segments': storage.block_segments_for(d, with_cancelled=True),
-                        'overrides': storage.get_overrides_for_date(d),
-                        'plan': storage.get_day_plan(d)} for d in dates})
+    out = {}
+    for d in dates:
+        plan = storage.get_day_plan(d)
+        out[d] = {'segments': storage.block_segments_for(d, with_cancelled=True),
+                  'overrides': storage.get_overrides_for_date(d), 'plan': plan}
+        # A planned day's blocks are its plan's. `beneath` is the day the plan
+        # replaced, served so it can be read beside the plan while it is being
+        # written — the server's answer, never the week re-derived.
+        if plan['body'].strip():
+            out[d]['beneath'] = storage.block_segments_for(d, plan=False)
+    return jsonify(out)
 
 
 @app.route('/api/engage/day')
@@ -2013,15 +2021,18 @@ def day_plan_route(ymd):
     data = request.get_json(force=True) or {}
     if not isinstance(data.get('body'), str):
         return jsonify({'error': 'send the plan as body (text; blank clears it)'}), 400
-    # A `!` line is a PHOTO GATE: locked once its window opens, and committed
-    # by the same look that saves it (qr_judge, PHOTO GATES).
-    refusal = qr_judge.plan_lock_refusal(ymd, data['body'])
-    if refusal:
-        return jsonify({'error': refusal}), 409
     # `base`: the text the writer's field started from, so the tasks it never
     # saw (written in by the server meanwhile) are not read as removed.
     base = data.get('base') if isinstance(data.get('base'), str) else None
-    plan = storage.set_day_plan(ymd, data['body'], base)
+    # A `!` line is a PHOTO GATE: locked once its window opens, and committed
+    # by the same look that saves it (qr_judge, PHOTO GATES). The lock is
+    # asked of the text the save would store — the writer's, with what changed
+    # through the items merged in — so a task finished elsewhere under an open
+    # gate is not read as this save changing the gate.
+    plan = storage.set_day_plan(ymd, data['body'], base,
+                                guard=lambda old, new: qr_judge.plan_lock_refusal(ymd, new, old=old))
+    if plan.get('refused'):
+        return jsonify({'error': plan['refused']}), 409
     # A crossed-out task is finished through the one door; one that could
     # not be (a sheet that refused its tick) stays, and the next save asks
     # again.

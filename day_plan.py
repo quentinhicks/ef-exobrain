@@ -25,7 +25,9 @@
 # in hex at its end (`[2b1]`, 1-5 digits). storage._plan_sync mints the id
 # and keeps the item, its placement and this text agreeing; nothing here
 # touches the db. `* ~~words~~ [id]` is a task crossed out — done. A `*` line
-# under a `!` gate is the gate's description, never a task (see _owner_ok).
+# under a `!` gate is a task too, and also the gate's description: what the
+# judge holds it to is frozen in the gate's ledger row (plan_gate) when its
+# window opens, so the item changing afterwards changes nothing judged.
 #
 # A LINE THAT IS ONLY `@ PLACE.` IS A FRAME (2026-11-20, the same design): a
 # place you have to be, drawn as an outline over that stretch of the day. It
@@ -233,28 +235,13 @@ def walk(items, parent=None):
 
 
 # ── THE TASKS, AS LINES (2026-11-20) ──
-# Every `*` line that is a task, with what it is on (`owner`: a block or a
-# frame) and its 0-based index in text.split('\n'). A `*` line under a gate,
-# or under a block nested in one, is the gate's description and not here.
+# Every `*` line, with what it is on (`owner`: a block or a frame) and its
+# 0-based index in text.split('\n').
 def tasks_of(text):
     P = parse(text)
     out = []
-
-    def add(owner, gated):
-        if gated:
-            return
+    for owner, _ in list(walk(P['items'])) + [(f, None) for f in P['frames']]:
         out.extend(dict(t, idx=t['line'] - 1, owner=owner) for t in owner['tasks'])
-
-    def visit(it, gated):
-        gated = gated or it['gate']
-        add(it, gated)
-        for k in it['kids']:
-            visit(k, gated)
-
-    for it in P['items']:
-        visit(it, False)
-    for f in P['frames']:
-        add(f, False)
     return out, P
 
 
@@ -306,21 +293,24 @@ def task_insert_at(lines, owner):
 # Every live gate line, nested ones included, keyed by its window (start, end)
 # in minutes from the date's midnight — the key a gate is stored under, so two
 # gates may not share a window. A crossed-out `!` line is no gate. Each comes
-# with the text Claude judges against: the line, its notes and its block.
-def gate_lines(text):
+# with the text Claude judges against: the line, its open tasks and its
+# block. `done=True` reads every task whatever its strike: what the LOCK
+# compares, since crossing a task out is doing it, not changing the gate.
+def gate_lines(text, done=False):
     out = {}
     for g, parent in walk(parse(text)['items']):
         if g['gate'] and not g['struck']:
-            out[(g['start'], g['end'])] = {'title': label_of(g), 'task': _gate_task(g, parent)}
+            out[(g['start'], g['end'])] = {'title': label_of(g), 'task': _gate_task(g, parent, done)}
     return out
 
 
-def _gate_task(g, parent):
+def _gate_task(g, parent, done=False):
     named = lambda it: ': '.join(x for x in (it['cat'], it['title']) if x) or 'Plan'
-    lines = [named(g)] + ['- ' + n for n in g['notes']]
+    said = lambda it: [t['text'] for t in it['tasks']] if done else it['notes']
+    lines = [named(g)] + ['- ' + n for n in said(g)]
     if parent:
         lines.append('Inside the block: ' + named(parent))
-        lines += ['- ' + n for n in parent['notes']]
+        lines += ['- ' + n for n in said(parent)]
     return '\n'.join(lines)
 
 
@@ -329,8 +319,10 @@ def _gate_task(g, parent):
 # reworded. Returns the first one a save would touch, or None. Comparing the
 # PARSED lines, not the text, so editing any other line stays free — unless it
 # changes how a locked line's times read, which moves that gate and is refused.
+# A task under it may be crossed out (done) and its id written in; neither
+# changes the gate, whose requirements its ledger row froze at the opening.
 def locked_change(old, new, now_min):
-    before, after = gate_lines(old), gate_lines(new)
+    before, after = gate_lines(old, done=True), gate_lines(new, done=True)
     for key in sorted(set(before) | set(after)):
         if key[0] <= now_min and before.get(key) != after.get(key):
             return (before.get(key) or after.get(key))['title']

@@ -1306,11 +1306,16 @@ def plan_commit(ymd, now=None, settings=None):
             storage.plan_gate_drop(r['id'])
 
 
-def plan_lock_refusal(ymd, body, now=None):
-    """Why this save of a day's plan is refused, or None (THE LOCK)."""
+def plan_lock_refusal(ymd, body, now=None, old=None):
+    """Why this save of a day's plan is refused, or None (THE LOCK).
+
+    `old` is the text it replaces (default: the stored plan). The plan route
+    asks of the text a save would STORE, after the to-do sync has merged in
+    what changed elsewhere — a task finished or reworded through its item."""
     now = now or datetime.now()
     now_min = int((now - _local_dt(ymd, '00:00')).total_seconds() // 60)
-    title = day_plan.locked_change(storage.get_day_plan(ymd)['body'], body, now_min)
+    old = storage.get_day_plan(ymd)['body'] if old is None else old
+    title = day_plan.locked_change(old, body, now_min)
     if title is None:
         return None
     return ('"%s" is a gate whose window has opened, so it can no longer be added, '

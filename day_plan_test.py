@@ -265,7 +265,11 @@ check('a new task line is minted an item, its id written onto the line',
 check('...filed under the area its category names, placed at its line', item(q3)['area_id'] == area_id
       and placed(q3) == [(760, 'plan')], (item(q3), placed(q3)))
 check('a one-letter task is not minted yet', '* x\n' in p['body'] + '\n', p['body'])
-check("a gate's * line is its description, never a task", '* photo of Q3\n' in p['body'] + '\n', p['body'])
+photo = ids_of(p['body'])[2]   # [Finish Q3, x (no id yet), photo of Q3]
+check("a gate's * line is a to-do too, placed at the gate's line",
+      item(photo) and item(photo)["content"] == "photo of Q3" and placed(photo) == [(900, "plan")], (item(photo), placed(photo)))
+check("...and its id is not part of what the gate is judged on",
+      day_plan.gate_lines(p['body'])[(900, 910)]['task'] == 'Photo\n- photo of Q3', day_plan.gate_lines(p['body']))
 body = p['body']
 p = put(body.replace('Finish Q3', 'Finish Q3 and Q4'))
 check('a line reworded rewords its item', item(q3)['content'] == 'Finish Q3 and Q4', item(q3))
@@ -327,6 +331,34 @@ check('a frame is served with its tasks, minted like any other',
       fr['label'] == 'STOKES' and fr['tasks'][0]['id'] == badge and placed(badge) == [(945, 'plan')], p)
 put('')
 check('clearing the plan takes its tasks off the day, and keeps them', placed(badge) == [] and item(badge))
+
+# ── 7. the day beneath a plan, served while it is written ──
+p = put('3:45-4:45. Meet')
+rows = client.get(f'/api/calendar/days?from={day}&to={day}').get_json()[day]
+check('a planned day serves the day it replaced, beside its own blocks',
+      [s['label'] for s in rows['beneath']] == ['ENT200']
+      and all(s.get('plan_date') for s in rows['segments']), rows)
+put('')
+check('an unplanned day has nothing beneath it',
+      'beneath' not in client.get(f'/api/calendar/days?from={day}&to={day}').get_json()[day])
+
+# ── 8. a gate's tasks under its lock (its window opened at midnight today) ──
+today = date_cls.today().isoformat()
+storage.set_day_plan(today, '!0-0:10 Photo of the set\n* Q1\n* Q2')
+body = storage.get_day_plan(today)['body']
+q1, q2 = ids_of(body)
+r = client.put(f'/api/day-plan/{today}', json={'body': body.replace('* Q1', '* ~~Q1~~'), 'base': body})
+check('a task under an open gate may be crossed out — done is not a change to the gate',
+      r.status_code == 200 and item(q1) is None, r.get_json())
+body = r.get_json()['body']
+r = client.put(f'/api/day-plan/{today}', json={'body': body.replace('* Q2', '* Q2 and Q3'), 'base': body})
+check('...but not reworded: the lock still holds the text', r.status_code == 409 and item(q2)['content'] == 'Q2', r.get_json())
+storage.update_inbox_item(q2, content='Q2, all parts')
+r = client.put(f'/api/day-plan/{today}', json={'body': body, 'base': body})
+check('reworded through its item, a field that never saw it is not refused: the item wins',
+      r.status_code == 200 and f'* Q2, all parts [{q2:x}]' in r.get_json()['body'], r.get_json())
+r = client.put(f'/api/day-plan/{today}', json={'body': '', 'base': body})
+check('and a base cannot talk the lock out of removing the gate', r.status_code == 409, r.get_json())
 
 print()
 print(f'{len(fails)} FAILED' if fails else 'All checks passed.')
