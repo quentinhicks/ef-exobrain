@@ -5437,7 +5437,9 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   border-radius: 50%;
   background: var(--surface-mid);
   cursor: pointer;
-  z-index: 2;
+  /* Over everything the column draws: a plan's blocks (2-4 by depth), the
+     ring (5) and a frame's outline (6) — a gate is never under its day. */
+  z-index: 7;
 }
 /* The mark is round and 14px; its target is not. A finger gets the band
    around it, which is otherwise empty column edge. */
