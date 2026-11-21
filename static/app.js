@@ -2939,6 +2939,10 @@ const WK_SVG = {
 // square outline over the blocks with a folder tab at its top right; no
 // title or task sits on a frame's line — it moves under it.
 const WK_ROW = 11.5, WK_TITLE = 13, WK_MIN_BLOCK = 11, WK_SMALL = 15, WK_NEST = 7;
+// A frame's folder tab (.wk-frame-tab, 14px over the frame's top) and how far
+// a gate's mark reaches up and down from its centre: 7px of mark and the 8px
+// finger band round it (.wk-gate::after).
+const WK_TAB_H = 14, WK_GATE_REACH = 15;
 const WK_BACK_SVG = '<svg width="4" height="4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="m8 4 8 8-8 8"/></svg>';
 
 // Which task lines fit a box `H` px tall whose title is `lh` px, keeping
@@ -2995,8 +2999,9 @@ function wkSpan(s, e) {
 }
 
 // A planned day's blocks and frames, as one column's HTML. `segs` are the
-// served plan segments (nested ones in `kids`), `frames` the plan's @ lines.
-function wkPlanHtml(d, segs, frames, y, clip) {
+// served plan segments (nested ones in `kids`), `frames` the plan's @ lines,
+// `marks` where the column's gate marks stand (their centres, px).
+function wkPlanHtml(d, segs, frames, y, clip, marks) {
   const flat = [];
   const walk = (b, depth, parent) => {
     const it = { b, depth, parent, kids: [], atStart: !!parent && b.start === parent.b.start };
@@ -3047,10 +3052,14 @@ function wkPlanHtml(d, segs, frames, y, clip) {
     const [a, b] = clip(f.start, f.end);
     if (b <= a) return '';
     const name = `@ ${f.label.toUpperCase()}`;
-    return `<div class="wk-frame" data-obj="plan:${d}" data-sel="f:${d}:${f.line}" data-plan-line="${f.line}"
+    // A gate's mark at the column's edge never covers the tab: a tab within
+    // a mark's reach steps left of it (.wk-frame-shy).
+    const top = y(a);
+    const shy = (marks || []).some(m => m - WK_GATE_REACH < top && m + WK_GATE_REACH > top - WK_TAB_H);
+    return `<div class="wk-frame${shy ? ' wk-frame-shy' : ''}" data-obj="plan:${d}" data-sel="f:${d}:${f.line}" data-plan-line="${f.line}"
       data-date="${d}" data-start-min="${f.start}" data-end-min="${f.end}" data-occ-min="${f.start}"
       data-name="${escHtml(name)}" data-what="${escHtml(wkSpan(f.start, f.end))}"
-      style="top:${y(a)}px;height:${y(b) - y(a)}px;--block-color:${f.color}"><span class="wk-frame-tab">${escHtml(name)}</span></div>`;
+      style="top:${top}px;height:${y(b) - top}px;--block-color:${f.color}"><span class="wk-frame-tab">${escHtml(name)}</span></div>`;
   }).join('');
   return { blocks, frames: frameHtml };
 }
@@ -3174,7 +3183,12 @@ function renderCalWeek() {
     // planned day's own blocks are the plan's (wkPlanHtml); only last night's
     // tail of an unplanned yesterday stands beside them.
     const segs = drawnSegments(day.segments);
-    const plan = wkPlanHtml(d, segs.filter(s => s.plan_date), (dayPlanOf(d) || {}).frames || [], y, clip);
+    // The gates drawn on this column — asked first, so the plan's frames know
+    // where the marks stand.
+    const qrGates = wkDayGates(d).filter(g => g.window.end_min >= start && g.window.end_min <= end);
+    const photoGates = ((calWeek.days[d] || {}).plan_gates || []).filter(g => g.end_min >= start && g.end_min <= end);
+    const marks = [...qrGates.map(g => y(g.window.end_min)), ...photoGates.map(g => y(g.end_min))];
+    const plan = wkPlanHtml(d, segs.filter(s => s.plan_date), (dayPlanOf(d) || {}).frames || [], y, clip, marks);
     const blocks = planning
       ? `<div class="wk-lane wk-lane-day">${wkBeneathHtml(
           isPlannedDay(d) ? drawnSegments(day.beneath || []) : segs.filter(s => !s.plan_date), timed(true), y, clip)}</div>
@@ -3215,8 +3229,7 @@ function renderCalWeek() {
           wkTaskList(formatDateYMD(new Date(e.start)), isoMin(e.start), false, null, eventKey(e))}</div>`;
     }).join('');
 
-    const gates = wkDayGates(d).filter(g => g.window.end_min >= start && g.window.end_min <= end)
-      .map(g => {
+    const gates = qrGates.map(g => {
         const st = wkGateState(g);
         const role = wkRole(g.node_id);
         const mark = wkGateMark(g.node_id);
@@ -3226,8 +3239,7 @@ function renderCalWeek() {
           data-wk="gate" data-node="${g.node_id}" data-date="${d}" data-obj="gate:${g.node_id}"
           data-obj-date="${d}" title="${escHtml(`${g.label} · ${say} ${hhmmToAmPm(clockHHMM(g.window.end_min))}`)}"
           style="top:${y(g.window.end_min) - 7}px">${mark}</button>`;
-      }).join('') + ((calWeek.days[d] || {}).plan_gates || [])
-      .filter(g => g.end_min >= start && g.end_min <= end).map(g => {
+      }).join('') + photoGates.map(g => {
         // A PHOTO GATE (a `!` line in the plan): the same mark at its close,
         // in the same words. Its door is the plan; no drag - its line is its
         // one editor.

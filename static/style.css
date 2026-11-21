@@ -5698,6 +5698,11 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   pointer-events: auto;
   cursor: pointer;
 }
+/* A GATE'S MARK sits at the column's right edge, where the tab does. A tab
+   in its reach (wkPlanHtml) steps left of the mark (1px in, 14px wide) and
+   its finger band (10px more), so the mark never covers it and a click on
+   the tab is the tab's; while gates are hidden it stays in its corner. */
+#cal-overlay:not(.cal-hide-gates) .wk-frame-shy .wk-frame-tab { right: 26px; }
 
 /* THE RING (calRingHtml): the hovered or lit thing's own colour, its own
    layer over the boxes (so a nested block cannot break it) and under a
