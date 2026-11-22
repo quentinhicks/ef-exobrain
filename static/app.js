@@ -1314,7 +1314,7 @@ function wkRestoreMenu(e) {
 // said; every save sends it as `base`, so a line written in meanwhile is
 // never read as one this field removed.
 const DP_EXAMPLE = '12:40-2. COS333: A4\n  * Finish Q3\n7:30-9. CWR201: Library\n  7:30-7:40. Walk to Firestone\n3:45-6. @ STOKES.';
-const dayPlanSheet = { open: false, date: null, base: '', server: '', logged: false, failed: false };
+const dayPlanSheet = { open: false, date: null, base: '', server: '', logged: false, failed: false, ink: {} };
 
 function dayPlanOf(d) {
   const p = (calWeek.days[d] || {}).plan;
@@ -1353,11 +1353,32 @@ async function openDayPlan(d, line) {
 // The plan's own colouring, in the shared field (mdFieldHtml + wireMdField):
 // an @ frame's line in the frame's ink, a task's bullet and its id faint, a
 // crossed-out task struck through.
+// A FRAME'S LINE IS IN ITS FRAME'S COLOUR (2026-11-21, Quentin's instruction:
+// the @ lines match the colour the calendar draws them in). The colour is the
+// server's — storage._name_color, served on each of the plan's `frames` —
+// never re-derived here: `dayPlanSheet.ink` keys it by the frame line's words
+// as last served (dpFrameInk), so a frame being typed takes its colour with
+// the save that reads it, and wears the default ink until then.
+const DP_FRAME_RE = /^(\s*\d{1,2}(?::\d{2})?\s*[-–—]\s*\d{1,2}(?::\d{2})?\.?\s*)(@.*)$/;
+
+function dpFrameInk(p) {
+  const lines = (p.body || '').split('\n');
+  const ink = {};
+  (p.frames || []).forEach(f => {
+    const m = (lines[f.line - 1] || '').match(DP_FRAME_RE);
+    if (m && /^#[0-9a-f]{3,8}$/i.test(f.color || '')) ink[m[2].trim()] = f.color;
+  });
+  return ink;
+}
+
 function dpHighlight(text) {
   if (text.endsWith('\n')) text += ' ';
   return text.split('\n').map(line => {
-    const fm = line.match(/^(\s*\d{1,2}(?::\d{2})?\s*[-–—]\s*\d{1,2}(?::\d{2})?\.?\s*)(@.*)$/);
-    if (fm) return `${escHtml(fm[1])}<span class="dph-frame">${escHtml(fm[2])}</span>`;
+    const fm = line.match(DP_FRAME_RE);
+    if (fm) {
+      const c = dayPlanSheet.ink[fm[2].trim()];
+      return `${escHtml(fm[1])}<span class="dph-frame"${c ? ` style="--frame-c: ${c}"` : ''}>${escHtml(fm[2])}</span>`;
+    }
     const tm = line.match(/^(\s*[*•]\s+)(.*?)(\s*\[[0-9a-fA-F]{1,5}\])?(\s*)$/);
     if (!tm) return escHtml(line);
     const done = tm[2].length > 4 && /^~~[\s\S]*~~$/.test(tm[2]);
@@ -1397,13 +1418,17 @@ function renderDayPlanSheet(p) {
   ta.focus();
 }
 
-// What the server could not read is said, never guessed at.
+// What the server could not read is said, never guessed at; its frames'
+// colours are taken into the field's colouring.
 function paintDayPlanSheet(p) {
   const sk = document.getElementById('dp-skipped');
   if (!sk) return;
   sk.innerHTML = (p.skipped || []).map(s =>
     `<div>skipped line ${s.n}: ${escHtml(s.text)}</div>`).join('');
   document.getElementById('dp-clear').classList.toggle('hidden', !p.body.trim());
+  dayPlanSheet.ink = dpFrameInk(p);
+  const ta = document.getElementById('dp-text');
+  if (ta) paintMdField(ta);
 }
 
 // The server's text into the field, as the smallest edit between the two —
@@ -1441,6 +1466,7 @@ function dayPlanFollow() {
   if (!p || !ta || p.body === dayPlanSheet.server || ta.value !== dayPlanSheet.server) return;
   dayPlanSheet.server = p.body;
   dpAdopt(ta, p.body);
+  paintDayPlanSheet(p);
 }
 
 // Half-typed plan text is data: written before anything else writes the plan.

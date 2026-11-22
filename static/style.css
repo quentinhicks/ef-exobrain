@@ -5781,7 +5781,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
 .dph-mark, .dph-id { color: var(--text-secondary); }
 .dph-id { opacity: 0.7; }
 .dph-done { color: var(--text-secondary); text-decoration: line-through; }
-.dph-frame { color: color-mix(in srgb, #c8aa64 70%, var(--text-primary)); }
+/* An @ frame's line in its frame's colour (--frame-c, served; dpHighlight),
+   mixed as the calendar mixes the frame's outline (82%, .wk-frame). Measured
+   over every hash hue on every surface: worst 5.06:1 dark; light takes 40%,
+   the frame tab's own ink (4.81:1), in the appendix. */
+:root { --dph-frame-mix: 82%; }
+.dph-frame { color: color-mix(in srgb, var(--frame-c, #c8aa64) var(--dph-frame-mix), var(--text-primary)); }
 .dp-code { font-family: var(--font-mono); color: var(--text-primary); }
 .dp-hint { padding: 0 14px 8px; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
 .dp-skipped { padding: 0 14px; font: 12px var(--font-mono); color: var(--text-secondary); }
@@ -6332,6 +6337,8 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
   --on-gate: #ffffff;
   --gate-dismissed: #c4c9cf;
   --on-gate-dismissed: #1f2328;
+  /* A plan's @ frame line: the pastels as text need the ink's weight here. */
+  --dph-frame-mix: 40%;
 }
 
 /* Accent tints: keyed to the pastel accent, so they vanish on a light bg. */
