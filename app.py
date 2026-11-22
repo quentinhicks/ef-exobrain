@@ -560,6 +560,8 @@ def _drive_privacy(on):
 _clarify_window = None
 _clarify_shown = False
 CLARIFY_W = 430
+HIDDEN_WINDOWS_AFTER_S = 1.5  # after the main window loads (see __main__)
+_hidden_loaded = False  # the Clarify and Google Calendar pages are loading
 
 
 # THE STRIP IS STICKY (2026-11-17, Quentin's instruction, reversing "it
@@ -694,7 +696,7 @@ def _clarify_changed():
 # sitting is in it. Hiding goes through closeClarify, which keeps typed notes.
 def _clarify_toggle():
     global _clarify_shown
-    if not _clarify_window:
+    if not (_clarify_window and _hidden_loaded):
         return False
     if _clarify_shown:
         _clarify_window.evaluate_js('clarifyView.open && closeClarify()')
@@ -806,6 +808,8 @@ def _gcal_hook(window):
         control = window.native.browser.webview
         control.NavigationStarting += _gcal_navigating
         control.CoreWebView2InitializationCompleted += _gcal_ready
+    else:
+        _gcal_quiet.set()  # nothing here to quiet: Calendar may load
 
 
 # IT NEVER INTERRUPTS (2026-11-18, Quentin's instruction: "remove those weird
@@ -814,20 +818,52 @@ def _gcal_hook(window):
 # pywebview rewrites every page's alert into WinForms.MessageBox.Show. Here
 # alert is nothing, fixed before any script runs so that rewrite is ignored;
 # the page is also refused leave to notify, and a notification it sends
-# anyway shows nothing. Runs after pywebview's ready handler, which has
-# already started the first load: so Calendar loads again, under the script.
+# anyway shows nothing. The window opens on pywebview's blank page and
+# Calendar is loaded only once this has run (`_gcal_load`), so no page of it
+# ever runs without the script.
+# 2026-11-21 (reported again): pywebview also leaves Chromium's OWN dialogs on
+# (`AreDefaultScriptDialogsEnabled`), so confirm, prompt and "leave this
+# page?" could still come out of the hidden window, and a notification
+# permission the profile had already saved never asked `_gcal_permission`.
+# Here the default dialogs are off and every one is answered unseen, and the
+# saved permission is overwritten with Deny at every launch. Measured in a
+# hidden WebView2 window: alert returns, confirm false, prompt null,
+# Notification.permission 'denied', nothing shown.
 GCAL_QUIET_JS = ("Object.defineProperty(window, 'alert', "
                  "{ get: () => function () {}, set: () => {}, configurable: false });")
+GCAL_ORIGINS = ('https://calendar.google.com', 'https://www.google.com')
+_gcal_quiet = threading.Event()  # set once _gcal_ready has quieted the window
 
 
 def _gcal_ready(sender, args):
     if not args.IsSuccess:
         return
+    from Microsoft.Web.WebView2.Core import CoreWebView2PermissionKind, CoreWebView2PermissionState
     core = sender.CoreWebView2
+    core.Settings.AreDefaultScriptDialogsEnabled = False
+    core.ScriptDialogOpening += _gcal_dialog
     core.AddScriptToExecuteOnDocumentCreatedAsync(GCAL_QUIET_JS)
     core.PermissionRequested += _gcal_permission
     core.NotificationReceived += _gcal_notification
-    core.Navigate(GCAL_URL)
+    for origin in GCAL_ORIGINS:
+        core.Profile.SetPermissionStateAsync(CoreWebView2PermissionKind.Notifications, origin,
+                                             CoreWebView2PermissionState.Deny)
+    _gcal_quiet.set()
+
+
+# Calendar itself, once the window is quiet (launch: _load_hidden_windows).
+def _gcal_load():
+    _gcal_quiet.wait(30)
+    _gcal_window.load_url(GCAL_URL)
+
+
+# A dialog nobody sees: alert, confirm and prompt are dismissed (Cancel),
+# and "leave this page?" is let go, so a reload or a sign-in redirect is
+# never held up by a question in a hidden window.
+def _gcal_dialog(sender, args):
+    from Microsoft.Web.WebView2.Core import CoreWebView2ScriptDialogKind
+    if args.Kind == CoreWebView2ScriptDialogKind.Beforeunload:
+        args.Accept()
 
 
 def _gcal_permission(sender, args):
@@ -905,7 +941,7 @@ def _gcal_put_away():
 # comes up — and inbox.ahk activates it, since only the process that owns the
 # hotkey may take the foreground.
 def _gcal_toggle():
-    if not _gcal_window:
+    if not (_gcal_window and _hidden_loaded):
         return False
     if _gcal_shown and _gcal_in_front():
         _gcal_put_away()
@@ -923,9 +959,10 @@ def _gcal_closing():
     return False
 
 
-# Made at launch and kept hidden, so the key shows it already drawn.
+# Made at launch and kept hidden, so the key shows it already drawn — made
+# blank, and Calendar loaded by _gcal_load.
 def _gcal_create():
-    w = webview.create_window(GCAL_TITLE, GCAL_URL, width=1200, height=860, hidden=True)
+    w = webview.create_window(GCAL_TITLE, None, width=1200, height=860, hidden=True)
     w.events.before_show += _gcal_hook
     w.events.closing += _gcal_closing
     return w
@@ -4653,7 +4690,7 @@ class WindowApi:
     # The Calendar page's "Google ↗": Ctrl+Alt+G's way in from the app. From
     # here the app is in front, so showing it also brings it forward.
     def gcal_show(self):
-        if not _gcal_window:
+        if not (_gcal_window and _hidden_loaded):
             return False
         _gcal_bring()
         return True
@@ -4989,7 +5026,8 @@ if __name__ == '__main__':
 
     if _CLIENT_SERVER:
         base = _CLIENT_SERVER
-        _client_panel_hidden = _remote_settings(base).get('panel_hidden') == '1'
+        launch_settings = _remote_settings(base)
+        _client_panel_hidden = launch_settings.get('panel_hidden') == '1'
         panel_hidden = _client_panel_hidden
         _start_inbox_hotkeys()
         threading.Thread(target=_client_bridge, daemon=True).start()
@@ -5009,6 +5047,7 @@ if __name__ == '__main__':
         t = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, use_reloader=False))
         t.daemon = True
         t.start()
+        launch_settings = storage.get_settings()
         panel_hidden = _panel_toggled_off()
 
     _coach = coach.Coach(base, _REPO_DIR, _coach_emit)
@@ -5020,6 +5059,9 @@ if __name__ == '__main__':
         width=430,
         height=930,
         js_api=main_api,
+        # The page's own ground (style.css `--bg`), so the window opens in the
+        # app's colour instead of flashing white until the page paints.
+        background_color='#f6f7f9' if launch_settings.get('theme') == 'light' else '#0d0d0d',
     )
     main_api._window = main_window
     origin_x, origin_y = _active_monitor_origin()
@@ -5041,10 +5083,12 @@ if __name__ == '__main__':
     _panel_window = panel_window
     _main_window = main_window
     # Hidden until Ctrl+Alt+O; _clarify_place puts it on the right edge then.
+    # It opens on pywebview's blank page: its own is loaded by
+    # _load_hidden_windows below.
     clarify_api = ClarifyApi()
     _clarify_window = webview.create_window(
         'Clarify',
-        base + '/clarify',
+        None,
         width=CLARIFY_W,
         height=930,
         frameless=True,
@@ -5055,6 +5099,33 @@ if __name__ == '__main__':
     )
     clarify_api._window = _clarify_window
     _gcal_window = _gcal_create()
+
+    # THE DAY FIRST, THEN THE HIDDEN WINDOWS (2026-11-21, Quentin's
+    # instruction: "improve the boot up speed"). The Clarify strip and the
+    # Google Calendar window stay hidden until their keys, but they loaded the
+    # whole app and Google Calendar at the same moment the main window did,
+    # and the VM answered two launch batches at once: the day drew ~0.6s
+    # later (measured on the laptop, hidden windows, median of three). They
+    # are still MADE here — a window made after start is built before
+    # anything can hook it, so `_gcal_hook` would never run — but their pages
+    # load once the main window has loaded and had HIDDEN_WINDOWS_AFTER_S for
+    # its reads. Until then their keys do nothing (`_hidden_loaded`).
+    def _load_hidden_windows():
+        global _hidden_loaded
+        if _quitting:
+            return
+        _clarify_window.load_url(base + '/clarify')
+        _gcal_load()
+        _hidden_loaded = True
+
+    hidden_timer = []
+
+    def _main_loaded():  # every load fires it; the first one counts
+        if not hidden_timer:
+            hidden_timer.append(threading.Timer(HIDDEN_WINDOWS_AFTER_S, _load_hidden_windows))
+            hidden_timer[0].start()
+
+    main_window.events.loaded += _main_loaded
 
     def _close_panel(*args):
         global _quitting

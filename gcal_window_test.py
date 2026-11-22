@@ -122,6 +122,15 @@ A._gcal_window = win
 A._gcal_shown = False
 front = [False]
 A._gcal_in_front = lambda: front[0]
+# Launch draws the day first: the window exists, blank, until its page loads
+# (`_load_hidden_windows`), and until then the key and the button do nothing.
+A._hidden_loaded = False
+r = c.post('/api/panel/gcal')
+check('before its page loads: the key does nothing',
+      r.get_json() == {'shown': False} and win.log == [] and not A._gcal_shown, (r.get_json(), win.log))
+check('before its page loads: the button does nothing',
+      A.WindowApi().gcal_show() is False and win.log == [], win.log)
+A._hidden_loaded = True
 
 r = c.post('/api/panel/gcal')
 check('hidden: the key shows it', r.get_json() == {'shown': True} and win.log == ['show'], win.log)
@@ -164,6 +173,45 @@ A._gcal_notification(None, note)
 check('a notification it sends shows nothing', note.Handled is True)
 check('alert is pinned to nothing, against a later rewrite',
       "'alert'" in A.GCAL_QUIET_JS and 'set: () => {}' in A.GCAL_QUIET_JS and 'configurable: false' in A.GCAL_QUIET_JS)
+
+
+# Chromium's own dialogs (2026-11-21): with the default ones off, each is
+# answered here, unseen — only "leave this page?" is let go, so a reload is
+# never held by a question in a hidden window. Kinds as WebView2 names them.
+class FakeDialog:
+    def __init__(self, kind):
+        self.Kind, self.accepted = kind, False
+
+    def Accept(self):
+        self.accepted = True
+
+
+try:
+    import clr  # noqa: E402  (pythonnet, which pywebview brings on Windows)
+    clr.AddReference(os.path.join(os.path.dirname(A.webview.__file__), 'lib', 'Microsoft.Web.WebView2.Core.dll'))
+    from Microsoft.Web.WebView2.Core import CoreWebView2ScriptDialogKind as K  # noqa: E402
+    kinds = {'alert': K.Alert, 'confirm': K.Confirm, 'prompt': K.Prompt, 'beforeunload': K.Beforeunload}
+except Exception:
+    kinds = None
+if kinds:
+    answered = {}
+    for name, kind in kinds.items():
+        d = FakeDialog(kind)
+        A._gcal_dialog(None, d)
+        answered[name] = d.accepted
+    check('a dialog is dismissed unseen; only leaving the page is let go',
+          answered == {'alert': False, 'confirm': False, 'prompt': False, 'beforeunload': True}, answered)
+else:
+    print('NOT RUN  dialog answers (no WebView2 assembly on this machine)')
+
+# Calendar loads only once the window is quiet, so no page of it runs
+# without the script; the window itself opens blank.
+loads = []
+A._gcal_window = type('W', (), {'load_url': lambda self, u: loads.append(u)})()
+A._gcal_quiet.set()
+A._gcal_load()
+check('Calendar is loaded once the window is quiet', loads == [A.GCAL_URL], loads)
+A._gcal_window = None
 
 # ── Where the sign-in lives ───────────────────────────────
 where = os.path.abspath(A._webview_storage())

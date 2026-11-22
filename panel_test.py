@@ -141,6 +141,14 @@ heard = A.WindowApi().clarify_hear({'key': 'Enter'})
 check('clarify hidden: the main window\'s page is heard by nothing',
       heard is False and strip.log == [], (heard, strip.log))
 
+# Launch draws the day first: the strip exists, blank, until its page loads
+# (`_load_hidden_windows`), and until then the key does nothing.
+A._hidden_loaded = False
+r = c.post('/api/panel/clarify').get_json()
+check('clarify: before its page loads the key does nothing',
+      r == {'shown': False} and strip.log == [] and placed == [], (r, strip.log))
+A._hidden_loaded = True
+
 r = c.post('/api/panel/clarify').get_json()
 check('clarify: the key shows it', r == {'shown': True} and strip.visible, r)
 check('clarify: placed as the strip, shown, its strip reserved, then opened',
