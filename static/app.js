@@ -2382,13 +2382,14 @@ function wkTaskPopHtml() {
   const tasks = t.isPlan
     ? ((wkPlanOwner(t.date, t.line) || {}).tasks || []).filter(x => !x.struck && x.id).map(x => ({ id: x.id, content: x.text }))
     : wkTasksAt(t.date, t.minute, t.evKey);
+  if (!tasks.some(x => x.id === t.cursor)) t.cursor = null;   // finished or moved off
   t.verbs = wkCardVerbs(t);
   const verbs = `<div class="wk-card-verbs">${t.verbs.map((v, i) => `<button class="om-item${v.danger ? ' om-danger' : ''}" data-task-verb="${i}">${escHtml(v.label)}</button>`).join('')}</div>`;
   return `<div class="wk-pop wk-task-pop" data-x="${t.x}" data-y="${t.y}" style="width:${t.w || 260}px">
     <div class="wk-pop-head"><span>${escHtml(t.name)}</span>
       <button class="wk-icon" data-task-close title="Close">${WK_SVG.close}</button></div>
     <div class="wk-pop-note">${weekdayOf(day).name} ${day.getDate()} · ${escHtml(t.span)}</div>
-    <div class="ref-list">${tasks.map(x => `<div class="ref-row ref-item">
+    <div class="ref-list">${tasks.map(x => `<div class="ref-row ref-item${x.id === t.cursor ? ' eg-row-sel' : ''}" data-id="${x.id}">
         <span class="eg-check" data-task-done="${x.id}" title="Done"></span>
         <span class="ref-text">${escHtml(x.content)}</span></div>`).join('')}
       <div class="wk-task-new"><input type="text" class="wk-task-add" placeholder="Add a task" value="${escHtml(t.draft || '')}">
@@ -2460,10 +2461,55 @@ function wkOpenCard(el, px, py) {
   // it has a size (fitInViewport), so no height is guessed here.
   const y = Math.max(56, py - 24);
   calWeek.pop = 'tasks';
-  calWeek.taskPop = { ...occ, x, y, w: W, draft: '', focus: false };
+  calWeek.taskPop = { ...occ, x, y, w: W, draft: '', focus: false, cursor: null };
   renderCalWeek();
   return true;
 }
+
+// A CARD'S TASKS TAKE THE TO-DO LIST'S KEYS (2026-11-21, Quentin's
+// instruction: right-click a plan block, Tab, and its to-do rows "hotkey like
+// regular todo rows"). Tab / Shift+Tab, ↑↓ or j/k select a row — the to-do
+// list's mark (.eg-row-sel) — and Enter or P / C / L open clarify on it
+// (todoRowKeys, the one table); the card goes down as clarify comes up. The
+// cursor is the card's own state (`taskPop.cursor`), painted by
+// wkTaskPopHtml, since a redraw replaces the card; Esc puts it away before it
+// puts the card down (the rung below the card's).
+function wkCardRows() {
+  return [...document.querySelectorAll('#cal-week .wk-task-pop .ref-row[data-id]')];
+}
+
+function wkCardSelect(id) {
+  calWeek.taskPop.cursor = id;
+  wkCardRows().forEach(r => r.classList.toggle('eg-row-sel', r.dataset.id === String(id)));
+}
+
+// The item behind a card's row: the to-do items the app already holds (a
+// card's tasks are active items, plan lines' included), else read fresh.
+function wkCardItem(id) {
+  return engageView.allItems.find(i => i.id === id)
+    || apiGet('/api/inbox/active', null).then(all => (Array.isArray(all) ? all.find(i => i.id === id) : null));
+}
+
+document.addEventListener('keydown', e => {
+  const t = calWeek.on && calWeek.pop === 'tasks' && calWeek.taskPop;
+  if (!t || !noSurfaceOver()) return;
+  todoRowKeys(e, {
+    tab: true,
+    rows: wkCardRows,
+    cursor: () => t.cursor,
+    select: wkCardSelect,
+    item: wkCardItem,
+    leave: () => { calWeek.pop = null; calWeek.taskPop = null; renderCalWeek(); },
+    after: () => refreshAfterPlanWrite(),
+  });
+});
+
+escRung(23.5, () => {
+  const t = calWeek.on && calWeek.pop === 'tasks' && calWeek.taskPop;
+  if (!t || t.cursor == null) return false;
+  wkCardSelect(null);
+  return true;
+});
 
 // The verbs under a card's tasks, read fresh from the item each time it draws
 // — the same providers the object menu asks, so a verb added for blocks shows
@@ -13103,6 +13149,41 @@ function rowCursorStep(rows, id, step) {
   return parseInt(next.dataset.id);
 }
 
+// THE TO-DO ROWS' KEYS, ONE TABLE (2026-11-21: the to-do list's, and a
+// calendar card's tasks — "hotkey like regular todo rows"). ↑↓ or j/k walk
+// the rows (Tab / Shift+Tab too where `c.tab`), Enter opens clarify on the
+// row, and P / C / L open it already in that flow (CLARIFY_FLOWS). Esc is
+// each surface's own, since what it puts down differs. `c`: rows() the row
+// elements (data-id), cursor() the selected id or null, select(id),
+// item(id) the item (or a promise of it), and `leave` / `after` around
+// clarify. Returns whether it took the key.
+function todoRowKeys(e, c) {
+  if (e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target)) return false;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const step = k === 'Tab' ? (c.tab ? (e.shiftKey ? -1 : 1) : 0)
+    : { ArrowDown: 1, j: 1, ArrowUp: -1, k: -1 }[k];
+  const at = c.cursor();
+  if (step) {
+    const id = rowCursorStep(c.rows(), at, at == null ? 0 : step);
+    if (id == null) return false;
+    e.preventDefault();
+    c.select(id);
+    return true;
+  }
+  if (at == null) return false;
+  const flow = CLARIFY_FLOWS.find(f => f.route && f.k.toLowerCase() === k);
+  if (k !== 'Enter' && !flow) return false;
+  const found = c.item(at);
+  if (!found) return false;
+  e.preventDefault();
+  Promise.resolve(found).then(item => {
+    if (!item) { toast('That to-do is gone'); return; }
+    if (c.leave) c.leave();
+    openClarifyForItem(item, c.after).then(() => { if (flow) setClarifyFlow(flow.key); });
+  });
+  return true;
+}
+
 // Nothing stands over the page — no Settings, sheet, menu or read-out — so a
 // page's own keys may act. Asked by every page's key handler.
 // A clarify that is PICKING is not over the page: the page is what is being
@@ -14408,26 +14489,18 @@ function egCursorSync() {
 
 document.addEventListener('keydown', e => {
   if (currentRoute() !== '' || !noSurfaceOver()) return;
-  if (e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target)) return;
-  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-  const step = { ArrowDown: 1, j: 1, ArrowUp: -1, k: -1 }[k];
-  if (step) {
-    const id = rowCursorStep(egRows(), engageView.cursor, engageView.cursor == null ? 0 : step);
-    if (id == null) return;
-    e.preventDefault();
-    engageView.cursor = id;
-    egCursorSync();
+  if (e.key === 'Escape' && !(e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target))) {
+    const row = egCursorSync();
+    if (row) { engageView.cursor = null; row.classList.remove('eg-row-sel'); }
     return;
   }
-  const row = egCursorSync();
-  if (!row) return;
-  if (k === 'Escape') { engageView.cursor = null; row.classList.remove('eg-row-sel'); return; }
-  const flow = CLARIFY_FLOWS.find(f => f.route && f.k.toLowerCase() === k);
-  if (k !== 'Enter' && !flow) return;
-  const item = engageView.pool.find(i => i.id === engageView.cursor);
-  if (!item) return;
-  e.preventDefault();
-  openClarifyForItem(item, refreshEngage).then(() => { if (flow) setClarifyFlow(flow.key); });
+  todoRowKeys(e, {
+    rows: egRows,
+    cursor: () => (egCursorSync() ? engageView.cursor : null),
+    select: id => { engageView.cursor = id; egCursorSync(); },
+    item: id => engageView.pool.find(i => i.id === id),
+    after: refreshEngage,
+  });
 });
 
 function initEngage() {
