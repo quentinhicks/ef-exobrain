@@ -7245,8 +7245,12 @@ body.pt-stale #app { padding-top: var(--stale-h, 20px); }
     left: 0;
     right: 0;
     bottom: calc(100% - var(--vvh, 100%) - var(--vvt, 0px));
-    height: var(--tabbar-h);
-    box-sizing: border-box;
+    /* Ionic forces `box-sizing: content-box !important` on ion-tab-bar, so
+       the height is the CONTENT and the inset is added by the padding — the
+       sum is --tabbar-h. Writing --tabbar-h here counted the inset twice and
+       the bar covered the capture field on an iPhone (2026-11-22). */
+    height: 50px;
+    box-sizing: content-box;
     padding-bottom: env(safe-area-inset-bottom);
     z-index: 170;
     font-family: var(--font-ui);
