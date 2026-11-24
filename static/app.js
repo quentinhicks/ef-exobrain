@@ -14984,7 +14984,12 @@ function engageDayRows(now, dateStr, viewDate, isToday, isoMin) {
     rows.push({ kind: 'pgate', minute: g.end_min, endMin: g.end_min, gate: g });
   });
 
-  rows.sort((a, b) => a.minute - b.minute || (a.kind === 'action') - (b.kind === 'action'));
+  // At one minute, a gate (drawn at its window's CLOSE) comes before a block
+  // or event STARTING then — a gate ending at 5 is over by the time a 5:00
+  // block begins — and a routine riding the gate stays with it; actions last.
+  const tieRank = r => r.kind === 'qr' || r.kind === 'pgate'
+    || (r.kind === 'routine' && !r.blocks.length) ? 0 : r.kind === 'action' ? 2 : 1;
+  rows.sort((a, b) => a.minute - b.minute || tieRank(a) - tieRank(b));
 
   return { rows, qrMinutes, routineAreaIds, routineGroups, itemById, placedIds };
 }
