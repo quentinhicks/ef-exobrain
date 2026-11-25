@@ -808,6 +808,11 @@ def _gcal_hook(window):
         control = window.native.browser.webview
         control.NavigationStarting += _gcal_navigating
         control.CoreWebView2InitializationCompleted += _gcal_ready
+        # KEYS REACH THE PAGE (2026-11-24, Quentin's report: Calendar's
+        # shortcuts did nothing after Ctrl+Alt+G). pywebview focuses the page
+        # on the FIRST show only, so a window brought back held the focus on
+        # its frame until a click. Every activation hands it to the page.
+        window.native.Activated += lambda *_: control.Focus()
     else:
         _gcal_quiet.set()  # nothing here to quiet: Calendar may load
 
