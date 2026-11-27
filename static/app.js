@@ -1877,9 +1877,13 @@ async function unmoveEvent(uid, start) {
 // The events payload is the SERVER's resolution of where things sit, moves
 // applied, so both surfaces that draw events re-read it rather than patching a
 // local copy into agreement.
+// Also on focus and once an hour on the minute tick: the SERVER refreshes the
+// feeds hourly (_gcal_refresh_loop), and a page left open would otherwise keep
+// the events it launched with. This reads the db, never Google.
+let lastGcalRead = Date.now();
 async function refreshGcalEvents() {
-  state.gcalEvents = await fetch('/api/gcal').then(r => r.json())
-    .catch(() => state.gcalEvents);
+  lastGcalRead = Date.now();
+  state.gcalEvents = await apiGet('/api/gcal', state.gcalEvents);
   renderTimeline();
   renderEngage();
 }
@@ -3759,6 +3763,7 @@ function focusRefresh() {
   if (document.hidden || Date.now() - lastFocusRefresh < 30000) return;
   lastFocusRefresh = Date.now();
   refreshTodoNow();
+  if (Date.now() - lastGcalRead > 5 * 60000) refreshGcalEvents();
   // Back at the window with the calendar up: another device may have changed
   // it — a scan from the phone is the usual one, and its gate should turn.
   const cal = document.getElementById('cal-overlay');
@@ -10414,6 +10419,7 @@ document.addEventListener('DOMContentLoaded', () => {
   shell.then(() => { openEngage(firstEngage); initTimezone(); refreshSocialDot(); initRoutes(); coachLoad(); });
   setInterval(() => {
     checkDayRollover(); checkActiveBlock(); paintNowRows(); coachTick(); pgTick();
+    if (Date.now() - lastGcalRead > 60 * 60000) refreshGcalEvents();
     if (calWeek.on) moveWeekNowLine();
   }, 60000);
 });

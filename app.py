@@ -2382,6 +2382,33 @@ def _refresh_all_calendars():
         return [f for f in ex.map(_rebuild_source_safe, sources) if f]
 
 
+# THE CALENDAR REFRESHES ITSELF HOURLY (2026-11-27, Quentin's instruction).
+# It used to be fetched only when a device opened the app 6h after its last
+# refresh, or on ↻ — so a day with the laptop left open never saw an event
+# added on the phone. The feeds are secret iCal addresses, which have no push
+# channel (that needs the Calendar API and a public webhook), so this is a
+# timer. Hourly is well under Google's 429 threshold, and Google's own
+# publishing of a secret feed lags by hours anyway. The first run waits, so
+# launch is the day first. Pages pick the result up on focus and on the hour
+# (refreshGcalEvents), reading the db, never Google.
+GCAL_REFRESH_S = 3600
+
+
+def _gcal_refresh_loop():
+    while True:
+        time.sleep(GCAL_REFRESH_S)
+        try:
+            failed = _refresh_all_calendars()
+            if failed:
+                print(f'calendar refresh: {len(failed)} feed(s) kept their last copy')
+        except Exception as e:
+            print(f'calendar refresh failed: {e}')
+
+
+if not os.environ.get('PT_SERVER'):
+    threading.Thread(target=_gcal_refresh_loop, daemon=True).start()
+
+
 @app.route('/api/gcal/refresh', methods=['POST'])
 def refresh_gcal():
     failed = _refresh_all_calendars()
